@@ -25,6 +25,12 @@ Outputs eight raw physical quantities per step (no state-machine logic):
     the target.  Unbounded — the punch_power stage's "as hard as
     possible" signal.
 
+  Left / right SHOULDER SPEED-TOWARD-OPPONENT (m/s, signed):
+    v_shoulder · (opp_head − shoulder)/|·| — the punching-side
+    shoulder's own world velocity toward the target.  Shoulder speed
+    is driven by hip rotation and leg drive — the proximal end of
+    the kinetic chain.  An elbow-only flick leaves it near zero.
+
 The experiment's post-hoc state machine (``arm_state_machine.py``) consumes
 these to produce per-step actor weights for four reward channels
 (``r_left_elbow``, ``r_right_elbow``, ``r_left_hand_dist``,
@@ -64,6 +70,8 @@ class ArmStateObserver(BaseObserverPlugin):
       right_hand_closing_speed   — same for right hand
       left_hand_speed_to_opp     — v_hand · dir(hand→opp_head), m/s
       right_hand_speed_to_opp    — same for right hand
+      left_shoulder_speed_to_opp  — v_shoulder · dir(shoulder→opp_head), m/s
+      right_shoulder_speed_to_opp — same for right shoulder
     """
 
     def __init__(
@@ -93,6 +101,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rh_pos: np.ndarray | None = None
         self._left_speed_to_opp: float = 0.0
         self._right_speed_to_opp: float = 0.0
+        self._prev_ls_pos: np.ndarray | None = None
+        self._prev_rs_pos: np.ndarray | None = None
+        self._left_shoulder_speed: float = 0.0
+        self._right_shoulder_speed: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -115,6 +127,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._prev_rh_pos = None
         self._left_speed_to_opp = 0.0
         self._right_speed_to_opp = 0.0
+        self._prev_ls_pos = None
+        self._prev_rs_pos = None
+        self._left_shoulder_speed = 0.0
+        self._right_shoulder_speed = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         # --- Joint angles from core_state ---
@@ -236,6 +252,37 @@ class ArmStateObserver(BaseObserverPlugin):
             sr = np.asarray(shoulder_right, dtype=np.float64)
             self._opp_head_right_shoulder = float(np.linalg.norm(oh - sr))
 
+        # Shoulder's own speed toward the target — proxy for proximal
+        # kinetic-chain drive (hips/torso rotating the shoulder into
+        # the punch).  Elbow-only flicks leave this near zero.
+        if (
+            opp_head is None
+            or shoulder_left is None
+            or shoulder_right is None
+        ):
+            self._left_shoulder_speed = 0.0
+            self._right_shoulder_speed = 0.0
+            self._prev_ls_pos = None
+            self._prev_rs_pos = None
+        else:
+            oh = np.asarray(opp_head, dtype=np.float64)
+            sl = np.asarray(shoulder_left, dtype=np.float64)
+            sr = np.asarray(shoulder_right, dtype=np.float64)
+            if self._prev_ls_pos is None:
+                self._left_shoulder_speed = 0.0
+                self._right_shoulder_speed = 0.0
+            else:
+                vsl = (sl - self._prev_ls_pos) / self.action_dt
+                vsr = (sr - self._prev_rs_pos) / self.action_dt
+                dir_sl = oh - sl
+                dir_sr = oh - sr
+                dir_sl /= max(np.linalg.norm(dir_sl), 1e-6)
+                dir_sr /= max(np.linalg.norm(dir_sr), 1e-6)
+                self._left_shoulder_speed = float(vsl @ dir_sl)
+                self._right_shoulder_speed = float(vsr @ dir_sr)
+            self._prev_ls_pos = sl
+            self._prev_rs_pos = sr
+
     # ------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------
@@ -254,6 +301,8 @@ class ArmStateObserver(BaseObserverPlugin):
             "right_hand_closing_speed": self._right_closing_speed,
             "left_hand_speed_to_opp": self._left_speed_to_opp,
             "right_hand_speed_to_opp": self._right_speed_to_opp,
+            "left_shoulder_speed_to_opp": self._left_shoulder_speed,
+            "right_shoulder_speed_to_opp": self._right_shoulder_speed,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:

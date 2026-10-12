@@ -20,6 +20,14 @@ Two new channels driven by the same reactive arm state machine:
                Own velocity only; the opponent's motion is excluded.
       aw     = +SPEED_WEIGHT × φ² on those strike frames, else 0.
 
+  r_left_shoulder_drive / r_right_shoulder_drive
+      reward = max(0, v_shoulder · dir(shoulder→opp_head)) — the
+               punching-side shoulder's own speed toward the target,
+               paid on the same strike frames.  Shoulder speed is
+               produced by hip rotation / leg drive — the proximal
+               kinetic chain.  An elbow-only flick earns ~0 here.
+      aw     = +DRIVE_WEIGHT × φ² on strike frames, else 0.
+
 The world-frame hand velocity means the whole kinetic chain pays: arm
 swing + body lunge.  The retained hand_dist channels (shoulder-
 relative) still punish pure body-charging without arm extension.
@@ -96,9 +104,10 @@ class PunchPowerStep(AttackPrepStep):
 
     name = "punch_power_step"
 
-    # --- Channels: attack_prep's 12 + punch speed ×2 ---
+    # --- Channels: attack_prep's 12 + punch speed ×2 + shoulder ×2 ---
     _channel_names = AttackPrepStep._channel_names + (
         "r_left_punch_speed", "r_right_punch_speed",
+        "r_left_shoulder_drive", "r_right_shoulder_drive",
     )
     _channel_gammas = {
         **AttackPrepStep._channel_gammas,
@@ -106,6 +115,8 @@ class PunchPowerStep(AttackPrepStep):
         # a short gamma keeps credit tight around the swing itself.
         "r_left_punch_speed": 0.90,
         "r_right_punch_speed": 0.90,
+        "r_left_shoulder_drive": 0.90,
+        "r_right_shoulder_drive": 0.90,
     }
 
     # Speed reward is raw m/s (~1-8).  Strike frames are sparse (~17%
@@ -113,6 +124,10 @@ class PunchPowerStep(AttackPrepStep):
     # mean speed stayed flat at ~1.6 m/s.  W=3.0 matches ARM_WEIGHT so
     # punch power gets comparable pressure to punch form.
     PUNCH_SPEED_WEIGHT: float = 3.0
+
+    # Shoulder speeds are smaller (~0.3-1.5 m/s) — a modest weight so
+    # chain drive is a real incentive without dominating strike form.
+    SHOULDER_DRIVE_WEIGHT: float = 2.0
 
     # --- Tracking state ---
     _pp_best_quality: float = -1.0
@@ -143,6 +158,10 @@ class PunchPowerStep(AttackPrepStep):
             oo, arm_key, "left_hand_speed_to_opp", T_full)
         r_cs = extract_per_step_field(
             oo, arm_key, "right_hand_speed_to_opp", T_full)
+        l_ss = extract_per_step_field(
+            oo, arm_key, "left_shoulder_speed_to_opp", T_full)
+        r_ss = extract_per_step_field(
+            oo, arm_key, "right_shoulder_speed_to_opp", T_full)
         left_elbow = extract_per_step_field(
             oo, arm_key, "left_elbow_norm", T_full)
         right_elbow = extract_per_step_field(
@@ -160,14 +179,17 @@ class PunchPowerStep(AttackPrepStep):
         phi = extract_per_step_field(oo, phi_key, "potential", T_full)
 
         if any(v is None for v in (
-            l_cs, r_cs, left_elbow, right_elbow,
+            l_cs, r_cs, l_ss, r_ss, left_elbow, right_elbow,
             left_hand_opp, right_hand_opp, self_x, opp_x, phi,
         )):
             for t in trajs:
                 T = t.obs.shape[0]
                 z = np.zeros(T, dtype=np.float32)
                 ref = t.channels["r_fall"]
-                for key in ("r_left_punch_speed", "r_right_punch_speed"):
+                for key in (
+                    "r_left_punch_speed", "r_right_punch_speed",
+                    "r_left_shoulder_drive", "r_right_shoulder_drive",
+                ):
                     t.channels[key] = ChannelData(
                         reward=z.copy(),
                         is_terminated=ref.is_terminated,
@@ -211,6 +233,12 @@ class PunchPowerStep(AttackPrepStep):
         w_rs = (
             self.PUNCH_SPEED_WEIGHT * swing_r.astype(np.float32) * phi2
         ).astype(np.float32)
+        w_ld = (
+            self.SHOULDER_DRIVE_WEIGHT * swing_l.astype(np.float32) * phi2
+        ).astype(np.float32)
+        w_rd = (
+            self.SHOULDER_DRIVE_WEIGHT * swing_r.astype(np.float32) * phi2
+        ).astype(np.float32)
 
         for t in trajs:
             T = t.obs.shape[0]
@@ -227,6 +255,18 @@ class PunchPowerStep(AttackPrepStep):
                 is_terminated=ref.is_terminated,
                 actor_weight=w_rs[:T],
             )
+            t.channels["r_left_shoulder_drive"] = ChannelData(
+                reward=np.maximum(
+                    np.asarray(l_ss[:T], dtype=np.float32), 0.0),
+                is_terminated=ref.is_terminated,
+                actor_weight=w_ld[:T],
+            )
+            t.channels["r_right_shoulder_drive"] = ChannelData(
+                reward=np.maximum(
+                    np.asarray(r_ss[:T], dtype=np.float32), 0.0),
+                is_terminated=ref.is_terminated,
+                actor_weight=w_rd[:T],
+            )
         return trajs
 
     # ------------------------------------------------------------------
@@ -239,6 +279,7 @@ class PunchPowerStep(AttackPrepStep):
 
         speed_means: List[float] = []
         speed_peaks: List[float] = []
+        shoulder_means: List[float] = []
         for ep in episodes:
             T = ep.num_frames
             if T == 0:
@@ -258,6 +299,10 @@ class PunchPowerStep(AttackPrepStep):
                 oo, arm_key, "left_elbow_norm", T)
             r_elb = extract_per_step_field(
                 oo, arm_key, "right_elbow_norm", T)
+            l_ss = extract_per_step_field(
+                oo, arm_key, "left_shoulder_speed_to_opp", T)
+            r_ss = extract_per_step_field(
+                oo, arm_key, "right_shoulder_speed_to_opp", T)
             self_x = extract_per_step_field(oo, app_key, "self_x", T)
             self_y = extract_per_step_field(oo, app_key, "self_y", T)
             opp_x = extract_per_step_field(oo, app_key, "opp_x", T)
@@ -268,7 +313,8 @@ class PunchPowerStep(AttackPrepStep):
                 oo, face_key, "forward_y", T)
             phi = extract_per_step_field(oo, phi_key, "potential", T)
             if any(v is None for v in (
-                l_cs, r_cs, l_elb, r_elb, self_x, opp_x, phi,
+                l_cs, r_cs, l_elb, r_elb, l_ss, r_ss,
+                self_x, opp_x, phi,
             )):
                 continue
 
@@ -306,9 +352,18 @@ class PunchPowerStep(AttackPrepStep):
             if pos.size:
                 speed_means.append(float(pos.mean()))
                 speed_peaks.append(float(pos.max()))
+            l_sh = np.asarray(l_ss, dtype=np.float64)[strike_l]
+            r_sh = np.asarray(r_ss, dtype=np.float64)[strike_r]
+            sh = np.concatenate([l_sh, r_sh])
+            sh_pos = sh[sh > 0]
+            if sh_pos.size:
+                shoulder_means.append(float(sh_pos.mean()))
 
         spd = float(np.mean(speed_means)) if speed_means else 0.0
         spd_pk = float(np.mean(speed_peaks)) if speed_peaks else 0.0
+        sh_spd = (
+            float(np.mean(shoulder_means)) if shoulder_means else 0.0
+        )
         self._punch_speed_mean = spd
 
         quality = spd + 0.1 * self._punches_per_ep
@@ -344,6 +399,7 @@ class PunchPowerStep(AttackPrepStep):
         info.update({
             "punch_speed": round(spd, 3),
             "punch_speed_pk": round(spd_pk, 3),
+            "shoulder_speed": round(sh_spd, 3),
         })
         return {
             "is_new_best": improved or trend_improved,
