@@ -465,7 +465,9 @@ def sac_update_v2(
         q1_loss = (mask * (q1_pred - target).pow(2)).sum() / mask_sum
         q2_loss = (mask * (q2_pred - target).pow(2)).sum() / mask_sum
         (q1_loss + q2_loss).backward()
-        torch.nn.utils.clip_grad_norm_(
+        # clip_grad_norm_ returns the total pre-clip norm — capturing it is
+        # free (no extra backward/forward) and read-only.
+        ch_grad_norm = torch.nn.utils.clip_grad_norm_(
             list(critic.channel_parameters(ch.name)), grad_clip_norm,
         )
         critic.step_channel(ch.name)
@@ -479,6 +481,15 @@ def sac_update_v2(
         stats[f"td_abs_mean_{ch.name}"] = float(
             (q1_pred.detach() - target).abs().mean().item()
         )
+        stats[f"grad_norm_critic_{ch.name}"] = float(ch_grad_norm)
+        stats[f"critic_clip_applied_{ch.name}"] = float(
+            ch_grad_norm > grad_clip_norm
+        )
+        if capture is not None:
+            capture.setdefault("grad_norms", {})[ch.name] = {
+                "critic_pre_clip": float(ch_grad_norm),
+                "clip_applied": bool(ch_grad_norm > grad_clip_norm),
+            }
     if not updated_channels:
         raise SACTrainerError("SAC batch has no valid critic channels")
 
@@ -589,6 +600,11 @@ def sac_update_v2(
         actor.parameters(), grad_clip_norm,
     )
     actor_optimizer.step()
+    if capture is not None:
+        capture.setdefault("grad_norms", {})["actor"] = {
+            "pre_clip": float(actor_grad_norm),
+            "clip_applied": bool(actor_grad_norm > grad_clip_norm),
+        }
 
     # Entropy estimate for auto-alpha: the enumerated joint logπ
     # expectation −Σ_km w·logp (detached), per A4.7.
@@ -606,10 +622,16 @@ def sac_update_v2(
         ).sum() / actor_den
         alpha_optimizer.zero_grad()
         alpha_loss.backward()
+        alpha_grad_norm = float(log_alpha.grad.norm().item())
         alpha_optimizer.step()
         with torch.no_grad():
             log_alpha.clamp_(sp.log_alpha_min, sp.log_alpha_max)
         alpha_loss_value = float(alpha_loss.item())
+        stats["grad_norm_alpha"] = alpha_grad_norm
+        if capture is not None:
+            capture.setdefault("grad_norms", {})["alpha"] = {
+                "pre_step": alpha_grad_norm,
+            }
 
     for channel_name in updated_channels:
         critic.soft_update_channel(channel_name, float(sp.tau))

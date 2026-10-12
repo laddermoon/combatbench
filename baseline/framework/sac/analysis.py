@@ -430,6 +430,8 @@ def dump_trace(
     i = int(matches[0])
     channels = _channels_of(dump)
     meta = (batch.get("metadata") or [{}] * len(ids))[i] or {}
+    tparts = _target_parts(dump)
+    aparts = _actor_parts(dump)
 
     def _row(t: Any) -> Any:
         return _jsonable(t[i]) if isinstance(t, torch.Tensor) else t
@@ -466,6 +468,11 @@ def dump_trace(
                 if isinstance(_field(dump, "actor_cand_q"), Mapping)
                 else "unavailable"
             ),
+            "target_parts": {
+                k: float(v[i])
+                for k, v in tparts["channels"][ch].items()
+            },
+            "actor_q_term": float(aparts["per_channel_q"][ch][i]),
         }
     return {
         "dump_dir": str(Path(dump_dir)),
@@ -501,10 +508,326 @@ def dump_trace(
             ),
             "weighted_q": _row(forward.get("weighted_q")),
             "alpha_pre": _jsonable(forward.get("alpha_pre")),
+            "entropy_term": float(aparts["entropy_term"][i]),
+            "reg_term": float(aparts["reg_term"][i]),
         },
         "task_facts": _jsonable(
             {k: v[i] for k, v in (batch.get("task_facts") or {}).items()}
         ),
+    }
+
+
+def _target_parts(dump: Mapping[str, Any]) -> Dict[str, Any]:
+    """Decompose each channel's Bellman target into parts per row.
+
+    ``target_c = reward_scale*r_c + gamma_c*bootstrap*(softq_c + reg)`` where
+    ``softq_c = Σ_km w_km·Q_c(sel pair)`` and ``reg`` is −α·logp̄ (shannon)
+    or the per-state U term (u_bonus/u_floor, from ``reg_next``).
+    """
+    batch, forward = dump["batch"], dump["forward"]
+    spec = dump["spec"]
+    channels = _channels_of(dump)
+    gamma = {c["name"]: float(c["gamma"]) for c in spec["channels"]}
+    reward_scale = float(spec["sac_params"]["reward_scale"])
+    mode = spec["sac_params"].get("regularizer_mode", "shannon")
+
+    integ = forward["next_integration_weights"].float()
+    cand_q = _field(dump, "next_cand_q")
+    softq: Dict[str, np.ndarray] = {}
+    for c, ch in enumerate(channels):
+        q_sel = cand_q[ch].float().gather(        # [B,K,M]
+            -1, forward["target_pair_index"][..., None],
+        ).squeeze(-1)
+        softq[ch] = (integ * q_sel).sum(dim=(1, 2)).numpy()
+    if mode == "shannon":
+        alpha = forward["alpha_pre"].float()
+        reg = (
+            -alpha * (integ * forward["next_log_probs"].float())
+            .sum(dim=(1, 2))
+        ).numpy()
+    else:
+        reg = forward["reg_next"].float().numpy()
+    bootstrap = batch["bootstrap"].float().numpy()
+    rewards = batch["rewards"].float().numpy()
+    parts: Dict[str, Any] = {"mode": mode, "channels": {}}
+    for c, ch in enumerate(channels):
+        r_term = rewards[:, c] * reward_scale
+        boot = gamma[ch] * bootstrap
+        parts["channels"][ch] = {
+            "reward_term": r_term,
+            "softq_term": boot * softq[ch],
+            "reg_term": boot * reg,
+            "total": r_term + boot * (softq[ch] + reg),
+        }
+    return parts
+
+
+def _actor_parts(dump: Mapping[str, Any]) -> Dict[str, Any]:
+    """Decompose each row's actor objective into per-channel Q + reg parts.
+
+    ``objective_i = Σ_km w_km·(α·logp − Σ_c w_c·Q_c(sel)) + reg_i`` for
+    shannon; U modes drop the α·logp term inside the candidate integral.
+    """
+    batch, forward = dump["batch"], dump["forward"]
+    spec = dump["spec"]
+    channels = _channels_of(dump)
+    mode = spec["sac_params"].get("regularizer_mode", "shannon")
+    integ = forward["actor_integration_weights"].float()
+    pair = forward["actor_pair_index"]
+    cand_q = _field(dump, "actor_cand_q")
+    aw = batch["actor_weight"].float()
+    share = torch.tensor(
+        [1.0 if c["actor_weight_share"] else 0.0
+         for c in spec["channels"]]
+    )
+    per_ch: Dict[str, np.ndarray] = {}
+    for c, ch in enumerate(channels):
+        q_sel = cand_q[ch].float().gather(-1, pair[..., None]).squeeze(-1)
+        per_ch[ch] = (
+            integ * (-aw[:, c, None, None] * share[c] * q_sel)
+        ).sum(dim=(1, 2)).numpy()
+    parts: Dict[str, Any] = {"mode": mode, "per_channel_q": per_ch}
+    if mode == "shannon":
+        alpha = forward["alpha_pre"].float()
+        parts["entropy_term"] = (
+            alpha
+            * (integ * forward["new_log_probs"].float()).sum(dim=(1, 2))
+        ).numpy()
+    else:
+        parts["entropy_term"] = np.zeros(
+            int(batch["sample_ids"].numel())
+        )
+    parts["reg_term"] = (
+        forward["reg_actor"].float().numpy()
+        if isinstance(forward.get("reg_actor"), torch.Tensor)
+        else np.zeros(int(batch["sample_ids"].numel()))
+    )
+    parts["total"] = (
+        sum(per_ch.values()) + parts["entropy_term"] + parts["reg_term"]
+    )
+    return parts
+
+
+def objective_decomp(
+    dump_dir: Path,
+    *,
+    sample_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Part-wise decomposition of the dump's targets and actor objective.
+
+    Every reported ``*_term`` sums back to the recorded target/objective
+    within float tolerance — the decomposition is accounting, not a new
+    estimate. ``sample_id`` selects one row for full per-row parts.
+    """
+    from .debugkit import load_dump
+
+    dump = load_dump(Path(dump_dir))
+    tparts = _target_parts(dump)
+    aparts = _actor_parts(dump)
+    batch = dump["batch"]
+    recorded_targets = {
+        ch: dump["forward"]["targets"][ch].float().numpy()
+        for ch in tparts["channels"]
+    }
+    recorded_obj = (
+        dump["forward"]["weighted_q"].float().numpy()
+        + (
+            dump["forward"]["reg_actor"].float().numpy()
+            if isinstance(dump["forward"].get("reg_actor"), torch.Tensor)
+            else 0.0
+        )
+    )
+    rows: Optional[Dict[str, Any]] = None
+    if sample_id is not None:
+        ids = batch["sample_ids"].cpu().numpy()
+        matches = np.nonzero(ids == int(sample_id))[0]
+        if len(matches) != 1:
+            raise ValueError(
+                f"sample_id={sample_id} matches={len(matches)} in dump"
+            )
+        i = int(matches[0])
+        rows = {
+            "sample_id": int(sample_id),
+            "target": {
+                ch: {k: float(v[i]) for k, v in parts.items()}
+                for ch, parts in tparts["channels"].items()
+            },
+            "actor": {
+                "per_channel_q": {
+                    ch: float(v[i]) for ch, v in aparts["per_channel_q"].items()
+                },
+                "entropy_term": float(aparts["entropy_term"][i]),
+                "reg_term": float(aparts["reg_term"][i]),
+                "total": float(aparts["total"][i]),
+            },
+        }
+    summary = {
+        "target": {
+            ch: {
+                k: {"mean": float(v.mean()), "std": float(v.std())}
+                for k, v in parts.items()
+            }
+            for ch, parts in tparts["channels"].items()
+        },
+        "actor": {
+            "per_channel_q": {
+                ch: {
+                    "mean": float(v.mean()),
+                    "std": float(v.std()),
+                }
+                for ch, v in aparts["per_channel_q"].items()
+            },
+            "entropy_term": {
+                "mean": float(aparts["entropy_term"].mean()),
+            },
+            "reg_term": {"mean": float(aparts["reg_term"].mean())},
+            "total": {"mean": float(aparts["total"].mean())},
+        },
+    }
+    check = {
+        "target_max_abs_err": float(max(
+            np.abs(parts["total"] - recorded_targets[ch]).max()
+            for ch, parts in tparts["channels"].items()
+        )),
+        "objective_max_abs_err": float(
+            np.abs(aparts["total"] - recorded_obj).max()
+        ),
+    }
+    return {
+        "dump_dir": str(Path(dump_dir)),
+        "critic_tick": dump["manifest"].get("critic_tick"),
+        "regularizer_mode": tparts["mode"],
+        "summary": summary,
+        "row": rows,
+        "check": check,
+    }
+
+
+# ---------------------------------------------------------- attribution
+
+
+_GROUP_KEYS = {
+    "collection_round": lambda meta: str(
+        (meta.get("collection") or {}).get("collection_round", "unknown")
+    ),
+    "policy_fingerprint": lambda meta: str(
+        (meta.get("collection") or {}).get("policy_fingerprint", "unknown")
+    )[:12],
+    "explore_factor": lambda meta: str(
+        (meta.get("behavior") or {}).get("explore_factor", "unknown")
+    ),
+    "random_start": lambda meta: str(
+        bool((meta.get("behavior") or {}).get("random_start", False))
+    ),
+}
+
+
+def batch_attribution(
+    dump_dir: Path,
+    *,
+    group_by: str = "collection_round",
+) -> Dict[str, Any]:
+    """Attribute one dump's update contribution to sample provenance.
+
+    Groups the batch rows by a metadata key, then for each group reports
+    row counts, per-channel critic-loss share (``mask * td^2 / Σ``) and
+    actor-objective share — the joint provenance × contribution view that
+    answers "which behavior version's samples drove this update".
+    """
+    from .debugkit import load_dump
+
+    if group_by not in _GROUP_KEYS:
+        raise ValueError(
+            f"unknown group_by {group_by!r}; allowed={sorted(_GROUP_KEYS)}"
+        )
+    dump = load_dump(Path(dump_dir))
+    batch, forward = dump["batch"], dump["forward"]
+    channels = _channels_of(dump)
+    B = int(batch["sample_ids"].numel())
+    key_fn = _GROUP_KEYS[group_by]
+
+    td2: Dict[str, np.ndarray] = {}
+    td1_map, td2_map = _field(dump, "td_q1"), _field(dump, "td_q2")
+    for ch in channels:
+        if isinstance(td1_map, Mapping) and ch in td1_map:
+            t1 = td1_map[ch].float().numpy()
+            t2 = td2_map[ch].float().numpy()
+        else:
+            t = forward["targets"][ch].float().numpy()
+            t1 = forward["q1_pred"][ch].float().numpy() - t
+            t2 = forward["q2_pred"][ch].float().numpy() - t
+        td2[ch] = (t1 ** 2 + t2 ** 2) / 2.0
+    valid = batch["channel_valid"].float().numpy()
+    sw = batch["sample_weight"].float().numpy()
+    mask = valid * sw[:, None]                              # [B,C]
+    contrib = {
+        ch: mask[:, c] * td2[ch] for c, ch in enumerate(channels)
+    }
+    contrib_totals = {
+        ch: float(contrib[ch].sum()) for ch in channels
+    }
+
+    actor_rows = batch["channel_valid"].all(dim=1).float().numpy() * sw
+    objective = (
+        forward["weighted_q"].float().numpy()
+        if "weighted_q" in forward else np.zeros(B)
+    )
+    if isinstance(forward.get("reg_actor"), torch.Tensor):
+        objective = objective + forward["reg_actor"].float().numpy()
+    actor_contrib = actor_rows * objective
+    actor_total = float(actor_contrib.sum())
+
+    metas = (batch.get("metadata") or [{}] * B)
+    groups: Dict[str, Dict[str, Any]] = {}
+    for i in range(B):
+        g = key_fn(metas[i] or {})
+        entry = groups.setdefault(g, {
+            "key": g,
+            "rows": 0,
+            "actor_valid_rows": 0,
+            "td_abs_sum": {ch: 0.0 for ch in channels},
+            "critic_loss_sum": {ch: 0.0 for ch in channels},
+            "actor_objective_sum": 0.0,
+        })
+        entry["rows"] += 1
+        entry["actor_valid_rows"] += int(actor_rows[i] > 0)
+        for ch in channels:
+            entry["td_abs_sum"][ch] += float(np.sqrt(td2[ch][i]))
+            entry["critic_loss_sum"][ch] += float(contrib[ch][i])
+        entry["actor_objective_sum"] += float(actor_contrib[i])
+
+    out_groups = []
+    for g in sorted(groups, key=lambda k: -groups[k]["rows"]):
+        entry = groups[g]
+        out_groups.append({
+            "key": g,
+            "rows": entry["rows"],
+            "batch_share": entry["rows"] / max(B, 1),
+            "actor_valid_rows": entry["actor_valid_rows"],
+            "critic_loss_share": {
+                ch: (
+                    entry["critic_loss_sum"][ch] / contrib_totals[ch]
+                    if contrib_totals[ch] > 0 else None
+                )
+                for ch in channels
+            },
+            "td_abs_mean": {
+                ch: (
+                    entry["td_abs_sum"][ch] / max(entry["rows"], 1)
+                )
+                for ch in channels
+            },
+            "actor_objective_share": (
+                entry["actor_objective_sum"] / actor_total
+                if abs(actor_total) > 0 else None
+            ),
+        })
+    return {
+        "dump_dir": str(Path(dump_dir)),
+        "critic_tick": dump["manifest"].get("critic_tick"),
+        "group_by": group_by,
+        "n_rows": B,
+        "groups": out_groups,
     }
 
 

@@ -298,6 +298,65 @@ def test_actor_weight_share_excludes_channel_from_actor_objective() -> None:
     assert abs(perturbed - base) > 1.0
 
 
+def test_grad_norm_capture_populates_per_channel_and_alpha() -> None:
+    """R2-W30: per-channel critic grad norms + alpha grad norm are
+    captured via clip_grad_norm_ return values (zero-cost, read-only)."""
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=1e-3)
+    batch = _batch(B=16)
+    capture: dict = {}
+    stats = sac_update(
+        actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        batch, channels, SACParams(use_grad_norm=False),
+        grad_clip_norm=1.0, device=torch.device("cpu"),
+        capture=capture,
+    )
+    for ch in channels:
+        assert stats[f"grad_norm_critic_{ch.name}"] > 0
+        assert stats[f"critic_clip_applied_{ch.name}"] in (0.0, 1.0)
+        entry = capture["grad_norms"][ch.name]
+        assert entry["critic_pre_clip"] == pytest.approx(
+            stats[f"grad_norm_critic_{ch.name}"]
+        )
+    assert stats["grad_norm_alpha"] >= 0
+    assert capture["grad_norms"]["alpha"]["pre_step"] == pytest.approx(
+        stats["grad_norm_alpha"]
+    )
+    assert capture["grad_norms"]["actor"]["pre_clip"] == pytest.approx(
+        stats["grad_norm_actor"]
+    )
+
+
+def test_capture_does_not_change_update_result() -> None:
+    """R2-W30 invariant: enabling forward capture is observationally
+    inert — identical stats and identical post-update weights."""
+
+    def _run(capture):
+        actor, critic, channels = _models(C=2)
+        actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+        log_alpha = torch.tensor(0.0, requires_grad=True)
+        alpha_optimizer = torch.optim.Adam([log_alpha], lr=1e-3)
+        stats = sac_update(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+            _batch(B=16), channels, SACParams(use_grad_norm=False),
+            grad_clip_norm=1.0, device=torch.device("cpu"),
+            capture=capture,
+        )
+        weights = [
+            p.detach().clone() for p in actor.parameters()
+        ] + [p.detach().clone() for p in critic.all_parameters()]
+        return stats, weights, log_alpha.detach().clone()
+
+    stats_a, weights_a, alpha_a = _run(None)
+    stats_b, weights_b, alpha_b = _run({})
+    assert stats_a == stats_b
+    assert torch.equal(alpha_a, alpha_b)
+    for wa, wb in zip(weights_a, weights_b):
+        assert torch.equal(wa, wb)
+
+
 def test_trainer_rejects_unsupported_or_invalid_inputs() -> None:
     actor, critic, channels = _models(C=1)
     opt = torch.optim.Adam(actor.parameters())

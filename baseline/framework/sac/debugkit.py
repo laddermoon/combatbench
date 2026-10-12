@@ -690,6 +690,25 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     tr.add_argument("dump", type=Path)
     tr.add_argument("--sample-id", type=int, default=None)
     tr.add_argument("--source-key", default=None)
+    at = sub.add_parser(
+        "attribute",
+        help="provenance × update-contribution joint attribution",
+    )
+    at.add_argument("dump", type=Path)
+    at.add_argument(
+        "--group-by",
+        default="collection_round",
+        choices=[
+            "collection_round", "policy_fingerprint",
+            "explore_factor", "random_start",
+        ],
+    )
+    dc = sub.add_parser(
+        "decomp",
+        help="target/actor-objective part decomposition",
+    )
+    dc.add_argument("dump", type=Path)
+    dc.add_argument("--sample-id", type=int, default=None)
     ser = sub.add_parser("series")
     ser.add_argument("run_dir", type=Path)
     ser.add_argument("--metric", required=True)
@@ -750,6 +769,14 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = analysis.dump_trace(
             args.dump, sample_id=args.sample_id,
             source_key=args.source_key,
+        )
+    elif args.command == "attribute":
+        out = analysis.batch_attribution(
+            args.dump, group_by=args.group_by,
+        )
+    elif args.command == "decomp":
+        out = analysis.objective_decomp(
+            args.dump, sample_id=args.sample_id,
         )
     elif args.command == "series":
         out = analysis.metric_series(

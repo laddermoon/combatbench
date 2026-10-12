@@ -185,6 +185,100 @@ def test_dump_trace_full_provenance(tmp_path):
         analysis.dump_trace(dump_dir, sample_id=99999)
 
 
+def test_batch_attribution_groups_provenance(tmp_path):
+    """R2-W31: provenance × contribution attribution — groups cover the
+    whole batch and per-channel loss shares sum to 1."""
+    actor, critic, channels = _models(C=2)
+    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=1e-3)
+    batch = _batch(B=16)
+    batch["metadata"] = [
+        {
+            "collection": {"collection_round": 1 if i < 6 else 2,
+                           "policy_fingerprint": f"fp{i % 2}"},
+            "behavior": {"explore_factor": 1.0 + (i % 3) * 0.1,
+                         "random_start": i % 4 == 0},
+        }
+        for i in range(16)
+    ]
+    sp = SACParams(use_grad_norm=False, reward_scale=2.0)
+    tmp = begin_critic_tick_dump(
+        dump_root=tmp_path / "debug_dumps", critic_tick=5,
+        clocks=SACClockState(collection_round=2, critic_tick=4),
+        batch=batch,
+        trainer_pre_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        ),
+        hypothesis="attr",
+    )
+    capture = {}
+    stats = sac_update_v2(
+        actor=actor, critic=critic, actor_optimizer=actor_optimizer,
+        log_alpha=log_alpha, alpha_optimizer=alpha_optimizer,
+        batch=batch, channels=channels, sp=sp, grad_clip_norm=1.0,
+        device=torch.device("cpu"), capture=capture,
+    )
+    dump_dir = finish_critic_tick_dump(
+        tmp, forward_capture=capture,
+        trainer_post_state=trainer_state_dict(
+            actor, critic, actor_optimizer, log_alpha, alpha_optimizer,
+        ),
+        update_stats=stats, actor=actor, critic=critic,
+        channels=channels, sp=sp, grad_clip_norm=1.0, critic_lr=1e-3,
+    )
+    out = analysis.batch_attribution(dump_dir, group_by="collection_round")
+    assert out["n_rows"] == 16
+    groups = {g["key"]: g for g in out["groups"]}
+    assert set(groups) == {"1", "2"}
+    assert groups["1"]["rows"] + groups["2"]["rows"] == 16
+    for ch in ("r0", "r1"):
+        total = sum(
+            g["critic_loss_share"][ch] for g in out["groups"]
+        )
+        assert total == pytest.approx(1.0, abs=1e-5)
+    # other group keys work
+    by_fp = analysis.batch_attribution(
+        dump_dir, group_by="policy_fingerprint",
+    )
+    assert {g["key"] for g in by_fp["groups"]} == {"fp0", "fp1"}
+    by_rs = analysis.batch_attribution(dump_dir, group_by="random_start")
+    assert {g["key"] for g in by_rs["groups"]} == {"True", "False"}
+    with pytest.raises(ValueError, match="group_by"):
+        analysis.batch_attribution(dump_dir, group_by="nope")
+
+
+def test_objective_decomp_parts_sum_to_recorded(tmp_path):
+    """R2-W32: decomposed parts re-add to the recorded target/objective
+    within float tolerance — accounting, not a new estimate."""
+    dump_dir = _make_dump(tmp_path)
+    out = analysis.objective_decomp(dump_dir)
+    assert out["check"]["target_max_abs_err"] < 1e-4
+    assert out["check"]["objective_max_abs_err"] < 1e-4
+    t = out["summary"]["target"]["r0"]
+    assert set(t) == {"reward_term", "softq_term", "reg_term", "total"}
+    a = out["summary"]["actor"]
+    assert set(a["per_channel_q"]) == {"r0", "r1"}
+    # per-row decomp for a sample_id
+    row = analysis.objective_decomp(dump_dir, sample_id=3)["row"]
+    assert row["sample_id"] == 3
+    parts = row["target"]["r0"]
+    assert parts["total"] == pytest.approx(
+        parts["reward_term"] + parts["softq_term"] + parts["reg_term"],
+        abs=1e-5,
+    )
+    with pytest.raises(ValueError, match="matches=0"):
+        analysis.objective_decomp(dump_dir, sample_id=4242)
+    # trace rows carry the same decomposition
+    tr = analysis.dump_trace(dump_dir, sample_id=3)
+    ch = tr["per_channel"][next(iter(tr["per_channel"]))]
+    assert set(ch["target_parts"]) == {
+        "reward_term", "softq_term", "reg_term", "total",
+    }
+    assert "actor_q_term" in ch
+    assert "entropy_term" in tr["actor_side"]
+
+
 def test_metric_series_runs_and_catalog(tmp_path):
     run_dir = tmp_path / "run"
     train_sac(_FakeExperiment(), run_dir=run_dir, rollouter=_FakeRollouter())
