@@ -3008,6 +3008,84 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.10a R2-2 细计划：实验接口、策略契约与控制闭环
+
+**目标**：实验契约中"声明了却不生效"的项全部接线或诚实标注；
+建立 SAC 原生的 round 边界调度通道（借鉴 PPO `--param`/`param_overrides`
+契约形状，按 SAC 的 collection_round 时钟实现，不引入 PPO 依赖）。
+
+**上下文核查结论**：
+
+- `build_q_critic()` 是 abstractmethod 但 loop 直接实例化
+  `MultiHeadQCritic`——契约假象；且其"每通道一个 critic 模块"的形状与
+  实际的"按 gamma 分组共享 trunk + twin head"架构不匹配；
+- `actor_weight_share` 的 actor 目标接线点已定位：
+  `trainer.py` `w_actor = actor_weight[:,None,None,:,None]` 逐通道列——
+  share=False 的诚实语义 = 该通道整体不进 actor 的 Q 加权和；
+- `--set KEY=VALUE` 对 SAC **已生效**（registry 构造 kwargs，矩阵需更正）；
+- `--param` 被 `_reject_ppo_only_options_for_sac` fail-loud 拒绝（非静默）；
+- 逐 round 动态读取的实验属性：`behavior_explore`、
+  `random_start_transitions`（getattr 每轮读）；`sp.utd_ratio`/
+  `max_grad_steps_per_round`/`cp.episodes_per_update`/`eval_interval`/
+  `eval_episodes` 也是每轮读取——patch 生效域自然成立；
+- patch 是 collection_round 的确定性函数 → 分段=连续对拍不受影响。
+
+### R2-W20 critic 构造契约接线
+
+1. `ExperimentSAC` 新增可选方法 `build_critic(obs_dim, action_dim, channels,
+   device) -> nn.Module`，默认实现构造 `MultiHeadQCritic`（现有 loop 内联
+   参数原样搬入）；loop 改调 `experiment.build_critic(...)`——实验可整体
+   替换 critic 架构（契约级接口）；
+2. `build_q_critic` 从 abstractmethod 降为具体方法返回 `None`，docstring
+   改"reserved legacy hook，不被调用；替代者用 build_critic"（保留方法
+   名是旧配置/子类兼容，能力矩阵已标 reserved）。
+
+**测试**：默认路径行为不变；自定义 build_critic 的实验确实被调用
+（fake critic 可断言构造参数）；老 abstractmethod 强制实现的子类不破坏。
+
+### R2-W21 `actor_weight_share` 接线
+
+trainer actor 目标中 `w_actor` 乘以按 channel 构建的 share mask
+（share=False → 该通道列置零，Q 照常训练但不影响 actor）。
+docstring 改回真实语义。
+
+**测试**：share=False 通道的 Q 扰动不改变 actor loss/参数梯度；share=True
+通道仍贡献；全部 False 时 actor 只剩熵项（无 actor-valid 报错路径不变——
+share 是权重零化不是行掩码，actor_den 语义不受影响）。
+
+### R2-W22 round 边界调度通道
+
+1. `ExperimentSAC.param_overrides()` 可选 → 返回
+   `Sequence[Tuple[int, str, Any]]`（from_round, field, value）；
+2. `train_sac(param_patches=...)` 接收同形列表，与实验的合并，
+   **CLI 优先**（同 field+round 冲突时 CLI 值生效）；
+3. 生效域 allowlist（fail-loud 拒其余）：
+   `experiment.behavior_explore`、`experiment.random_start_transitions`
+   （直接 setattr 实验属性）；
+   `sac_params.utd_ratio`、`sac_params.max_grad_steps_per_round`
+   `common_params.episodes_per_update`、`common_params.eval_interval`、
+   `common_params.eval_episodes`（dataclasses.replace 局部变量）；
+4. 应用点 = collection round 起点（导出/建 job 之前），应用即记入
+   round 事件 context `param_patches` + print 审计行；
+5. `train.py`：SAC 放行 `--param`，语义标注 `@ROUND`（与 PPO `@UPDATE`
+   区分，GUIDE 写明）。
+
+**测试**：patch 在指定 round 生效且仅生效域内；非法 field 拒绝；
+CLI vs experiment 冲突 CLI 胜；round context 记录；分段=连续不变
+（补丁确定性）。
+
+### R2-W23 文档与收口
+
+GUIDE 调度段 + 矩阵状态更新（`--set` 已支持更正、build_critic/
+actor_weight_share/`--param` 状态变化）+ R2.12~R2.14 登记 + PLAN 标。
+
+### 边界
+
+不做 mid-round/tick 级调度（round 是 SAC 的控制时钟粒度，与 PPO 的
+update 粒度对应）；不引入 PPO post_update 的 artifacts 形态——SAC 的
+等价反馈通道是已有 `post_round_metrics`（上报）+ 新 `param_overrides`
+（下行）；`actor_blueprint` 维持 reserved 待 R2-5。
+
 ## R2.10 R2-W15 收口：R2-1 完成登记
 
 **回归**：SAC suite **213 passed**（R2-0 收口 202 → +11）；PPO suite
