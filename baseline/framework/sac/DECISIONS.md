@@ -2784,6 +2784,31 @@ SAC suite 192 passed。
 - 不动 `_seen_source_keys` 数据结构的语义，只登记其增长模型为 R2-1 输入；
 - 不改 PPO、不动共享 rollout 层。
 
+## R2.1 基线登记（R2-W00 产出，2026-10-15）
+
+**参照版本**：`bb0aef8c`（R2 路线图+本细计划提交；调研基于 `3da38980`，两者间仅有文档变更）。
+
+**测试基线**：SAC suite **193 passed**（32.5s，pynvml deprecation warning 为既有噪声）；PPO suite 232 passed（P7-REG-1 记录，本轮未复跑，收口时核查 diff 范围即可）。
+
+**产物基线**（8 条验收 run，均含 `held_out_eval.json`，64 episodes/run）：
+
+| run | held-out | 验收结论 |
+|---|---|---|
+| sac_standup_s01_s42_te0_ln | success 0.992 | ✅ |
+| sac_standup_s01_s1337_te0_ln | success 0.984 | ✅ |
+| sac_standup_s01_s2024_te0_ln | success 0.516 | ✗ 失败记录（用户裁决接受） |
+| sac_standup_m11_s42_te0_ln | success 0.945 | ✅ |
+| sac_balance_s01_s42 | survival 0.953 | ✅ |
+| sac_balance_s01_s1337 | survival 0.906 | ✅ |
+| sac_balance_s01_s2024 | survival 0.891 | ⚠ 边界未过（用户裁决接受） |
+| sac_balance_m11_s42 | survival 0.984 | ✅ |
+
+另有 `sac_balance_real_v1~v7`、`sac_standup_s01_s42`、`sac_standup_s01_s42_te0` 等历史/调试 run，非验收产物。
+
+**schema 基线**（ARTIFACTS.md 已登记 9 类工件）：`sac_checkpoint_v1`、`sac_trainer_v1`、`sac_replay_v2`、`sac_metrics_v1`、`sac_dump_v3`（可读 v2）、`sac_transition_v2`、`tn_kernel_v1`、`sac_run_config_v1`、`sac_collection_v1`（内存标记）。R2 期间任何 schema 变更须同步 ARTIFACTS.md。
+
+**运行环境**：工作区干净；无在训 SAC run；GPU 上仅有用户自有 PPO run，不触碰。
+
 ---
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
