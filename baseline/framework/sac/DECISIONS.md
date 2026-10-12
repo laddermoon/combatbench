@@ -3011,6 +3011,37 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.16a R2-5 细计划：策略交付与评估证据
+
+**目标**（PLAN R2-5 出口）：评估报告、发布策略、checkpoint、视频指向
+同一策略身份；结果可逐 episode 复核。
+
+**上下文核查结论**：
+
+- `policy/` = best-of-run 导出（仅在 eval `is_new_best` 时写，确定性
+  蓝图）；`policy_exports/rNNNNN`（采集版）与 `rNNNNN_eval`（评估版）
+  按轮记录——语义存在但**产物无任何身份标注**。
+- `held_out_eval` 评的是**最新 checkpoint 的 actor**，不是 `policy/`
+  的 best——两者可能不同（best 来自更早 eval）；报告只留聚合分，
+  无逐 episode、无 seed 清单、无策略指纹、无代码版本。
+- 判据按 **agent** 计数（每 episode 2 个 agent，同局相关，非独立
+  样本）——报告必须声明 denominator=agents 且不得当独立样本统计。
+- `policy_fingerprint()` 两个 actor 都有；episode 自带
+  `policy_fingerprints`/`blueprint_hash`/`episode_metrics`/
+  `agent_termination_reason`——证据所需数据已全。
+
+**工作包**：
+
+| 包 | 内容 | 测试 |
+|---|---|---|
+| `R2-W50` | `ExperimentSAC.eval_episode_details(episodes)` 可选钩子：standup 返回 per-agent {episode_seed, agent, max_pot, final_pot, success}；balance 返回 {episode_seed, agent, termination_reason, survived} | 单测：两实验返回行数=episodes×agents、聚合与 on_eval 一致 |
+| `R2-W51` | `held_out_eval` 报告增强：`policy` 对象（被评 artifact=checkpoint 名 + actor fingerprint + model sha256）、逐 episode/agent 明细行、seeds 清单、`denominator:"agents"`+相关性注记、env blueprint hash、code_snapshot 版本、可选 `--policy <dir>` 直接评 `policy/` 导出 | fake-exp 级集成测试跑通；JSON schema 断言 |
+| `R2-W52` | `policy/meta.json`：loop 写 best 时附 {kind:"best_of_run", env_step, eval_info, fingerprint, written_at}——policy/ 不再是匿名导出；held_out_eval `--policy policy/` 可读 meta 校验身份 | env-integration 断言 meta 存在且字段齐 |
+| `R2-W53` | 文档（GUIDE §工件、ARTIFACTS 新增 meta.json、PLAYBOOK 判读）、矩阵、登记收口 | 全量回归 |
+
+**边界**：不改判据口径（agent 计数保留），不动 run 历史产物；
+`--policy` 为新增可选参数，默认行为（最新 ckpt）不变。
+
 ## R2.15 R2-4 结论：Debug 前端六工作区落地
 
 - **R2-W40 API**：新增 `/api/dump/{attribute,decomp,drift,grad-attr}`
