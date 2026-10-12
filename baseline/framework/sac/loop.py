@@ -327,6 +327,7 @@ def train_sac(
     dump_keep_last: int = 8,
     checkpoint_keep_last: int = 3,
     policy_export_keep_last: int = 8,
+    param_patches: Optional[Sequence[Tuple[int, str, Any]]] = None,
 ) -> None:
     cp = experiment.common_params()
     sp = experiment.sac_params()
@@ -343,6 +344,56 @@ def train_sac(
         )
     if any(src.sampling_share <= 0 for src in sources):
         raise ValueError("SAC data source sampling_share must be positive")
+
+    # R2-W22: round-boundary scheduling. Patches are (from_round, field,
+    # value) triples applied at the start of the matching collection
+    # round. Experiment-declared param_overrides() merge with CLI
+    # --param patches; CLI wins on (round, field) conflicts. Validated
+    # up front so an unpatchable field fails before any training work.
+    _PATCHABLE_FIELDS = (
+        "experiment.behavior_explore",
+        "experiment.random_start_transitions",
+        "sac_params.utd_ratio",
+        "sac_params.max_grad_steps_per_round",
+        "common_params.episodes_per_update",
+        "common_params.eval_interval",
+        "common_params.eval_episodes",
+    )
+    _patch_map: Dict[Tuple[int, str], Any] = {}
+    for from_round, field, value in (experiment.param_overrides() or ()):
+        _patch_map[(int(from_round), str(field))] = value
+    for from_round, field, value in (param_patches or ()):  # CLI wins
+        _patch_map[(int(from_round), str(field))] = value
+    bad_fields = sorted(
+        {field for (_, field) in _patch_map} - set(_PATCHABLE_FIELDS)
+    )
+    if bad_fields:
+        raise ValueError(
+            f"unpatchable SAC fields {bad_fields}; "
+            f"allowed: {list(_PATCHABLE_FIELDS)}"
+        )
+    _patches_by_round: Dict[int, List[Tuple[str, Any]]] = {}
+    for (from_round, field), value in _patch_map.items():
+        _patches_by_round.setdefault(from_round, []).append((field, value))
+
+    def _apply_patch(field: str, value: Any) -> None:
+        nonlocal cp, sp
+        if field == "experiment.behavior_explore":
+            setattr(experiment, "behavior_explore", value)
+        elif field == "experiment.random_start_transitions":
+            setattr(experiment, "random_start_transitions", value)
+        elif field == "sac_params.utd_ratio":
+            sp = dataclasses.replace(sp, utd_ratio=value)
+        elif field == "sac_params.max_grad_steps_per_round":
+            sp = dataclasses.replace(sp, max_grad_steps_per_round=value)
+        elif field == "common_params.episodes_per_update":
+            cp = dataclasses.replace(cp, episodes_per_update=value)
+        elif field == "common_params.eval_interval":
+            cp = dataclasses.replace(cp, eval_interval=value)
+        elif field == "common_params.eval_episodes":
+            cp = dataclasses.replace(cp, eval_episodes=value)
+        else:  # pragma: no cover - allowlist validated up front
+            raise ValueError(f"unpatchable SAC field {field!r}")
 
     # R2-W10: graceful-stop protocol. The first SIGTERM/SIGINT only raises
     # a request flag — the loop finishes the current safe boundary
@@ -371,13 +422,10 @@ def train_sac(
     metrics.emit_config(clocks, config, run_id=run_dir.name)
 
     actor = experiment.build_actor(device)
-    critic = MultiHeadQCritic(
+    critic = experiment.build_critic(
         obs_dim=actor.obs_dim,
         action_dim=actor.action_dim,
         channels=channels,
-        hidden_dim=sp.q_hidden_dim,
-        layer_norm=sp.q_layer_norm,
-        critic_lr=cp.critic_learning_rate,
         device=device,
     )
     actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cp.learning_rate)
@@ -557,6 +605,18 @@ def train_sac(
             while clocks.env_step < cp.max_env_steps:
                 t_round_start = time.perf_counter()
                 round_index = clocks.collection_round + 1
+
+                applied_patches = _patches_by_round.get(round_index)
+                if applied_patches:
+                    for field, value in applied_patches:
+                        _apply_patch(field, value)
+                        print(
+                            f"  [param_patch] round={round_index} "
+                            f"{field}={value!r}",
+                            flush=True,
+                        )
+                else:
+                    applied_patches = None
 
                 t0 = time.perf_counter()
                 export_dir = run_dir / "policy_exports" / f"r{round_index:05d}"
@@ -962,6 +1022,14 @@ def train_sac(
                     dropped_updates=dropped_updates,
                     replay_stats=buf_stats,
                     tick_ring_size=len(tick_ring),
+                    param_patches=(
+                        [
+                            {"field": f, "value": v}
+                            for f, v in applied_patches
+                        ]
+                        if applied_patches
+                        else None
+                    ),
                 )
 
                 print(

@@ -74,10 +74,11 @@ class SACRewardChannel:
             Channels with the same ``trunk_group`` share a trunk
             network with per-channel heads. If None, auto-groups by
             ``gamma``.
-        actor_weight_share: RESERVED — currently unused. Intended to
-            gate whether this channel's Q influences the actor; today
-            actor influence is controlled only by ``actor_weight`` in
-            trajectory slices. Do not rely on it until R2-2 wires it.
+        actor_weight_share: If True (default), this channel's Q
+            participates in the actor's weighted-Q objective. If False,
+            the channel's critics are still trained but the channel is
+            excluded from the actor loss entirely (equivalent to
+            actor_weight=0 for this channel on every transition).
     """
 
     name: str
@@ -611,19 +612,48 @@ class ExperimentSAC(ABC):
         """Build and return the actor policy."""
         ...
 
-    @abstractmethod
-    def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
-        """Build a Q(s,a) critic for one reward channel.
+    def build_critic(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        channels: Tuple[SACRewardChannel, ...],
+        device: torch.device,
+    ) -> nn.Module:
+        """Build the multi-channel Q critic used by the training loop.
 
-        The critic must accept (obs, action) tensors and return (B,)
-        or (B, 1) Q-values. For multi-head architectures, the framework
-        wraps individual channel critics into shared trunks.
+        Contract-level hook: experiments may override to substitute a
+        different critic architecture. The returned module must satisfy
+        the ``MultiHeadQCritic`` runtime contract (per-channel twin-Q
+        heads, ``channel_parameters``, ``load_state_dict`` with the
+        strict six-key layout, ``set_lr``).
 
-        Args:
-            channel_name: The SACRewardChannel.name for this critic.
-            device: Torch device.
+        Default: ``MultiHeadQCritic`` grouped by channel ``trunk_group``/
+        gamma, sized by ``sac_params.q_hidden_dim``/``q_layer_norm`` and
+        ``common_params.critic_learning_rate``.
         """
-        ...
+        from .networks import MultiHeadQCritic
+
+        sp = self.sac_params()
+        cp = self.common_params()
+        return MultiHeadQCritic(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            channels=channels,
+            hidden_dim=sp.q_hidden_dim,
+            layer_norm=sp.q_layer_norm,
+            critic_lr=cp.critic_learning_rate,
+            device=device,
+        )
+
+    def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
+        """RESERVED legacy hook — not consulted by the training loop.
+
+        The per-channel-module shape does not match the actual
+        gamma-grouped shared-trunk critic architecture. Experiments
+        that need a custom critic override :meth:`build_critic`
+        instead. Do not implement this for new experiments.
+        """
+        return None
 
     # ==================================================================
     # Phase 1: Data Source Declaration
@@ -696,6 +726,17 @@ class ExperimentSAC(ABC):
     # ==================================================================
     # Per-round metrics (optional override)
     # ==================================================================
+
+    def param_overrides(self) -> Tuple[Tuple[int, str, Any], ...]:
+        """Round-boundary parameter patches for the training loop.
+
+        Returns ``(from_round, field, value)`` triples applied at the
+        start of the matching collection round (before policy export
+        and job construction). ``field`` must be in the loop's
+        patchable allowlist; CLI ``--param`` patches win on conflicts.
+        Deterministic by round, so resume equivalence is preserved.
+        """
+        return ()
 
     def post_round_metrics(self, episodes: List[Any]) -> Dict[str, float]:
         """Return task-level metrics for the just-finished collection round.

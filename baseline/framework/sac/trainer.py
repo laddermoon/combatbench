@@ -536,7 +536,14 @@ def sac_update_v2(
         param.requires_grad_(required)
 
     q_online_pairs = torch.stack((q1_all, q2_all), dim=-1)  # [B,K,M,C,2]
-    w_actor = actor_weight[:, None, None, :, None]          # [B,1,1,C,1]
+    # actor_weight_share=False excludes the channel from the actor's
+    # weighted-Q objective entirely — its critics still train.
+    share = torch.tensor(
+        [1.0 if ch.actor_weight_share else 0.0 for ch in channels],
+        dtype=actor_weight.dtype,
+        device=actor_weight.device,
+    )
+    w_actor = actor_weight[:, None, None, :, None] * share[None, None, None, :, None]
     f_actor = (q_online_pairs * w_actor).sum(dim=3)         # [B,K,M,2]
     pair_actor = f_actor.argmin(dim=-1)                     # [B,K,M]
     f_selected = f_actor.gather(-1, pair_actor[..., None]).squeeze(-1)

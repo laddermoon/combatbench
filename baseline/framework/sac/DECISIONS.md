@@ -2873,7 +2873,7 @@ SAC suite 192 passed。
 | `n_critics` / `in_target_min` | 域校验存在但**仅 =2 可用** | trainer 对 `!=2` fail-loud；非 twin-Q 未实现 |
 | `n_step` | 域校验存在但**仅 =1 可用** | trainer 对 `!=1` fail-loud；多步 return 未实现 |
 | `trunk_group` | 已支持 | 按 gamma 分组的 critic trunk 结构 |
-| `actor_weight_share` | **预留/死字段** | R2-W04 核实无任何消费方；actor 影响由 trajectory `actor_weight` 控制；docstring 已改写（R2-2 决定是否接线或删除） |
+| `actor_weight_share` | 已支持（R2-W21 接线） | False → 通道整体排除出 actor 加权 Q 目标，critics 照常训练 |
 
 ### C. 数据契约
 
@@ -2895,7 +2895,8 @@ SAC suite 192 passed。
 | `behavior_explore` / `random_start_transitions` | 已支持 | 训练 run 使用 |
 | `episodes_per_update` / `max_env_steps` / `eval_interval` / `eval_episodes` / `video_eval_interval` / `rollout_workers` / `seed` | 已支持 | — |
 | `actor_blueprint` | **预留/死字段** | 声明无消费方（导出路径不读它）；R2-2 决定语义（删除或接入策略导出契约） |
-| `build_q_critic()` | **声明式契约，未接线** | loop 直接实例化 `MultiHeadQCritic`；列为 R2-2 设计项，不在本阶段修 |
+| `build_critic()` | 已支持（R2-W20 新增） | 契约级 critic 构造钩子，默认 MultiHeadQCritic，loop 实际调用 |
+| `build_q_critic()` | **预留 legacy 钩子** | 不被调用；per-channel 形状与实际 trunk 架构不符，新实验不要实现 |
 
 ### E. CLI / 运行控制
 
@@ -2904,7 +2905,9 @@ SAC suite 192 passed。
 | `--experiment/--algo sac/--smoke/--background/--run-name/--run-dir/--no-snapshot/--list-experiments/--seed` | 已支持 | `--seed` 覆盖 `experiment.seed` |
 | `--resume-from` / `--config-lock` / `--reset-update` | 已支持 | R2-W02 起 config_lock 语义对称可证 |
 | `--dump-at` / `--dump-hypothesis` | 已支持（语义为 **critic tick**，非 PPO update） | 调度写入 request.json，dump v3 |
-| `--param` / `--dump-full-grad` / `--no-confidence` / `--adv-*` / `--dual-clip-*` / `--collector*` | **SAC 明确拒绝** | `train.py::_reject_ppo_only_options_for_sac` SystemExit fail-loud，非静默忽略（R2-W04 核实代码在案） |
+| `--set KEY=VALUE` | 已支持 | registry 构造 kwargs 透传（R2-W22 核实本已生效） |
+| `--param KEY=VALUE@ROUND` | 已支持（R2-W22 接线） | collection-round 边界补丁，allowlist 见 GUIDE §4；CLI 优先于 `param_overrides()` |
+| `--dump-full-grad` / `--no-confidence` / `--adv-*` / `--dual-clip-*` / `--collector*` | **SAC 明确拒绝** | `train.py::_reject_ppo_only_options_for_sac` SystemExit fail-loud，非静默忽略（R2-W04 核实代码在案） |
 
 ### F. Debug / 诊断
 
@@ -3007,6 +3010,36 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 **测试**（3 新增）：wrap-around 后 seen ⊆ live 且 size=capacity；
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
+
+## R2.12 R2-W20~W22 结论：契约接线 + round 调度通道
+
+**R2-W20 critic 契约**：`ExperimentSAC.build_critic(obs_dim, action_dim,
+channels, device)` 为新的契约级钩子——默认实现构造 MultiHeadQCritic，
+loop 实际调用；`build_q_critic` 从 abstractmethod 降为 reserved legacy
+钩子返回 None（per-channel 形状与 trunk 架构不符，新实验不要实现），
+`experiments_sac/base.py` 的死实现同步移除换注释。
+
+**R2-W21 `actor_weight_share` 接线**：trainer actor 目标的 `w_actor`
+乘按 channel 构建的 share mask——False 通道的 Q 被逐列零化、不进
+actor loss，其 critics 照常训练。docstring 恢复真实语义。
+
+**R2-W22 round 调度**：`param_overrides()`（实验侧）+ `--param
+KEY=VALUE@ROUND`（CLI 侧）双通道合并，CLI 优先；allowlist 7 字段
+（experiment.behavior_explore/random_start_transitions、
+sac_params.utd_ratio/max_grad_steps_per_round、
+common_params.episodes_per_update/eval_interval/eval_episodes），
+list 外 fail-loud；dataclasses.replace 使补丁值也过 __post_init__
+校验；应用在 round 起点（导出/jobs 之前），记录进 round 事件
+context `param_patches`。SAC 语义单位是 collection_round——与 PPO
+@UPDATE 对应但时钟不同，GUIDE §4 已写明。
+
+**副产修正**：`--set` 原本就对 SAC 生效（构造 kwargs），矩阵补记；
+`--param` 从 SAC 拒绝清单移除（`--dump-full-grad` 等仍拒绝）。
+
+**测试**（5 新增）：build_critic 钩子被调用+参数正确；share=False 时
+r1 Q 加 1e4 扰动 actor_loss 不变（对照 share=True 变化 >1）；patch
+指定 round 生效+context 记录；CLI vs experiment 冲突 CLI 胜；
+unpatchable field 拒绝（API+CLI 两层）。**SAC suite 218 passed。**
 
 ## R2.10a R2-2 细计划：实验接口、策略契约与控制闭环
 

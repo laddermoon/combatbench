@@ -65,13 +65,13 @@
 | `sac_params()` | `SACParams`：replay/batch/UTD/τ/α 控制/正则模式（构造期强校验） |
 | `reward_channels()` | `SACRewardChannel` 元组：name/gamma/n_critics/in_target_min |
 | `build_actor(device)` | 构造 actor（通常 `TNActor(..., arch=...)`） |
-| `build_q_critic(name, device)` | 单 channel Q critic（框架包成 MultiHeadQCritic） |
+| `build_critic(obs_dim, action_dim, channels, device)` | **可选**——默认构造 `MultiHeadQCritic`；覆写以替换 critic 架构（旧 `build_q_critic` 是 reserved 钩子，不被调用） |
 | `data_sources()` | 数据源声明（当前仅 `kind="self"` 被支持） |
 | `build_jobs(...)` | rollout/eval 任务构建 |
 | `build_slices(episodes)` | episode → `sac_transition_v2` 切片（reward/gate/终止语义唯一出处） |
 | `on_eval(episodes, env_step)` | 返回 `{is_new_best, info, stop_training?}` |
 
-可选覆写：`replay_plan()`（采样/保留策略）、`pre_action_fact_specs()`（action 前捕获的 task facts，如 `phi_pre`）、`post_round_metrics(episodes)`（`task.*` 指标）、`state()/load_state()`（实验自状态——**resume 等价性要求把恢复所需的游标/调度全部放进来**，例如随机化进度、方向余弦调度）。
+可选覆写：`replay_plan()`（采样/保留策略）、`pre_action_fact_specs()`（action 前捕获的 task facts，如 `phi_pre`）、`post_round_metrics(episodes)`（`task.*` 指标）、`param_overrides()`（实验侧 round 调度补丁，见 §4 调度）、`state()/load_state()`（实验自状态——**resume 等价性要求把恢复所需的游标/调度全部放进来**，例如随机化进度、方向余弦调度）。
 
 参考实现：`experiments_sac/exp_sac_standup.py`（单通道）、`exp_sac_balance.py`（双通道双 agent）。
 
@@ -101,6 +101,29 @@ PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
 ```
 
 每次 run 写 `config.json`（含全部参数与实验 knobs）、`code_snapshot.json`（git 快照分支）、`REPRODUCE.md`。**训练跑的是代码快照**，主线后续改动不影响在训 run。
+
+**实验 knobs 与调度**：
+
+```bash
+--set actor_arch=m11            # 构造期注入实验 kwargs（registry 透传）
+--param experiment.behavior_explore=0.3@50   # 第 50 collection round 起生效
+--param sac_params.utd_ratio=0.5@100
+```
+
+`--param KEY=VALUE@ROUND` 在 SAC 上的语义单位是 **collection round**
+（PPO 的 @UPDATE 对应物）。可 patch 字段（其余 fail-loud）：
+`experiment.behavior_explore`、`experiment.random_start_transitions`、
+`sac_params.utd_ratio`、`sac_params.max_grad_steps_per_round`、
+`common_params.episodes_per_update`、`common_params.eval_interval`、
+`common_params.eval_episodes`。实验侧 `param_overrides()` 返回同形
+`(from_round, field, value)` 列表，与 CLI 合并时 **CLI 优先**；
+应用在 round 起点、记录进 round 事件 context（`param_patches`）。
+补丁是 round 的确定性函数，分段=连续对拍不受影响。
+
+**安全停训**（R2-W10 起）：SIGTERM/SIGINT 第一次 → 在安全边界
+（collection 提交后 / critic tick 完成后）停训、写终态 checkpoint
+与 `run_terminal.json`；第二次信号才是强杀逃生口。eval 事件发布前
+对应 checkpoint 已落盘——监控读到达标 eval 即可安全停训。
 
 ---
 

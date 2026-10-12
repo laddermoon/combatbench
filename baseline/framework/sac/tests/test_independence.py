@@ -127,7 +127,7 @@ def test_sac_cli_rejects_ppo_only_flags():
             "baseline/framework/train.py",
             "--algo", "sac",
             "--experiment", "sac_balance",
-            "--param", "actor_lr=1e-4",
+            "--dump-full-grad",
         ],
         cwd=_PROJECT_ROOT,
         env=_env(),
@@ -138,7 +138,31 @@ def test_sac_cli_rejects_ppo_only_flags():
     assert result.returncode != 0
     output = result.stdout + result.stderr
     assert "PPO-only or not yet supported by SAC" in output
-    assert "--param" in output
+    assert "--dump-full-grad" in output
+
+
+def test_sac_cli_rejects_unpatchable_param_field():
+    """R2-W22: --param is supported on the SAC path (@ROUND semantics)
+    but only for the declared allowlist — anything else fails loudly."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "baseline/framework/train.py",
+            "--algo", "sac",
+            "--experiment", "sac_balance",
+            "--param", "actor_lr=1e-4",
+        ],
+        cwd=_PROJECT_ROOT,
+        env=_env(),
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "unpatchable SAC fields" in output
+    assert "actor_lr" in output
 
 
 def test_sac_actor_builds_without_ppo_imports():

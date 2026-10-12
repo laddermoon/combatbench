@@ -242,6 +242,62 @@ def test_sac_update_mutates_actor_alpha_and_target() -> None:
     )
 
 
+def test_actor_weight_share_excludes_channel_from_actor_objective() -> None:
+    """R2-W21: actor_weight_share=False removes the channel's Q from the
+    actor's weighted objective while its critics keep training."""
+
+    def _build(share_r1: bool):
+        torch.manual_seed(5)
+        channels = (
+            SACRewardChannel(name="r0", gamma=0.99),
+            SACRewardChannel(name="r1", gamma=0.99,
+                             actor_weight_share=share_r1),
+        )
+        actor = TNActor(6, 3, arch="s01", hidden_dim=16)
+        critic = MultiHeadQCritic(
+            obs_dim=6, action_dim=3, channels=channels, hidden_dim=16,
+            layer_norm=False, critic_lr=1e-3,
+            device=torch.device("cpu"),
+        )
+        return actor, critic, channels
+
+    def _perturbed_q(critic):
+        orig_q1 = critic.q1_forward
+        orig_q2 = critic.q2_forward
+        critic.q1_forward = lambda o, a, name: orig_q1(o, a, name) + (
+            1e4 if name == "r1" else 0.0
+        )
+        critic.q2_forward = lambda o, a, name: orig_q2(o, a, name) + (
+            1e4 if name == "r1" else 0.0
+        )
+
+    def _actor_loss(actor, critic, channels, batch):
+        opt = torch.optim.Adam(actor.parameters())
+        log_alpha = torch.tensor(0.0, requires_grad=True)
+        return sac_update(
+            actor, critic, opt, log_alpha, None, batch, channels,
+            SACParams(use_grad_norm=False), 1.0, torch.device("cpu"),
+        )["actor_loss"]
+
+    batch = _batch(B=8, C=2)
+
+    # share=False: a huge r1 Q perturbation cannot reach the actor.
+    actor, critic, channels = _build(share_r1=False)
+    base = _actor_loss(actor, critic, channels, batch)
+    actor, critic, channels = _build(share_r1=False)
+    _perturbed_q(critic)
+    perturbed = _actor_loss(actor, critic, channels, batch)
+    assert perturbed == pytest.approx(base, rel=0, abs=1e-5)
+
+    # control: share=True — the same perturbation moves the actor loss.
+    actor, critic, channels = _build(share_r1=True)
+    base = _actor_loss(actor, critic, channels, batch)
+    actor, critic, channels = _build(share_r1=True)
+    _perturbed_q(critic)
+    perturbed = _actor_loss(actor, critic, channels, batch)
+    assert abs(perturbed - base) > 1.0
+
+
 def test_trainer_rejects_unsupported_or_invalid_inputs() -> None:
     actor, critic, channels = _models(C=1)
     opt = torch.optim.Adam(actor.parameters())

@@ -192,8 +192,6 @@ def _validate_sac_args(args: argparse.Namespace) -> None:
         unsupported.append("--dual-clip-from-update")
     if args.dump_full_grad:
         unsupported.append("--dump-full-grad")
-    if args.param:
-        unsupported.append("--param")
     if args.collector != "cpu":
         unsupported.append(f"--collector={args.collector}")
     if args.collector_batch_size != 64:
@@ -561,6 +559,7 @@ def main() -> None:
             config_lock=args.config_lock,
             dump_ticks=dump_updates,
             dump_hypothesis=args.dump_hypothesis,
+            param_patches=param_patches,
         )
     else:
         from baseline.framework.ppo.loop import train_ppo

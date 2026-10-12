@@ -275,6 +275,106 @@ def test_eval_event_published_after_checkpoint(tmp_path) -> None:
     ), "eval event was emitted before its env_step checkpoint"
 
 
+def test_build_critic_hook_is_used(tmp_path) -> None:
+    """R2-W20: the loop builds the critic through experiment.build_critic,
+    so a contract-level critic substitution is honored."""
+    called = {}
+
+    class _CriticHookExperiment(_FakeExperiment):
+        def build_critic(self, obs_dim, action_dim, channels, device):
+            called["obs_dim"] = obs_dim
+            called["channels"] = channels
+            return super().build_critic(obs_dim, action_dim, channels, device)
+
+    run_dir = tmp_path / "run"
+    train_sac(
+        _CriticHookExperiment(),
+        run_dir=run_dir,
+        rollouter=_FakeRollouter(),
+    )
+    assert called["obs_dim"] == 3
+    assert [c.name for c in called["channels"]] == ["r"]
+
+
+def test_param_patches_apply_at_round_boundary(tmp_path) -> None:
+    """R2-W22: --param patches land on patchable fields at the requested
+    collection round and are recorded in the round event context."""
+
+    class _PatchedExperiment(_FakeExperiment):
+        _round = 0
+
+        def common_params(self) -> CommonParamsSAC:
+            return dataclasses.replace(
+                super().common_params(), max_env_steps=12
+            )
+
+        def build_slices(self, episodes):
+            self._round += 1
+            return [_slice(T=4, obs_dim=3, action_dim=2, channels=1,
+                           slice_id=f"slice-{self._round}")]
+
+    run_dir = tmp_path / "run"
+    train_sac(
+        _PatchedExperiment(),
+        run_dir=run_dir,
+        rollouter=_FakeRollouter(),
+        param_patches=[(2, "experiment.behavior_explore", 0.5)],
+    )
+    events = load_events(run_dir / EVENTS_RELATIVE_PATH)
+    patched = [
+        e for e in events
+        if e.event_type == "round" and e.context.get("param_patches")
+    ]
+    assert len(patched) == 1
+    assert patched[0].context["param_patches"] == [
+        {"field": "experiment.behavior_explore", "value": 0.5}
+    ]
+
+
+def test_param_patches_cli_wins_and_bad_field_rejected(tmp_path) -> None:
+    seen = {}
+
+    class _OverrideExperiment(_FakeExperiment):
+        _round = 0
+
+        def common_params(self) -> CommonParamsSAC:
+            return dataclasses.replace(
+                super().common_params(), max_env_steps=12
+            )
+
+        def param_overrides(self):
+            return ((2, "experiment.behavior_explore", 0.9),)
+
+        def build_slices(self, episodes):
+            self._round += 1
+            return [_slice(T=4, obs_dim=3, action_dim=2, channels=1,
+                           slice_id=f"slice-{self._round}")]
+
+        def build_jobs(self, policy_bp, base_seed, n_episodes, **kw):
+            seen["explore"] = getattr(self, "behavior_explore", None)
+            return super().build_jobs(policy_bp, base_seed, n_episodes, **kw)
+
+    class _Bad(_FakeExperiment):
+        pass
+
+    run_dir = tmp_path / "run"
+    train_sac(
+        _OverrideExperiment(),
+        run_dir=run_dir,
+        rollouter=_FakeRollouter(),
+        param_patches=[(2, "experiment.behavior_explore", 0.3)],
+    )
+    assert seen["explore"] == 0.3  # CLI won over experiment's 0.9
+
+    with pytest.raises(ValueError, match="unpatchable"):
+        train_sac(
+            _Bad(),
+            run_dir=tmp_path / "run2",
+            rollouter=_FakeRollouter(),
+            param_patches=[(1, "sac_params.batch_size", 999)],
+        )
+
+
 def test_error_path_writes_terminal_record(tmp_path) -> None:
     class _BadExperiment(_FakeExperiment):
         def build_slices(self, episodes):

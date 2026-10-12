@@ -240,26 +240,10 @@ class CombatExperimentSACBase(ExperimentSAC):
             f"allowed: 'legacy_tanh' + {sorted(TN_ARCH_SPECS)}"
         )
 
-    def build_q_critic(self, channel_name: str, device: torch.device) -> nn.Module:
-        """Build a single-channel Q critic.
-
-        The MultiHeadQCritic wrapper will group these into shared trunks.
-        For the MVP, we return a simple QTrunkHeads with one channel.
-        The wrapper handles the actual grouping.
-
-        Actually, the MultiHeadQCritic builds its own networks based on
-        the channel configs. This method is not used by the current
-        MultiHeadQCritic — it builds networks internally. We keep it
-        for interface compatibility and future per-channel customization.
-        """
-        from baseline.framework.sac.networks import QTrunkHeads
-        return QTrunkHeads(
-            obs_dim=self.obs_dim,
-            action_dim=self.action_dim,
-            hidden_dim=self.q_hidden_dim,
-            channel_names=(channel_name,),
-            layer_norm=self.q_layer_norm,
-        ).to(device)
+    # build_q_critic is a reserved legacy hook — not consulted by the
+    # training loop.  The actual critic contract is build_critic()
+    # (inherited default constructs MultiHeadQCritic); override that
+    # method to substitute a custom critic architecture.
 
     # ------------------------------------------------------------------
     # Data sources
