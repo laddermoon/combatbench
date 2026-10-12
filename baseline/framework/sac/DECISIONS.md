@@ -2706,6 +2706,86 @@ SAC suite 192 passed。
 
 ---
 
+# 第二轮深化执行计划（R2）
+
+> 状态：R2 路线图已写入 PLAN.md（顶部为本轮有效路线图）；本节为 R2-0 细计划。
+> 命名：R2 工作包编号 `R2-W<阶段><序号>`，本阶段为 `R2-W00`～`R2-W05`。
+
+## R2.0 R2-0 细计划：真实基线与可信性修复
+
+**目标**：在深化之前，把"声称支持"与"实际支持"对齐，修复调研中已核实（多数已探针复现）的可信性缺陷。本阶段只修缺陷与对齐文档，**不做新机制、不做结构重构**——调度/生命周期/深度诊断属于后续阶段。
+
+**基线**：调研参照版本 `3da38980`（第一轮收口）；SAC suite 193 passed、PPO suite 232 passed；PLAN.md 差距清单 G1–G16，本阶段处理 G1–G8 + G5 文档侧。
+
+### R2-W00 基线固定
+
+- 记录 R2 起点 commit、两 suite 测试数、现有 run 产物清单（8 条 run 的 metrics/checkpoint/held_out_eval 完整性）、全部工件 schema 版本；
+- 确认工作区干净、无在训 SAC run；
+- 产出：本节尾部 R2.1 基线登记条目。
+
+### R2-W01 配置契约补全（G4 + G5 代码侧）
+
+**改动**：
+
+1. `SACParams.__post_init__`/`CommonParamsSAC.__post_init__` 补全三类校验：
+   - 所有数值字段 `isfinite`（堵 `utd_ratio=NaN`、`alpha_lr=Inf`、`grad_clip_norm=NaN` 等——NaN 会绕过现有 `<=0` 比较）；
+   - 整型字段拒绝非整型（`batch_size=1.5`、`q_hidden_dim=1.5`、`warmup_steps`、replay 容量、`expectation_samples` 等）；
+   - `SACRewardChannel`/`DataSource`/`ReplayPlan` 同类扫一遍，不漏字段。
+2. `use_grad_norm` 语义裁决：**构造期拒绝 `use_grad_norm=True`**（把 trainer 的 fail-loud 提前到配置边界）；`grad_norm_est_interval`/`grad_norm_ema_decay` 标注为"预留字段、未实现机制"，保留校验但文档明确不产生效果。是否真正实现梯度归一化留待 R2-2/R2-3 有诊断证据后立项。
+
+**测试**：每个字段的 NaN/Inf/非整型/越界负例（参数化）；`use_grad_norm=True` 构造期拒绝；两个真实实验默认配置不受影响。
+
+### R2-W02 恢复语义修复（G1 + G2 + G3）
+
+**改动**：
+
+1. **config_lock 对称化**：严格锁语义重定义为"两侧 config 均在零白名单下指纹相等"——从 checkpoint 的 `config.json` 与期望 config 各自计算 `config_fingerprint(overrides=())` 直接比对，不再依赖 manifest 里按白名单扣除的 fp；非严格路径维持现有"manifest fp vs 期望 config 按 manifest overrides 扣除"。新增指纹字段写入 manifest（`config_fingerprint_full`）供审计，旧 checkpoint 无该字段时按两侧直算兼容。
+2. **LR 生效语义统一**：白名单字段的语义定义为"新 config 生效"——`load_trainer_state`/`load_checkpoint_bundle` 恢复 optimizer state 后，把 actor lr 对齐 `common_params.learning_rate`、critic lr 对齐 `critic_learning_rate`、alpha lr 对齐 `sac_params.alpha_lr`（与 utd_ratio 等白名单字段"新值生效"的既有语义一致）。登记裁决：恢复的是 optimizer 动量状态，学习率取新配置。
+3. **critic 恢复严格化**：`QTrunkGroup.load_state_dict` 要求 `q1/q2/q1_target/q2_target/q1_optimizer/q2_optimizer` 全键存在且形状匹配，缺失/损坏抛 `SACCheckpointError`；删除 optimizer load 的 print-and-continue 分支；`load_model_state`（warm-start 路径）保持只取网络权重、允许缺 optimizer 键的既有语义，但同样对缺失权重键 fail-loud。
+
+**测试**：strict lock 同配置通过/异配置拒绝/白名单字段在非锁模式生效；LR 覆盖用例（checkpoint 旧 LR ≠ 新 LR → 恢复后取新值、动量保留）；缺键/错形状/损坏 optimizer state 的负例；旧格式 checkpoint 兼容。
+
+### R2-W03 诊断正确性修复（G6 + G7 + G8）
+
+**改动**：
+
+1. `analysis.param_delta()` 递归遍历嵌套 dict/list 中的 tensor，输出仍聚合为 l2/max_abs/elements；critic 嵌套状态（trunk/head/optimizer）纳入统计。
+2. `recompute_dump` 支持边界：spec `regularizer_mode != "shannon"` 时显式标记"该分支未覆盖"并列出已核对/未核对字段集，不再静默按 Shannon 公式给出 misleading pass/fail；U 分支完整重算列入 R2-3。
+3. `metric_catalog` 与实验实际键对齐：`eval.success`（standup 实际发出）补入 catalog，核对全部 spec 条目与真实 metrics.jsonl 键的一次性 diff。
+
+**测试**：嵌套 state 非零 delta；u_floor dump 的 recompute 报告"部分覆盖"而非假通过；catalog spec 键全部在真实指标中存在（standup/balance 各取一条 run 的 metrics.jsonl 校验）。
+
+### R2-W04 能力矩阵与文档校准（G5 文档侧 + 全面对齐）
+
+**改动**：
+
+1. 在 DECISIONS.md 登记**能力支持矩阵**：每个 `SACParams`/`CommonParamsSAC` 字段、实验旋钮、debug 命令、导出能力标注 `已支持（含证据）/实验性/明确不支持/预留`。后续阶段以此表为真值源。
+2. 校准失实表述：README "action-gradient 归一化是主机制"、GUIDE 旋钮表中 `use_grad_norm` 未标注不支持、IMPLEMENTATION_SUMMARY 的过期描述；`build_q_critic` 未被调用的事实登记为 R2-2 设计项而非缺陷修复。
+3. GUIDE.md 增补"字段语义分类"说明：事实记录字段 vs 控制参数字段 vs 展示指标。
+
+**测试**：不需要新增行为测试；文档断言以人工核对为准，矩阵每行附证据链接。
+
+### R2-W05 收口
+
+- SAC suite 全量回归 + PPO diff 范围核查（本阶段只应触碰 `framework/sac/`；若触碰共享/实验层另记）；
+- 每项修复在 DECISIONS.md 登记 `R2.2`～`R2.5` 编号结论；
+- PLAN.md R2-0 标完成。
+
+### 本阶段出口标准
+
+- G1–G8 全部修复并有回归测试；能力矩阵落地；文档与实现一致；
+- `config_lock` 严格模式在相同/不同 config 两侧行为对称可证；
+- 无"被接受却不生效"的公开配置残留（或已被显式标注预留）。
+
+### 明确不做（R2-0 边界）
+
+- 不实现梯度归一化/U 分支完整 recompute/新调度接口（R2-2/R2-3）；
+- 不改信号处理与停训事务（R2-1）；
+- 不动 `_seen_source_keys` 数据结构的语义，只登记其增长模型为 R2-1 输入；
+- 不改 PPO、不动共享 rollout 层。
+
+---
+
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。
 
 # SAC V2 Implementation Decision Log
