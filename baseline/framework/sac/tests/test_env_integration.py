@@ -179,6 +179,30 @@ def test_sac_params_invalid_values_fail_at_construction() -> None:
         {"q_hidden_dim": 0},
         {"regularizer_mode": "bogus"},
         {"u_kind": "bogus"},
+        # R2-W01: NaN/Inf and non-integral values must not bypass checks
+        {"utd_ratio": float("nan")},
+        {"utd_ratio": float("inf")},
+        {"alpha_lr": float("nan")},
+        {"alpha_lr": float("inf")},
+        {"init_alpha": float("nan")},
+        {"init_alpha": float("inf")},
+        {"log_alpha_min": float("nan")},
+        {"log_alpha_max": float("nan")},
+        {"reg_lambda": float("nan")},
+        {"reg_lambda": -0.5},
+        {"u_floor": float("nan")},
+        {"u_floor": float("inf")},
+        {"use_grad_norm": True},
+        {"batch_size": 1.5},
+        {"batch_size": 256.0},
+        {"batch_size": "256"},
+        {"batch_size": True},
+        {"replay_buffer_size": 1.5},
+        {"warmup_steps": 1.5},
+        {"max_grad_steps_per_round": 2.5},
+        {"grad_norm_est_interval": 1.5},
+        {"q_hidden_dim": 1.5},
+        {"expectation_samples": 1.5},
     ]
     for kw in bad_kwargs:
         try:
@@ -200,6 +224,12 @@ def test_sac_reward_channel_invalid_values_fail_at_construction() -> None:
         {"n_critics": 0},
         {"in_target_min": 0},
         {"in_target_min": 3},
+        # R2-W01: fractional/integral-float ints and bools
+        {"n_step": 1.5},
+        {"n_step": 2.0},
+        {"n_critics": 2.5},
+        {"in_target_min": 1.5},
+        {"n_step": True},
     ]
     for kw in bad_kwargs:
         try:
@@ -225,6 +255,15 @@ def test_common_params_sac_invalid_values_fail_at_construction() -> None:
         ("episodes_per_update", 0), ("max_env_steps", 0),
         ("eval_interval", 0), ("eval_episodes", 0),
         ("video_eval_interval", -1), ("rollout_workers", 0),
+        # R2-W01: NaN/Inf numerics and non-integral/bool int fields
+        ("learning_rate", float("nan")), ("learning_rate", float("inf")),
+        ("critic_learning_rate", float("nan")),
+        ("grad_clip_norm", float("nan")), ("grad_clip_norm", float("inf")),
+        ("episodes_per_update", 1.5), ("episodes_per_update", 8.0),
+        ("max_env_steps", 1.5), ("eval_interval", 1.5),
+        ("eval_episodes", 4.0), ("video_eval_interval", 0.5),
+        ("rollout_workers", 2.0), ("rollout_workers", True),
+        ("seed", 1.5), ("seed", -1), ("seed", 2**32), ("seed", True),
     ):
         try:
             CommonParamsSAC(**{**base, key: bad})
@@ -238,7 +277,7 @@ def test_common_params_sac_invalid_values_fail_at_construction() -> None:
 def test_data_source_invalid_share_fails_at_construction() -> None:
     from baseline.framework.sac.experiment import DataSource
 
-    for bad in (0.0, -0.5):
+    for bad in (0.0, -0.5, float("nan"), float("inf")):
         try:
             DataSource(kind="self", sampling_share=bad)
         except ValueError:
@@ -246,6 +285,38 @@ def test_data_source_invalid_share_fails_at_construction() -> None:
         raise AssertionError(
             f"invalid DataSource silently accepted: share={bad}"
         )
+    for bad_kind in ("slef", "Self", "", "gaussian"):
+        try:
+            DataSource(kind=bad_kind)
+        except ValueError:
+            continue
+        raise AssertionError(
+            f"invalid DataSource silently accepted: kind={bad_kind!r}"
+        )
+    for ok_kind in ("self", "opponent", "pool", "scripted", "recorded"):
+        DataSource(kind=ok_kind)
+
+
+def test_replay_plan_invalid_values_fail_at_construction() -> None:
+    from baseline.framework.sac.experiment import ReplayPlan
+
+    for bad in (0, -1, 1.5, 1000.0, True):
+        try:
+            ReplayPlan(min_per_stratum=bad)
+        except ValueError:
+            continue
+        raise AssertionError(
+            f"invalid ReplayPlan silently accepted: min_per_stratum={bad!r}"
+        )
+    for bad in (-0.1, float("nan"), float("inf")):
+        try:
+            ReplayPlan(freshness_weight=bad)
+        except ValueError:
+            continue
+        raise AssertionError(
+            f"invalid ReplayPlan silently accepted: freshness_weight={bad!r}"
+        )
+    ReplayPlan(stratify_by="phase", min_per_stratum=100, freshness_weight=0.5)
 
 
 def test_loop_prunes_checkpoints_with_keep_last(tmp_path) -> None:

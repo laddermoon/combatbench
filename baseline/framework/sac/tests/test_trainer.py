@@ -255,12 +255,8 @@ def test_trainer_rejects_unsupported_or_invalid_inputs() -> None:
             (SACRewardChannel(name="r0", gamma=0.99, n_step=2),),
             SACParams(use_grad_norm=False), 1.0, torch.device("cpu"),
         )
-    with pytest.raises(SACTrainerError, match="gradient"):
-        sac_update(
-            actor, critic, opt, log_alpha, None,
-            batch, channels, SACParams(use_grad_norm=True),
-            1.0, torch.device("cpu"),
-        )
+    with pytest.raises(ValueError, match="use_grad_norm"):
+        SACParams(use_grad_norm=True)
     bad = dict(batch)
     bad.pop("source_keys")
     with pytest.raises(SACTrainerError, match="source_keys"):

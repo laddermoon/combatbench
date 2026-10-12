@@ -2809,6 +2809,21 @@ SAC suite 192 passed。
 
 **运行环境**：工作区干净；无在训 SAC run；GPU 上仅有用户自有 PPO run，不触碰。
 
+## R2.2 R2-W01 结论：配置契约补全（G4 + G5 代码侧）
+
+**改动**（`experiment.py`）：
+
+- 新增 `_is_intlike`/`_is_numlike` 模块级判定（bool/np.bool_ 一律拒绝；`256.0` 这类整值 float 也拒绝——int 字段必须携带真整型）；
+- `SACParams`：7 个整型字段 intlike 化（intlike 失败的字段跳过数值比较，避免 TypeError 噪声）；`utd_ratio`/`init_alpha`/`alpha_lr`/`reward_scale`/`reg_lambda`(≥0)/`u_floor`/`grad_norm_ema_decay`/`target_entropy` 补 numlike+isfinite（此前 `<=0`/`>=0` 比较被 NaN 静默绕过）；`log_alpha_min/max` 拒 NaN（±inf 仍允许，语义为"该侧无夹界"）；**`use_grad_norm=True` 改为构造期拒绝**——裁决：梯度归一化为预留未实现机制，字段与 `grad_norm_est_interval`/`grad_norm_ema_decay` 标注 RESERVED，docstring 已改写；
+- `CommonParamsSAC`：三个浮点字段 numlike+isfinite；7 个整型字段 intlike 化；`seed` 新增 `[0, 2**32-1]` 域检查（np.random.seed 上界）；
+- `SACRewardChannel`：`n_step`/`n_critics`/`in_target_min` intlike 化（原 `int(1.5)` 截断后放过）；`gamma` 补 numlike；
+- `DataSource`：`kind` 补枚举校验（非 self 仍由 loop 层 fail-loud，构造期只管合法枚举）；`sampling_share` numlike+isfinite；
+- `ReplayPlan`：新增 `__post_init__`，`min_per_stratum` intlike≥1、`freshness_weight` numlike≥0（stratify/freshness>0 的不支持判定仍由 replay 层负责）。
+
+**测试**：新增 40+ 非法值参数化用例（NaN/Inf/非整型/字符串/bool 全覆盖四 dataclass）+ `test_replay_plan_invalid_values_fail_at_construction`；两处旧测试预期改为构造期 `ValueError`（`use_grad_norm=True`、`reg_lambda=-1.0`——更早失败，与 P7 regularizer_mode 先例一致；trainer 层检查保留作纵深防御）。
+
+**探针复验**：G4 四个原接受案例全部拒绝；两真实实验构造不受影响。**SAC suite 194 passed。**
+
 ---
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。

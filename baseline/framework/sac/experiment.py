@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -26,6 +27,25 @@ from envs.framework.policy import PolicyBlueprint
 from .actor import SACActor
 from .collection import SACFactSpec, SACJob
 from .transition import SACTransitionSlice
+
+
+def _is_intlike(value: Any) -> bool:
+    """True only for genuine integers (bool excluded).
+
+    Rejects fractional floats like ``1.5`` *and* integral floats like
+    ``256.0`` — config fields typed ``int`` must carry a real integer,
+    not a silently truncated float.
+    """
+    return isinstance(value, (int, np.integer)) and not isinstance(
+        value, (bool, np.bool_)
+    )
+
+
+def _is_numlike(value: Any) -> bool:
+    """True only for real numbers (bool/str excluded)."""
+    return isinstance(value, (int, float, np.integer, np.floating)) and (
+        not isinstance(value, (bool, np.bool_))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -72,21 +92,27 @@ class SACRewardChannel:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("SACRewardChannel.name must be non-empty")
-        if not (0.0 < float(self.gamma) <= 1.0):
+        if not _is_numlike(self.gamma) or not (0.0 < self.gamma <= 1.0):
             raise ValueError(
-                f"channel {self.name!r}: gamma must be in (0,1], "
-                f"got {self.gamma}"
+                f"channel {self.name!r}: gamma must be a finite number "
+                f"in (0,1], got {self.gamma!r}"
             )
-        if int(self.n_step) < 1:
+        for fname in ("n_step", "n_critics", "in_target_min"):
+            if not _is_intlike(getattr(self, fname)):
+                raise ValueError(
+                    f"channel {self.name!r}: {fname} must be an "
+                    f"integer, got {getattr(self, fname)!r}"
+                )
+        if self.n_step < 1:
             raise ValueError(
                 f"channel {self.name!r}: n_step must be >= 1, "
                 f"got {self.n_step}"
             )
-        if int(self.n_critics) < 1:
+        if self.n_critics < 1:
             raise ValueError(
                 f"channel {self.name!r}: n_critics must be >= 1"
             )
-        if not (1 <= int(self.in_target_min) <= int(self.n_critics)):
+        if not (1 <= self.in_target_min <= self.n_critics):
             raise ValueError(
                 f"channel {self.name!r}: in_target_min="
                 f"{self.in_target_min} must be in [1, n_critics="
@@ -119,13 +145,18 @@ class SACParams:
         alpha_lr: Learning rate for alpha optimizer.
         log_alpha_min: Lower clamp for log_alpha.
         log_alpha_max: Upper clamp for log_alpha.
-        use_grad_norm: If True, use action-gradient normalization for
-            actor loss (the primary mechanism). If False, use naive
-            weighted Q sum (fallback / baseline for comparison).
-        grad_norm_est_interval: How often (in gradient steps) to
-            re-estimate the per-channel gradient scale statistics.
-        grad_norm_ema_decay: EMA decay for running gradient scale
-            statistics.
+        use_grad_norm: RESERVED, currently unsupported — must be False.
+            Action-gradient normalization for actor loss is not
+            implemented; setting True raises at construction. If ever
+            implemented, it would normalize per-channel action-gradient
+            contributions; False (required) uses the weighted Q sum.
+        grad_norm_est_interval: RESERVED knob for the unimplemented
+            gradient-normalization mechanism (re-estimation interval in
+            gradient steps). Validated but has no effect while
+            ``use_grad_norm`` must be False.
+        grad_norm_ema_decay: RESERVED knob — EMA decay for gradient
+            scale statistics. No effect while ``use_grad_norm`` is
+            unsupported.
         q_hidden_dim: Hidden dimension for Q networks.
         q_layer_norm: If True, use LayerNorm in Q trunk (improves
             stability, recommended for high-DOF).
@@ -166,58 +197,155 @@ class SACParams:
         import math
 
         errs = []
-        if self.batch_size <= 0:
+        bad_ints = set()
+        for fname in (
+            "replay_buffer_size",
+            "batch_size",
+            "warmup_steps",
+            "max_grad_steps_per_round",
+            "grad_norm_est_interval",
+            "q_hidden_dim",
+            "expectation_samples",
+        ):
+            if not _is_intlike(getattr(self, fname)):
+                bad_ints.add(fname)
+                errs.append(
+                    f"{fname} must be an integer, "
+                    f"got {getattr(self, fname)!r}"
+                )
+        if "batch_size" not in bad_ints and self.batch_size <= 0:
             errs.append("batch_size must be > 0")
-        if self.replay_buffer_size < self.batch_size:
+        if (
+            "replay_buffer_size" not in bad_ints
+            and "batch_size" not in bad_ints
+            and self.replay_buffer_size < self.batch_size
+        ):
             errs.append(
                 f"replay_buffer_size={self.replay_buffer_size} < "
                 f"batch_size={self.batch_size}"
             )
-        if self.warmup_steps < 0:
+        if "warmup_steps" not in bad_ints and self.warmup_steps < 0:
             errs.append("warmup_steps must be >= 0")
-        if self.utd_ratio <= 0.0:
+        if not _is_numlike(self.utd_ratio) or not math.isfinite(
+            float(self.utd_ratio)
+        ):
+            errs.append(
+                f"utd_ratio must be a finite number, got {self.utd_ratio!r}"
+            )
+        elif self.utd_ratio <= 0.0:
             errs.append("utd_ratio must be > 0")
-        if self.max_grad_steps_per_round <= 0:
+        if (
+            "max_grad_steps_per_round" not in bad_ints
+            and self.max_grad_steps_per_round <= 0
+        ):
             errs.append("max_grad_steps_per_round must be > 0")
-        if not (0.0 <= self.tau <= 1.0):
-            errs.append(f"tau must be in [0,1], got {self.tau}")
-        if self.init_alpha <= 0.0:
+        if not _is_numlike(self.tau) or not (0.0 <= self.tau <= 1.0):
+            errs.append(
+                f"tau must be a finite number in [0,1], got {self.tau!r}"
+            )
+        if not _is_numlike(self.init_alpha) or not math.isfinite(
+            float(self.init_alpha)
+        ):
+            errs.append(
+                f"init_alpha must be a finite number, got {self.init_alpha!r}"
+            )
+        elif self.init_alpha <= 0.0:
             errs.append(f"init_alpha must be > 0, got {self.init_alpha}")
-        if self.log_alpha_min >= self.log_alpha_max:
+        if not _is_numlike(self.log_alpha_min) or math.isnan(
+            float(self.log_alpha_min)
+        ):
+            errs.append(f"log_alpha_min must not be NaN/non-numeric")
+        if not _is_numlike(self.log_alpha_max) or math.isnan(
+            float(self.log_alpha_max)
+        ):
+            errs.append(f"log_alpha_max must not be NaN/non-numeric")
+        if _is_numlike(self.log_alpha_min) and _is_numlike(
+            self.log_alpha_max
+        ) and self.log_alpha_min >= self.log_alpha_max:
             errs.append(
                 f"log_alpha_min={self.log_alpha_min} >= "
                 f"log_alpha_max={self.log_alpha_max}"
             )
-        if self.alpha_lr <= 0.0:
+        if not _is_numlike(self.alpha_lr) or not math.isfinite(
+            float(self.alpha_lr)
+        ):
+            errs.append(
+                f"alpha_lr must be a finite number, got {self.alpha_lr!r}"
+            )
+        elif self.alpha_lr <= 0.0:
             errs.append("alpha_lr must be > 0")
-        if not (
-            self.log_alpha_min <= math.log(self.init_alpha)
-            <= self.log_alpha_max
+        if (
+            _is_numlike(self.init_alpha)
+            and math.isfinite(float(self.init_alpha))
+            and self.init_alpha > 0.0
+            and _is_numlike(self.log_alpha_min)
+            and _is_numlike(self.log_alpha_max)
+            and not math.isnan(float(self.log_alpha_min))
+            and not math.isnan(float(self.log_alpha_max))
+        ):
+            if not (
+                self.log_alpha_min <= math.log(self.init_alpha)
+                <= self.log_alpha_max
+            ):
+                errs.append(
+                    f"init_alpha={self.init_alpha} outside "
+                    f"[exp(log_alpha_min), exp(log_alpha_max)] clamps"
+                )
+        if self.target_entropy is not None and (
+            not _is_numlike(self.target_entropy)
+            or not math.isfinite(float(self.target_entropy))
         ):
             errs.append(
-                f"init_alpha={self.init_alpha} outside "
-                f"[exp(log_alpha_min), exp(log_alpha_max)] clamps"
+                f"target_entropy must be a finite number or None, "
+                f"got {self.target_entropy!r}"
             )
-        if self.target_entropy is not None and not math.isfinite(
-            float(self.target_entropy)
-        ):
+        if self.use_grad_norm:
             errs.append(
-                f"target_entropy must be finite or None, "
-                f"got {self.target_entropy}"
+                "use_grad_norm=True is not supported: action-gradient "
+                "normalization is reserved but unimplemented; set "
+                "use_grad_norm=False"
             )
-        if self.grad_norm_est_interval < 1:
+        if (
+            "grad_norm_est_interval" not in bad_ints
+            and self.grad_norm_est_interval < 1
+        ):
             errs.append("grad_norm_est_interval must be >= 1")
-        if not (0.0 <= self.grad_norm_ema_decay < 1.0):
+        if not _is_numlike(self.grad_norm_ema_decay) or not (
+            0.0 <= self.grad_norm_ema_decay < 1.0
+        ):
             errs.append(
-                f"grad_norm_ema_decay must be in [0,1), "
-                f"got {self.grad_norm_ema_decay}"
+                f"grad_norm_ema_decay must be a finite number in [0,1), "
+                f"got {self.grad_norm_ema_decay!r}"
             )
-        if self.q_hidden_dim < 1:
+        if "q_hidden_dim" not in bad_ints and self.q_hidden_dim < 1:
             errs.append("q_hidden_dim must be >= 1")
-        if self.expectation_samples < 1:
+        if (
+            "expectation_samples" not in bad_ints
+            and self.expectation_samples < 1
+        ):
             errs.append("expectation_samples must be >= 1")
-        if not math.isfinite(float(self.reward_scale)):
-            errs.append("reward_scale must be finite")
+        if not _is_numlike(self.reward_scale) or not math.isfinite(
+            float(self.reward_scale)
+        ):
+            errs.append(
+                f"reward_scale must be a finite number, "
+                f"got {self.reward_scale!r}"
+            )
+        if (
+            not _is_numlike(self.reg_lambda)
+            or not math.isfinite(float(self.reg_lambda))
+            or self.reg_lambda < 0.0
+        ):
+            errs.append(
+                f"reg_lambda must be a finite number >= 0, "
+                f"got {self.reg_lambda!r}"
+            )
+        if not _is_numlike(self.u_floor) or not math.isfinite(
+            float(self.u_floor)
+        ):
+            errs.append(
+                f"u_floor must be a finite number, got {self.u_floor!r}"
+            )
         if self.regularizer_mode not in ("shannon", "u_bonus", "u_floor"):
             errs.append(
                 f"regularizer_mode must be shannon/u_bonus/u_floor, "
@@ -270,34 +398,62 @@ class CommonParamsSAC:
     seed: int
 
     def __post_init__(self) -> None:
+        import math
+
         errs = []
         if not self.name:
             errs.append("name must be non-empty")
-        if self.learning_rate <= 0.0:
-            errs.append(
-                f"learning_rate must be > 0, got {self.learning_rate}"
-            )
-        if self.critic_learning_rate <= 0.0:
-            errs.append(
-                f"critic_learning_rate must be > 0, "
-                f"got {self.critic_learning_rate}"
-            )
-        if self.grad_clip_norm <= 0.0:
-            errs.append(
-                f"grad_clip_norm must be > 0, got {self.grad_clip_norm}"
-            )
-        if self.episodes_per_update < 1:
+        for fname in (
+            "learning_rate",
+            "critic_learning_rate",
+            "grad_clip_norm",
+        ):
+            value = getattr(self, fname)
+            if not _is_numlike(value) or not math.isfinite(float(value)):
+                errs.append(
+                    f"{fname} must be a finite number, got {value!r}"
+                )
+            elif value <= 0.0:
+                errs.append(f"{fname} must be > 0, got {value}")
+        bad_ints = set()
+        for fname in (
+            "episodes_per_update",
+            "max_env_steps",
+            "eval_interval",
+            "eval_episodes",
+            "video_eval_interval",
+            "rollout_workers",
+            "seed",
+        ):
+            if not _is_intlike(getattr(self, fname)):
+                bad_ints.add(fname)
+                errs.append(
+                    f"{fname} must be an integer, "
+                    f"got {getattr(self, fname)!r}"
+                )
+        if (
+            "episodes_per_update" not in bad_ints
+            and self.episodes_per_update < 1
+        ):
             errs.append("episodes_per_update must be >= 1")
-        if self.max_env_steps < 1:
+        if "max_env_steps" not in bad_ints and self.max_env_steps < 1:
             errs.append("max_env_steps must be >= 1")
-        if self.eval_interval < 1:
+        if "eval_interval" not in bad_ints and self.eval_interval < 1:
             errs.append("eval_interval must be >= 1")
-        if self.eval_episodes < 1:
+        if "eval_episodes" not in bad_ints and self.eval_episodes < 1:
             errs.append("eval_episodes must be >= 1")
-        if self.video_eval_interval < 0:
+        if (
+            "video_eval_interval" not in bad_ints
+            and self.video_eval_interval < 0
+        ):
             errs.append("video_eval_interval must be >= 0")
-        if self.rollout_workers < 1:
+        if "rollout_workers" not in bad_ints and self.rollout_workers < 1:
             errs.append("rollout_workers must be >= 1")
+        if "seed" not in bad_ints and not (0 <= self.seed <= 2**32 - 1):
+            errs.append(
+                f"seed must be in [0, 2**32-1] (np.random.seed bound), "
+                f"got {self.seed}"
+            )
         if errs:
             raise ValueError("invalid CommonParamsSAC: " + "; ".join(errs))
 
@@ -335,6 +491,26 @@ class DataSource:
     config: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        import math
+
+        if self.kind not in (
+            "self",
+            "opponent",
+            "pool",
+            "scripted",
+            "recorded",
+        ):
+            raise ValueError(
+                f"DataSource.kind must be one of "
+                f"self/opponent/pool/scripted/recorded, got {self.kind!r}"
+            )
+        if not _is_numlike(self.sampling_share) or not math.isfinite(
+            float(self.sampling_share)
+        ):
+            raise ValueError(
+                f"DataSource.sampling_share must be a finite number, "
+                f"got {self.sampling_share!r}"
+            )
         if not (self.sampling_share > 0.0):
             raise ValueError(
                 f"DataSource.sampling_share must be > 0, "
@@ -366,6 +542,32 @@ class ReplayPlan:
     stratify_by: Optional[str] = None
     min_per_stratum: int = 1000
     freshness_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        import math
+
+        if not _is_intlike(self.min_per_stratum):
+            raise ValueError(
+                f"ReplayPlan.min_per_stratum must be an integer, "
+                f"got {self.min_per_stratum!r}"
+            )
+        if self.min_per_stratum < 1:
+            raise ValueError(
+                f"ReplayPlan.min_per_stratum must be >= 1, "
+                f"got {self.min_per_stratum}"
+            )
+        if not _is_numlike(self.freshness_weight) or not math.isfinite(
+            float(self.freshness_weight)
+        ):
+            raise ValueError(
+                f"ReplayPlan.freshness_weight must be a finite number, "
+                f"got {self.freshness_weight!r}"
+            )
+        if self.freshness_weight < 0.0:
+            raise ValueError(
+                f"ReplayPlan.freshness_weight must be >= 0, "
+                f"got {self.freshness_weight}"
+            )
 
 
 # ---------------------------------------------------------------------------

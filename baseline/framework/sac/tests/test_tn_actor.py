@@ -653,9 +653,10 @@ def test_regularizer_mode_validation():
                       reg_lambda=0.1),
             alpha_opt=torch.optim.Adam([log_alpha]),
         )
-    with pytest.raises(SACTrainerError, match="reg_lambda"):
-        run(SACParams(use_grad_norm=False, regularizer_mode="u_floor",
-                      reg_lambda=-1.0, u_floor=0.5))
+    # negative reg_lambda fails at SACParams construction (R2-W01).
+    with pytest.raises(ValueError, match="reg_lambda"):
+        SACParams(use_grad_norm=False, regularizer_mode="u_floor",
+                  reg_lambda=-1.0, u_floor=0.5)
     with pytest.raises(SACTrainerError, match="u_floor"):
         run(SACParams(use_grad_norm=False, regularizer_mode="u_floor",
                       reg_lambda=0.1, u_floor=2.0))
