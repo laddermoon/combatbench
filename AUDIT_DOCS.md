@@ -373,3 +373,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 （combatbench-research `workspace/experiment/README.md`，提交至
 mono 仓）——按用户决定，公开仓暂不加任何指路，待指导内容成熟后
 再开放。公开仓内用法文档（GUIDE/POLICY_SELECTION 等）原地保留。
+
+**ACH-9** 实验与数据层门面建于 research 侧：`workspace/experiment/
+DATASETS.md`——runs/ 资产清单（958目录/1.3TB 实测盘点）、run 目录
+契约、消费链路、未来规范化实验约定（命名/配对seed/复现件/报告
+落仓）。数据治理（过时 run 清理）记为暂缓待办。
