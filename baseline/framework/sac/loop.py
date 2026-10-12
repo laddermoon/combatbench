@@ -65,6 +65,34 @@ TICK_METRIC_INTERVAL = 64
 TICK_RING_CAPACITY = 4096
 
 
+def _align_resumed_optimizer_lrs(
+    *,
+    actor_optimizer: torch.optim.Optimizer,
+    critic,
+    alpha_optimizer,
+    cp: CommonParamsSAC,
+    sp,
+) -> None:
+    """Align resumed optimizer LRs to the NEW config.
+
+    ``RESUME_ALLOWED_OVERRIDES`` whitelists the three LR fields, meaning a
+    resume may legitimately carry a different LR in the config than in
+    the checkpoint. Semantics: optimizer momentum state is restored from
+    the checkpoint, but the *new* config's learning rates take effect —
+    the same rule already applied to whitelisted ``utd_ratio`` and
+    ``max_grad_steps_per_round``, whose new values drive scheduling.
+    Without this alignment the old checkpoint LRs silently won and the
+    whitelist was a no-op for LR fields.
+    """
+    for group in actor_optimizer.param_groups:
+        group["lr"] = float(cp.learning_rate)
+    for trunk in critic.groups.values():
+        trunk.set_lr(float(cp.critic_learning_rate))
+    if alpha_optimizer is not None:
+        for group in alpha_optimizer.param_groups:
+            group["lr"] = float(sp.alpha_lr)
+
+
 def set_seed(seed: int) -> None:
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
@@ -379,6 +407,13 @@ def train_sac(
                     log_alpha=log_alpha,
                     alpha_optimizer=alpha_optimizer,
                     expectation_rng=expectation_rng,
+                )
+                _align_resumed_optimizer_lrs(
+                    actor_optimizer=actor_optimizer,
+                    critic=critic,
+                    alpha_optimizer=alpha_optimizer,
+                    cp=cp,
+                    sp=sp,
                 )
                 replay = bundle.replay
                 runtime_state = dict(bundle.runtime_state or {})

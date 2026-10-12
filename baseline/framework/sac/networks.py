@@ -171,24 +171,32 @@ class QTrunkGroup:
         }
 
     def load_state_dict(self, sd: Dict[str, Any]) -> None:
-        if "q1" in sd:
-            self.q1.load_state_dict(sd["q1"])
-        if "q2" in sd:
-            self.q2.load_state_dict(sd["q2"])
-        if "q1_target" in sd:
-            self.q1_target.load_state_dict(sd["q1_target"])
-        if "q2_target" in sd:
-            self.q2_target.load_state_dict(sd["q2_target"])
-        if "q1_optimizer" in sd:
-            try:
-                self.q1_optimizer.load_state_dict(sd["q1_optimizer"])
-            except (ValueError, RuntimeError) as e:
-                print(f"[checkpoint] Q1 optimizer load error: {e}", flush=True)
-        if "q2_optimizer" in sd:
-            try:
-                self.q2_optimizer.load_state_dict(sd["q2_optimizer"])
-            except (ValueError, RuntimeError) as e:
-                print(f"[checkpoint] Q2 optimizer load error: {e}", flush=True)
+        """Strict full-state restore for resume.
+
+        All six sub-states are required — a missing or malformed entry
+        raises rather than silently continuing with fresh/partial state.
+        For a weights-only warm start use explicit per-module loads (see
+        ``load_model_state``), which requires only the four networks.
+        """
+        required = (
+            "q1",
+            "q2",
+            "q1_target",
+            "q2_target",
+            "q1_optimizer",
+            "q2_optimizer",
+        )
+        missing = [key for key in required if key not in sd]
+        if missing:
+            raise ValueError(
+                f"incomplete QTrunkGroup state: missing {missing}"
+            )
+        self.q1.load_state_dict(sd["q1"])
+        self.q2.load_state_dict(sd["q2"])
+        self.q1_target.load_state_dict(sd["q1_target"])
+        self.q2_target.load_state_dict(sd["q2_target"])
+        self.q1_optimizer.load_state_dict(sd["q1_optimizer"])
+        self.q2_optimizer.load_state_dict(sd["q2_optimizer"])
 
 
 class MultiHeadQCritic:

@@ -2824,6 +2824,18 @@ SAC suite 192 passed。
 
 **探针复验**：G4 四个原接受案例全部拒绝；两真实实验构造不受影响。**SAC suite 194 passed。**
 
+## R2.3 R2-W02 结论：恢复语义修复（G1 + G2 + G3）
+
+**G1 config_lock 对称化**：根因确认——manifest `config_fingerprint` 按存盘白名单扣除后计算，而 strict 模式按零扣除计算期望值，两侧恒不相等（真实 run 恒带 `RESUME_ALLOWED_OVERRIDES`，config_lock 此前实际完全不可用，测试恰好都存 `overrides=()` 未覆盖）。修复：strict 模式重定义为"两侧 config 各按 `CONFIG_LOCK_VOLATILE_FIELDS=（"saved_at",)` 扣除后指纹相等"，从 checkpoint 的 `config.json` 与期望 config **直接重算**比对，不依赖 manifest fp；manifest 新增 `config_fingerprint_strict` 字段供审计（旧 checkpoint 无此字段时重算路径照常工作，有测试）。语义裁决：`saved_at` 是序列化产物不是语义配置（resume 时重新生成的 config 时间戳必然不同），其余任何字段差异 strict 都拒绝。
+
+**G2 LR 生效语义统一**：`loop.py` 新增 `_align_resumed_optimizer_lrs`——full-resume 恢复 optimizer state 后，把 actor lr 对齐 `common_params.learning_rate`、critic 各 trunk 对齐 `critic_learning_rate`（用 `trunk.set_lr`）、alpha lr 对齐 `sac_params.alpha_lr`。裁决：**恢复的是 optimizer 动量状态，学习率取新 config**——与白名单字段 `utd_ratio`/`max_grad_steps_per_round`"新值生效"的既有语义一致；此前 checkpoint 旧 LR 静默生效使白名单对 LR 形同虚设（探针实证 0.02→0.001）。warm-start 路径不动（只加载权重，optimizer 全新建）。
+
+**G3 critic 恢复严格化**：`QTrunkGroup.load_state_dict` 改为要求 `q1/q2/q1_target/q2_target/q1_optimizer/q2_optimizer` 全六键，缺失抛 `ValueError` 名列缺失键；删除两处 optimizer load 的 print-and-continue——torch 原生错误（形状/键不匹配）直接上抛。warm-start 的 `load_model_state` 保持只取四网络权重的既有语义（缺键已会 KeyError）。
+
+**测试**（5 新增）：strict 同配置过/异配置拒/白名单差异在 strict 下仍拒、非 strict 下放行；pre-strict-field 旧 manifest 兼容；LR 对齐用例（旧 LR 恢复→对齐新值→动量保留）；critic 缺四键/畸形 optimizer 负例。**SAC suite 199 passed。** 端到端探针：`--config-lock`（train.py 已接线）strict resume 成功。
+
+---
+
 ---
 
 以下保留旧文全文，供调查取证。其 Phase 编号、默认参数、共享方式、性能判断及因果解释不自动生效；被本轮采用时必须另立 `SAC-R1-*` 决策并说明证据。

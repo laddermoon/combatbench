@@ -348,3 +348,90 @@ def test_actor_and_alpha_use_only_all_channel_valid_rows() -> None:
             no_actor_rows, channels, SACParams(use_grad_norm=False),
             1.0, torch.device("cpu"),
         )
+
+
+def test_resumed_optimizer_lrs_follow_new_config() -> None:
+    """R2-W02: whitelisted LR fields mean the NEW config wins on resume —
+    optimizer momentum state is kept, but LRs are re-aligned after
+    optimizer state_dict restore (which otherwise silently reinstates
+    the checkpoint's old LRs, making the whitelist a no-op for LR)."""
+    from baseline.framework.sac.experiment import CommonParamsSAC
+    from baseline.framework.sac.loop import _align_resumed_optimizer_lrs
+    from baseline.framework.sac.trainer import (
+        load_trainer_state,
+        trainer_state_dict,
+    )
+
+    actor, critic, channels = _models()
+    old_opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+    old_alpha = torch.optim.Adam(
+        [torch.tensor(0.0, requires_grad=True)], lr=1e-3,
+    )
+    log_alpha = torch.tensor(0.0, requires_grad=True)
+    # populate optimizer momentum so we can verify it survives alignment
+    actor_p = next(actor.parameters())
+    actor_p.grad = torch.ones_like(actor_p)
+    old_opt.step()
+    state = trainer_state_dict(
+        actor, critic, old_opt, log_alpha, old_alpha,
+    )
+
+    actor2, critic2, _ = _models()
+    new_opt = torch.optim.Adam(actor2.parameters(), lr=5e-2)
+    new_alpha_param = torch.tensor(0.0, requires_grad=True)
+    new_alpha = torch.optim.Adam([new_alpha_param], lr=9e-2)
+    load_trainer_state(
+        state,
+        actor=actor2,
+        critic=critic2,
+        actor_optimizer=new_opt,
+        log_alpha=new_alpha_param,
+        alpha_optimizer=new_alpha,
+    )
+    # optimizer state restore reinstates the OLD lrs — the G2 bug
+    assert new_opt.param_groups[0]["lr"] == pytest.approx(1e-3)
+    trunk = next(iter(critic2.groups.values()))
+    assert trunk.q1_optimizer.param_groups[0]["lr"] == pytest.approx(1e-3)
+
+    cp = CommonParamsSAC(
+        name="x", learning_rate=5e-2, critic_learning_rate=7e-3,
+        grad_clip_norm=1.0, episodes_per_update=8, max_env_steps=1000,
+        eval_interval=100, eval_episodes=4, video_eval_interval=0,
+        rollout_workers=2, seed=0,
+    )
+    sp = SACParams(alpha_lr=9e-2)
+    _align_resumed_optimizer_lrs(
+        actor_optimizer=new_opt,
+        critic=critic2,
+        alpha_optimizer=new_alpha,
+        cp=cp,
+        sp=sp,
+    )
+    assert new_opt.param_groups[0]["lr"] == pytest.approx(5e-2)
+    assert new_alpha.param_groups[0]["lr"] == pytest.approx(9e-2)
+    for trunk in critic2.groups.values():
+        assert trunk.q1_optimizer.param_groups[0]["lr"] == pytest.approx(7e-3)
+        assert trunk.q2_optimizer.param_groups[0]["lr"] == pytest.approx(7e-3)
+    # momentum state survived: state dict is non-empty
+    assert len(new_opt.state_dict()["state"]) > 0
+
+
+def test_critic_load_state_dict_requires_complete_state() -> None:
+    """R2-W02: full-resume critic restore is strict — missing or malformed
+    sub-states raise instead of silently keeping fresh values."""
+    _, critic, _ = _models()
+    group = next(iter(critic.groups.values()))
+    sd = group.state_dict()
+
+    for dropped in ("q1", "q1_target", "q1_optimizer", "q2_optimizer"):
+        incomplete = {k: v for k, v in sd.items() if k != dropped}
+        with pytest.raises(ValueError, match=dropped):
+            group.load_state_dict(incomplete)
+
+    malformed = {k: v for k, v in sd.items()}
+    malformed["q1_optimizer"] = {}
+    with pytest.raises((KeyError, ValueError, RuntimeError)):
+        group.load_state_dict(malformed)
+
+    # a complete state still loads
+    group.load_state_dict(sd)

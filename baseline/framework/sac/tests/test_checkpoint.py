@@ -108,6 +108,90 @@ def test_whitelisted_override_can_resume_without_config_lock(tmp_path) -> None:
     assert bundle.resume_mode == "full"
 
 
+def test_config_lock_matches_identical_config_saved_with_overrides(
+    tmp_path,
+) -> None:
+    """Strict lock must accept an identical regenerated config even when
+    the checkpoint was saved under a non-empty override whitelist (as all
+    real runs are). Previously broken: the manifest fp was computed with
+    overrides removed while strict mode compared a zero-override
+    expectation, so config_lock could never succeed (G1)."""
+    cfg = {
+        **_config(lr=1e-3),
+        "saved_at": "2026-01-01 00:00:00",
+        "config_schema": "sac_run_config_v1",
+    }
+    path = save_checkpoint_bundle(
+        tmp_path / "ckpt",
+        trainer_state={},
+        replay=_replay(),
+        runtime_state={},
+        experiment_state={},
+        config=cfg,
+        allowed_overrides=("optimization.actor_lr",),
+    )
+    # identical config except the volatile saved_at timestamp
+    expected = {**cfg, "saved_at": "2026-10-15 12:00:00"}
+    bundle = load_checkpoint_bundle(
+        path, expected_config=expected, config_lock=True,
+    )
+    assert bundle.resume_mode == "full"
+
+
+def test_config_lock_rejects_whitelisted_difference(tmp_path) -> None:
+    """A field whitelisted for non-strict resume is still rejected under
+    config_lock (strict = no semantic overrides at all)."""
+    cfg = _config(lr=1e-3)
+    path = save_checkpoint_bundle(
+        tmp_path / "ckpt",
+        trainer_state={},
+        replay=_replay(),
+        runtime_state={},
+        experiment_state={},
+        config=cfg,
+        allowed_overrides=("optimization.actor_lr",),
+    )
+    with pytest.raises(SACCheckpointError, match="config"):
+        load_checkpoint_bundle(
+            path,
+            expected_config=_config(lr=2e-3),
+            config_lock=True,
+        )
+    # the same difference is accepted without the lock
+    expected = _config(lr=1e-3)
+    expected["optimization"]["actor_lr"] = 2e-3
+    bundle = load_checkpoint_bundle(
+        path,
+        expected_config=expected,
+        allowed_overrides=("optimization.actor_lr",),
+    )
+    assert bundle.resume_mode == "full"
+
+
+def test_config_lock_works_on_pre_strict_field_checkpoints(tmp_path) -> None:
+    """Checkpoints saved before config_fingerprint_strict existed must
+    still load under config_lock via recomputation from config.json."""
+    cfg = _config()
+    path = save_checkpoint_bundle(
+        tmp_path / "ckpt",
+        trainer_state={},
+        replay=_replay(),
+        runtime_state={},
+        experiment_state={},
+        config=cfg,
+    )
+    import json as _json
+
+    manifest_path = path / "manifest.json"
+    manifest = _json.loads(manifest_path.read_text())
+    manifest.pop("config_fingerprint_strict", None)
+    manifest_path.write_text(_json.dumps(manifest))
+    bundle = load_checkpoint_bundle(
+        path, expected_config=_config(), config_lock=True,
+    )
+    assert bundle.resume_mode == "full"
+
+
 def test_warm_start_does_not_restore_replay_or_clocks(tmp_path) -> None:
     path = save_checkpoint_bundle(
         tmp_path / "ckpt",

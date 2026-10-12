@@ -23,6 +23,12 @@ from .replay import SACReplayBuffer
 SAC_CHECKPOINT_SCHEMA = "sac_checkpoint_v1"
 MANIFEST_NAME = "manifest.json"
 
+# Fields excluded even under ``config_lock``: they are serialization
+# artifacts that legitimately differ when a config is regenerated at
+# resume time, not semantic configuration. Any other field difference
+# is rejected in strict mode.
+CONFIG_LOCK_VOLATILE_FIELDS = ("saved_at",)
+
 
 class SACCheckpointError(RuntimeError):
     """Raised when a checkpoint bundle is invalid or cannot be resumed."""
@@ -137,6 +143,12 @@ def save_checkpoint_bundle(
             "config_fingerprint": config_fingerprint(
                 config, allowed_overrides=allowed_overrides,
             ),
+            # Strict-mode fingerprint: only volatile serialization
+            # fields removed. Stored for audit; loaders recompute from
+            # config.json so pre-field checkpoints still work.
+            "config_fingerprint_strict": config_fingerprint(
+                config, allowed_overrides=CONFIG_LOCK_VOLATILE_FIELDS,
+            ),
             "allowed_overrides": tuple(allowed_overrides),
             "files": files,
         }
@@ -189,8 +201,12 @@ def load_checkpoint_bundle(
     """Load and validate a checkpoint bundle.
 
     ``expected_config`` is compared after removing ``allowed_overrides``.
-    ``config_lock=True`` is strict mode: overrides are not allowed and an
-    expected config is required.
+    ``config_lock=True`` is strict mode: no resume overrides are allowed
+    and an expected config is required. Strict comparison recomputes the
+    fingerprint of BOTH configs with only ``CONFIG_LOCK_VOLATILE_FIELDS``
+    (serialization artifacts like ``saved_at``) removed — it does not use
+    the manifest fingerprint, which was computed under the save-time
+    whitelist and would never match a zero-override expectation.
     """
     path = Path(path)
     if not path.is_dir():
@@ -208,14 +224,23 @@ def load_checkpoint_bundle(
 
     config = json.loads((path / "config.json").read_text(encoding="utf-8"))
     if expected_config is not None:
-        actual_fp = str(manifest.get("config_fingerprint"))
-        expected_fp = config_fingerprint(
-            expected_config, allowed_overrides=overrides,
-        )
+        if config_lock:
+            actual_fp = config_fingerprint(
+                config, allowed_overrides=CONFIG_LOCK_VOLATILE_FIELDS,
+            )
+            expected_fp = config_fingerprint(
+                expected_config,
+                allowed_overrides=CONFIG_LOCK_VOLATILE_FIELDS,
+            )
+        else:
+            actual_fp = str(manifest.get("config_fingerprint"))
+            expected_fp = config_fingerprint(
+                expected_config, allowed_overrides=overrides,
+            )
         if actual_fp != expected_fp:
             raise SACCheckpointError(
                 "checkpoint config does not match expected config "
-                f"(allowed_overrides={overrides})"
+                f"(config_lock={config_lock}, allowed_overrides={overrides})"
             )
 
     trainer_state = torch.load(
@@ -291,6 +316,7 @@ def prune_checkpoints(ckpt_dir: str | Path, *, keep_last: int) -> None:
 
 
 __all__ = [
+    "CONFIG_LOCK_VOLATILE_FIELDS",
     "SAC_CHECKPOINT_SCHEMA",
     "SACCheckpointBundle",
     "SACCheckpointError",
