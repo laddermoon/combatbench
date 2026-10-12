@@ -6,7 +6,7 @@
 <style>
   body { font: 13px/1.5 monospace; margin: 0; background:#14161a; color:#d8dde3; }
   header { padding:8px 14px; background:#1d2126; border-bottom:1px solid #2c3138;
-           position:sticky; top:0; display:flex; gap:14px; align-items:center; }
+           position:sticky; top:0; display:flex; gap:14px; align-items:center; z-index:9; }
   header b { color:#7fb3e0; }
   #runs { width:340px; border-right:1px solid #2c3138; height:calc(100vh - 42px);
           overflow-y:auto; float:left; }
@@ -14,8 +14,10 @@
   #runs div:hover { background:#1d2126; }
   #runs div.sel { background:#26313d; }
   #runs .sub { color:#8a929c; font-size:11px; }
+  #runs input[type=checkbox] { vertical-align:middle; }
   #main { margin-left:360px; padding:12px; }
   h3 { margin:14px 0 6px; color:#9db8d2; font-size:13px; }
+  h4 { margin:10px 0 4px; color:#9db8d2; font-size:12px; }
   table { border-collapse:collapse; }
   td,th { border:1px solid #2c3138; padding:2px 8px; text-align:right; }
   th { color:#8a929c; font-weight:normal; }
@@ -24,17 +26,31 @@
   input,select,button { background:#1d2126; color:#d8dde3; border:1px solid #3a4149;
           padding:3px 8px; font:inherit; }
   button { cursor:pointer; }
+  button.on { background:#2d4356; border-color:#5a7f9d; }
   .ok { color:#7fd18a; } .bad { color:#e07f7f; } .dim { color:#8a929c; }
+  .tabs { margin:8px 0; }
+  .tabs button { margin-right:4px; }
+  .card { background:#191d22; border:1px solid #2c3138; padding:8px 10px;
+          margin:6px 0; }
+  .warn { color:#e0b97f; }
+  a { color:#7fb3e0; }
 </style>
 </head>
 <body>
 <header><b>SAC Debug Viewer</b><span id="hdr" class="dim">loading…</span>
-  <button onclick="loadRuns()">refresh</button></header>
+  <button onclick="loadRuns()">refresh</button>
+  <span class="dim">R2-4 workspaces: run / compare / replay / dump-chain</span>
+</header>
 <div id="runs"></div>
 <div id="main"><p class="dim">select a run</p></div>
 <script>
 const api = p => fetch(p).then(r => r.json());
-let curRun = null;
+const fmt = x => typeof x==='number' ? +x.toFixed(4) : JSON.stringify(x);
+const COLORS = ['#7fb3e0','#7fd18a','#e0b97f','#e07f7f','#b78ce0','#7fd1c8',
+                '#d1a0a0','#a0c87f','#8a92e0','#e0d17f','#c87fa0','#9db8d2'];
+let curRun = null, curDump = null, cmpRuns = new Set(), xAxis = 'env_step';
+
+/* ---------------- runs list ---------------- */
 
 async function loadRuns() {
   const runs = await api('/api/runs');
@@ -47,99 +63,362 @@ async function loadRuns() {
     const ev = r.last_eval ? Object.entries(r.last_eval)
         .filter(([k])=>/success|survival/.test(k))
         .map(([k,v])=>k.split('.').pop()+'='+(+v).toFixed(3)).join(' ') : '';
-    d.innerHTML = `<b>${r.name}</b><br><span class="sub">${r.experiment_name||''} `
+    const cb = cmpRuns.has(r.name) ? 'checked' : '';
+    d.innerHTML = `<input type="checkbox" ${cb}
+        onclick="event.stopPropagation();toggleCmp('${r.name}',this.checked)">
+      <b>${r.name}</b><br><span class="sub">${r.experiment_name||''} `
       + `${r.knobs?.actor_arch||''} env=${r.last_clocks?.env_step??'-'} ${ev}</span>`;
-    d.onclick = () => { selectRun(r.name, d); };
+    d.onclick = () => { selectRun(r.name); };
     el.appendChild(d);
   }
+  const cmp = document.createElement('div');
+  cmp.innerHTML = `<button style="width:100%" onclick="compareView()">compare selected (${cmpRuns.size})</button>`;
+  el.appendChild(cmp);
+}
+function toggleCmp(name, on) {
+  on ? cmpRuns.add(name) : cmpRuns.delete(name); loadRuns();
 }
 
-async function selectRun(name, el) {
-  curRun = name;
+/* ---------------- chart helper ---------------- */
+
+function chart(parent, series, title, xlab) {
+  // series: [{label, color, pts:[[x,y],...]}]
+  const cv = document.createElement('canvas'); cv.width=720; cv.height=190;
+  const ctx = cv.getContext('2d');
+  parent.appendChild(cv);
+  ctx.fillStyle='#8a929c'; ctx.fillText(title,8,14);
+  const all = series.flatMap(s=>s.pts);
+  if (!all.length) { ctx.fillText('no data',60,100); return; }
+  const xs = all.map(p=>p[0]), ys = all.map(p=>p[1]);
+  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+  const X=v=>50+(v-x0)/((x1-x0)||1)*650, Y=v=>160-(v-y0)/((y1-y0)||1e-12)*130;
+  ctx.strokeStyle='#3a4149'; ctx.strokeRect(50,20,660,140);
+  ctx.fillText(y1.toPrecision(3),4,30); ctx.fillText(y0.toPrecision(3),4,158);
+  ctx.fillText(x0,50,175); ctx.fillText(x1,700,175); ctx.fillText(xlab||'x',340,178);
+  series.forEach((s,i)=>{
+    ctx.strokeStyle=s.color||COLORS[i%COLORS.length];
+    ctx.beginPath();
+    s.pts.forEach(([x,y],j)=> j?ctx.lineTo(X(x),Y(y)):ctx.moveTo(X(x),Y(y)));
+    ctx.stroke();
+    ctx.fillStyle=s.color||COLORS[i%COLORS.length];
+    ctx.fillText(s.label, 60+i*120, 14);
+  });
+}
+const clockOf = p => (xAxis==='critic_tick')
+  ? (p.clocks?.critic_tick ?? 0) : (p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0);
+
+/* ---------------- run dashboard ---------------- */
+
+async function selectRun(name) {
+  curRun = name; curDump = null;
   document.querySelectorAll('#runs div').forEach(x=>x.classList.remove('sel'));
-  el.classList.add('sel');
   const s = await api('/api/run?name='+name);
   const m = document.getElementById('main');
   m.innerHTML = `<h3>${name} <span class="dim">${s.experiment_name||''}</span></h3>
-    <pre>${JSON.stringify({clocks:s.last_clocks, knobs:s.knobs, last_eval:s.last_eval,
-      events:s.event_counts},null,1)}</pre>
-    <h3>metrics <span class="dim">(click to plot)</span></h3><div id="mlist"></div>
-    <div id="chart"></div>
+    <div class="tabs">
+      <button class="on" id="tab_dash" onclick="runTab('dash')">dashboard</button>
+      <button id="tab_replay" onclick="runTab('replay')">replay</button>
+      <span class="dim" style="margin-left:14px">x-axis:</span>
+      <select onchange="xAxis=this.value"><option value="env_step">env_step</option>
+        <option value="critic_tick">critic_tick</option></select>
+    </div>
+    <div id="ws"></div>`;
+  window._summary = s;
+  runTab('dash');
+}
+function runTab(t) {
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
+  (document.getElementById('tab_'+t)||{}).classList?.add('on');
+  if (t==='dash') dashView();
+  else replayView();
+}
+
+async function dashView() {
+  const s = window._summary, name = curRun;
+  const ws = document.getElementById('ws');
+  ws.innerHTML = `<pre>${JSON.stringify({clocks:s.last_clocks, knobs:s.knobs,
+    last_eval:s.last_eval, events:s.event_counts, terminal:s.terminal||null},null,1)}</pre>
+    <h3>metrics <span class="dim">(click to plot, ctrl=multi overlay)</span></h3>
+    <div id="mlist"></div><div id="chart"></div>
     <h3>videos</h3><div id="vids"></div>
-    <h3>dumps</h3><div id="dumps"></div><div id="dumpview"></div>`;
+    <h3>dumps <span class="dim">click → dump workspace</span></h3>
+    <div id="dumps"></div><div id="dumpws"></div>`;
   const vv = document.getElementById('vids');
   for (const v of (s.videos || []).slice(-12)) {
     const a = document.createElement('a');
     a.href = `/videos/${name}/${v}`; a.textContent = v; a.target = '_blank';
-    a.style.marginRight = '10px';
-    vv.appendChild(a);
+    a.style.marginRight = '10px'; vv.appendChild(a);
   }
   const cat = await api('/api/catalog');
   const ml = document.getElementById('mlist');
-  const picks = cat.filter(c=>/^(eval\.|temperature\.alpha|actor\.log_prob|critic\.(q_mean|td_mean|loss)|round\.|collection\.)/.test(c.name));
-  for (const c of picks.slice(0, 40)) {
+  const picks = cat.filter(c=>/^(eval\.|temperature\.|actor\.|critic\.|collection\.|task\.|behavior\.|replay\.)/.test(c.name));
+  window._picked = new Set();
+  for (const c of picks.slice(0, 60)) {
     const b = document.createElement('button');
     b.textContent = c.name; b.style.margin='2px';
-    b.onclick = () => plotMetric(name, c.name, c.event_type);
+    b.onclick = (ev) => {
+      if (!ev.ctrlKey && !ev.metaKey) { window._picked.clear(); }
+      window._picked.has(c.name) ? window._picked.delete(c.name)
+                                 : window._picked.add({name:c.name, ev:c.event_type});
+      [...ml.children].forEach(x=>x.classList.remove('on'));
+      [...ml.children].filter((x,i)=>[...window._picked].some(p=>p.name===x.textContent))
+        .forEach(x=>x.classList.add('on'));
+      plotMetrics(name, [...window._picked]);
+    };
     ml.appendChild(b);
   }
   const dl = document.getElementById('dumps');
-  for (const dn of s.dumps || []) {
+  for (const dn of (s.dumps || [])) {
     const b = document.createElement('button');
     b.textContent = dn; b.style.margin='2px';
-    b.onclick = () => dumpView(name, dn);
+    b.onclick = () => dumpWorkspace(name, dn);
     dl.appendChild(b);
   }
 }
 
-async function plotMetric(run, key, ev) {
-  const d = await api(`/api/run/metrics?name=${run}&key=${key}&event=${ev||''}`);
-  const pts = d.points.map(p=>[p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0, p.value]);
-  const cv = document.createElement('canvas'); cv.width=720; cv.height=180;
-  const ctx = cv.getContext('2d');
-  const div = document.getElementById('chart'); div.innerHTML=''; div.appendChild(cv);
-  ctx.fillStyle='#8a929c'; ctx.fillText(`${run} :: ${key} (${pts.length} pts)`,8,14);
-  if (!pts.length) return;
-  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
-  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
-  const X=v=>50+(v-x0)/((x1-x0)||1)*650, Y=v=>160-(v-y0)/((y1-y0)||1e-12)*130;
-  ctx.strokeStyle='#3a4149'; ctx.strokeRect(50,20,660,140);
-  ctx.fillText(y1.toPrecision(3),8,30); ctx.fillText(y0.toPrecision(3),8,158);
-  ctx.fillText(x0,50,175); ctx.fillText(x1,700,175);
-  ctx.strokeStyle='#7fb3e0'; ctx.beginPath();
-  pts.forEach(([x,y],i)=> i?ctx.lineTo(X(x),Y(y)):ctx.moveTo(X(x),Y(y)));
-  ctx.stroke();
-}
-
-async function dumpView(run, dn) {
-  const d = await api(`/api/dump/inspect?run=${run}&name=${dn}`);
-  const v = document.getElementById('dumpview');
-  v.innerHTML = `<h3>${dn}</h3>
-    <pre>${JSON.stringify({consistency:d.consistency, update_stats:d.update_stats,
-      per_channel:d.per_channel, batch:d.batch}, null, 1)}</pre>
-    <h4>samples <span class="dim">sorted by td_abs</span></h4><div id="samp"></div>`;
-  const sm = await api(`/api/dump/samples?run=${run}&name=${dn}&sort=td_abs&limit=30`);
-  const rows = sm.rows || [];
-  let h = '<table><tr><th>sample_id</th><th>round</th><th>reward</th>' +
-    '<th>td_abs</th><th>q_mean</th><th>logp</th><th>term</th><th>trace</th></tr>';
-  for (const r of rows) {
-    h += `<tr><td>${r.sample_id}</td><td>${r.collection_round??''}</td>` +
-      `<td>${fmt(r.reward_sum)}</td><td>${fmt(r.td_abs)}</td>` +
-      `<td>${fmt(r.q_mean)}</td><td>${fmt(r.logp_expectation)}</td>` +
-      `<td>${r.terminated?'T':(r.truncated?'~':'')}</td>` +
-      `<td><button onclick="trace('${run}','${dn}',${r.sample_id})">trace</button></td></tr>`;
+async function plotMetrics(run, keys) {
+  const div = document.getElementById('chart'); div.innerHTML='';
+  if (!keys.length) return;
+  const series = [];
+  for (const [i,k] of keys.entries()) {
+    const d = await api(`/api/run/metrics?name=${run}&key=${k.name}&event=${k.ev||''}`);
+    series.push({label:k.name, color:COLORS[i%COLORS.length],
+      pts:d.points.map(p=>[clockOf(p), p.value])});
   }
-  document.getElementById('samp').innerHTML = h + '</table>';
+  chart(div, series, `${run} :: ${keys.length} metric(s)`, xAxis);
 }
 
-async function trace(run, dn, sid) {
-  const d = await api(`/api/dump/trace?run=${run}&name=${dn}&sample_id=${sid}`);
-  const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(d, null, 1);
-  document.getElementById('dumpview').appendChild(pre);
+/* ---------------- compare workspace ---------------- */
+
+async function compareView() {
+  const m = document.getElementById('main');
+  m.innerHTML = `<h3>compare <span class="dim">${[...cmpRuns].join(', ')}</span></h3>
+    <div>metric key: <input id="cmpkey" value="eval.success" size="26">
+      event: <select id="cmpev"><option value="">auto</option><option>tick</option>
+        <option>round</option><option>eval</option></select>
+      x: <select id="cmpx"><option value="env_step">env_step</option>
+        <option value="critic_tick">critic_tick</option></select>
+      <button onclick="plotCompare()">plot</button></div>
+    <div id="cmpchart"></div><div id="cmptable"></div>`;
+}
+async function plotCompare() {
+  const key = document.getElementById('cmpkey').value;
+  const ev = document.getElementById('cmpev').value;
+  const ax = document.getElementById('cmpx').value;
+  const series = [];
+  for (const [i,name] of [...cmpRuns].entries()) {
+    try {
+      const d = await api(`/api/run/metrics?name=${name}&key=${key}&event=${ev}`);
+      series.push({label:name, color:COLORS[i%COLORS.length],
+        pts:d.points.map(p=>[
+          ax==='critic_tick' ? (p.clocks?.critic_tick??0)
+                             : (p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0),
+          p.value])});
+    } catch(e) { /* run lacks the metric — leave the gap visible */ }
+  }
+  const div = document.getElementById('cmpchart'); div.innerHTML='';
+  chart(div, series, `compare :: ${key}`, ax);
 }
 
-function fmt(x){ return typeof x==='number' ? +x.toFixed(4) : JSON.stringify(x); }
+/* ---------------- replay workspace ---------------- */
+
+async function replayView() {
+  const ws = document.getElementById('ws');
+  ws.innerHTML = '<p class="dim">loading replay report…</p>';
+  const r = await api(`/api/run/replay?name=${curRun}`);
+  let h = `<h3>replay demographics</h3><pre>${JSON.stringify({
+    size:r.size, capacity:r.capacity, total_inserted:r.total_inserted,
+    overwritten:r.overwritten, sample_age:r.sample_age, reuse:r.reuse,
+    collection_round_counts:r.collection_round_counts,
+    policy_fingerprint_counts:r.policy_fingerprint_counts,
+    explore_factor_counts:r.explore_factor_counts,
+    random_start_rows:r.random_start_rows}, null, 1)}</pre>
+    <h3>slice context</h3>
+    <div>sample_id <input id="sc_sid" size="8"> or source_key <input id="sc_sk" size="40">
+      <button onclick="sliceCtx()">query</button>
+      <span class="dim">resolves the newest checkpoint's replay.pt; evicted frames are shown as gaps</span></div>
+    <div id="sctx"></div>`;
+  ws.innerHTML = h;
+}
+async function sliceCtx() {
+  const sid = document.getElementById('sc_sid').value;
+  const sk = document.getElementById('sc_sk').value;
+  const q = sid ? `sample_id=${sid}` : `source_key=${encodeURIComponent(sk)}`;
+  const d = await api(`/api/run/slice-ctx?name=${curRun}&${q}`);
+  const el = document.getElementById('sctx');
+  let h = `<div class="card"><b>${d.slice_id}</b> <span class="dim">${d.episode_prefix}</span><br>
+    live=${d.live_count} range=${JSON.stringify(d.frame_index_range)}
+    gaps=${JSON.stringify(d.missing_frame_indices)}<br>
+    <span class="dim">${d.note}</span></div>`;
+  h += '<table><tr><th>frame</th><th>sample_id</th><th>draws</th><th>reward</th><th>end</th></tr>';
+  for (const f of d.live_frames) {
+    h += `<tr><td>${f.frame_index}</td><td>${f.sample_id}</td><td>${f.draw_count}</td>
+      <td>${fmt(f.reward_sum)}</td><td>${f.terminated?'T':(f.truncated?'~':'')}</td></tr>`;
+  }
+  el.innerHTML = h + '</table>';
+}
+
+/* ---------------- dump workspace (computation chain) ---------------- */
+
+async function dumpWorkspace(run, dn) {
+  curDump = dn;
+  const host = document.getElementById('dumpws');
+  host.innerHTML = `<h3>dump ${dn}</h3>
+    <div class="tabs" id="dtabs">
+      <button class="on" data-t="inspect" onclick="dumpTab('inspect')">inspect</button>
+      <button data-t="samples" onclick="dumpTab('samples')">samples</button>
+      <button data-t="target" onclick="dumpTab('target')">target/critic</button>
+      <button data-t="actor" onclick="dumpTab('actor')">actor/temp</button>
+      <button data-t="drift" onclick="dumpTab('drift')">drift</button>
+      <button data-t="grad" onclick="dumpTab('grad')">grad-attr</button>
+      <button data-t="attr" onclick="dumpTab('attr')">attribution</button>
+    </div><div id="dws"></div>`;
+  host.scrollIntoView();
+  dumpTab('inspect');
+}
+function dumpTab(t) {
+  document.querySelectorAll('#dtabs button').forEach(b=>b.classList.remove('on'));
+  document.querySelector(`#dtabs button[data-t=${t}]`).classList.add('on');
+  const fn = {inspect:dInspect, samples:dSamples, target:dTarget,
+              actor:dActor, drift:dDrift, grad:dGrad, attr:dAttr}[t];
+  fn();
+}
+const dumpApi = p => api(`/api/dump/${p}${p.includes('?')?'&':'?'}run=${curRun}&name=${curDump}`);
+
+async function dInspect() {
+  const d = await dumpApi('inspect');
+  document.getElementById('dws').innerHTML =
+    `<pre>${JSON.stringify({clocks:d.clocks, hypothesis:d.hypothesis,
+      consistency:d.consistency, batch:d.batch, pair_index:d.pair_index,
+      per_channel:d.per_channel, update_stats:d.update_stats,
+      param_delta:d.param_delta}, null, 1)}</pre>`;
+}
+
+async function dSamples() {
+  const sm = await dumpApi('samples&sort=td_abs&limit=40');
+  let h = `<h4>samples <span class="dim">sorted by |td| — row actions:
+      trace / decomp / slice-ctx (run newest ckpt replay)</span></h4>
+    <table><tr><th>sample_id</th><th>round</th><th>reward</th><th>|td|</th>
+    <th>q_mean</th><th>logp̄</th><th>draws</th><th>end</th><th></th></tr>`;
+  for (const r of sm.rows) {
+    h += `<tr><td>${r.sample_id}</td><td>${r.collection_round??''}</td>
+      <td>${fmt(r.reward_sum)}</td><td>${fmt(r.td_abs)}</td>
+      <td>${fmt(r.q_mean)}</td><td>${fmt(r.logp_expectation)}</td>
+      <td>${r.draw_count}</td><td>${r.terminated?'T':(r.truncated?'~':'')}</td>
+      <td><button onclick="dTrace(${r.sample_id})">trace</button>
+        <button onclick="dDecompRow(${r.sample_id})">decomp</button>
+        <button onclick="dSliceCtx(${r.sample_id})">slice-ctx</button></td></tr>`;
+  }
+  document.getElementById('dws').innerHTML = h + '</table><div id="drill"></div>';
+}
+async function dTrace(sid) {
+  const d = await dumpApi(`trace&sample_id=${sid}`);
+  document.getElementById('drill').innerHTML =
+    `<h4>trace ${sid}</h4><pre>${JSON.stringify(d,null,1)}</pre>`;
+}
+async function dDecompRow(sid) {
+  const d = await dumpApi(`decomp&sample_id=${sid}`);
+  document.getElementById('drill').innerHTML =
+    `<h4>decomp ${sid}</h4><pre>${JSON.stringify(d.row,null,1)}</pre>`;
+}
+async function dSliceCtx(sid) {
+  const d = await api(`/api/run/slice-ctx?name=${curRun}&sample_id=${sid}`);
+  document.getElementById('drill').innerHTML =
+    `<h4>slice-ctx ${sid} → ${d.slice_id}</h4><pre>${JSON.stringify(d,null,1)}</pre>`;
+}
+
+async function dTarget() {
+  const d = await dumpApi('decomp');
+  const ins = await dumpApi('inspect');
+  let h = '<h4>target decomposition <span class="dim">target = r·scale + γ·b·(softQ + reg)</span></h4><table>' +
+    '<tr><th>channel</th><th>reward</th><th>softQ</th><th>reg</th><th>total</th><th>|td|max</th><th>grad_norm</th></tr>';
+  for (const [ch, p] of Object.entries(d.summary.target)) {
+    const gn = ins.update_stats?.[`grad_norm_critic_${ch}`];
+    const td = ins.per_channel?.[ch]?.td_abs_max;
+    h += `<tr><td>${ch}</td><td>${fmt(p.reward_term.mean)}</td>
+      <td>${fmt(p.softq_term.mean)}</td><td>${fmt(p.reg_term.mean)}</td>
+      <td>${fmt(p.total.mean)}</td><td>${fmt(td??NaN)}</td><td>${fmt(gn??NaN)}</td></tr>`;
+  }
+  h += `</table><div class="dim">check.target_max_abs_err=${d.check.target_max_abs_err.toExponential(2)}</div>`;
+  h += `<h4>per-channel critic stats</h4><pre>${JSON.stringify(ins.per_channel,null,1)}</pre>`;
+  document.getElementById('dws').innerHTML = h;
+}
+
+async function dActor() {
+  const d = await dumpApi('decomp');
+  const ins = await dumpApi('inspect');
+  let h = '<h4>actor objective decomposition <span class="dim">objective = Σ_ch w·Q + entropy + reg</span></h4><table>' +
+    '<tr><th>part</th><th>mean</th><th>std</th></tr>';
+  for (const [ch, p] of Object.entries(d.summary.actor.per_channel_q)) {
+    h += `<tr><td>Q·${ch}</td><td>${fmt(p.mean)}</td><td>${fmt(p.std)}</td></tr>`;
+  }
+  h += `<tr><td>entropy_term</td><td>${fmt(d.summary.actor.entropy_term.mean)}</td><td></td></tr>
+    <tr><td>reg_term</td><td>${fmt(d.summary.actor.reg_term.mean)}</td><td></td></tr>
+    <tr><td><b>total</b></td><td><b>${fmt(d.summary.actor.total.mean)}</b></td><td></td></tr></table>
+    <div class="dim">mode=${d.regularizer_mode} check.objective_max_abs_err=${d.check.objective_max_abs_err.toExponential(2)}</div>`;
+  h += `<h4>temperature / pair selection</h4><pre>${JSON.stringify({
+    alpha:ins.update_stats?.alpha, alpha_loss:ins.update_stats?.alpha_loss,
+    grad_norm_alpha:ins.update_stats?.grad_norm_alpha,
+    actor_grad_norm:ins.update_stats?.grad_norm_actor,
+    actor_pair1_frac:ins.update_stats?.actor_pair1_frac,
+    target_pair1_frac:ins.update_stats?.target_pair1_frac},null,1)}</pre>`;
+  document.getElementById('dws').innerHTML = h;
+}
+
+async function dDrift() {
+  document.getElementById('dws').innerHTML = '<p class="dim">rebuilding pre/post models…</p>';
+  const d = await dumpApi('drift');
+  let h = `<h4>fixed-input drift <span class="dim">pre→post on this batch's obs (n=${d.n_probe_rows})</span></h4>
+    <pre>${JSON.stringify({det_action_drift:d.det_action_drift,
+      logp_drift:d.logp_drift, alpha_delta:d.alpha_delta,
+      per_channel:d.per_channel},null,1)}</pre>`;
+  document.getElementById('dws').innerHTML = h;
+}
+
+async function dGrad() {
+  document.getElementById('dws').innerHTML =
+    `<p class="warn">grad-attr is heavy: it rebuilds pre-state models and runs
+     (groups×channels + 3) backwards. <button onclick="dGradRun()">compute</button></p>
+     <div id="gradout"></div>`;
+}
+async function dGradRun() {
+  document.getElementById('gradout').innerHTML = '<p class="dim">computing…</p>';
+  const d = await dumpApi('grad-attr');
+  let h = `<h4>actor term gradients <span class="dim">total ‖g‖=${fmt(d.actor.total_grad_norm)}</span></h4>
+    <table><tr><th>term</th><th>loss</th><th>‖g‖</th><th>cos→total</th></tr>`;
+  for (const t of d.actor.terms) {
+    h += `<tr><td>${t.term}</td><td>${fmt(t.loss)}</td><td>${fmt(t.grad_norm)}</td>
+      <td>${t.cos_to_total===null?'—':fmt(t.cos_to_total)}</td></tr>`;
+  }
+  h += '</table><h4>critic per-group gradients</h4>';
+  for (const [ch, e] of Object.entries(d.critic)) {
+    h += `<h4>${ch} <span class="dim">total ‖g‖=${fmt(e.total_grad_norm)}</span></h4>
+      <table><tr><th>${d.group_by}</th><th>rows</th><th>‖g‖</th><th>cos→total</th></tr>`;
+    for (const g of e.groups) {
+      h += `<tr><td>${g.key}</td><td>${g.rows}</td><td>${fmt(g.grad_norm)}</td>
+        <td>${g.cos_to_total===null?'—':fmt(g.cos_to_total)}</td></tr>`;
+    }
+    h += '</table>';
+  }
+  h += `<h4>alpha group contributions <span class="dim">sum=${fmt(d.alpha.total_grad)}</span></h4>
+    <pre>${JSON.stringify(d.alpha.groups,null,1)}</pre>`;
+  document.getElementById('gradout').innerHTML = h;
+}
+
+async function dAttr() {
+  const d = await dumpApi('attribute&group_by=collection_round');
+  let h = `<h4>provenance × contribution <span class="dim">group_by=collection_round</span></h4>
+    <table><tr><th>round</th><th>rows</th><th>share</th>
+    ${Object.keys(d.groups[0]?.critic_loss_share||{}).map(c=>`<th>loss·${c}</th>`).join('')}
+    <th>actor_share</th></tr>`;
+  for (const g of d.groups) {
+    h += `<tr><td>${g.key}</td><td>${g.rows}</td><td>${fmt(g.batch_share)}</td>` +
+      Object.values(g.critic_loss_share).map(v=>`<td>${v===null?'—':fmt(v)}</td>`).join('') +
+      `<td>${g.actor_objective_share===null?'—':fmt(g.actor_objective_share)}</td></tr>`;
+  }
+  document.getElementById('dws').innerHTML = h + '</table>';
+}
+
 loadRuns();
 setInterval(loadRuns, 60000);
 </script>

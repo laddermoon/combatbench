@@ -93,6 +93,41 @@ def _dispatch(root: Path, path: str, q: Dict[str, list]) -> Any:
         )
     if path == "/api/dump/recompute":
         return recompute_dump(_resolve_dump(root, q))
+    if path == "/api/dump/attribute":
+        return analysis.batch_attribution(
+            _resolve_dump(root, q),
+            group_by=_opt("group_by", "collection_round"),
+        )
+    if path == "/api/dump/decomp":
+        return analysis.objective_decomp(
+            _resolve_dump(root, q),
+            sample_id=(
+                int(_opt("sample_id")) if _opt("sample_id") else None
+            ),
+        )
+    if path == "/api/dump/drift":
+        return analysis.policy_drift(_resolve_dump(root, q))
+    if path == "/api/dump/grad-attr":
+        return analysis.grad_attribution(
+            _resolve_dump(root, q),
+            group_by=_opt("group_by", "collection_round"),
+        )
+    if path == "/api/run/slice-ctx":
+        # resolves the run's newest checkpoint replay.pt by default;
+        # an explicit replay= path overrides
+        target = (
+            Path(_opt("replay"))
+            if _opt("replay")
+            else _resolve_run(root, _opt("name"))
+        )
+        return analysis.slice_context(
+            target,
+            source_key=_opt("source_key"),
+            slice_id=_opt("slice_id"),
+            sample_id=(
+                int(_opt("sample_id")) if _opt("sample_id") else None
+            ),
+        )
     if path == "/api/catalog":
         return analysis.metric_catalog(prefix=_opt("prefix"))
     raise KeyError(f"unknown endpoint {path!r}")

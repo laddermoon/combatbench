@@ -189,7 +189,16 @@ $DK serve baseline/runs --port 8766 --host 0.0.0.0
       # 只读 JSON API + HTML viewer（http://<host>:8766/）
 ```
 
-浏览器 viewer：run 列表、指标曲线、dump inspect/样本/trace、eval 视频直接播放。API 端点见 `debugserver.py` 头注释。
+浏览器 viewer（R2-4 重构为六工作区 SPA）：run 侧 `dashboard`（指标多选叠加，
+ctrl 多键同图，x 轴 env_step/critic_tick 可切）+ `replay`（人口学 + slice-ctx
+查询器）；runs 侧 checkbox → `compare`（多 run 同图叠加）；dump 侧七页签按
+计算链组织：inspect → samples（行内 trace/decomp/slice-ctx 三级钻取）→
+target/critic（目标三分解+通道梯度范数）→ actor/temp（actor 项分解+α）→
+drift（pre/post 固定输入漂移）→ grad-attr（分组梯度归因，按需重算）→
+attribution（来源×贡献联合分布）。缺数据显式标 `—`，不补零。
+API：`/api/dump/{inspect,samples,trace,recompute,attribute,decomp,drift,grad-attr}`、
+`/api/run/{metrics,replay,dumps,slice-ctx}`、`/api/{runs,catalog}`——全部与
+CLI 共用 `analysis` 层。
 
 ---
 

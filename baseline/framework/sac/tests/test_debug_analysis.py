@@ -552,6 +552,26 @@ def test_http_server_endpoints_share_analysis_layer(tmp_path):
         assert ins["batch"]["size"] == 16
         tr = get(f"/api/dump/trace?path={dump_dir}&sample_id=3")
         assert tr["sample_id"] == 3
+        # R2-W40: the deep-diagnostic endpoints share the analysis layer
+        att = get(f"/api/dump/attribute?path={dump_dir}")
+        assert att["n_rows"] == 16 and att["groups"]
+        dec = get(f"/api/dump/decomp?path={dump_dir}")
+        assert dec["check"]["target_max_abs_err"] < 1e-4
+        dri = get(f"/api/dump/drift?path={dump_dir}")
+        assert dri["det_action_drift"]["l2_mean"] > 0
+        gra = get(f"/api/dump/grad-attr?path={dump_dir}")
+        assert {t["term"] for t in gra["actor"]["terms"]} == {
+            "q", "entropy", "reg",
+        }
+        ckpt = sorted((run_dir / "checkpoints").iterdir())[-1]
+        rstate = torch.load(
+            ckpt / "replay.pt", map_location="cpu", weights_only=False,
+        )
+        live_id = int(
+            (rstate["sample_ids"][rstate["sample_ids"] >= 0])[0]
+        )
+        sctx = get(f"/api/run/slice-ctx?name=run&sample_id={live_id}")
+        assert sctx["live_count"] > 0 and sctx["slice_id"]
         cat = get("/api/catalog?prefix=actor.")
         assert all(s["name"].startswith("actor.") for s in cat)
         with pytest.raises(HTTPError) as exc:

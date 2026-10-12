@@ -3011,6 +3011,61 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.15 R2-4 结论：Debug 前端六工作区落地
+
+- **R2-W40 API**：新增 `/api/dump/{attribute,decomp,drift,grad-attr}`
+  与 `/api/run/slice-ctx`（默认解析 run 最新 checkpoint replay.pt，
+  可 `replay=` 覆盖）；全部经 `analysis` 层，HTTP 端点测试已扩展
+  覆盖全部新端点。
+- **R2-W41 viewer 重构**：`sac_viewer.html` 147→426 行六工作区
+  SPA（无构建、单文件风格延续）——dashboard（ctrl 多键指标叠加、
+  x 轴 env_step/critic_tick 切换）、compare（runs checkbox → 多 run
+  同图）、replay（人口学+slice-ctx 查询）、dump 七页签按计算链
+  （inspect/samples/target/actor/drift/grad-attr/attribution），
+  samples 行内 trace→decomp→slice-ctx 三级钻取链——"异常曲线→
+  更新→样本→target/梯度贡献→来源上下文→前后行为"操作链可执行。
+  `node --check` 语法通过、实服务 smoke 通过。
+- **边界如实声明**：episode 逐帧渲染回放仍未做（无持久化帧数据），
+  slice-ctx 为序列级上下文上限；grad-attr 保持按需触发（前端明示
+  成本）；缺数据显示 `—`。
+- **测试**：HTTP 端点测试扩展覆盖全部新端点；SAC suite **225 passed**
+  （无新测试函数，既有端点测试扩展断言）。
+
+## R2.15a R2-4 细计划：Debug 前端深度
+
+**目标**（PLAN R2-4 出口）：完成一条实际诊断操作链——"从异常曲线
+进入更新 → 找到异常样本 → 查看 target/梯度贡献 → 回到来源上下文
+→ 对照更新前后行为"；CLI/HTTP/前端共用 analysis 层，缺数据显式标
+不可用。
+
+**现状核查**：sac_viewer.html 仅 147 行（runs 列表 → 指标线图 +
+dump inspect/samples/trace 的 JSON 展示）；R2-3 五个新分析器
+（attribute/decomp/drift/grad-attr/slice-ctx）无 HTTP 端点；无
+compare、无 replay 工作区、无工作区化组织。
+
+**对照 PPO 深度裁决（SAC 原生取舍）**：
+
+- **做**：六工作区单页 SPA（无构建步骤，延续单文件风格）——
+  ①Runs/Compare（多 run 指标叠加曲线，x 轴 env_step/critic_tick 可切）
+  ②Run 仪表（指标多选叠加、dump 列表、eval 视频）
+  ③Replay（replay_report 全景 + slice-ctx 查询器）
+  ④Target/Critic（decomp 目标分解 + 分通道 TD/Q + 梯度范数）
+  ⑤Actor/Temperature（decomp actor 项 + drift + grad-attr 项分解）
+  ⑥Update/Drift（drift 面板 + grad-attr 面板 + param_delta）。
+  样本→trace→slice-ctx→drift 的链式跳转按钮贯穿。
+- **不做**：episode 逐帧渲染回放（无持久化帧数据，不在本阶段建采集
+  管线——slice-ctx 提供序列级上下文已是当前诚实边界）；在线 attach
+  （R2-1 已定边界为 sentinel/停机语义）；gradsig 式逐样本 full-grad
+  （R2-W33 已定分组粒度为限）。
+
+**工作包**：
+
+| 包 | 内容 | 测试 |
+|---|---|---|
+| `R2-W40` | API：/api/dump/{attribute,decomp,drift,grad-attr,slice-ctx}（slice-ctx 默认解析 run 最新 checkpoint 的 replay.pt）；全部走 analysis 层 | HTTP 端点测试扩展现有 test_http_server_endpoints |
+| `R2-W41` | viewer 重构为六工作区 SPA + compare 多 run 叠加 + 链式跳转 | 静态检查（无浏览器测试基建）；人检 |
+| `R2-W42` | 文档（GUIDE §7 viewer 段、PLAYBOOK 入口表、矩阵）、登记、收口 | 全量回归 |
+
 ## R2.14 R2-3 结论：计算链深度诊断落地
 
 - **R2-W30 梯度动力学捕获**：per-channel critic grad norm（取
