@@ -3011,6 +3011,44 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.13a R2-3 细计划：SAC 计算链深度诊断
+
+**目标**（PLAN R2-3 出口）：对一个异常更新能回答"哪些样本、来自哪个
+行为版本、经哪个 target/通道/正则项、形成什么梯度、把策略推向哪里"；
+诊断开关不改变训练结果。
+
+**上下文核查结论**（调研已完成）：
+
+- dump 数据已富：batch.pt 含 metadata（collection_round/policy_fingerprint/
+  explore_factor/random_start）、draw_counts、source_keys；forward.pt 含
+  per-channel cand-Q、pair index、integ_w、logπ、reg_next/reg_actor、
+  冻结 u_next/u_actor。pre/post trainer state 全量。
+- **梯度数据全缺**：`clip_grad_norm_` 返回值 critic 每通道丢弃、alpha
+  未测；无任何 per-sample/per-group 梯度归因。
+- recompute 已用捕获 u 复原候选——U 模式全覆盖只差套
+  `_state_regularizer`（trainer 内部函数，允许诊断侧复用同一语义）。
+- source_key 前缀 `{run}/r{round}/j{job}/{agent}/e{seed}/f{frame}` 可
+  定位同 slice；live replay（checkpoint 内 replay.pt）可重建邻居序列。
+- param_delta 已递归；PPO 参照物：gradsig（逐样本梯度信号分布）、
+  delta（跨代策略漂移）、trace（跨阶段单帧溯源）。
+
+**工作包**：
+
+| 包 | 内容 | 关键测试 |
+|---|---|---|
+| `R2-W30` | 梯度动力学捕获：per-channel critic grad norm（取 clip 返回值，零成本）+ clip_applied + alpha grad norm + actor 已有；入 forward capture 与 stats | capture on/off 逐位一致（诊断不改变训练） |
+| `R2-W31` | 样本归因 `batch_attribution`：按 collection_round/policy_fingerprint/explore/random_start 分组 × {count, 分通道 critic loss share(mask·td²/Σ), |td|, actor objective share} | 分组和=batch 行数；share 合计=1 |
+| `R2-W32` | 目标分解 `objective_decomp`：per-sample/通道 target=r·scale+γ·b·v_c 拆成 reward/softQ/正则三部；actor 目标拆成 分通道加权Q+α·logπ̄+reg；trace 增补分解字段 | 分解各部相加=target/objective（容差内） |
+| `R2-W33` | 分组梯度分解 `grad_attribution`（重型按需，不进训练路径）：重建 pre-state actor/critic，带 grad 重算，按 {term: actor的Q/entropy/reg} × {来源组} 分组 autograd.grad → 每组梯度范数+与总梯度 cosine | 分组范数平方和≈总范数²（正交分组时）；小 batch 数值自洽 |
+| `R2-W34` | 固定输入漂移 `policy_drift`：pre/post actor det-action 与 logπ 在 batch obs 上漂移；pre/post critic Q 在 (s,a) 与 (s,π(s)) 漂移；alpha 位移 | 全零训练（post=pre）时漂移=0 |
+| `R2-W35` | recompute U 模式全覆盖：u_bonus/u_floor 的 target/actor/alpha 重算，复用 `_state_regularizer`+捕获 u；coverage→full | 构造 u 模式 dump 重算 passed=True |
+| `R2-W36` | slice 上下文重建 `slice_context`：扫 checkpoint replay.pt 同 slice_id live 样本→有序帧序列+逐出统计 | 构造 replay 态验证序列连续性 |
+| `R2-W37` | 登记：catalog 新键、DEBUG_PLAYBOOK 新工作流、GUIDE、矩阵、DECISIONS | — |
+
+**边界**：梯度归因全部走"重建+autograd.grad"离线路径，训练路径只
+加零成本标量捕获；不做 per-sample 逐样本 full-gradient（成本不可行），
+分组粒度=来源组；帧级 env 重放一致性不在本阶段（R2-4 渲染链时再议）。
+
 ## R2.12 R2-W20~W22 结论：契约接线 + round 调度通道
 
 **R2-W20 critic 契约**：`ExperimentSAC.build_critic(obs_dim, action_dim,
