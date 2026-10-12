@@ -10,13 +10,16 @@ Two new channels driven by the same reactive arm state machine:
 
   r_left_punch_speed / r_right_punch_speed
       reward = hand SPEED TOWARD the opponent head (m/s, signed,
-               unbounded): v_hand · dir(hand→opp_head), paid on every
-               frame of a READY run that ENDS IN A COMPLETED PUNCH
-               (elbow crosses extend_threshold).  Swings that never
-               complete — including fast wave-without-punch farming —
-               score zero.  Own velocity only; the opponent's motion
+               unbounded): v_hand · dir(hand→opp_head), paid only on
+               frames where the elbow is ACTIVELY EXTENDING inside a
+               READY run that ends in a completed punch.  Two gates
+               stack: (a) the run must complete — wave-without-punch
+               farms nothing; (b) within the run only true extension
+               strokes pay — integrating signed speed over the whole
+               run would reward net displacement (slow drifts) rather
+               than speed.  Own velocity only; the opponent's motion
                is excluded.
-      aw     = +SPEED_WEIGHT × φ² on those swing frames, else 0.
+      aw     = +SPEED_WEIGHT × φ² on those strike frames, else 0.
 
 The world-frame hand velocity means the whole kinetic chain pays: arm
 swing + body lunge.  The retained hand_dist channels (shoulder-
@@ -68,6 +71,7 @@ def _completed_swing_mask(
         return mask
     state = _RETRACT if float(elbow[0]) <= extend_threshold else _READY
     run_start = 0 if state == _READY else -1
+    prev_e = float(elbow[0])
     for t in range(T):
         e = float(elbow[t])
         if state == _READY and e <= extend_threshold:
@@ -78,7 +82,14 @@ def _completed_swing_mask(
         elif state == _RETRACT and e >= flex_threshold:
             state = _READY
             run_start = t
-    return mask
+        prev_e = e
+    # Keep only actively-extending frames: elbow_norm decreasing means
+    # the arm is mid-strike — paying speed there rewards the strike's
+    # power rather than slow drift displacement.
+    extending = np.zeros(T, dtype=bool)
+    de = np.diff(elbow.astype(np.float64))
+    extending[1:] = de < 0.0
+    return mask & extending
 
 
 class PunchPowerStep(AttackPrepStep):
