@@ -9,16 +9,15 @@ but the new signal rewards raw fist speed toward the opponent's head.
 Two new channels driven by the same reactive arm state machine:
 
   r_left_punch_speed / r_right_punch_speed
-      reward = hand SPEED TOWARD the opponent head (m/s, signed,
-               unbounded): v_hand · dir(hand→opp_head), paid only on
-               frames where the elbow is ACTIVELY EXTENDING inside a
-               READY run that ends in a completed punch.  Two gates
-               stack: (a) the run must complete — wave-without-punch
-               farms nothing; (b) within the run only true extension
-               strokes pay — integrating signed speed over the whole
-               run would reward net displacement (slow drifts) rather
-               than speed.  Own velocity only; the opponent's motion
-               is excluded.
+      reward = max(0, v_hand · dir(hand→opp_head)) — positive hand
+               speed toward the opponent head (m/s, unbounded), paid
+               only on frames where the elbow is ACTIVELY EXTENDING
+               inside a READY run that ends in a completed punch.
+               Positive-only: a wind-up dip or recoil inside the swing
+               earns zero instead of a penalty — with the signed
+               version, negative-speed extension frames suppressed the
+               punching action itself (punches fell as W rose).
+               Own velocity only; the opponent's motion is excluded.
       aw     = +SPEED_WEIGHT × φ² on those strike frames, else 0.
 
 The world-frame hand velocity means the whole kinetic chain pays: arm
@@ -217,12 +216,14 @@ class PunchPowerStep(AttackPrepStep):
             T = t.obs.shape[0]
             ref = t.channels["r_fall"]
             t.channels["r_left_punch_speed"] = ChannelData(
-                reward=np.asarray(l_cs[:T], dtype=np.float32),
+                reward=np.maximum(
+                    np.asarray(l_cs[:T], dtype=np.float32), 0.0),
                 is_terminated=ref.is_terminated,
                 actor_weight=w_ls[:T],
             )
             t.channels["r_right_punch_speed"] = ChannelData(
-                reward=np.asarray(r_cs[:T], dtype=np.float32),
+                reward=np.maximum(
+                    np.asarray(r_cs[:T], dtype=np.float32), 0.0),
                 is_terminated=ref.is_terminated,
                 actor_weight=w_rs[:T],
             )
