@@ -11,6 +11,13 @@ Outputs eight raw physical quantities per step (no state-machine logic):
 
   Opponent head to own left / right shoulder 3D distance (meters, unnormalized)
 
+  Left / right hand→opponent-head CLOSING SPEED (m/s, signed):
+    -d(hand→opp_head dist)/dt — how fast the fist is closing on the
+    target.  World-frame speed projected onto the target direction:
+    arm swing AND body lunge both count (real punches are a kinetic
+    chain).  Positive = approaching.  Unbounded — the punch_power
+    stage's "as hard as possible" signal.
+
 The experiment's post-hoc state machine (``arm_state_machine.py``) consumes
 these to produce per-step actor weights for four reward channels
 (``r_left_elbow``, ``r_right_elbow``, ``r_left_hand_dist``,
@@ -46,11 +53,20 @@ class ArmStateObserver(BaseObserverPlugin):
       right_hand_to_shoulder   — 3D distance, right hand → right shoulder (m)
       opp_head_to_left_shoulder  — 3D distance, opponent head → left shoulder (m)
       opp_head_to_right_shoulder — 3D distance, opponent head → right shoulder (m)
+      left_hand_closing_speed    — -d(hand→opp_head)/dt, m/s, signed
+      right_hand_closing_speed   — same for right hand
     """
 
-    def __init__(self, agent_id: str = "robot_a") -> None:
+    def __init__(
+        self,
+        agent_id: str = "robot_a",
+        action_dt: float = 0.05,
+    ) -> None:
         self.agent_id = str(agent_id)
         self.opp_id = "robot_b" if self.agent_id == "robot_a" else "robot_a"
+        # Action-step period for the finite-difference speed estimate:
+        # phy_steps_per_action (25) × phy dt (0.002 s) = 0.05 s.
+        self.action_dt = float(action_dt)
 
         self._left_elbow: float = 0.0
         self._right_elbow: float = 0.0
@@ -60,6 +76,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._right_hand_shoulder: float = 0.0
         self._opp_head_left_shoulder: float = 0.0
         self._opp_head_right_shoulder: float = 0.0
+        self._prev_lh_dist: float | None = None
+        self._prev_rh_dist: float | None = None
+        self._left_closing_speed: float = 0.0
+        self._right_closing_speed: float = 0.0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -74,6 +94,10 @@ class ArmStateObserver(BaseObserverPlugin):
         self._right_hand_shoulder = 0.0
         self._opp_head_left_shoulder = 0.0
         self._opp_head_right_shoulder = 0.0
+        self._prev_lh_dist = None
+        self._prev_rh_dist = None
+        self._left_closing_speed = 0.0
+        self._right_closing_speed = 0.0
 
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         # --- Joint angles from core_state ---
@@ -121,12 +145,33 @@ class ArmStateObserver(BaseObserverPlugin):
         if hand_left is None or hand_right is None or opp_head is None:
             self._left_hand_opp_head = 0.0
             self._right_hand_opp_head = 0.0
+            self._left_closing_speed = 0.0
+            self._right_closing_speed = 0.0
+            self._prev_lh_dist = None
+            self._prev_rh_dist = None
         else:
             hl = np.asarray(hand_left, dtype=np.float64)
             hr = np.asarray(hand_right, dtype=np.float64)
             oh = np.asarray(opp_head, dtype=np.float64)
             self._left_hand_opp_head = float(np.linalg.norm(hl - oh))
             self._right_hand_opp_head = float(np.linalg.norm(hr - oh))
+            # Closing speed: -Δ(hand→opp_head dist)/Δt.  Equivalent to the
+            # hand's world velocity projected onto the target direction —
+            # the whole kinetic chain (swing + body lunge) counts.
+            if self._prev_lh_dist is None:
+                self._left_closing_speed = 0.0
+                self._right_closing_speed = 0.0
+            else:
+                self._left_closing_speed = (
+                    -(self._left_hand_opp_head - self._prev_lh_dist)
+                    / self.action_dt
+                )
+                self._right_closing_speed = (
+                    -(self._right_hand_opp_head - self._prev_rh_dist)
+                    / self.action_dt
+                )
+            self._prev_lh_dist = self._left_hand_opp_head
+            self._prev_rh_dist = self._right_hand_opp_head
 
         if hand_left is None or shoulder_left is None:
             self._left_hand_shoulder = 0.0
@@ -170,10 +215,12 @@ class ArmStateObserver(BaseObserverPlugin):
             "right_hand_to_shoulder": self._right_hand_shoulder,
             "opp_head_to_left_shoulder": self._opp_head_left_shoulder,
             "opp_head_to_right_shoulder": self._opp_head_right_shoulder,
+            "left_hand_closing_speed": self._left_closing_speed,
+            "right_hand_closing_speed": self._right_closing_speed,
         }
 
     def to_blueprint(self) -> Dict[str, Any]:
-        return {"agent_id": self.agent_id}
+        return {"agent_id": self.agent_id, "action_dt": self.action_dt}
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "ArmStateObserver":
