@@ -368,3 +368,8 @@ M0–M6 已由 D-DOC-1 标"历史｜取代者 E 路线"。**唯一缺口 E6_PLAN
 系统成果文档：SAC 原生设计（TaggedReplay source_key 溯源/env_step
 时钟/逐channel twin-Q）、诊断体系对齐 PPO、正确性分层、uncertainty
 路线 A4、复制后适配边界；诚实标注基线 #7 未开始。
+
+**ACH-8** 指导层枢纽建于研究侧私有目录
+（combatbench-research `workspace/experiment/README.md`，提交至
+mono 仓）——按用户决定，公开仓暂不加任何指路，待指导内容成熟后
+再开放。公开仓内用法文档（GUIDE/POLICY_SELECTION 等）原地保留。
