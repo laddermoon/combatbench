@@ -2844,6 +2844,99 @@ SAC suite 192 passed。
 
 **测试**（3 新增）：嵌套 critic delta 非零+by_key 分解；u_bonus dump 的 recompute `status=partial` 且 Shannon 键不出现于 recomputed；catalog spec 与真实键对齐断言。**SAC suite 202 passed。**
 
+## R2.5 R2-W04 结论：能力支持矩阵 + 文档校准（G5 文档侧）
+
+**矩阵为后续阶段的真值源**：凡本表未列或标注非"已支持"的字段/能力，
+不得在文档或验收中声称可用；后续工作包改变某一状态时必须同步本表。
+
+### A. 学习/优化旋钮（`SACParams`）
+
+| 字段 | 状态 | 证据/备注 |
+|---|---|---|
+| `learning_rate` / `critic_learning_rate` / `alpha_lr` | 已支持 | R2-W02 起 resume 时新 config 值生效（动量保留、LR 对齐） |
+| `grad_clip_norm` | 已支持 | trainer 梯度裁剪路径 + 测试覆盖 |
+| `batch_size` / `warmup_steps` / `replay_buffer_size` | 已支持 | R2-W01 起 intlike 校验 |
+| `utd_ratio` / `max_grad_steps_per_round` | 已支持 | utd_credit 滚动/round 封顶，resume 白名单生效 |
+| `tau` | 已支持 | target 软更新/冻结语义经测试覆盖 |
+| `init_alpha` / `auto_alpha` / `target_entropy` / `log_alpha_min/max` | 已支持 | 固定 α 与自动 α 两路径均有训练证据 |
+| `q_hidden_dim` / `q_layer_norm` | 已支持 | balance 训练证据（LayerNorm 为防 Q 发散关键开关） |
+| `reward_scale` / `expectation_samples` | 已支持 | — |
+| `use_grad_norm` | **预留/未实现** | 构造期拒绝 True；`grad_norm_est_interval`/`grad_norm_ema_decay` 同属预留（校验但不生效） |
+| `regularizer_mode="shannon"` | 已支持 | 全部训练证据 |
+| `regularizer_mode="u_bonus"/"u_floor"` + `reg_lambda`/`u_floor`/`u_kind` | **实验性** | 数值路径+域校验存在；无训练级验证；recompute 覆盖不完整（R2-W03 显式标注，完整重算列 R2-3）；与 auto-alpha 组合限制见 trainer 校验 |
+
+### B. 通道级配置（`SACRewardChannel`）
+
+| 字段 | 状态 | 证据/备注 |
+|---|---|---|
+| `name` / `gamma` | 已支持 | 多通道独立 gamma 有效 |
+| `n_critics` / `in_target_min` | 域校验存在但**仅 =2 可用** | trainer 对 `!=2` fail-loud；非 twin-Q 未实现 |
+| `n_step` | 域校验存在但**仅 =1 可用** | trainer 对 `!=1` fail-loud；多步 return 未实现 |
+| `trunk_group` | 已支持 | 按 gamma 分组的 critic trunk 结构 |
+| `actor_weight_share` | **预留/死字段** | R2-W04 核实无任何消费方；actor 影响由 trajectory `actor_weight` 控制；docstring 已改写（R2-2 决定是否接线或删除） |
+
+### C. 数据契约
+
+| 项 | 状态 | 证据/备注 |
+|---|---|---|
+| `DataSource(kind="self")` | 已支持 | 唯一被 loop 接受的来源 |
+| `DataSource` 其他 kind（opponent/pool/scripted） | **未支持** | 枚举合法但 loop 构造期 fail-loud；`sampling_share` 仅随 self 生效 |
+| `ReplayPlan.stratify_by` / `freshness_weight>0` / `min_per_stratum` | **未支持** | 构造期域校验通过，replay 层对非默认值 fail-loud；分层/新鲜度采样未实现 |
+| `TrajectorySlice.tags` / `reward_features` | 已支持（仅元数据） | 随样本存储可溯源，但不参与任何采样/重标逻辑 |
+| `TrajectorySlice.actor_weight` | 已支持 | 逐通道 actor 权重，课程/掩码的实际控制点 |
+| replay 持久化/恢复 | 已支持 | `sac_replay_v2`，分段恢复逐位一致（P7 证据+R2-W02 补强） |
+
+### D. 实验层旋钮（`experiments_sac/base.py`）
+
+| 字段 | 状态 | 证据/备注 |
+|---|---|---|
+| `actor_arch`（`legacy_tanh` + TN 八格 `s00…m11`） | 已支持 | 八格全部可构造；s01/m11 有训练级证据，其余六格仅构造级 |
+| `actor_n_components` / `init_log_std` / `log_std_min/max` / `actor_hidden_dim` | 已支持 | — |
+| `behavior_explore` / `random_start_transitions` | 已支持 | 训练 run 使用 |
+| `episodes_per_update` / `max_env_steps` / `eval_interval` / `eval_episodes` / `video_eval_interval` / `rollout_workers` / `seed` | 已支持 | — |
+| `actor_blueprint` | **预留/死字段** | 声明无消费方（导出路径不读它）；R2-2 决定语义（删除或接入策略导出契约） |
+| `build_q_critic()` | **声明式契约，未接线** | loop 直接实例化 `MultiHeadQCritic`；列为 R2-2 设计项，不在本阶段修 |
+
+### E. CLI / 运行控制
+
+| 选项 | 状态 | 证据/备注 |
+|---|---|---|
+| `--experiment/--algo sac/--smoke/--background/--run-name/--run-dir/--no-snapshot/--list-experiments/--seed` | 已支持 | `--seed` 覆盖 `experiment.seed` |
+| `--resume-from` / `--config-lock` / `--reset-update` | 已支持 | R2-W02 起 config_lock 语义对称可证 |
+| `--dump-at` / `--dump-hypothesis` | 已支持（语义为 **critic tick**，非 PPO update） | 调度写入 request.json，dump v3 |
+| `--param` / `--dump-full-grad` / `--no-confidence` / `--adv-*` / `--dual-clip-*` / `--collector*` | **SAC 明确拒绝** | `train.py::_reject_ppo_only_options_for_sac` SystemExit fail-loud，非静默忽略（R2-W04 核实代码在案） |
+
+### F. Debug / 诊断
+
+| 能力 | 状态 | 证据/备注 |
+|---|---|---|
+| `debugkit` 全部子命令（`runs`/`run`/`series`/`summary`/`recompute`/`inspect`/`find-sample`/`catalog`/`samples`/`trace`/`replay`/`query`/`dump`/`serve`） | 已支持 | DEBUG_PLAYBOOK 各流程有测试 |
+| `recompute_dump` shannon 路径 | 已支持 | 完整重算 |
+| `recompute_dump` u_bonus/u_floor | **部分覆盖** | mode 无关字段照常对比；mode 依赖字段显式列 `unsupported_keys`（R2-W03）；完整重算列 R2-3 |
+| `analysis.param_delta` | 已支持 | R2-W03 起递归嵌套统计 |
+| `metric_catalog` | 已支持 | R2-W03 与真实 events.jsonl 对齐 |
+| `diagnostics` tick ring / debug_server 只读 API | 已支持 | — |
+
+### G. 导出 / 交付
+
+| 能力 | 状态 | 证据/备注 |
+|---|---|---|
+| checkpoint 原子写入 + manifest + hash | 已支持 | `sac_checkpoint_v1`；`_newest_checkpoint` 跳过半成品 |
+| `policy/` blueprint 导出（`tn_kernel_v1`） | 已支持但**依赖仓库内部 `TNRuntimePolicy`** | 非自包含，迁移到独立环境不可用——R2-5 缺口 |
+| held-out eval 工具 | 已支持 | `held_out_eval.py`，每 episode 结果+seed 记录 |
+
+### H. 文档校准（本包已修）
+
+- `README.md`：删"action-gradient 归一化是主机制/GradNormStats"失实表述，改为"加权 Q 求和为已实现机制、归一化预留未实现"；`n-step return` 声明补"当前仅 n_step=1"；
+- `GUIDE.md`：`use_grad_norm` 行改为预留未实现（附两个配套预留字段说明）；
+- `IMPLEMENTATION_SUMMARY.md`：整体过期（描述未实现的 V2 MVP 设计），加 SUPERSEDED 声明指向当前真值文档；
+- `experiment.py`：`actor_weight_share` docstring 改为 RESERVED 实述。
+
+### 遗留说明
+
+- `--param`/`--dump-full-grad` 曾在调研笔记中被记为"SAC 静默忽略"，R2-W04 核实 `train.py` 已有 `_reject_ppo_only_options_for_sac` 显式拒绝——非缺陷，登记纠正；
+- `build_q_critic()` 未接线、`actor_blueprint` 死字段、u_mode recompute 覆盖、策略导出非自包含——分别列入 R2-2/R2-3/R2-5，不在本阶段边界内。
+
 ---
 
 ---

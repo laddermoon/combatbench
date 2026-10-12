@@ -74,11 +74,10 @@ class SACRewardChannel:
             Channels with the same ``trunk_group`` share a trunk
             network with per-channel heads. If None, auto-groups by
             ``gamma``.
-        actor_weight_share: If True (default), this channel
-            participates in the action-gradient normalization that
-            balances per-channel influence on the policy. If False,
-            the channel's Q is trained but does not influence the
-            actor (equivalent to actor_weight=0 everywhere).
+        actor_weight_share: RESERVED — currently unused. Intended to
+            gate whether this channel's Q influences the actor; today
+            actor influence is controlled only by ``actor_weight`` in
+            trajectory slices. Do not rely on it until R2-2 wires it.
     """
 
     name: str

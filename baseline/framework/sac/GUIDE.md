@@ -133,7 +133,7 @@ config fingerprint 默认校验：除 `RESUME_ALLOWED_OVERRIDES`（lr/critic_lr/
 | `reward_scale` | 1.0 | 全局 reward 缩放（小 per-step reward 任务需要放大，但过大会加大 TD） |
 | `expectation_samples` | 1 | actor/target 期望的枚举样本数 |
 | `regularizer_mode` | "shannon" | `u_bonus`/`u_floor` 为不确定性正则路线（需 actor 提供 uncertainty；不与 auto-alpha 叠加） |
-| `use_grad_norm` | False | per-channel actor 梯度归一化（多 channel 权重均衡） |
+| `use_grad_norm` | False | **预留未实现**——置 True 构造期拒绝；`grad_norm_est_interval`/`grad_norm_ema_decay` 为配套的预留字段，验证但不生效 |
 
 实验层旋钮（写进 `config.json` 的 `knobs`）：`actor_arch`（s00/s01/s10/s11/m00/m01/m10/m11）、`actor_hidden_dim`、`actor_n_components`、`behavior_explore`（探索放大）、`random_start_transitions`（开局随机动作填充）。
 

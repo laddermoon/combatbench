@@ -9,14 +9,16 @@ loss"。MVP 已实现并验证（`IMPLEMENTATION_SUMMARY.md`）。
 ## 🏆 这项成果的价值
 
 - **SAC 原生而非移植**：off-policy 机制按 SAC 的需求建——
-  `TaggedReplay`（轨迹连续存储、逐 channel 奖励、n-step return、
+  `TaggedReplay`（轨迹连续存储、逐 channel 奖励、
   `source_key` 全链路溯源 run→round→job→episode→frame）、
   env_step 时钟（eval/checkpoint 按环境步调度，与 UTD 无关）、
-  逐 channel TD target。回放样本可溯源是它的调试原语。
+  逐 channel TD target（当前仅支持 n_step=1，多步 return 未实现）。
+  回放样本可溯源是它的调试原语。
 - **多 critic 用 SAC 自己的方式**：每 channel 独立 twin-Q + 独立
   gamma + actor 门控/权重 + clipped double-Q + 自动温度——不是把
-  PPO 的 advantage 归一化搬过来；action-gradient 归一化是主机制，
-  `GradNormStats` 记录逐通道梯度占比供诊断。
+  PPO 的 advantage 归一化搬过来。actor loss 用加权 Q 求和
+  （`Σ w_c·min(Q1,Q2)`）；action-gradient 归一化是**预留未实现**
+  的机制（`use_grad_norm=True` 构造期拒绝），不作为当前卖点。
 - **诊断体系对齐 PPO 深度**：自有 `debugkit`/`debugserver`/
   `diagnostics`/`metric_catalog`/`DEBUG_PLAYBOOK`；训练中写哨兵
   文件即可在下一个 critic tick 捕获完整截面（按需 dump，非常驻开销）。

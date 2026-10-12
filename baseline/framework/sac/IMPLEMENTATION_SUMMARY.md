@@ -2,6 +2,14 @@
 
 > 类型：产物
 
+> **⚠ SUPERSEDED / 过期声明**：本文描述的是早期 SAC V2 MVP 的设计与
+> 验证记录，**不是当前实现的事实来源**。其中 action-gradient
+> normalization（GradNormStats、per-channel gradient share）在本轮
+> 框架中**未实现**（`use_grad_norm` 构造期拒绝，字段标记为预留），
+> relabel/分层 replay 等也仍是未实现方向。
+> 当前实现的真实状态以 [GUIDE.md](GUIDE.md)、[PLAN.md](PLAN.md)、
+> [DECISIONS.md](DECISIONS.md) 与 ARTIFACTS.md 为准。
+
 ## Overview
 
 This document summarizes the SAC V2 framework implementation, validation
