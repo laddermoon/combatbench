@@ -3011,6 +3011,31 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.16 R2-5 结论：策略身份绑定 + 逐 agent 评估证据
+
+- **R2-W50 `eval_episode_details`**：`ExperimentSAC` 新增可选钩子
+  （默认 `[]`）；standup 返回 per-agent
+  `{episode_seed, agent_id, max_pot, final_pot, max_stage, max_torso_h, success}`，
+  balance 返回 `{episode_seed, agent_id, termination_reason, survived}`。
+  聚合判据仍由 `on_eval` 单一产出，测试断言两侧分母与聚合一致。
+- **R2-W52 `policy/meta.json`**：loop 在 best 导出时原子写
+  `{kind:"best_of_run", env_step, collection_round, eval{...},
+  policy_fingerprint, written_unix}`——`policy/` 不再是匿名蓝图，
+  且 meta 先于 eval 事件落盘（沿用 R2-W10 耐久先于发布次序）。
+- **R2-W51 held_out_eval 重写**：`--policy <dir>` 直接评发布工件
+  （与 `--checkpoint` 互斥；相对路径解析到 run 下，读 meta.json 溯源
+  kind/fingerprint/eval_origin + model.pt sha256）；checkpoint 路径
+  记 `fingerprint`。报告新增 `policy` 身份块、`episode_seeds`、
+  `env_blueprint_hashes`、`denominator:"agents"` + 同局相关性注记、
+  `episode_details`、`code_version`——verdict 可逐 agent 复核。
+- **测试**（4 新增）：默认钩子空、standup/balance 明细行数与聚合一致、
+  meta.json 字段齐全。SAC suite **229 passed**。
+- **边界如实声明**：denominator 仍为 agents（判据口径不变，只声明
+  相关性）；`policy_exports/r*` 轮次导出仍无 meta（身份语义暂限
+  best-of-run 与 held-out 入口）；PPO 式完全独立推理代码（自包含
+  runtime policy 副本）未做——蓝图仍指仓库 `TNRuntimePolicy`，已记
+  为已知边界而非隐藏缺口。
+
 ## R2.16a R2-5 细计划：策略交付与评估证据
 
 **目标**（PLAN R2-5 出口）：评估报告、发布策略、checkpoint、视频指向

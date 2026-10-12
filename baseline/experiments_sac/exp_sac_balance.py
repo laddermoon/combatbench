@@ -257,6 +257,21 @@ class SacBalance(CombatExperimentSACBase):
             },
         }
 
+    def eval_episode_details(self, episodes: List[Any]) -> List[Dict[str, Any]]:
+        """Per-agent rows behind ``on_eval``'s survival denominator."""
+        rows: List[Dict[str, Any]] = []
+        for ep in episodes:
+            for aid in self._AGENT_IDS:
+                reason = ep.agent_termination_reason.get(aid, "")
+                rows.append({
+                    "episode_index": int(ep.episode_index),
+                    "episode_seed": int(ep.episode_seed),
+                    "agent_id": aid,
+                    "termination_reason": reason,
+                    "survived": not reason.startswith("imbalance"),
+                })
+        return rows
+
     def state(self) -> dict:
         return {
             "survival_rate": self._survival_rate,

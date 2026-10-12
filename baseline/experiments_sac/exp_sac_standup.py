@@ -174,6 +174,29 @@ class SacStandup(CombatExperimentSACBase):
             },
         }
 
+    def eval_episode_details(self, episodes: List[Any]) -> List[Dict[str, Any]]:
+        """Per-agent rows behind ``on_eval``'s success denominator."""
+        rows: List[Dict[str, Any]] = []
+        for ep in episodes:
+            if ep.num_frames == 0:
+                continue
+            for agent_id, obs_key in self._AGENT_OBS:
+                phi = extract_per_step_field(
+                    ep.observer_outputs, obs_key, "potential", ep.num_frames,
+                )
+                if phi is None or len(phi) == 0:
+                    continue
+                mx = float(np.max(phi))
+                rows.append({
+                    "episode_index": int(ep.episode_index),
+                    "episode_seed": int(ep.episode_seed),
+                    "agent_id": agent_id,
+                    "max_pot": round(mx, 3),
+                    "final_pot": round(float(phi[-1]), 3),
+                    "success": bool(mx >= 0.9),
+                })
+        return rows
+
     def state(self) -> dict:
         return {
             "best_potential": self._best_potential,

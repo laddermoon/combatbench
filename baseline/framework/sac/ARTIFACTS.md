@@ -33,6 +33,8 @@ Update this table whenever a schema is added or bumped.
 | Eval videos | `runs/<run>/videos/s<env_step>.mp4` | filename encodes env_step; served by `debugserver /videos/` |
 | Dump request sentinel | `runs/<run>/dump_request.json` | `{critic_tick, hypothesis}`; consumed and deleted by the loop |
 | Terminal record | `runs/<run>/run_terminal.json` | `{status, reason, env_step, agent_transition, critic_tick, collection_round, final_checkpoint, stopped_at_unix}`; written on every exit path (completed/signal_stop/experiment_stop/diverged/error); paired `terminal` event in `sac_metrics_v1` (context carries status/reason/final_checkpoint) |
+| Best-policy identity | `runs/<run>/policy/meta.json` | R2-W52: `{kind:"best_of_run", env_step, collection_round, eval{...}, policy_fingerprint, written_unix}`; written durably with each best export — `policy/` is no longer an anonymous blueprint |
+| Held-out eval report | `runs/<run>/held_out_eval.json` | `held_out_eval.py` output: `{run, experiment, policy{kind,artifact,fingerprint,model_sha256?,eval_origin?}, train_seed, held_out_base_seed, episode_seeds[], denominator:"agents", agent_rows, eval{...}, episode_details[]}` — per-agent detail rows come from `experiment.eval_episode_details`; aggregate still owned by `on_eval` |
 
 ## Conventions
 

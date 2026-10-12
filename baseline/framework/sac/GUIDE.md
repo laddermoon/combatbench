@@ -71,7 +71,7 @@
 | `build_slices(episodes)` | episode → `sac_transition_v2` 切片（reward/gate/终止语义唯一出处） |
 | `on_eval(episodes, env_step)` | 返回 `{is_new_best, info, stop_training?}` |
 
-可选覆写：`replay_plan()`（采样/保留策略）、`pre_action_fact_specs()`（action 前捕获的 task facts，如 `phi_pre`）、`post_round_metrics(episodes)`（`task.*` 指标）、`param_overrides()`（实验侧 round 调度补丁，见 §4 调度）、`state()/load_state()`（实验自状态——**resume 等价性要求把恢复所需的游标/调度全部放进来**，例如随机化进度、方向余弦调度）。
+可选覆写：`replay_plan()`（采样/保留策略）、`pre_action_fact_specs()`（action 前捕获的 task facts，如 `phi_pre`）、`post_round_metrics(episodes)`（`task.*` 指标）、`param_overrides()`（实验侧 round 调度补丁，见 §4 调度）、`eval_episode_details(episodes)`（逐 agent 评估明细行，供 held-out eval 等证据产物使用——聚合判据仍由 `on_eval` 单一产出，两者口径必须一致）、`state()/load_state()`（实验自状态——**resume 等价性要求把恢复所需的游标/调度全部放进来**，例如随机化进度、方向余弦调度）。
 
 参考实现：`experiments_sac/exp_sac_standup.py`（单通道）、`exp_sac_balance.py`（双通道双 agent）。
 
@@ -207,6 +207,25 @@ CLI 共用 `analysis` 层。
 - 工件版本登记见 `ARTIFACTS.md`；checkpoint bundle 原子写（tmp dir + rename + sha256 manifest）。
 - **磁盘**：checkpoint ~1GB/个（含 replay），默认 `checkpoint_keep_last=3` 自动剪枝；`.pinned` 文件可钉住重要 checkpoint（如留给 held-out eval 的）；debug dump 默认保留最近 8 个。
 - 长期跑之前预估：`eval 次数 × ~1GB`（剪枝前），盯 `df -h`。
+
+**Held-out 评估**（训练 seed 外的独立验收）：
+
+```bash
+# 评 checkpoint 的 actor（默认最新完整 bundle）
+PYTHONPATH=. python3 -m baseline.framework.sac.held_out_eval \
+    --run baseline/runs/<run> [--checkpoint checkpoints/checkpoint_sXXXXXXXX] \
+    [--episodes 64] [--seed-offset 900000] [--workers 32]
+
+# 评 policy/ 导出（best-of-run 确定性蓝图；与 checkpoint 互斥）
+PYTHONPATH=. python3 -m baseline.framework.sac.held_out_eval \
+    --run baseline/runs/<run> --policy policy
+```
+
+输出 `held_out_eval.json`：聚合指标 `eval` + `episode_details[]`
+逐 agent 明细（由实验 `eval_episode_details` 提供；`denominator:"agents"`，
+同局两 agent 相关，不当独立样本统计）+ `policy` 身份块（被评
+artifact 的 kind/路径/fingerprint/model_sha256/`meta.json` 溯源）+
+`episode_seeds` 清单 + `code_version`。
 
 ## 9. 出问题时
 

@@ -770,6 +770,20 @@ class ExperimentSAC(ABC):
         """
         ...
 
+    def eval_episode_details(self, episodes: List[Any]) -> List[Dict[str, Any]]:
+        """Optional: per-episode/per-agent rows backing ``on_eval``.
+
+        Returned rows must sum to the same verdict ``on_eval`` computes —
+        they are the auditable denominator of the aggregate (e.g. one row
+        per episode×agent with that agent's success/survival flag). The
+        held-out evaluator records these verbatim; the default is an
+        empty list, which honest callers report as "details unavailable".
+
+        Args:
+            episodes: Raw eval episodes (same objects ``on_eval`` got).
+        """
+        return []
+
     # ==================================================================
     # State Persistence
     # ==================================================================

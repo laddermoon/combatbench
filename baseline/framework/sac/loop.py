@@ -950,6 +950,30 @@ def train_sac(
                     # artifacts already being on disk.
                     if is_new_best:
                         actor.to_blueprint(str(policy_dir), stochastic=False)
+                        # R2-W52: best-of-run export carries its identity —
+                        # which eval produced it and which weights it holds.
+                        try:
+                            (policy_dir / "meta.json").write_text(
+                                json.dumps(
+                                    {
+                                        "kind": "best_of_run",
+                                        "env_step": int(clocks.env_step),
+                                        "collection_round": int(round_index),
+                                        "eval": eval_info or {},
+                                        "policy_fingerprint": (
+                                            actor.policy_fingerprint()
+                                            if hasattr(actor, "policy_fingerprint")
+                                            else None
+                                        ),
+                                        "written_unix": time.time(),
+                                    },
+                                    indent=2,
+                                )
+                                + "\n",
+                                encoding="utf-8",
+                            )
+                        except Exception as exc:  # meta is additive evidence
+                            print(f"  [policy_meta_failed] {exc}", flush=True)
                     _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
                     eval_ckpt_written = True
                     metrics.emit_eval(clocks, eval_metrics)
