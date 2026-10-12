@@ -3008,6 +3008,33 @@ eval 事件）；异常路径终态记录（status=error，原异常重抛）。
 live 内重提交仍拒绝；淘汰键重提交被允许（钉死新语义）；含幽灵键的
 旧 state 载入后收敛。**SAC suite 210 passed。**
 
+## R2.9 R2-W13+W14 结论：跨进程恢复对拍 + 产物保留治理
+
+**R2-W13 跨进程真实恢复对拍（旗舰证据）**：新增
+`tests/_sac_resume_driver.py`（sac_balance 真实 MuJoCo、缩参、独立子进程）
++ `test_resume_equivalence.py`。连续 A vs B1→新进程 B2 resume：
+最终 checkpoint 全量 payload 递归对拍**逐位一致**——actor/critic 参数、
+全部 optimizer 动量、α 状态、replay 全数组+RNG+身份映射、runtime
+RNG/clocks、experiment state。训练相关时钟全等。
+
+**对拍中登记为合法差异的 provenance**（记录"谁产出的"，非计算量，
+各自带注释裁决）：run_id 嵌入的 source_key、`collection.job_key`/
+`policy_fingerprint`（run 作用域产物 hash）、`worker_id`（PID）、
+`clocks.checkpoint_tick`（断点谱系写次数，B 分支本就多写一次）。
+normalize 仅作用于这三类明确字段，其余一切仍精确比较。
+
+**副产修复**：resume 白名单补 `experiment.common_params.max_env_steps`——
+"延长训练预算续训"是最典型的 resume 用例，该字段只界循环、不改任何
+计算量；此前续训会被 config 匹配拒绝（对拍实测暴露）。
+
+**R2-W14 保留治理**：`prune_policy_exports`（`.pinned` 豁免、返回删除数
+供审计 print）接入 loop，`policy_export_keep_last=8` 默认有界；checkpoints/
+dumps/exports 三类增长产物现均有统一 keep_last+豁免语义；videos 登记为
+体积模型项留待 R2-4。
+
+**测试**：旗舰对拍 1 项（MuJoCo skipif 门控）+ exports 剪枝 2 项。
+**SAC suite 213 passed。**
+
 ## R2.6a R2-1 细计划：生命周期、恢复与资源治理
 
 **目标**：停训/完成/恢复形成可验证的事务语义；replay 元数据与产物保留有界；

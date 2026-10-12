@@ -25,6 +25,7 @@ from .checkpoint import (
     load_checkpoint_bundle,
     load_model_only,
     prune_checkpoints,
+    prune_policy_exports,
     save_checkpoint_bundle,
 )
 from .clocks import SACClockState
@@ -60,6 +61,10 @@ RESUME_ALLOWED_OVERRIDES = (
     "experiment.sac_params.utd_ratio",
     "experiment.sac_params.max_grad_steps_per_round",
     "experiment.sac_params.alpha_lr",
+    # R2-W13: extending the training budget is the canonical resume use
+    # case; max_env_steps only bounds the loop, it does not alter any
+    # computed quantity.
+    "experiment.common_params.max_env_steps",
 )
 TICK_METRIC_INTERVAL = 64
 TICK_RING_CAPACITY = 4096
@@ -321,6 +326,7 @@ def train_sac(
     debug_strict: bool = False,
     dump_keep_last: int = 8,
     checkpoint_keep_last: int = 3,
+    policy_export_keep_last: int = 8,
 ) -> None:
     cp = experiment.common_params()
     sp = experiment.sac_params()
@@ -977,6 +983,21 @@ def train_sac(
 
                 if (do_eval or clocks.collection_round == 1) and not eval_ckpt_written:
                     _checkpoint(ckpt_dir / f"checkpoint_s{clocks.env_step:08d}")
+
+                # R2-W14: policy_exports grows one blueprint dir per round
+                # (plus one per eval) — bound it like checkpoints/dumps.
+                # The round's jobs already consumed the blueprint object
+                # in memory, so pruning files is safe here.
+                n_pruned = prune_policy_exports(
+                    run_dir / "policy_exports",
+                    keep_last=policy_export_keep_last,
+                )
+                if n_pruned:
+                    print(
+                        f"  [pruned policy_exports: {n_pruned} removed, "
+                        f"keep_last={policy_export_keep_last}]",
+                        flush=True,
+                    )
 
     except BaseException as exc:
         # Terminal record on failure paths too: "how did this run end"

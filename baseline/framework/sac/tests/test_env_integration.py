@@ -525,6 +525,61 @@ def test_loop_prunes_checkpoints_with_keep_last(tmp_path) -> None:
     assert survivors == ["checkpoint_s00000012"]
 
 
+def test_loop_prunes_policy_exports_with_keep_last(tmp_path) -> None:
+    """R2-W14: policy_exports gains one blueprint dir per round (+eval);
+    keep_last bounds it. .pinned marks survive."""
+    class MultiRoundExperiment(_FakeExperiment):
+        _round = 0
+
+        def build_slices(self, episodes):
+            self._round += 1
+            return [_slice(T=4, obs_dim=3, action_dim=2, channels=1,
+                           slice_id=f"slice-{self._round}")]
+
+        def common_params(self) -> CommonParamsSAC:
+            return CommonParamsSAC(
+                name=self.name,
+                learning_rate=1e-3,
+                critic_learning_rate=1e-3,
+                grad_clip_norm=1.0,
+                episodes_per_update=1,
+                max_env_steps=12,
+                eval_interval=1,
+                eval_episodes=1,
+                video_eval_interval=0,
+                rollout_workers=1,
+                seed=31,
+            )
+
+    run_dir = tmp_path / "run"
+    exports_dir = run_dir / "policy_exports"
+    train_sac(
+        MultiRoundExperiment(),
+        run_dir=run_dir,
+        rollouter=_FakeRollouter(),
+        policy_export_keep_last=2,
+    )
+    survivors = sorted(p.name for p in exports_dir.iterdir())
+    assert len(survivors) <= 2
+    # survivors are the newest rounds
+    assert survivors[-1].startswith("r00003")
+
+
+def test_prune_policy_exports_respects_pinned(tmp_path) -> None:
+    from baseline.framework.sac.checkpoint import prune_policy_exports
+
+    root = tmp_path / "policy_exports"
+    for i in range(1, 5):
+        d = root / f"r{i:05d}"
+        d.mkdir(parents=True)
+    (root / "r00001" / ".pinned").touch()
+
+    removed = prune_policy_exports(root, keep_last=2)
+    assert removed == 1  # only r00002 removed (r00001 pinned exempts)
+    survivors = sorted(p.name for p in root.iterdir())
+    assert survivors == ["r00001", "r00003", "r00004"]
+
+
 def test_segmented_resume_matches_continuous_training(tmp_path, monkeypatch) -> None:
     """P7-RESUME-1: crash→resume produces bitwise-identical results to an
     uninterrupted run under declared determinism (CPU, fixed seeds,

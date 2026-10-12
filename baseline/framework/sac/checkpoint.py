@@ -315,6 +315,33 @@ def prune_checkpoints(ckpt_dir: str | Path, *, keep_last: int) -> None:
         shutil.rmtree(old)
 
 
+_POLICY_EXPORT_DIR_RE = re.compile(r"^r\d+")
+
+
+def prune_policy_exports(exports_dir: str | Path, *, keep_last: int) -> int:
+    """Bounded latest-N retention for ``policy_exports/rNNNNN[_eval]``.
+
+    Each collection round writes a stochastic blueprint and each eval
+    round a deterministic one; without retention they grow linearly in
+    rounds.  ``keep_last <= 0`` disables pruning.  A ``.pinned`` marker
+    exempts an export (same convention as checkpoint pruning).  Returns
+    the number of directories removed so callers can audit-log it.
+    """
+    root = Path(exports_dir)
+    if int(keep_last) <= 0 or not root.exists():
+        return 0
+    candidates = sorted(
+        p for p in root.iterdir()
+        if p.is_dir()
+        and _POLICY_EXPORT_DIR_RE.match(p.name)
+        and not (p / ".pinned").exists()
+    )
+    removed = candidates[:-int(keep_last)]
+    for old in removed:
+        shutil.rmtree(old)
+    return len(removed)
+
+
 __all__ = [
     "CONFIG_LOCK_VOLATILE_FIELDS",
     "SAC_CHECKPOINT_SCHEMA",
