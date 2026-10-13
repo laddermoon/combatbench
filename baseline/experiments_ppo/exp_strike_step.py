@@ -111,7 +111,7 @@ class StrikeStep(AttackPrepStep):
 
     # Retract potential shaping (must match strike_step_env.yaml /
     # StrikeSettlementPlugin defaults).
-    RETRACT_W: float = 0.3
+    RETRACT_W: float = 0.6
     _RET_SEP_REF: float = 0.5        # == retract_dist
     _RET_HOME_REF: float = 0.55      # == hand_home_dist
     _RET_EXTENDED_REF: float = 0.8   # ~fully extended arm

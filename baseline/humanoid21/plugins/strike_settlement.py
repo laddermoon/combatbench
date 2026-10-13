@@ -9,7 +9,12 @@ Single-strike episode state machine (per learner, authoritative):
 
 Semantics:
 
-* The FIRST legal hit locks the striking hand (left or right) — later
+* A contact only *triggers* the event if its force >= ``min_hit_force``
+  — a light graze never locks a hand and never starts SETTLE (s42c
+  diagnosis: tap-and-retract farming produced strike_done episodes
+  with Q as low as 0.02).  Once locked, ALL locked-hand contacts
+  inside the window accrue damage regardless of force.
+* The first legal hit locks the striking hand (left or right) — later
   contacts by the other hand or by feet do not extend the event and do
   not add to the strike score ``Q``.
 * During SETTLE (``settle_steps`` action steps, starting with the hit
@@ -90,6 +95,7 @@ class StrikeSettlementPlugin(BasePlugin):
         retract_timeout_steps: int = 60,
         force_scale: float = 100.0,
         phy_step_dt: float = 0.002,
+        min_hit_force: float = 250.0,
     ) -> None:
         if agent_id not in ("robot_a", "robot_b"):
             raise ValueError(f"agent_id must be robot_a/robot_b, got {agent_id!r}")
@@ -105,6 +111,7 @@ class StrikeSettlementPlugin(BasePlugin):
         self.retract_timeout_steps = int(retract_timeout_steps)
         self.force_scale = float(force_scale)
         self.phy_step_dt = float(phy_step_dt)
+        self.min_hit_force = float(min_hit_force)
 
         self._phase = PHASE_PRE_HIT
         self._locked_hand = HAND_NONE
@@ -143,6 +150,7 @@ class StrikeSettlementPlugin(BasePlugin):
             "retract_timeout_steps": self.retract_timeout_steps,
             "force_scale": self.force_scale,
             "phy_step_dt": self.phy_step_dt,
+            "min_hit_force": self.min_hit_force,
         }
 
     @classmethod
@@ -256,6 +264,8 @@ class StrikeSettlementPlugin(BasePlugin):
                 continue
 
             if self._phase == PHASE_PRE_HIT:
+                if force < self.min_hit_force:
+                    continue          # graze — not a strike event
                 self._locked_hand = hand
                 self._phase = PHASE_SETTLE
                 self._settle_elapsed = 0

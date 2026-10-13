@@ -166,6 +166,26 @@ def test_only_locked_hand_scores_during_settle():
     assert ctx.metrics["robot_a_strike_damage_total"] == pytest.approx(exp)
 
 
+def test_weak_contact_does_not_trigger():
+    """A graze below min_hit_force must not lock a hand or start SETTLE
+    (s42c tap-and-retract farming fix)."""
+    p = _plugin(settle_steps=3, min_hit_force=250.0)
+    ctx = _Ctx(_Accessor())
+    p.on_pre_episode(ctx)
+    ctx.accessor._contacts = _contacts([_hit(100.0)])
+    p.on_post_phy_step(ctx)
+    assert p._phase == PHASE_PRE_HIT
+    assert p._locked_hand == 0
+    # A subsequent real hit still triggers normally.
+    ctx.accessor._contacts = _contacts([_hit(400.0)])
+    p.on_post_phy_step(ctx)
+    assert p._phase == PHASE_SETTLE
+    assert p._locked_hand == HAND_LEFT
+    # The graze never scored — Q contains only the real hit.
+    exp = _expected_damage(400.0, "head")
+    assert ctx.metrics["robot_a_strike_damage_total"] == pytest.approx(exp)
+
+
 def test_foot_contact_never_locks():
     p = _plugin(settle_steps=5)
     ctx = _Ctx(_Accessor())
@@ -484,8 +504,9 @@ def test_r_retract_potential_difference():
     ch = trajs[0].channels["r_retract"]
 
     # φ: d_opp term 0→1 at t=12; d_home term (0.8-d)/0.25: 0.2→1 at t=14
-    assert ch.reward[12] == pytest.approx(0.3 * (1.0 - 0.2))
-    assert ch.reward[14] == pytest.approx(0.3 * (1.0 - 0.2))
+    W = StrikeStep.RETRACT_W
+    assert ch.reward[12] == pytest.approx(W * (1.0 - 0.2))
+    assert ch.reward[14] == pytest.approx(W * (1.0 - 0.2))
     # No reward on non-RETRACT frames, none while parked.
     assert ch.reward[:10].max() == 0.0
     assert ch.reward[15:].max() == 0.0

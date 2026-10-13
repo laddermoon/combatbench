@@ -109,6 +109,7 @@ plugins:
       stand_height_min: 1.0
       hold_steps: 3
       retract_timeout_steps: 60
+      min_hit_force: 250.0           # graze <250N never triggers the event
 
 observer_plugins:
   standing_balance_a:
