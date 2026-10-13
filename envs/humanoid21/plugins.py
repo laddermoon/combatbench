@@ -226,7 +226,8 @@ class CombatScoringPlugin(BasePlugin):
                         health_a=ctx.metrics.get('health_a', 0),
                         health_b=ctx.metrics.get('health_b', 0))
 
-    def _get_part_category(self, geom_name: str) -> str:
+    @staticmethod
+    def _get_part_category(geom_name: str) -> str:
         if not geom_name: return None
         name_lower = geom_name.lower()
 
