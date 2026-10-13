@@ -1,0 +1,46 @@
+{
+  "cmu_to_mujoco": "v_mj = (z_cmu, x_cmu, y_cmu); R_mj = C R_cmu C^T",
+  "C": [
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0
+    ]
+  ],
+  "meters_per_cmu_unit": 0.11693077479727103,
+  "robot": {
+    "torso_z": 1.282,
+    "head_z": 1.472,
+    "pelvis_z": 0.857,
+    "hip_joint_z": 0.817,
+    "knee_z": 0.4169999999999999,
+    "ankle_z": 0.02699999999999992,
+    "hip_width": 0.2,
+    "shoulder_z": 1.342
+  },
+  "human_rest": {
+    "hip_height_units": 6.987039993675535,
+    "ankle_height_units": 0.35530817167178785,
+    "leg_length_units": 6.631731822003747,
+    "total_height_units": 12.975860662920535,
+    "shoulder_width_units": 2.9083280577975,
+    "rest_hip_y": -0.8763418817415001,
+    "rest_sole_y": -7.863381875417035
+  },
+  "derived": {
+    "human_height_m": 1.5172774409767291,
+    "human_leg_m": 0.775453540194616,
+    "robot_leg_m": 0.79
+  },
+  "note": "scale = robot hip height / human rest hip height; provisional, recalibrate in M2 if foot placement is systematically off."
+}
