@@ -196,9 +196,14 @@ class Retargeter:
                 pos, _ = self._eval_positions(qq, rquat, needed=need)
                 ankle_rel = pos[f"foot_{sd}"] - pos[f"thigh_{sd}"]
                 shin_dir = _unit(pos[f"foot_{sd}"] - pos[f"shin_{sd}"])
+                # hamstring fixed tendon: 0.5*hip_y - 0.5*knee >= -0.3 rad
+                # soft hinge penalty (margin 0.02) keeps solution feasible
+                tendon = 0.5 * x[2] - 0.5 * x[3]
+                t_pen = max(0.0, -(tendon + 0.28)) * 3.0
                 return np.concatenate([
                     W_POS * (ankle_rel - pr),
-                    W_DIR_LEG * (shin_dir - ds)])
+                    W_DIR_LEG * (shin_dir - ds),
+                    [t_pen]])
 
             qq, err = self._lsq(joints, leg_resid, q)
             q.update(qq)
