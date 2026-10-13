@@ -89,11 +89,48 @@
 
 ## W3 片段内容核验
 
-（待执行）
+### 官方描述（证据：`cmu_motion_descriptions.json`，2026-10-13 抓取）
+
+- subject 13 = "various everyday behaviors"：**仅 13_17、13_18 是 boxing**
+- subject 14 = "various everyday behaviors"：14_01/02/03 是 boxing ✓
+- subject 15 = "everyday + dance"：仅 15_13 是 boxing ✓
+- subject 17 = "different walking styles"：仅 17_10 是 boxing ✓（可能是行进间拳击）
+- CMU 页面帧率列均为 **120** ——确认 AMC 采样率 120 Hz。
+
+**纠正 prepare_data.py 的隐含假设**：`BOXING_SUBJECTS` 把 subject 13 的 24 个片段全部当
+拳击——实际只有 2 个。真实拳击片段共 7 个：`13_17, 13_18, 14_01, 14_02, 14_03, 15_13, 17_10`。
+其余 22 个是日常动作（坐站/喝水/跳/笑/擦窗/扫地/指挥交通）——对先验库仍有价值
+（非拳击的自然动作多样性），但不能再标错类别。
+
+### 特征扫描（`content_scan.py` → `content_scan.json`）
+
+FK 全部片段，单位经合理性校验：**meters = 原始单位 ÷ 0.45 × 0.0254**（即 raw×0.0564），
+人体身高 ≈1.70 m、股骨 ≈43 cm、足底贴地——与人体一致。
+注意：fk.py 乘 `units_length=0.45` 只保证自洽，绝对尺度按上式换算（已记录为方法说明）。
+
+特征与官方描述交叉核对一致：
+
+- 7 个 boxing 片段手峰速 2.0–5.7 m/s + 均有小范围脚步移动——符合拳击
+- 13_11/13/19 "forward jump"：位移 0.6–0.7 m、根速度峰值 1.2–1.3 m/s ✓
+- 13_14 标记 "laugh" 但左手峰速 6.6 m/s 异常偏高——已列入预览人工复核清单
+- 我写的 foot-contact 启发式误报（把踝关节原点当脚底）→ 接触估计推迟到 M1 用
+  几何修正后重算，本审计不据此判数据质量
+
+### 预览素材
+
+源骨架三视角棒图视频：`/data1/dev/combatbench_mocap/preview/*.mp4`（不入库），
+供人工复核片段真实内容与最小集挑选。
 
 ## W4 许可核验
 
-（待执行）
+CMU Graphics Lab Motion Capture Database（mocap.cs.cmu.edu），2026-10-13 在线核验：
+
+- **"This dataset of motions is free for all uses."**
+- **"may be copied, modified, or redistributed without permission"**
+- 免责声明：不保证数据质量；分类标签仅供参考（→ 我们的逐片段内容核验确实必要）
+- 请求（非强制）：发表时注明 "obtained from mocap.cs.cmu.edu ... NSF EIA-0196217"，
+  并将引文发给 jkh+mocap@cs.cmu.edu
+- 结论：**许可不构成障碍，可自由使用与再分发**，index 中记录来源 URL + sha256 + 抓取日期
 
 ## W5 数据契约
 
