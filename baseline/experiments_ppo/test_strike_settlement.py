@@ -22,8 +22,6 @@ from baseline.humanoid21.plugins.strike_settlement import (
     PHASE_RETRACT,
     PHASE_SETTLE,
     StrikeSettlementPlugin,
-    ELBOW_LEFT_IDX,
-    ELBOW_RIGHT_IDX,
 )
 from envs.humanoid21.plugins import CombatScoringPlugin
 
@@ -94,28 +92,27 @@ class _Ctx:
         self.terminations.append(reason)
 
 
-def _core(root_h=1.2, elbow_l=0.8, elbow_r=0.8):
-    jpn = np.zeros(21, dtype=np.float32)
-    jpn[ELBOW_LEFT_IDX] = elbow_l
-    jpn[ELBOW_RIGHT_IDX] = elbow_r
+def _core(root_h=1.2):
     return {
         "robot_a": {
             "root_pos": np.array([0.0, 0.0, root_h], dtype=np.float32),
-            "joint_pos_norm": jpn,
         },
         "robot_b": {
             "root_pos": np.array([1.0, 0.0, 1.3], dtype=np.float32),
-            "joint_pos_norm": jpn.copy(),
         },
     }
 
 
-def _retract_derived(hand_pos=None, head=(1.0, 0.0, 1.5), torso=(1.0, 0.0, 1.0)):
-    """derived state: locked hand far from opp head/torso by default."""
+def _retract_derived(hand_pos=None, torso_a=(0.0, 0.0, 1.0),
+                     head=(1.0, 0.0, 1.5), torso=(1.0, 0.0, 1.0)):
+    """derived state: locked hand home & far from opp by default."""
     if hand_pos is None:
-        hand_pos = (0.0, 0.0, 1.2)   # ~1.55m from head, ~1.02m from torso
+        # 0.2m from own torso, ~1.02m from opp torso — retracted.
+        hand_pos = (0.0, 0.0, 1.2)
     return {
-        "robot_a": {"body_xpos": {"hand_left_a": np.array(hand_pos)}},
+        "robot_a": {"body_xpos": {
+            "hand_left_a": np.array(hand_pos),
+            "torso_a": np.array(torso_a)}},
         "robot_b": {"body_xpos": {
             "head_b": np.array(head), "torso_b": np.array(torso)}},
     }
@@ -257,18 +254,44 @@ def test_retract_hold_resets_when_condition_breaks():
     assert ctx.terminations == ["strike_done"]
 
 
-def test_retract_requires_chambered_elbow():
-    """Body may back off but an extended arm is NOT retracted."""
-    p = _plugin(settle_steps=1, hold_steps=2, retract_dist=0.5)
+def test_retract_requires_hand_home():
+    """Body may back off but a still-extended arm is NOT retracted."""
+    p = _plugin(settle_steps=1, hold_steps=2, retract_dist=0.5,
+                hand_home_dist=0.55)
     ctx = _Ctx(_Accessor(
-        core=_core(elbow_l=-0.8),           # left arm still extended
-        derived=_retract_derived()))
+        core=_core(),
+        # Opponent far away (d_opp ok) but the hand is 0.71m from the
+        # own torso — arm still out, must not count as retracted.
+        derived=_retract_derived(
+            hand_pos=(0.7, 0.0, 1.1),
+            head=(3.0, 0.0, 1.5), torso=(3.0, 0.0, 1.0))))
     p.on_pre_episode(ctx)
     _enter_retract(p, ctx)
     for _ in range(5):
         ctx.episode_step += 1
         p.on_post_action_step(ctx)
     assert "strike_done" not in ctx.terminations
+
+
+def test_retract_relaxed_hanging_arm_counts():
+    """A hanging arm while disengaged IS retracted (s42a fix: the old
+    elbow>=0.7 gate timed out episodes where the learner had clearly
+    walked away with the arm relaxed)."""
+    p = _plugin(settle_steps=1, hold_steps=2, retract_dist=0.5,
+                hand_home_dist=0.55)
+    ctx = _Ctx(_Accessor(
+        core=_core(),
+        # Hand 0.50m from own torso (arm hanging at the side) and
+        # >2m from the opponent — matches the observed ep0 case.
+        derived=_retract_derived(
+            hand_pos=(0.45, 0.0, 0.8),
+            head=(3.0, 0.0, 1.5), torso=(3.0, 0.0, 1.0))))
+    p.on_pre_episode(ctx)
+    _enter_retract(p, ctx)
+    for _ in range(3):
+        ctx.episode_step += 1
+        p.on_post_action_step(ctx)
+    assert ctx.terminations == ["strike_done"]
 
 
 def test_retract_requires_upright():
@@ -286,9 +309,12 @@ def test_retract_requires_upright():
 
 def test_retract_timeout_terminates():
     p = _plugin(settle_steps=1, hold_steps=3, retract_timeout_steps=10)
-    # Conditions never met: elbow stays extended.
+    # Conditions never met: hand stays extended away from the body.
     ctx = _Ctx(_Accessor(
-        core=_core(elbow_l=-0.8), derived=_retract_derived()))
+        core=_core(),
+        derived=_retract_derived(
+            hand_pos=(0.7, 0.0, 1.1),
+            head=(3.0, 0.0, 1.5), torso=(3.0, 0.0, 1.0))))
     p.on_pre_episode(ctx)
     _enter_retract(p, ctx)
     for _ in range(10):
@@ -310,7 +336,8 @@ def test_observer_metrics_prefix_per_agent():
 # r_strike reward construction (through _build_agent_trajectory)
 # ----------------------------------------------------------------------
 
-def _make_episode(T, step_damage, damage_total, term_reason="strike_done"):
+def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
+                  phase=None):
     """Minimal Episode with the observer fields exp_strike_step reads."""
     from baseline.framework.rollout.episode import Episode
 
@@ -324,7 +351,9 @@ def _make_episode(T, step_damage, damage_total, term_reason="strike_done"):
     }
     balance = {"potential": np.ones(T, dtype=np.float32)}
     strike = {
-        "phase": np.zeros(T), "locked_hand": np.zeros(T),
+        "phase": (np.zeros(T) if phase is None
+                  else np.asarray(phase, dtype=np.float32)),
+        "locked_hand": np.zeros(T),
         "step_damage": np.asarray(step_damage, dtype=np.float32),
         "damage_total": np.asarray(damage_total, dtype=np.float32),
         "retract_done": np.zeros(T),
@@ -399,3 +428,33 @@ def test_r_strike_no_hit_all_zero():
     ch = trajs[0].channels["r_strike"]
     assert ch.reward.max() == 0.0
     assert ch.is_terminated is False   # step-family: all ends bootstrap
+
+
+def test_retract_phase_masks_shaping_channels():
+    """On RETRACT frames (phase==2) every shaping channel except r_fall
+    and r_strike must carry reward=0 AND actor_weight=0 — otherwise the
+    follow/arm rewards pay the policy for hugging the target instead of
+    retracting."""
+    from baseline.experiments_ppo.exp_strike_step import StrikeStep
+
+    T = 20
+    phase = np.zeros(T); phase[15:] = 2.0      # last 5 frames RETRACT
+    ep = _make_episode(T, np.zeros(T), np.zeros(T),
+                       term_reason="retract_timeout", phase=phase)
+    trajs = StrikeStep()._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    t = trajs[0]
+    for cname in StrikeStep._RETRACT_MASKED_CHANNELS:
+        ch = t.channels[cname]
+        np.testing.assert_allclose(ch.reward[15:], 0.0)
+        np.testing.assert_allclose(ch.actor_weight[15:], 0.0)
+    # r_fall stays live (falls during retract are still punished) and
+    # r_strike keeps its constant weight (the withheld half).
+    assert t.channels["r_fall"].actor_weight[15:].max() != 0.0 or \
+        t.channels["r_fall"].actor_weight[15:].min() != 0.0
+    np.testing.assert_allclose(
+        t.channels["r_strike"].actor_weight[15:], 1.0)
+    # Pre-retract frames are untouched.
+    np.testing.assert_allclose(
+        t.channels["r_potential"].actor_weight[:15],
+        t.channels["r_potential"].actor_weight[0])

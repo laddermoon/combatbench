@@ -17,9 +17,9 @@ Settlement (``StrikeSettlementPlugin`` + ``StrikeStateObserver``):
 * SETTLE (10 action steps): locked-hand damage Q accrues under the
   standard CombatScoring formula.
 * RETRACT: score frozen; retract combo = hand→opp {head,torso}
-  dist >= 0.5m AND elbow_norm >= 0.7 AND root height >= 1.0m, held
-  3 consecutive steps → ``strike_done``; 60 steps without it →
-  ``retract_timeout``.
+  dist >= 0.5m AND hand→own-torso dist <= 0.55m AND root height
+  >= 1.0m, held 3 consecutive steps → ``strike_done``; 60 steps
+  without it → ``retract_timeout``.
 
 Reward (new channel ``r_strike``, γ=0.99):
 
@@ -30,12 +30,20 @@ Reward (new channel ``r_strike``, γ=0.99):
                        the withheld half IS the punishment)
     actor_weight = 1.0 — the event reward IS the task, no gating.
 
+Phase gating: on RETRACT frames every shaping channel except r_fall
+and r_strike is masked (reward=0, actor_weight=0).  Post-hit the only
+remaining positive payoff is the withheld half — the inherited
+follow/arm rewards would otherwise keep paying the policy for hugging
+the target, which directly fights the retract combo (observed: s42a
+episodes timed out pressed against the target at 0.14-0.27m).  r_fall
+stays so falling during retract is still punished.
+
 Distance gating needs no new code: r_radial/r_tangential only pay
 outside the hold radius and r_face ramps in below D_FACE — the
 "follow outside / strike inside" blend is already in the inherited
-channels.  The four arm-shaping channels stay ON as scaffolding (user
-decision) so the warm-started punching behavior has continuity while
-the sparse hit reward emerges; a fade experiment can follow.
+channels.  The four arm-shaping channels stay ON pre-hit as
+scaffolding (user decision) so the warm-started punching behavior has
+continuity while the sparse hit reward emerges.
 
 best-of-run / early stop composite:
     quality = mean per-episode strike return
@@ -85,6 +93,18 @@ class StrikeStep(AttackPrepStep):
     # v1: withheld second half is the only retract-timeout cost.
     RETRACT_FAIL_PENALTY: float = 0.0
 
+    # Phase-2 (RETRACT) frames: zero reward AND actor weight on every
+    # shaping channel so nothing but the withheld second half (and the
+    # r_fall fall penalty) is live post-settle.  Without this the
+    # follow/hand-dist channels pay the policy for staying glued to
+    # the target — the dominant s42a retract_timeout failure mode.
+    _RETRACT_MASKED_CHANNELS = (
+        "r_potential", "r_left_foot", "r_right_foot", "r_torso",
+        "r_radial", "r_tangential", "r_face",
+        "r_left_elbow", "r_right_elbow",
+        "r_left_hand_dist", "r_right_hand_dist",
+    )
+
     _STRIKE_OBS = {
         "robot_a": "strike_state_a",
         "robot_b": "strike_state_b",
@@ -131,6 +151,21 @@ class StrikeStep(AttackPrepStep):
             oo, strike_key, "step_damage", T_full)
         damage_total = extract_per_step_field(
             oo, strike_key, "damage_total", T_full)
+        phase = extract_per_step_field(
+            oo, strike_key, "phase", T_full)
+
+        # RETRACT-phase masking: no shaping rewards after the settle
+        # window — the withheld second half is the only prize left.
+        if phase is not None:
+            retract_mask = np.asarray(phase) == 2.0   # PHASE_RETRACT
+            for t in trajs:
+                T = t.obs.shape[0]
+                m = retract_mask[:T]
+                for cname in self._RETRACT_MASKED_CHANNELS:
+                    ch = t.channels.get(cname)
+                    if ch is not None:
+                        ch.reward[m] = 0.0
+                        ch.actor_weight[m] = 0.0
 
         if step_damage is None or damage_total is None:
             for t in trajs:

@@ -24,9 +24,10 @@ Retract combo (all held for ``hold_steps`` consecutive action steps):
 
   1. locked hand 3D distance to the opponent's nearest {head, torso}
      body >= ``retract_dist``  — actual separation from the target;
-  2. locked arm elbow_pos_norm >= ``elbow_flex_threshold`` — the arm
-     returned to a chambered pose (whole-body retreats with the arm
-     still extended do not count);
+  2. locked hand 3D distance to the learner's OWN torso <=
+     ``hand_home_dist`` — the hand is back at the body (chambered
+     guard OR relaxed hanging arm both count; a still-extended arm —
+     toward the target, sideways or windmilled backward — does not);
   3. learner root height >= ``stand_height_min`` — upright enough that
      "retract" is not "fell over and rolled away".
 
@@ -43,6 +44,9 @@ Metrics written (per episode, keyed by learner agent id ``<aid>``):
     <aid>_strike_damage_total float cumulative locked-hand damage (Q)
     <aid>_strike_hit_step     int   episode_step of first hit (-1 none)
     <aid>_strike_retract_done int   1 when retract combo completed
+    <aid>_strike_gates        int   bitmask of retract gates on the last
+                                    RETRACT check: bit0 upright,
+                                    bit1 hand home, bit2 separated
 
 Termination reasons: ``strike_done`` / ``retract_timeout`` (issued for
 ALL agents — the episode ends; neither equals "timeout", so learners
@@ -58,11 +62,6 @@ from envs.framework import BasePlugin, OBSERVER_DISPATCHER_PRIORITY
 from envs.framework.context import SimContext
 from envs.humanoid21.plugins import CombatScoringPlugin
 
-
-# Joint indices within joint_pos_norm[21] (CONTROLLED_JOINTS order) —
-# same mapping as arm_state_observer.py.
-ELBOW_RIGHT_IDX: int = 17
-ELBOW_LEFT_IDX: int = 20
 
 PHASE_PRE_HIT: int = 0
 PHASE_SETTLE: int = 1
@@ -81,7 +80,7 @@ class StrikeSettlementPlugin(BasePlugin):
         agent_id: str = "robot_a",
         settle_steps: int = 10,
         retract_dist: float = 0.5,
-        elbow_flex_threshold: float = 0.7,
+        hand_home_dist: float = 0.55,
         stand_height_min: float = 1.0,
         hold_steps: int = 3,
         retract_timeout_steps: int = 60,
@@ -96,7 +95,7 @@ class StrikeSettlementPlugin(BasePlugin):
         self._osfx = self.opp_id[-1]
         self.settle_steps = int(settle_steps)
         self.retract_dist = float(retract_dist)
-        self.elbow_flex_threshold = float(elbow_flex_threshold)
+        self.hand_home_dist = float(hand_home_dist)
         self.stand_height_min = float(stand_height_min)
         self.hold_steps = int(hold_steps)
         self.retract_timeout_steps = int(retract_timeout_steps)
@@ -134,7 +133,7 @@ class StrikeSettlementPlugin(BasePlugin):
             "agent_id": self.agent_id,
             "settle_steps": self.settle_steps,
             "retract_dist": self.retract_dist,
-            "elbow_flex_threshold": self.elbow_flex_threshold,
+            "hand_home_dist": self.hand_home_dist,
             "stand_height_min": self.stand_height_min,
             "hold_steps": self.hold_steps,
             "retract_timeout_steps": self.retract_timeout_steps,
@@ -282,41 +281,46 @@ class StrikeSettlementPlugin(BasePlugin):
         core = ctx.accessor.get_core_state()
         self_core = core.get(self.agent_id)
         if self_core is None:
+            ctx.metrics[self._k("gates")] = 0
             return False
 
-        # 3. upright gate — root height
+        gates = 0
+        # bit0: upright gate — root height
         root_pos = np.asarray(self_core.get("root_pos", [0, 0, 0]), dtype=np.float64)
-        if float(root_pos[2]) < self.stand_height_min:
-            return False
+        if float(root_pos[2]) >= self.stand_height_min:
+            gates |= 1
 
-        # 2. chambered gate — locked elbow back to flexed
-        jpn = self_core.get("joint_pos_norm")
-        if jpn is None:
-            return False
-        jpn = np.asarray(jpn, dtype=np.float64)
-        idx = ELBOW_LEFT_IDX if self._locked_hand == HAND_LEFT else ELBOW_RIGHT_IDX
-        if jpn.shape[0] <= idx or float(jpn[idx]) < self.elbow_flex_threshold:
-            return False
-
-        # 1. separation gate — locked hand far from opponent {head,torso}
         derived = ctx.accessor.get_derived_state([self.agent_id, self.opp_id])
         self_bx = derived.get(self.agent_id, {}).get("body_xpos", {})
         opp_bx = derived.get(self.opp_id, {}).get("body_xpos", {})
         side = "left" if self._locked_hand == HAND_LEFT else "right"
-        hand = self_bx.get(f"hand_{side}_{self._sfx}")
-        if hand is None:
-            return False
-        hand = np.asarray(hand, dtype=np.float64)
-        targets = [
-            opp_bx.get(f"{p}_{self._osfx}") for p in ("head", "torso")
-        ]
-        dists = [
-            float(np.linalg.norm(hand - np.asarray(t, dtype=np.float64)))
-            for t in targets if t is not None
-        ]
-        if not dists or min(dists) < self.retract_dist:
-            return False
-        return True
+        hand_raw = self_bx.get(f"hand_{side}_{self._sfx}")
+        torso_self_raw = self_bx.get(f"torso_{self._sfx}")
+        if hand_raw is not None and torso_self_raw is not None:
+            hand = np.asarray(hand_raw, dtype=np.float64)
+
+            # bit1: hand-home gate — the locked hand is back near the
+            # learner's own torso.  Covers both a chambered guard and a
+            # relaxed hanging arm; rejects arms still extended anywhere.
+            d_home = float(np.linalg.norm(
+                hand - np.asarray(torso_self_raw, dtype=np.float64)))
+            if d_home <= self.hand_home_dist:
+                gates |= 2
+
+            # bit2: separation gate — locked hand far from opponent
+            # {head,torso}
+            targets = [
+                opp_bx.get(f"{p}_{self._osfx}") for p in ("head", "torso")
+            ]
+            dists = [
+                float(np.linalg.norm(hand - np.asarray(t, dtype=np.float64)))
+                for t in targets if t is not None
+            ]
+            if dists and min(dists) >= self.retract_dist:
+                gates |= 4
+
+        ctx.metrics[self._k("gates")] = gates
+        return gates == 0b111
 
     def on_post_action_step(self, ctx: SimContext) -> None:
         if self._phase == PHASE_SETTLE:
@@ -332,7 +336,7 @@ class StrikeSettlementPlugin(BasePlugin):
                 ctx.request_termination("retract_timeout")
             elif self._retract_geometry_ok(ctx):
                 self._hold_count += 1
-                if self._hold_count >= self.hold_steps:
+                if self._hold_count == self.hold_steps:
                     ctx.metrics[self._k("retract_done")] = 1
                     ctx.request_termination("strike_done")
             else:

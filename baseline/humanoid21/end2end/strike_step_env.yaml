@@ -82,7 +82,7 @@ plugins:
       perturb_phy_steps: 100
       settle_phy_steps: 100
       action_scale: 0.6
-      min_height: 0.9
+      min_height: 1.15
       reset_interval: 50
   - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
     config:
@@ -105,7 +105,7 @@ plugins:
       agent_id: ${agent_id}
       settle_steps: 10
       retract_dist: 0.5
-      elbow_flex_threshold: 0.7
+      hand_home_dist: 0.55
       stand_height_min: 1.0
       hold_steps: 3
       retract_timeout_steps: 60

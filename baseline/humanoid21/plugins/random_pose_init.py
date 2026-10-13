@@ -43,7 +43,7 @@ class RandomPoseInitPlugin(BasePlugin):
         perturb_phy_steps: int = 100,
         settle_phy_steps: int = 100,
         action_scale: float = 0.6,
-        min_height: float = 0.9,
+        min_height: float = 1.15,
         reset_interval: int = 50,
         random_seed: Optional[int] = None,
     ) -> None:
