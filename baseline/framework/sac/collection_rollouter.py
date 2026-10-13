@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import os
 import pickle
@@ -88,6 +89,39 @@ def _group_key(job: SACJob) -> str:
     return hashlib.sha256(
         pickle.dumps(payload, protocol=5)
     ).hexdigest()
+
+
+def _group_jobs(jobs: Sequence[SACJob]) -> List[List[SACJob]]:
+    """Group consecutive jobs by shared env/policy/fact blueprint."""
+    groups: List[List[SACJob]] = []
+    group_keys: List[str] = []
+    for job in jobs:
+        key = _group_key(job)
+        if group_keys and key == group_keys[-1]:
+            groups[-1].append(job)
+        else:
+            groups.append([job])
+            group_keys.append(key)
+    return groups
+
+
+def _chunk_groups(
+    groups: Sequence[Sequence[SACJob]], num_workers: int
+) -> List[List[SACJob]]:
+    """Split each group into chunks sized for the worker pool.
+
+    Self-play rounds give every job the same group key (identical env +
+    both policy blueprints), so without chunking a whole round collapses
+    onto one worker — same fix shape as PPO's parallel_rollouter group
+    chunking.  Order is preserved throughout: pool.map is ordered and
+    chunks keep the per-group job order.
+    """
+    chunks: List[List[SACJob]] = []
+    for group in groups:
+        chunk_size = max(1, math.ceil(len(group) / num_workers))
+        for i in range(0, len(group), chunk_size):
+            chunks.append(list(group[i:i + chunk_size]))
+    return chunks
 
 
 def _provenance_for_job(job: SACJob) -> Dict[str, Any]:
@@ -239,15 +273,7 @@ class SACParallelRollouter:
                 "duplicate SACJob.job_key in one collection round"
             )
 
-        groups: List[List[SACJob]] = []
-        group_keys: List[str] = []
-        for job in job_list:
-            key = _group_key(job)
-            if group_keys and key == group_keys[-1]:
-                groups[-1].append(job)
-            else:
-                groups.append([job])
-                group_keys.append(key)
+        groups = _group_jobs(job_list)
 
         if self.num_workers == 1:
             out: List[CollectedEpisode] = []
@@ -255,12 +281,13 @@ class SACParallelRollouter:
                 out.extend(_run_job_batch([_serialize_job(j) for j in group]))
             return out
 
-        serialized_groups = [
-            [_serialize_job(job) for job in group] for group in groups
+        chunks = [
+            [_serialize_job(j) for j in chunk]
+            for chunk in _chunk_groups(groups, self.num_workers)
         ]
         ctx = mp.get_context(self.mp_context)
-        with ctx.Pool(processes=min(self.num_workers, len(serialized_groups))) as pool:
-            batches = pool.map(_run_job_batch, serialized_groups)
+        with ctx.Pool(processes=min(self.num_workers, len(chunks))) as pool:
+            batches = pool.map(_run_job_batch, chunks)
         return [episode for batch in batches for episode in batch]
 
 

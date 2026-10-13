@@ -347,6 +347,41 @@ def test_parallel_collection_preserves_input_order():
     assert [ep.episode_seed for ep in episodes] == [101, 102, 103]
 
 
+def test_same_blueprint_jobs_are_chunked_for_workers():
+    """Regression: self-play rounds give every job the same group key.
+    Without group chunking the whole round collapses onto one worker
+    (observed live: 64 ep serial at ~1.8s/ep despite workers=96)."""
+    from baseline.framework.sac.collection_rollouter import (
+        _chunk_groups,
+        _group_jobs,
+    )
+
+    jobs = [_job(i, seed=i) for i in range(64)]
+    groups = _group_jobs(jobs)
+    assert len(groups) == 1 and len(groups[0]) == 64  # self-play collapse
+
+    chunks = _chunk_groups(groups, num_workers=96)
+    assert len(chunks) == 64  # ceil(64/96)=1 → one job per chunk
+    # order preserved across chunks
+    flat = [j for c in chunks for j in c]
+    assert [j.job_index for j in flat] == list(range(64))
+
+    # group larger than workers → multi-job chunks
+    chunks8 = _chunk_groups(groups, num_workers=8)
+    assert len(chunks8) == 8
+    assert all(len(c) == 8 for c in chunks8)
+
+
+def test_parallel_same_blueprint_round_preserves_order():
+    """Same-blueprint jobs (the self-play shape) must still come back
+    in job order through the chunked parallel path."""
+    rollouter = SACParallelRollouter(num_workers=4)
+    jobs = [_job(i, seed=200 + i) for i in range(8)]
+    episodes = rollouter.collect(jobs)
+    assert [ep.job_index for ep in episodes] == list(range(8))
+    assert [ep.episode_seed for ep in episodes] == [200 + i for i in range(8)]
+
+
 def test_collection_failure_aborts_round():
     rollouter = SACParallelRollouter(num_workers=1)
     with pytest.raises(SACCollectionError, match="injected collection failure"):
