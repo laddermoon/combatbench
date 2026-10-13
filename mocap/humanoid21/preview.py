@@ -1,13 +1,20 @@
 """Render source-skeleton stick-figure previews of AMC clips (headless).
 
 For human eyeball review of clip content (M0 W3 / W6 minimal-set selection).
-Draws bone segments (parent joint -> child joint), hands highlighted,
-feet contact-ish tinted, ground plane at y=0.
+Draws bone segments (joint -> distal endpoint), hands highlighted,
+feet contact-ish tinted, ground line at y=0.
+
+FK uses mocap.humanoid21.ref_fk — the reference implementation faithful to
+CMU's official ASF/AMC viewer (the legacy baseline fk.py produced wrong
+kinematics; see ref_fk.py docstring and M0_AUDIT.md).
 
 Usage:
     PYTHONPATH=. python3 -m mocap.humanoid21.preview --clips 13_17 13_18 \
         --outdir /data1/dev/combatbench_mocap/preview [--every 4] [--fps 30]
     PYTHONPATH=. python3 -m mocap.humanoid21.preview --all --outdir ...
+
+Raw dirs searched for <subj>.asf / <clip>.amc: repo raw/ then
+/data1/dev/combatbench_mocap/raw/.
 """
 from __future__ import annotations
 
@@ -23,20 +30,24 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.humanoid21.mocap.asf_parser import parse_asf
 from baseline.humanoid21.mocap.amc_parser import parse_amc
-from baseline.humanoid21.mocap.fk import compute_fk_batch
+from mocap.humanoid21.ref_fk import RefSkeleton, fk_batch
 
-RAW = PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw"
-FK_TO_M = 0.0254 / 0.45  # see content_scan.py for derivation
+RAW_DIRS = [
+    PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw",
+    Path("/data1/dev/combatbench_mocap/raw"),
+]
 FPS_SRC = 120.0
+# ASF `:units length 0.45` => positions/lengths in units of 0.45 inch.
+# Display scale is arbitrary; we normalize plots to body height.
+UNIT_TO_INCH = 0.45
 
 
-def bone_edges(skel):
-    """(parent, child) joint pairs for stick-figure drawing."""
-    edges = []
-    for name, bone in skel.bones.items():
-        for ch in bone.children:
-            edges.append((name, ch))
-    return edges
+def _find_raw(name: str) -> Path:
+    for d in RAW_DIRS:
+        p = d / name
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"{name} not found in {RAW_DIRS}")
 
 
 def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
@@ -46,22 +57,25 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
     import imageio.v2 as imageio
 
     subj = clip.split("_")[0]
-    skel = parse_asf(str(RAW / f"{subj}.asf"))
-    frames = parse_amc(str(RAW / f"{clip}.amc"))
-    transforms = compute_fk_batch(skel, frames)
-    edges = bone_edges(skel)
+    skel = RefSkeleton.from_asf(parse_asf(str(_find_raw(f"{subj}.asf"))))
+    frames = parse_amc(str(_find_raw(f"{clip}.amc")))
+    J, D, names = fk_batch(skel, frames)          # (T,N,3) joint & distal positions
 
-    T = len(transforms)
+    T = len(frames)
     idxs = list(range(0, T, every))
 
-    # world positions (m), CMU y-up
-    P = {n: np.array([tr[n][1] for tr in transforms]) * FK_TO_M
-         for n in skel.bones if n in transforms[0]}
+    # distal endpoints for highlighted markers
+    idx = {n: i for i, n in enumerate(names)}
+    marker_bones = (("lhand", "lwrist", "red"), ("rhand", "rwrist", "darkred"),
+                    ("lfoot", "lfoot", "green"), ("rfoot", "rfoot", "darkgreen"),
+                    ("head", "head", "black"))
 
-    # fixed axis limits from global extents
-    allp = np.concatenate([v[idxs] for v in P.values()], axis=0)
+    # fixed axis limits from global extents; normalize around body height
+    allp = np.concatenate([J[idxs].reshape(-1, 3), D[idxs].reshape(-1, 3)], axis=0)
     cx, cz = allp[:, 0].mean(), allp[:, 2].mean()
-    span = max(1.2, float(allp[:, 1].max()) * 0.65)
+    body_h = float(allp[:, 1].max() - allp[:, 1].min())
+    span = max(0.35 * body_h, float(allp[:, 0].std()) * 2.5, 0.3 * body_h)
+    ymax = allp[:, 1].max() * 1.08
 
     desc = ""
     try:
@@ -70,13 +84,12 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
     except Exception:
         pass
 
+    # bone segments: each bone drawn from joint[b] to distal[b]
+    segs = [n for n in names if n != "root"]
+
     out = outdir / f"{clip}.mp4"
     fig, axes = plt.subplots(1, 3, figsize=(9.6, 4.2), dpi=90)
     writer = imageio.get_writer(out, fps=fps)
-    markers = (("lhand", "red"), ("rhand", "darkred"),
-               ("lfoot", "green"), ("rfoot", "darkgreen"),
-               ("head", "black"))
-    # (view horizontal axis index, label): front=x, side=z, top=(x,z)
     views = [(0, "front (x)"), (2, "side (z)")]
     try:
         for t in idxs:
@@ -84,20 +97,19 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
                 ax = axes[vi]
                 ax.clear()
                 ax.set_xlim(-span, span)
-                ax.set_ylim(-0.05, 1.9)
+                ax.set_ylim(-0.05 * ymax, ymax)
                 ax.set_aspect("equal")
                 ax.set_xticks([]); ax.set_yticks([])
                 ax.axhline(0, color="gray", lw=0.6)
-                for a, b in edges:
-                    if a in P and b in P:
-                        pa, pb = P[a][t], P[b][t]
-                        ax.plot([pa[hax] - (cx if hax == 0 else cz),
-                                 pb[hax] - (cx if hax == 0 else cz)],
-                                [pa[1], pb[1]], color="steelblue", lw=1.6)
-                for h, c in markers:
-                    if h in P:
-                        ax.scatter(P[h][t, hax] - (cx if hax == 0 else cz),
-                                   P[h][t, 1], color=c, s=24, zorder=5)
+                off = cx if hax == 0 else cz
+                for b in segs:
+                    i = idx[b]
+                    ax.plot([J[t, i, hax] - off, D[t, i, hax] - off],
+                            [J[t, i, 1], D[t, i, 1]], color="steelblue", lw=1.6)
+                for label_b, draw_b, c in marker_bones:
+                    if draw_b in idx:
+                        ax.scatter(D[t, idx[draw_b], hax] - off,
+                                   D[t, idx[draw_b], 1], color=c, s=24, zorder=5)
                 ax.set_title(label, fontsize=8)
             ax = axes[2]
             ax.clear()
@@ -105,14 +117,13 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
             ax.set_aspect("equal")
             ax.set_xticks([]); ax.set_yticks([])
             ax.axhline(0, color="gray", lw=0.4); ax.axvline(0, color="gray", lw=0.4)
-            for a, b in edges:
-                if a in P and b in P:
-                    pa, pb = P[a][t], P[b][t]
-                    ax.plot([pa[0] - cx, pb[0] - cx],
-                            [pa[2] - cz, pb[2] - cz], color="steelblue", lw=1.2)
-            for h, c in markers:
-                if h in P:
-                    ax.scatter(P[h][t, 0] - cx, P[h][t, 2] - cz,
+            for b in segs:
+                i = idx[b]
+                ax.plot([J[t, i, 0] - cx, D[t, i, 0] - cx],
+                        [J[t, i, 2] - cz, D[t, i, 2] - cz], color="steelblue", lw=1.2)
+            for label_b, draw_b, c in marker_bones:
+                if draw_b in idx:
+                    ax.scatter(D[t, idx[draw_b], 0] - cx, D[t, idx[draw_b], 2] - cz,
                                color=c, s=20, zorder=5)
             ax.set_title("top (x,z)", fontsize=8)
             fig.suptitle(f"{clip}  frame {t}/{T}   [{desc}]", fontsize=9)
@@ -138,7 +149,11 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
 
     if args.all:
-        clips = sorted(p.stem for p in RAW.glob("*.amc"))
+        seen = {}
+        for d in RAW_DIRS:
+            for p in sorted(d.glob("*.amc")):
+                seen.setdefault(p.stem, p)
+        clips = sorted(seen)
     else:
         clips = args.clips
     if not clips:

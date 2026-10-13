@@ -1,1229 +1,1220 @@
 {
-  "13_01": {
-    "frames": 2313,
-    "duration_s": 19.27,
-    "root_height_m": {
-      "min": 0.39,
-      "mean": 0.43,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.33,
-    "root_speed_mean_mps": 0.08,
-    "root_speed_max_mps": 0.43,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.5905278312607752,
-        "peak_t_s": 2.85,
-        "p99_speed_mps": 0.39671647988905717,
-        "mean_speed_mps": 0.1255744372365075
-      },
-      "rhand": {
-        "peak_speed_mps": 0.5283172201074057,
-        "peak_t_s": 12.27,
-        "p99_speed_mps": 0.34024959045267095,
-        "mean_speed_mps": 0.11561719266531255
-      }
-    },
-    "min_foot_height_m": 0.11858302794315662,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_02": {
-    "frames": 3477,
-    "duration_s": 28.98,
-    "root_height_m": {
-      "min": 0.39,
-      "mean": 0.43,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.42,
-    "root_speed_mean_mps": 0.08,
-    "root_speed_max_mps": 0.37,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.7055169830506485,
-        "peak_t_s": 20.61,
-        "p99_speed_mps": 0.42337459697976265,
-        "mean_speed_mps": 0.12663200610888278
-      },
-      "rhand": {
-        "peak_speed_mps": 0.6897449256468552,
-        "peak_t_s": 0.57,
-        "p99_speed_mps": 0.3897914322973832,
-        "mean_speed_mps": 0.11324175701456686
-      }
-    },
-    "min_foot_height_m": 0.09863872694991421,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_03": {
-    "frames": 3715,
-    "duration_s": 30.96,
-    "root_height_m": {
-      "min": 0.39,
-      "mean": 0.42,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.37,
-    "root_speed_mean_mps": 0.07,
-    "root_speed_max_mps": 0.43,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.0554327438885076,
-        "peak_t_s": 23.6,
-        "p99_speed_mps": 0.4641483165739713,
-        "mean_speed_mps": 0.11628981313239481
-      },
-      "rhand": {
-        "peak_speed_mps": 1.0470913807808195,
-        "peak_t_s": 23.61,
-        "p99_speed_mps": 0.4219635395231277,
-        "mean_speed_mps": 0.10380153621353799
-      }
-    },
-    "min_foot_height_m": 0.11602753707955649,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_04": {
-    "frames": 4759,
-    "duration_s": 39.66,
-    "root_height_m": {
-      "min": 0.24,
-      "mean": 0.33,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.37,
-    "root_speed_mean_mps": 0.08,
-    "root_speed_max_mps": 0.49,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.9581587560804515,
-        "peak_t_s": 2.71,
-        "p99_speed_mps": 0.5862762472304457,
-        "mean_speed_mps": 0.1638547802810541
-      },
-      "rhand": {
-        "peak_speed_mps": 0.875040960515643,
-        "peak_t_s": 2.71,
-        "p99_speed_mps": 0.498506142599136,
-        "mean_speed_mps": 0.14556724811909483
-      }
-    },
-    "min_foot_height_m": 0.10230687490510806,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_05": {
-    "frames": 4403,
-    "duration_s": 36.69,
-    "root_height_m": {
-      "min": 0.24,
-      "mean": 0.32,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.55,
-    "root_speed_mean_mps": 0.08,
-    "root_speed_max_mps": 0.44,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.0789035847029578,
-        "peak_t_s": 26.01,
-        "p99_speed_mps": 0.5381902818111233,
-        "mean_speed_mps": 0.14244685360225984
-      },
-      "rhand": {
-        "peak_speed_mps": 0.6971945072038186,
-        "peak_t_s": 24.78,
-        "p99_speed_mps": 0.5364726167819435,
-        "mean_speed_mps": 0.1381057147934237
-      }
-    },
-    "min_foot_height_m": 0.0939501344727297,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_06": {
-    "frames": 4413,
-    "duration_s": 36.77,
-    "root_height_m": {
-      "min": 0.25,
-      "mean": 0.31,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.56,
-    "root_speed_mean_mps": 0.07,
-    "root_speed_max_mps": 0.42,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.7620829716093924,
-        "peak_t_s": 25.54,
-        "p99_speed_mps": 0.6152985496893324,
-        "mean_speed_mps": 0.1443045031621126
-      },
-      "rhand": {
-        "peak_speed_mps": 0.7070739584102487,
-        "peak_t_s": 14.28,
-        "p99_speed_mps": 0.525728985758302,
-        "mean_speed_mps": 0.14227457120797204
-      }
-    },
-    "min_foot_height_m": 0.08452532345523361,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_07": {
-    "frames": 1452,
-    "duration_s": 12.1,
-    "root_height_m": {
-      "min": 0.48,
-      "mean": 0.48,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.01,
-    "root_speed_mean_mps": 0.01,
-    "root_speed_max_mps": 0.1,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.3171060273629454,
-        "peak_t_s": 12.0,
-        "p99_speed_mps": 0.33853201957069945,
-        "mean_speed_mps": 0.05069513502612626
-      },
-      "rhand": {
-        "peak_speed_mps": 0.7840359311944644,
-        "peak_t_s": 11.53,
-        "p99_speed_mps": 0.16927226360564865,
-        "mean_speed_mps": 0.039707174010762805
-      }
-    },
-    "min_foot_height_m": 0.13866911544761798,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_08": {
-    "frames": 1603,
-    "duration_s": 13.36,
-    "root_height_m": {
-      "min": 0.48,
-      "mean": 0.48,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.06,
-    "root_speed_mean_mps": 0.01,
-    "root_speed_max_mps": 0.13,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.6987749477652759,
-        "peak_t_s": 3.12,
-        "p99_speed_mps": 0.27317910124178,
-        "mean_speed_mps": 0.05848812330264185
-      },
-      "rhand": {
-        "peak_speed_mps": 0.48317944003942165,
-        "peak_t_s": 3.12,
-        "p99_speed_mps": 0.1844223055567633,
-        "mean_speed_mps": 0.05694374781019377
-      }
-    },
-    "min_foot_height_m": 0.1353713179463719,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_09": {
-    "frames": 1102,
-    "duration_s": 9.18,
-    "root_height_m": {
-      "min": 0.48,
-      "mean": 0.48,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.02,
-    "root_speed_mean_mps": 0.01,
-    "root_speed_max_mps": 0.18,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.28810097703877774,
-        "peak_t_s": 4.63,
-        "p99_speed_mps": 0.16643290034532904,
-        "mean_speed_mps": 0.03719127431214441
-      },
-      "rhand": {
-        "peak_speed_mps": 0.3127797855809086,
-        "peak_t_s": 8.32,
-        "p99_speed_mps": 0.2582600056021538,
-        "mean_speed_mps": 0.0772898613432686
-      }
-    },
-    "min_foot_height_m": 0.13938592223351956,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_10": {
-    "frames": 2396,
-    "duration_s": 19.97,
-    "root_height_m": {
-      "min": 0.44,
-      "mean": 0.49,
-      "max": 0.54
-    },
-    "root_horiz_displacement_m": 0.33,
-    "root_speed_mean_mps": 0.12,
-    "root_speed_max_mps": 0.44,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.0543014207227273,
-        "peak_t_s": 13.93,
-        "p99_speed_mps": 0.6951029325282815,
-        "mean_speed_mps": 0.25092716585995795
-      },
-      "rhand": {
-        "peak_speed_mps": 2.832821203606614,
-        "peak_t_s": 9.79,
-        "p99_speed_mps": 0.672975331416249,
-        "mean_speed_mps": 0.23060520816744848
-      }
-    },
-    "min_foot_height_m": 0.0640816474300127,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_11": {
-    "frames": 415,
-    "duration_s": 3.46,
-    "root_height_m": {
-      "min": 0.38,
-      "mean": 0.47,
-      "max": 0.59
-    },
-    "root_horiz_displacement_m": 0.63,
-    "root_speed_mean_mps": 0.19,
-    "root_speed_max_mps": 1.16,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.07329375191393,
-        "peak_t_s": 1.93,
-        "p99_speed_mps": 2.0301055056023767,
-        "mean_speed_mps": 0.3145123029472054
-      },
-      "rhand": {
-        "peak_speed_mps": 2.0464176178541376,
-        "peak_t_s": 1.95,
-        "p99_speed_mps": 1.899970276536696,
-        "mean_speed_mps": 0.3063596349210374
-      }
-    },
-    "min_foot_height_m": 0.0296491271813038,
-    "foot_contact_frac": 0.06,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_12": {
-    "frames": 3434,
-    "duration_s": 28.62,
-    "root_height_m": {
-      "min": 0.44,
-      "mean": 0.49,
-      "max": 0.55
-    },
-    "root_horiz_displacement_m": 0.27,
-    "root_speed_mean_mps": 0.1,
-    "root_speed_max_mps": 0.55,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.6269689622191144,
-        "peak_t_s": 11.04,
-        "p99_speed_mps": 0.6759846806384113,
-        "mean_speed_mps": 0.20264953157515037
-      },
-      "rhand": {
-        "peak_speed_mps": 1.3694211569103047,
-        "peak_t_s": 16.81,
-        "p99_speed_mps": 0.6557984226984397,
-        "mean_speed_mps": 0.1885199987939252
-      }
-    },
-    "min_foot_height_m": 0.07497577018680485,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_13": {
-    "frames": 439,
-    "duration_s": 3.66,
-    "root_height_m": {
-      "min": 0.35,
-      "mean": 0.47,
-      "max": 0.68
-    },
-    "root_horiz_displacement_m": 0.63,
-    "root_speed_mean_mps": 0.19,
-    "root_speed_max_mps": 1.33,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.1311255337291577,
-        "peak_t_s": 1.63,
-        "p99_speed_mps": 2.0197364059011593,
-        "mean_speed_mps": 0.4047305107911289
-      },
-      "rhand": {
-        "peak_speed_mps": 2.2212259316681866,
-        "peak_t_s": 1.65,
-        "p99_speed_mps": 2.1128697951458726,
-        "mean_speed_mps": 0.38100904579742334
-      }
-    },
-    "min_foot_height_m": 0.03455998057583465,
-    "foot_contact_frac": 0.16,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_14": {
-    "frames": 2424,
-    "duration_s": 20.2,
-    "root_height_m": {
-      "min": 0.39,
-      "mean": 0.46,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.37,
-    "root_speed_mean_mps": 0.18,
-    "root_speed_max_mps": 0.46,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 6.601941911571194,
-        "peak_t_s": 7.5,
-        "p99_speed_mps": 0.8609355726928976,
-        "mean_speed_mps": 0.29400287949982695
-      },
-      "rhand": {
-        "peak_speed_mps": 1.8668387844234553,
-        "peak_t_s": 7.5,
-        "p99_speed_mps": 0.9695232947713056,
-        "mean_speed_mps": 0.343431771638775
-      }
-    },
-    "min_foot_height_m": 0.05635469217771505,
-    "foot_contact_frac": 0.01,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_15": {
-    "frames": 2382,
-    "duration_s": 19.85,
-    "root_height_m": {
-      "min": 0.42,
-      "mean": 0.47,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.39,
-    "root_speed_mean_mps": 0.17,
-    "root_speed_max_mps": 0.53,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.0008080299771431,
-        "peak_t_s": 2.77,
-        "p99_speed_mps": 0.8826862827293324,
-        "mean_speed_mps": 0.29372948345939215
-      },
-      "rhand": {
-        "peak_speed_mps": 1.5350206217268747,
-        "peak_t_s": 9.59,
-        "p99_speed_mps": 0.9777689654409079,
-        "mean_speed_mps": 0.36702466988427673
-      }
-    },
-    "min_foot_height_m": 0.09823818933087625,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_16": {
-    "frames": 2275,
-    "duration_s": 18.96,
-    "root_height_m": {
-      "min": 0.43,
-      "mean": 0.47,
-      "max": 0.51
-    },
-    "root_horiz_displacement_m": 0.31,
-    "root_speed_mean_mps": 0.16,
-    "root_speed_max_mps": 0.44,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.2318162546473124,
-        "peak_t_s": 8.49,
-        "p99_speed_mps": 1.062250808946831,
-        "mean_speed_mps": 0.34320003560687146
-      },
-      "rhand": {
-        "peak_speed_mps": 3.0552318328759753,
-        "peak_t_s": 12.39,
-        "p99_speed_mps": 1.1075097931805524,
-        "mean_speed_mps": 0.4163767549391537
-      }
-    },
-    "min_foot_height_m": 0.08804967104889086,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_17": {
-    "frames": 4840,
-    "duration_s": 40.33,
-    "root_height_m": {
-      "min": 0.34,
-      "mean": 0.44,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.32,
-    "root_speed_mean_mps": 0.18,
-    "root_speed_max_mps": 0.59,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.4088549027315063,
-        "peak_t_s": 37.62,
-        "p99_speed_mps": 1.0776465841092098,
-        "mean_speed_mps": 0.35216628942294126
-      },
-      "rhand": {
-        "peak_speed_mps": 5.702349513771663,
-        "peak_t_s": 5.95,
-        "p99_speed_mps": 1.5545770843999775,
-        "mean_speed_mps": 0.4182679540527347
-      }
-    },
-    "min_foot_height_m": -0.01883152340679884,
-    "foot_contact_frac": 0.14,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_18": {
-    "frames": 3000,
-    "duration_s": 25.0,
-    "root_height_m": {
-      "min": 0.34,
-      "mean": 0.44,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.32,
-    "root_speed_mean_mps": 0.15,
-    "root_speed_max_mps": 0.5,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.0303023355095036,
-        "peak_t_s": 16.66,
-        "p99_speed_mps": 1.0168205077346981,
-        "mean_speed_mps": 0.3371132991181902
-      },
-      "rhand": {
-        "peak_speed_mps": 2.7159430256583934,
-        "peak_t_s": 10.27,
-        "p99_speed_mps": 1.2421739636842088,
-        "mean_speed_mps": 0.40014549760576157
-      }
-    },
-    "min_foot_height_m": -0.02770400544289678,
-    "foot_contact_frac": 0.18,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_19": {
-    "frames": 426,
-    "duration_s": 3.55,
-    "root_height_m": {
-      "min": 0.35,
-      "mean": 0.46,
-      "max": 0.63
-    },
-    "root_horiz_displacement_m": 0.72,
-    "root_speed_mean_mps": 0.22,
-    "root_speed_max_mps": 1.23,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.750779078606305,
-        "peak_t_s": 2.65,
-        "p99_speed_mps": 2.041842639913327,
-        "mean_speed_mps": 0.3954625024251761
-      },
-      "rhand": {
-        "peak_speed_mps": 1.8418229541963345,
-        "peak_t_s": 2.07,
-        "p99_speed_mps": 1.7703465340344648,
-        "mean_speed_mps": 0.3737368472960862
-      }
-    },
-    "min_foot_height_m": 0.024415431220073655,
-    "foot_contact_frac": 0.14,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_20": {
-    "frames": 5719,
-    "duration_s": 47.66,
-    "root_height_m": {
-      "min": 0.44,
-      "mean": 0.47,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.22,
-    "root_speed_mean_mps": 0.09,
-    "root_speed_max_mps": 0.35,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.7071930946497078,
-        "peak_t_s": 42.73,
-        "p99_speed_mps": 0.4118292914228386,
-        "mean_speed_mps": 0.15210253476885363
-      },
-      "rhand": {
-        "peak_speed_mps": 1.481253460274969,
-        "peak_t_s": 6.03,
-        "p99_speed_mps": 0.5527744724300848,
-        "mean_speed_mps": 0.22152097801446072
-      }
-    },
-    "min_foot_height_m": 0.10431548148270518,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_21": {
-    "frames": 5439,
-    "duration_s": 45.33,
-    "root_height_m": {
-      "min": 0.45,
-      "mean": 0.47,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.17,
-    "root_speed_mean_mps": 0.06,
-    "root_speed_max_mps": 0.23,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.5849197615771735,
-        "peak_t_s": 44.4,
-        "p99_speed_mps": 0.471552798336172,
-        "mean_speed_mps": 0.1576302691955722
-      },
-      "rhand": {
-        "peak_speed_mps": 1.073438548847933,
-        "peak_t_s": 0.04,
-        "p99_speed_mps": 0.5565877982553167,
-        "mean_speed_mps": 0.1747012062680764
-      }
-    },
-    "min_foot_height_m": 0.10876773093664688,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_22": {
-    "frames": 4962,
-    "duration_s": 41.35,
-    "root_height_m": {
-      "min": 0.45,
-      "mean": 0.48,
-      "max": 0.51
-    },
-    "root_horiz_displacement_m": 0.22,
-    "root_speed_mean_mps": 0.07,
-    "root_speed_max_mps": 0.24,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 0.6505691239488798,
-        "peak_t_s": 30.68,
-        "p99_speed_mps": 0.3628275236603869,
-        "mean_speed_mps": 0.10845985595865268
-      },
-      "rhand": {
-        "peak_speed_mps": 0.8682766576893745,
-        "peak_t_s": 10.73,
-        "p99_speed_mps": 0.6531147250180999,
-        "mean_speed_mps": 0.21607398782676585
-      }
-    },
-    "min_foot_height_m": 0.09993199393660429,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_23": {
-    "frames": 4017,
-    "duration_s": 33.48,
-    "root_height_m": {
-      "min": 0.46,
-      "mean": 0.48,
-      "max": 0.49
-    },
-    "root_horiz_displacement_m": 0.45,
-    "root_speed_mean_mps": 0.11,
-    "root_speed_max_mps": 0.48,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.1028093081649166,
-        "peak_t_s": 8.4,
-        "p99_speed_mps": 0.45502989326575055,
-        "mean_speed_mps": 0.1769656449111499
-      },
-      "rhand": {
-        "peak_speed_mps": 1.1397114463031226,
-        "peak_t_s": 8.4,
-        "p99_speed_mps": 0.5133474470213748,
-        "mean_speed_mps": 0.19616734432460053
-      }
-    },
-    "min_foot_height_m": 0.09611810946999597,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "13_24": {
-    "frames": 4034,
-    "duration_s": 33.62,
-    "root_height_m": {
-      "min": 0.46,
-      "mean": 0.48,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.55,
-    "root_speed_mean_mps": 0.13,
-    "root_speed_max_mps": 0.48,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.0205627240317643,
-        "peak_t_s": 2.84,
-        "p99_speed_mps": 0.5108967867774138,
-        "mean_speed_mps": 0.17899336447804617
-      },
-      "rhand": {
-        "peak_speed_mps": 1.131114984218161,
-        "peak_t_s": 2.84,
-        "p99_speed_mps": 0.5226350611384263,
-        "mean_speed_mps": 0.19472779560705267
-      }
-    },
-    "min_foot_height_m": 0.10381399494748382,
-    "foot_contact_frac": 0.0,
-    "provisional_labels": [
-      "in_place",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "14_01": {
-    "frames": 5594,
-    "duration_s": 46.62,
-    "root_height_m": {
-      "min": 0.34,
-      "mean": 0.42,
-      "max": 0.47
-    },
-    "root_horiz_displacement_m": 0.39,
-    "root_speed_mean_mps": 0.19,
-    "root_speed_max_mps": 0.56,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 1.8389188195418527,
-        "peak_t_s": 3.09,
-        "p99_speed_mps": 0.9132099502143519,
-        "mean_speed_mps": 0.3233180936475997
-      },
-      "rhand": {
-        "peak_speed_mps": 4.230655630154985,
-        "peak_t_s": 15.63,
-        "p99_speed_mps": 1.2193860279014617,
-        "mean_speed_mps": 0.3958240268075879
-      }
-    },
-    "min_foot_height_m": 0.025699681141936628,
-    "foot_contact_frac": 0.19,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "14_02": {
-    "frames": 5423,
-    "duration_s": 45.19,
-    "root_height_m": {
-      "min": 0.31,
-      "mean": 0.43,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.37,
-    "root_speed_mean_mps": 0.22,
-    "root_speed_max_mps": 0.66,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.8961733670787906,
-        "peak_t_s": 43.41,
-        "p99_speed_mps": 1.140143668970465,
-        "mean_speed_mps": 0.38072864957775415
-      },
-      "rhand": {
-        "peak_speed_mps": 3.4382703843737894,
-        "peak_t_s": 41.27,
-        "p99_speed_mps": 1.2471109343369553,
-        "mean_speed_mps": 0.424085850727746
-      }
-    },
-    "min_foot_height_m": 0.02536255843653859,
-    "foot_contact_frac": 0.06,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "14_03": {
-    "frames": 5536,
-    "duration_s": 46.13,
-    "root_height_m": {
-      "min": 0.32,
-      "mean": 0.43,
-      "max": 0.48
-    },
-    "root_horiz_displacement_m": 0.4,
-    "root_speed_mean_mps": 0.22,
-    "root_speed_max_mps": 0.83,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.7121761968960993,
-        "peak_t_s": 44.92,
-        "p99_speed_mps": 1.0728783990793016,
-        "mean_speed_mps": 0.3760253383595749
-      },
-      "rhand": {
-        "peak_speed_mps": 1.993179679324683,
-        "peak_t_s": 36.42,
-        "p99_speed_mps": 1.381239528237071,
-        "mean_speed_mps": 0.42613644212323976
-      }
-    },
-    "min_foot_height_m": -0.0018982301496639643,
-    "foot_contact_frac": 0.15,
-    "provisional_labels": [
-      "locomotion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "15_13": {
-    "frames": 9330,
-    "duration_s": 77.75,
-    "root_height_m": {
-      "min": 0.38,
-      "mean": 0.43,
-      "max": 0.46
-    },
-    "root_horiz_displacement_m": 0.34,
-    "root_speed_mean_mps": 0.16,
-    "root_speed_max_mps": 0.74,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 2.035315929507507,
-        "peak_t_s": 18.63,
-        "p99_speed_mps": 0.9828526888233953,
-        "mean_speed_mps": 0.28011372412944524
-      },
-      "rhand": {
-        "peak_speed_mps": 4.195261451910854,
-        "peak_t_s": 26.12,
-        "p99_speed_mps": 1.1645046589924042,
-        "mean_speed_mps": 0.31836257515782884
-      }
-    },
-    "min_foot_height_m": 0.05959572369124598,
-    "foot_contact_frac": 0.03,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
-  "17_10": {
-    "frames": 2783,
-    "duration_s": 23.19,
-    "root_height_m": {
-      "min": 0.27,
-      "mean": 0.41,
-      "max": 0.47
-    },
-    "root_horiz_displacement_m": 0.81,
-    "root_speed_mean_mps": 0.29,
-    "root_speed_max_mps": 0.81,
-    "hands": {
-      "lhand": {
-        "peak_speed_mps": 3.6042415307501035,
-        "peak_t_s": 2.0,
-        "p99_speed_mps": 1.4129553807091986,
-        "mean_speed_mps": 0.4802964977821649
-      },
-      "rhand": {
-        "peak_speed_mps": 2.608299969893268,
-        "peak_t_s": 19.12,
-        "p99_speed_mps": 1.4931134484979267,
-        "mean_speed_mps": 0.4946347630264908
-      }
-    },
-    "min_foot_height_m": -0.022192463113148053,
-    "foot_contact_frac": 0.11,
-    "provisional_labels": [
-      "locomotion",
-      "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
-    ]
-  },
   "02_01": {
     "frames": 343,
     "duration_s": 2.86,
     "root_height_m": {
-      "min": 0.42,
-      "mean": 0.44,
-      "max": 0.45
+      "min": 0.82,
+      "mean": 0.85,
+      "max": 0.88
     },
-    "root_horiz_displacement_m": 1.51,
-    "root_speed_mean_mps": 0.53,
-    "root_speed_max_mps": 0.72,
+    "root_horiz_displacement_m": 2.95,
+    "root_speed_mean_mps": 1.04,
+    "root_speed_max_mps": 1.39,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 0.9740202496042137,
-        "peak_t_s": 2.66,
-        "p99_speed_mps": 0.8590067577199989,
-        "mean_speed_mps": 0.5442771349645955
+        "peak_speed_mps": 2.220526403442319,
+        "peak_t_s": 2.4,
+        "p99_speed_mps": 2.0767689106590628,
+        "mean_speed_mps": 1.1577436928518394
       },
       "rhand": {
-        "peak_speed_mps": 1.3516896059777717,
-        "peak_t_s": 2.76,
-        "p99_speed_mps": 1.1915321091228388,
-        "mean_speed_mps": 0.5800312374289324
+        "peak_speed_mps": 5.026058966266929,
+        "peak_t_s": 2.83,
+        "p99_speed_mps": 4.200996533710251,
+        "mean_speed_mps": 1.3124866197717477
       }
     },
-    "min_foot_height_m": 0.06802565075513511,
-    "foot_contact_frac": 0.08,
+    "min_foot_height_m": -0.01,
+    "foot_contact_frac": 0.91,
     "provisional_labels": [
       "locomotion",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "02_02": {
     "frames": 298,
     "duration_s": 2.48,
     "root_height_m": {
-      "min": 0.4,
-      "mean": 0.43,
-      "max": 0.45
+      "min": 0.79,
+      "mean": 0.84,
+      "max": 0.87
     },
-    "root_horiz_displacement_m": 1.82,
-    "root_speed_mean_mps": 0.73,
-    "root_speed_max_mps": 1.07,
+    "root_horiz_displacement_m": 3.54,
+    "root_speed_mean_mps": 1.43,
+    "root_speed_max_mps": 2.09,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 1.3470488224823896,
-        "peak_t_s": 1.02,
-        "p99_speed_mps": 1.172875829049423,
-        "mean_speed_mps": 0.7490444378392719
+        "peak_speed_mps": 4.88296985173848,
+        "peak_t_s": 0.01,
+        "p99_speed_mps": 3.747481153930807,
+        "mean_speed_mps": 1.6078128604323314
       },
       "rhand": {
-        "peak_speed_mps": 1.6822571808245605,
-        "peak_t_s": 2.42,
-        "p99_speed_mps": 1.1933685139529981,
-        "mean_speed_mps": 0.7698741033159878
+        "peak_speed_mps": 3.319996032705982,
+        "peak_t_s": 2.19,
+        "p99_speed_mps": 2.99130364364097,
+        "mean_speed_mps": 1.617169862918153
       }
     },
-    "min_foot_height_m": 0.05444016192118705,
-    "foot_contact_frac": 0.15,
+    "min_foot_height_m": -0.03,
+    "foot_contact_frac": 0.72,
     "provisional_labels": [
       "locomotion",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "02_05": {
     "frames": 1854,
     "duration_s": 15.45,
     "root_height_m": {
-      "min": 0.37,
-      "mean": 0.43,
-      "max": 0.45
+      "min": 0.73,
+      "mean": 0.84,
+      "max": 0.88
     },
-    "root_horiz_displacement_m": 0.07,
-    "root_speed_mean_mps": 0.05,
-    "root_speed_max_mps": 0.24,
+    "root_horiz_displacement_m": 0.14,
+    "root_speed_mean_mps": 0.1,
+    "root_speed_max_mps": 0.46,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 0.5722126528960344,
-        "peak_t_s": 14.46,
-        "p99_speed_mps": 0.30905256946832943,
-        "mean_speed_mps": 0.11930583065151126
+        "peak_speed_mps": 2.5362825052385722,
+        "peak_t_s": 14.48,
+        "p99_speed_mps": 1.1007509090827772,
+        "mean_speed_mps": 0.4230061511436253
       },
       "rhand": {
-        "peak_speed_mps": 0.93267316513972,
-        "peak_t_s": 14.48,
-        "p99_speed_mps": 0.49690424897399904,
-        "mean_speed_mps": 0.2241465957328011
+        "peak_speed_mps": 5.041573726014139,
+        "peak_t_s": 8.61,
+        "p99_speed_mps": 2.479570028996656,
+        "mean_speed_mps": 0.8373857197993668
       }
     },
-    "min_foot_height_m": 0.040854574570268615,
-    "foot_contact_frac": 0.09,
+    "min_foot_height_m": -0.03,
+    "foot_contact_frac": 0.9,
     "provisional_labels": [
       "in_place",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "07_01": {
     "frames": 316,
     "duration_s": 2.63,
     "root_height_m": {
-      "min": 0.4,
-      "mean": 0.43,
-      "max": 0.44
+      "min": 0.78,
+      "mean": 0.83,
+      "max": 0.87
     },
-    "root_horiz_displacement_m": 1.61,
-    "root_speed_mean_mps": 0.62,
-    "root_speed_max_mps": 0.88,
+    "root_horiz_displacement_m": 3.14,
+    "root_speed_mean_mps": 1.2,
+    "root_speed_max_mps": 1.71,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 1.3340296333937487,
-        "peak_t_s": 2.52,
-        "p99_speed_mps": 1.2109051544915044,
-        "mean_speed_mps": 0.6738240153193238
+        "peak_speed_mps": 4.961073800347338,
+        "peak_t_s": 1.83,
+        "p99_speed_mps": 4.442794794175826,
+        "mean_speed_mps": 1.7091419592469193
       },
       "rhand": {
-        "peak_speed_mps": 1.4649785934358865,
-        "peak_t_s": 1.1,
-        "p99_speed_mps": 1.1640321938153615,
-        "mean_speed_mps": 0.6493395130710718
+        "peak_speed_mps": 4.864048048978528,
+        "peak_t_s": 0.11,
+        "p99_speed_mps": 3.743747022547941,
+        "mean_speed_mps": 1.5302746316806666
       }
     },
-    "min_foot_height_m": 0.06306717021394502,
-    "foot_contact_frac": 0.06,
+    "min_foot_height_m": -0.02,
+    "foot_contact_frac": 0.71,
     "provisional_labels": [
       "locomotion",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "07_06": {
     "frames": 417,
     "duration_s": 3.48,
     "root_height_m": {
-      "min": 0.4,
-      "mean": 0.42,
-      "max": 0.44
+      "min": 0.78,
+      "mean": 0.82,
+      "max": 0.86
     },
-    "root_horiz_displacement_m": 1.93,
-    "root_speed_mean_mps": 0.56,
-    "root_speed_max_mps": 1.01,
+    "root_horiz_displacement_m": 3.76,
+    "root_speed_mean_mps": 1.09,
+    "root_speed_max_mps": 1.96,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 1.7391059104966518,
+        "peak_speed_mps": 6.161758594399885,
         "peak_t_s": 3.24,
-        "p99_speed_mps": 1.362342672664657,
-        "mean_speed_mps": 0.6108736759921113
+        "p99_speed_mps": 3.8941791499803613,
+        "mean_speed_mps": 1.5160946933656754
       },
       "rhand": {
-        "peak_speed_mps": 1.6170599529332386,
-        "peak_t_s": 3.2,
-        "p99_speed_mps": 1.3253339835231945,
-        "mean_speed_mps": 0.595283415184553
+        "peak_speed_mps": 9.169104665363783,
+        "peak_t_s": 3.24,
+        "p99_speed_mps": 5.562490424014461,
+        "mean_speed_mps": 1.4255839653129594
       }
     },
-    "min_foot_height_m": 0.06442247403948934,
-    "foot_contact_frac": 0.08,
+    "min_foot_height_m": -0.03,
+    "foot_contact_frac": 0.78,
     "provisional_labels": [
       "locomotion",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "07_12": {
     "frames": 245,
     "duration_s": 2.04,
     "root_height_m": {
-      "min": 0.4,
-      "mean": 0.42,
-      "max": 0.44
+      "min": 0.77,
+      "mean": 0.81,
+      "max": 0.86
     },
-    "root_horiz_displacement_m": 1.76,
-    "root_speed_mean_mps": 0.87,
-    "root_speed_max_mps": 1.23,
+    "root_horiz_displacement_m": 3.43,
+    "root_speed_mean_mps": 1.69,
+    "root_speed_max_mps": 2.41,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 2.385386342289138,
+        "peak_speed_mps": 11.334968718616443,
         "peak_t_s": 2.0,
-        "p99_speed_mps": 1.5917983348662652,
-        "mean_speed_mps": 0.9222656174161613
+        "p99_speed_mps": 4.6501129815507305,
+        "mean_speed_mps": 2.0569562374447603
       },
       "rhand": {
-        "peak_speed_mps": 2.5070682473984816,
+        "peak_speed_mps": 9.965717167998404,
         "peak_t_s": 2.0,
-        "p99_speed_mps": 1.3637485462787617,
-        "mean_speed_mps": 0.9011269985799584
+        "p99_speed_mps": 5.16702411145083,
+        "mean_speed_mps": 2.0056824996939007
       }
     },
-    "min_foot_height_m": 0.04963358070545554,
-    "foot_contact_frac": 0.11,
+    "min_foot_height_m": -0.04,
+    "foot_contact_frac": 0.46,
     "provisional_labels": [
       "locomotion",
-      "upright",
-      "feet_often_off_ground"
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_01": {
+    "frames": 2313,
+    "duration_s": 19.27,
+    "root_height_m": {
+      "min": 0.77,
+      "mean": 0.85,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.65,
+    "root_speed_mean_mps": 0.16,
+    "root_speed_max_mps": 0.84,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 5.052004124575898,
+        "peak_t_s": 5.36,
+        "p99_speed_mps": 2.3802376935889065,
+        "mean_speed_mps": 0.47186517991544535
+      },
+      "rhand": {
+        "peak_speed_mps": 3.081551297773499,
+        "peak_t_s": 12.22,
+        "p99_speed_mps": 1.5813608348446346,
+        "mean_speed_mps": 0.42125315497633364
+      }
+    },
+    "min_foot_height_m": 0.0,
+    "foot_contact_frac": 0.77,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_02": {
+    "frames": 3477,
+    "duration_s": 28.98,
+    "root_height_m": {
+      "min": 0.77,
+      "mean": 0.83,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.83,
+    "root_speed_mean_mps": 0.16,
+    "root_speed_max_mps": 0.73,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 3.8048121714618044,
+        "peak_t_s": 5.42,
+        "p99_speed_mps": 2.001309832169317,
+        "mean_speed_mps": 0.42940846159184304
+      },
+      "rhand": {
+        "peak_speed_mps": 3.257570545233268,
+        "peak_t_s": 13.32,
+        "p99_speed_mps": 1.4837157578376448,
+        "mean_speed_mps": 0.3680892740736699
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.98,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_03": {
+    "frames": 3715,
+    "duration_s": 30.96,
+    "root_height_m": {
+      "min": 0.76,
+      "mean": 0.82,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.72,
+    "root_speed_mean_mps": 0.13,
+    "root_speed_max_mps": 0.84,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 6.419076908100326,
+        "peak_t_s": 23.6,
+        "p99_speed_mps": 2.1265710523393535,
+        "mean_speed_mps": 0.48171434947383057
+      },
+      "rhand": {
+        "peak_speed_mps": 5.8140031727821855,
+        "peak_t_s": 23.6,
+        "p99_speed_mps": 1.8872078861998711,
+        "mean_speed_mps": 0.40793039091971334
+      }
+    },
+    "min_foot_height_m": 0.0,
+    "foot_contact_frac": 0.82,
+    "provisional_labels": [
+      "in_place",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_04": {
+    "frames": 4759,
+    "duration_s": 39.66,
+    "root_height_m": {
+      "min": 0.47,
+      "mean": 0.64,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.73,
+    "root_speed_mean_mps": 0.16,
+    "root_speed_max_mps": 0.95,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 6.042802934539905,
+        "peak_t_s": 2.63,
+        "p99_speed_mps": 3.1793758708790247,
+        "mean_speed_mps": 0.6464043848720151
+      },
+      "rhand": {
+        "peak_speed_mps": 6.599237927308335,
+        "peak_t_s": 2.69,
+        "p99_speed_mps": 2.144398603760753,
+        "mean_speed_mps": 0.5317898684435098
+      }
+    },
+    "min_foot_height_m": -0.05,
+    "foot_contact_frac": 0.96,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_05": {
+    "frames": 4403,
+    "duration_s": 36.69,
+    "root_height_m": {
+      "min": 0.48,
+      "mean": 0.63,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 1.06,
+    "root_speed_mean_mps": 0.15,
+    "root_speed_max_mps": 0.85,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 5.415958967916902,
+        "peak_t_s": 26.78,
+        "p99_speed_mps": 3.187880404907799,
+        "mean_speed_mps": 0.5899305031358345
+      },
+      "rhand": {
+        "peak_speed_mps": 2.7802467498606807,
+        "peak_t_s": 16.17,
+        "p99_speed_mps": 1.7040463774322128,
+        "mean_speed_mps": 0.49589901705870354
+      }
+    },
+    "min_foot_height_m": -0.05,
+    "foot_contact_frac": 0.78,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_06": {
+    "frames": 4413,
+    "duration_s": 36.77,
+    "root_height_m": {
+      "min": 0.48,
+      "mean": 0.6,
+      "max": 0.96
+    },
+    "root_horiz_displacement_m": 1.09,
+    "root_speed_mean_mps": 0.13,
+    "root_speed_max_mps": 0.82,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 9.407794954844546,
+        "peak_t_s": 12.55,
+        "p99_speed_mps": 2.780845313919391,
+        "mean_speed_mps": 0.6263278712458786
+      },
+      "rhand": {
+        "peak_speed_mps": 3.9861898926876473,
+        "peak_t_s": 35.94,
+        "p99_speed_mps": 1.8606781177766234,
+        "mean_speed_mps": 0.5173772764947232
+      }
+    },
+    "min_foot_height_m": -0.06,
+    "foot_contact_frac": 0.74,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_07": {
+    "frames": 1452,
+    "duration_s": 12.1,
+    "root_height_m": {
+      "min": 0.93,
+      "mean": 0.94,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.02,
+    "root_speed_mean_mps": 0.02,
+    "root_speed_max_mps": 0.2,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 5.627129459321735,
+        "peak_t_s": 12.0,
+        "p99_speed_mps": 1.4204531220893437,
+        "mean_speed_mps": 0.2998934818671277
+      },
+      "rhand": {
+        "peak_speed_mps": 2.2728541033248955,
+        "peak_t_s": 11.53,
+        "p99_speed_mps": 0.915949367745336,
+        "mean_speed_mps": 0.1945750882066904
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 1.0,
+    "provisional_labels": [
+      "in_place",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_08": {
+    "frames": 1603,
+    "duration_s": 13.36,
+    "root_height_m": {
+      "min": 0.93,
+      "mean": 0.93,
+      "max": 0.93
+    },
+    "root_horiz_displacement_m": 0.12,
+    "root_speed_mean_mps": 0.03,
+    "root_speed_max_mps": 0.25,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 2.173929911400318,
+        "peak_t_s": 3.16,
+        "p99_speed_mps": 1.0125107128968893,
+        "mean_speed_mps": 0.2898603174509814
+      },
+      "rhand": {
+        "peak_speed_mps": 1.7781282299337267,
+        "peak_t_s": 3.12,
+        "p99_speed_mps": 0.8574586824221515,
+        "mean_speed_mps": 0.24390507302065476
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 1.0,
+    "provisional_labels": [
+      "in_place",
+      "upright"
+    ]
+  },
+  "13_09": {
+    "frames": 1102,
+    "duration_s": 9.18,
+    "root_height_m": {
+      "min": 0.93,
+      "mean": 0.93,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.04,
+    "root_speed_mean_mps": 0.02,
+    "root_speed_max_mps": 0.35,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 0.9966812248493918,
+        "peak_t_s": 4.62,
+        "p99_speed_mps": 0.6052459794971808,
+        "mean_speed_mps": 0.16113500501707337
+      },
+      "rhand": {
+        "peak_speed_mps": 1.026492617973686,
+        "peak_t_s": 9.11,
+        "p99_speed_mps": 0.8705049445524633,
+        "mean_speed_mps": 0.2954365818269863
+      }
+    },
+    "min_foot_height_m": 0.02,
+    "foot_contact_frac": 1.0,
+    "provisional_labels": [
+      "in_place",
+      "upright"
+    ]
+  },
+  "13_10": {
+    "frames": 2396,
+    "duration_s": 19.97,
+    "root_height_m": {
+      "min": 0.86,
+      "mean": 0.95,
+      "max": 1.05
+    },
+    "root_horiz_displacement_m": 0.65,
+    "root_speed_mean_mps": 0.24,
+    "root_speed_max_mps": 0.85,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 6.790387811412203,
+        "peak_t_s": 9.01,
+        "p99_speed_mps": 3.9248482035734544,
+        "mean_speed_mps": 1.2260782610513807
+      },
+      "rhand": {
+        "peak_speed_mps": 26.154498671518375,
+        "peak_t_s": 4.52,
+        "p99_speed_mps": 6.077952220879722,
+        "mean_speed_mps": 1.275188579574437
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.92,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_11": {
+    "frames": 415,
+    "duration_s": 3.46,
+    "root_height_m": {
+      "min": 0.73,
+      "mean": 0.91,
+      "max": 1.16
+    },
+    "root_horiz_displacement_m": 1.22,
+    "root_speed_mean_mps": 0.38,
+    "root_speed_max_mps": 2.25,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 4.236503057741125,
+        "peak_t_s": 2.5,
+        "p99_speed_mps": 3.5914711920701032,
+        "mean_speed_mps": 0.8869311484790302
+      },
+      "rhand": {
+        "peak_speed_mps": 5.163838655610254,
+        "peak_t_s": 2.49,
+        "p99_speed_mps": 3.435957300367757,
+        "mean_speed_mps": 0.8798455306070578
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.8,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_12": {
+    "frames": 3434,
+    "duration_s": 28.62,
+    "root_height_m": {
+      "min": 0.85,
+      "mean": 0.95,
+      "max": 1.06
+    },
+    "root_horiz_displacement_m": 0.53,
+    "root_speed_mean_mps": 0.2,
+    "root_speed_max_mps": 1.07,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 20.88754717099348,
+        "peak_t_s": 11.04,
+        "p99_speed_mps": 3.961395144568378,
+        "mean_speed_mps": 0.9692338182647361
+      },
+      "rhand": {
+        "peak_speed_mps": 10.571224135263893,
+        "peak_t_s": 11.83,
+        "p99_speed_mps": 3.561886164223274,
+        "mean_speed_mps": 0.8925838264612337
+      }
+    },
+    "min_foot_height_m": 0.02,
+    "foot_contact_frac": 0.97,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_13": {
+    "frames": 439,
+    "duration_s": 3.66,
+    "root_height_m": {
+      "min": 0.69,
+      "mean": 0.92,
+      "max": 1.32
+    },
+    "root_horiz_displacement_m": 1.23,
+    "root_speed_mean_mps": 0.37,
+    "root_speed_max_mps": 2.6,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 5.861257916098942,
+        "peak_t_s": 1.5,
+        "p99_speed_mps": 4.9094461127491265,
+        "mean_speed_mps": 1.0853083031214799
+      },
+      "rhand": {
+        "peak_speed_mps": 6.996102532767913,
+        "peak_t_s": 1.68,
+        "p99_speed_mps": 5.510645810768506,
+        "mean_speed_mps": 1.1292093499810198
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.78,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_14": {
+    "frames": 2424,
+    "duration_s": 20.2,
+    "root_height_m": {
+      "min": 0.77,
+      "mean": 0.9,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.72,
+    "root_speed_mean_mps": 0.35,
+    "root_speed_max_mps": 0.9,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 9.93081429694648,
+        "peak_t_s": 7.45,
+        "p99_speed_mps": 5.887326901497588,
+        "mean_speed_mps": 1.1575857960164935
+      },
+      "rhand": {
+        "peak_speed_mps": 44.8992246849723,
+        "peak_t_s": 7.47,
+        "p99_speed_mps": 7.859034976139579,
+        "mean_speed_mps": 2.01434892251598
+      }
+    },
+    "min_foot_height_m": -0.01,
+    "foot_contact_frac": 0.98,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_15": {
+    "frames": 2382,
+    "duration_s": 19.85,
+    "root_height_m": {
+      "min": 0.82,
+      "mean": 0.91,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.75,
+    "root_speed_mean_mps": 0.33,
+    "root_speed_max_mps": 1.04,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 7.398785810906669,
+        "peak_t_s": 9.88,
+        "p99_speed_mps": 5.15661363565761,
+        "mean_speed_mps": 1.2684084935599986
+      },
+      "rhand": {
+        "peak_speed_mps": 10.729529180001048,
+        "peak_t_s": 3.36,
+        "p99_speed_mps": 7.0954083164040895,
+        "mean_speed_mps": 2.2243562177084955
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.97,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_16": {
+    "frames": 2275,
+    "duration_s": 18.96,
+    "root_height_m": {
+      "min": 0.84,
+      "mean": 0.91,
+      "max": 0.99
+    },
+    "root_horiz_displacement_m": 0.6,
+    "root_speed_mean_mps": 0.3,
+    "root_speed_max_mps": 0.85,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 12.814548243291517,
+        "peak_t_s": 8.49,
+        "p99_speed_mps": 6.799364668507245,
+        "mean_speed_mps": 1.6408890839278818
+      },
+      "rhand": {
+        "peak_speed_mps": 27.564774711147695,
+        "peak_t_s": 12.48,
+        "p99_speed_mps": 8.719633397918264,
+        "mean_speed_mps": 2.353648078520059
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.98,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_17": {
+    "frames": 4840,
+    "duration_s": 40.33,
+    "root_height_m": {
+      "min": 0.66,
+      "mean": 0.85,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 0.62,
+    "root_speed_mean_mps": 0.35,
+    "root_speed_max_mps": 1.14,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 13.143272678578986,
+        "peak_t_s": 17.12,
+        "p99_speed_mps": 5.706794471152218,
+        "mean_speed_mps": 1.1484786673746634
+      },
+      "rhand": {
+        "peak_speed_mps": 53.81800738388956,
+        "peak_t_s": 1.97,
+        "p99_speed_mps": 5.719562527030742,
+        "mean_speed_mps": 1.311858589434321
+      }
+    },
+    "min_foot_height_m": -0.04,
+    "foot_contact_frac": 0.48,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_18": {
+    "frames": 3000,
+    "duration_s": 25.0,
+    "root_height_m": {
+      "min": 0.67,
+      "mean": 0.85,
+      "max": 0.96
+    },
+    "root_horiz_displacement_m": 0.63,
+    "root_speed_mean_mps": 0.3,
+    "root_speed_max_mps": 0.97,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 15.54140192679153,
+        "peak_t_s": 15.81,
+        "p99_speed_mps": 5.4537721057140365,
+        "mean_speed_mps": 1.1384504857300524
+      },
+      "rhand": {
+        "peak_speed_mps": 25.922701003074064,
+        "peak_t_s": 12.03,
+        "p99_speed_mps": 7.1927399469911375,
+        "mean_speed_mps": 1.4843772294550366
+      }
+    },
+    "min_foot_height_m": -0.02,
+    "foot_contact_frac": 0.71,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_19": {
+    "frames": 426,
+    "duration_s": 3.55,
+    "root_height_m": {
+      "min": 0.68,
+      "mean": 0.9,
+      "max": 1.23
+    },
+    "root_horiz_displacement_m": 1.39,
+    "root_speed_mean_mps": 0.43,
+    "root_speed_max_mps": 2.4,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 7.28496133660069,
+        "peak_t_s": 2.65,
+        "p99_speed_mps": 5.4669228107200105,
+        "mean_speed_mps": 1.1131112955078848
+      },
+      "rhand": {
+        "peak_speed_mps": 4.904729997700556,
+        "peak_t_s": 2.1,
+        "p99_speed_mps": 4.702243544075279,
+        "mean_speed_mps": 1.1505502838067196
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.8,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_20": {
+    "frames": 5719,
+    "duration_s": 47.66,
+    "root_height_m": {
+      "min": 0.86,
+      "mean": 0.92,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.44,
+    "root_speed_mean_mps": 0.17,
+    "root_speed_max_mps": 0.68,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 7.673486240148594,
+        "peak_t_s": 38.33,
+        "p99_speed_mps": 3.7164826879921296,
+        "mean_speed_mps": 0.7430648541305858
+      },
+      "rhand": {
+        "peak_speed_mps": 19.317672397779763,
+        "peak_t_s": 6.03,
+        "p99_speed_mps": 4.12042098311095,
+        "mean_speed_mps": 1.0889006034032955
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 0.99,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_21": {
+    "frames": 5439,
+    "duration_s": 45.33,
+    "root_height_m": {
+      "min": 0.88,
+      "mean": 0.92,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.33,
+    "root_speed_mean_mps": 0.12,
+    "root_speed_max_mps": 0.45,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 12.806465966149322,
+        "peak_t_s": 44.38,
+        "p99_speed_mps": 3.779400339860495,
+        "mean_speed_mps": 0.7964450937909469
+      },
+      "rhand": {
+        "peak_speed_mps": 12.460780573366478,
+        "peak_t_s": 13.92,
+        "p99_speed_mps": 5.245173049694491,
+        "mean_speed_mps": 1.0396793882385746
+      }
+    },
+    "min_foot_height_m": 0.01,
+    "foot_contact_frac": 1.0,
+    "provisional_labels": [
+      "in_place",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_22": {
+    "frames": 4962,
+    "duration_s": 41.35,
+    "root_height_m": {
+      "min": 0.88,
+      "mean": 0.93,
+      "max": 0.99
+    },
+    "root_horiz_displacement_m": 0.43,
+    "root_speed_mean_mps": 0.13,
+    "root_speed_max_mps": 0.46,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 7.21321331028073,
+        "peak_t_s": 11.33,
+        "p99_speed_mps": 2.1041436631265826,
+        "mean_speed_mps": 0.3993312722818709
+      },
+      "rhand": {
+        "peak_speed_mps": 6.568842422779982,
+        "peak_t_s": 12.14,
+        "p99_speed_mps": 3.902718306685354,
+        "mean_speed_mps": 1.1340170232929743
+      }
+    },
+    "min_foot_height_m": 0.0,
+    "foot_contact_frac": 1.0,
+    "provisional_labels": [
+      "in_place",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_23": {
+    "frames": 4017,
+    "duration_s": 33.48,
+    "root_height_m": {
+      "min": 0.9,
+      "mean": 0.93,
+      "max": 0.95
+    },
+    "root_horiz_displacement_m": 0.88,
+    "root_speed_mean_mps": 0.21,
+    "root_speed_max_mps": 0.95,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 6.13471075051153,
+        "peak_t_s": 22.38,
+        "p99_speed_mps": 3.0557699503113556,
+        "mean_speed_mps": 0.8786856456228586
+      },
+      "rhand": {
+        "peak_speed_mps": 4.726287835653397,
+        "peak_t_s": 31.11,
+        "p99_speed_mps": 2.259498371198464,
+        "mean_speed_mps": 0.764862948677172
+      }
+    },
+    "min_foot_height_m": 0.0,
+    "foot_contact_frac": 0.96,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "13_24": {
+    "frames": 4034,
+    "duration_s": 33.62,
+    "root_height_m": {
+      "min": 0.89,
+      "mean": 0.93,
+      "max": 0.94
+    },
+    "root_horiz_displacement_m": 1.07,
+    "root_speed_mean_mps": 0.26,
+    "root_speed_max_mps": 0.94,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 4.403982182385232,
+        "peak_t_s": 6.8,
+        "p99_speed_mps": 2.487662634476463,
+        "mean_speed_mps": 0.7411251787661765
+      },
+      "rhand": {
+        "peak_speed_mps": 6.729823818502903,
+        "peak_t_s": 2.08,
+        "p99_speed_mps": 2.155441144088753,
+        "mean_speed_mps": 0.7877657216343393
+      }
+    },
+    "min_foot_height_m": 0.0,
+    "foot_contact_frac": 0.98,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "14_01": {
+    "frames": 5594,
+    "duration_s": 46.62,
+    "root_height_m": {
+      "min": 0.65,
+      "mean": 0.82,
+      "max": 0.91
+    },
+    "root_horiz_displacement_m": 0.76,
+    "root_speed_mean_mps": 0.38,
+    "root_speed_max_mps": 1.09,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 9.530115096090006,
+        "peak_t_s": 15.28,
+        "p99_speed_mps": 5.083854609555997,
+        "mean_speed_mps": 0.9579453496190945
+      },
+      "rhand": {
+        "peak_speed_mps": 36.75061804113896,
+        "peak_t_s": 15.63,
+        "p99_speed_mps": 10.374527260354943,
+        "mean_speed_mps": 1.6076050817800707
+      }
+    },
+    "min_foot_height_m": -0.03,
+    "foot_contact_frac": 0.83,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "14_02": {
+    "frames": 5423,
+    "duration_s": 45.19,
+    "root_height_m": {
+      "min": 0.61,
+      "mean": 0.83,
+      "max": 0.93
+    },
+    "root_horiz_displacement_m": 0.71,
+    "root_speed_mean_mps": 0.43,
+    "root_speed_max_mps": 1.29,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 23.934002665035944,
+        "peak_t_s": 43.39,
+        "p99_speed_mps": 6.647433984691869,
+        "mean_speed_mps": 1.071419719204182
+      },
+      "rhand": {
+        "peak_speed_mps": 31.61024708061814,
+        "peak_t_s": 31.76,
+        "p99_speed_mps": 9.327323589234881,
+        "mean_speed_mps": 1.5992461974429313
+      }
+    },
+    "min_foot_height_m": -0.11,
+    "foot_contact_frac": 0.64,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "14_03": {
+    "frames": 5536,
+    "duration_s": 46.13,
+    "root_height_m": {
+      "min": 0.62,
+      "mean": 0.83,
+      "max": 0.93
+    },
+    "root_horiz_displacement_m": 0.78,
+    "root_speed_mean_mps": 0.43,
+    "root_speed_max_mps": 1.62,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 21.911707728681602,
+        "peak_t_s": 44.92,
+        "p99_speed_mps": 5.089959204327431,
+        "mean_speed_mps": 1.0018275012843967
+      },
+      "rhand": {
+        "peak_speed_mps": 20.89655076235303,
+        "peak_t_s": 25.26,
+        "p99_speed_mps": 10.297758569437807,
+        "mean_speed_mps": 1.6067471170219325
+      }
+    },
+    "min_foot_height_m": -0.08,
+    "foot_contact_frac": 0.6,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "15_13": {
+    "frames": 9330,
+    "duration_s": 77.75,
+    "root_height_m": {
+      "min": 0.74,
+      "mean": 0.83,
+      "max": 0.9
+    },
+    "root_horiz_displacement_m": 0.67,
+    "root_speed_mean_mps": 0.31,
+    "root_speed_max_mps": 1.45,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 15.111809355177785,
+        "peak_t_s": 53.14,
+        "p99_speed_mps": 6.22134021132608,
+        "mean_speed_mps": 0.9477105455233665
+      },
+      "rhand": {
+        "peak_speed_mps": 35.37223843507694,
+        "peak_t_s": 48.23,
+        "p99_speed_mps": 10.300651933820667,
+        "mean_speed_mps": 1.4641825188445317
+      }
+    },
+    "min_foot_height_m": -0.03,
+    "foot_contact_frac": 0.94,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
+      "upright"
     ]
   },
   "17_01": {
     "frames": 6305,
     "duration_s": 52.54,
     "root_height_m": {
-      "min": 0.4,
-      "mean": 0.44,
-      "max": 0.52
+      "min": 0.78,
+      "mean": 0.87,
+      "max": 1.0
     },
-    "root_horiz_displacement_m": 1.42,
-    "root_speed_mean_mps": 0.3,
-    "root_speed_max_mps": 0.88,
+    "root_horiz_displacement_m": 2.76,
+    "root_speed_mean_mps": 0.58,
+    "root_speed_max_mps": 1.71,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 2.654594012648206,
+        "peak_speed_mps": 15.418049375343548,
         "peak_t_s": 49.06,
-        "p99_speed_mps": 1.1062391365388844,
-        "mean_speed_mps": 0.3766028205869994
+        "p99_speed_mps": 4.457189787430177,
+        "mean_speed_mps": 1.2282503402624054
       },
       "rhand": {
-        "peak_speed_mps": 7.059590915759654,
+        "peak_speed_mps": 40.352442749971395,
         "peak_t_s": 33.42,
-        "p99_speed_mps": 0.981430360852307,
-        "mean_speed_mps": 0.36231526741005715
+        "p99_speed_mps": 4.172313402161596,
+        "mean_speed_mps": 1.2875179833554373
       }
     },
-    "min_foot_height_m": 0.07257934450343198,
-    "foot_contact_frac": 0.01,
+    "min_foot_height_m": -0.05,
+    "foot_contact_frac": 0.84,
     "provisional_labels": [
       "locomotion",
       "fast_hand_motion",
-      "upright",
-      "feet_often_off_ground"
+      "upright"
     ]
   },
   "17_03": {
     "frames": 6353,
     "duration_s": 52.94,
     "root_height_m": {
-      "min": 0.34,
-      "mean": 0.39,
-      "max": 0.43
+      "min": 0.66,
+      "mean": 0.76,
+      "max": 0.85
     },
-    "root_horiz_displacement_m": 1.41,
-    "root_speed_mean_mps": 0.2,
-    "root_speed_max_mps": 0.98,
+    "root_horiz_displacement_m": 2.75,
+    "root_speed_mean_mps": 0.39,
+    "root_speed_max_mps": 1.92,
     "hands": {
       "lhand": {
-        "peak_speed_mps": 2.1073264093070376,
+        "peak_speed_mps": 13.067831607537139,
         "peak_t_s": 48.21,
-        "p99_speed_mps": 0.5410132167997687,
-        "mean_speed_mps": 0.23926099660880623
+        "p99_speed_mps": 2.3752232964279374,
+        "mean_speed_mps": 0.7572199181235554
       },
       "rhand": {
-        "peak_speed_mps": 2.183003681225518,
+        "peak_speed_mps": 14.257343177730007,
         "peak_t_s": 48.21,
-        "p99_speed_mps": 0.5480562805160842,
-        "mean_speed_mps": 0.2231138892413309
+        "p99_speed_mps": 2.797209987502045,
+        "mean_speed_mps": 0.7279624426419554
       }
     },
-    "min_foot_height_m": 0.0009325598215872356,
-    "foot_contact_frac": 0.54,
+    "min_foot_height_m": -0.08,
+    "foot_contact_frac": 0.77,
     "provisional_labels": [
       "locomotion",
+      "fast_hand_motion",
+      "upright"
+    ]
+  },
+  "17_10": {
+    "frames": 2783,
+    "duration_s": 23.19,
+    "root_height_m": {
+      "min": 0.53,
+      "mean": 0.8,
+      "max": 0.91
+    },
+    "root_horiz_displacement_m": 1.57,
+    "root_speed_mean_mps": 0.57,
+    "root_speed_max_mps": 1.59,
+    "hands": {
+      "lhand": {
+        "peak_speed_mps": 14.260622216087247,
+        "peak_t_s": 13.38,
+        "p99_speed_mps": 6.408364815091101,
+        "mean_speed_mps": 1.259156800874073
+      },
+      "rhand": {
+        "peak_speed_mps": 62.74927844431671,
+        "peak_t_s": 18.32,
+        "p99_speed_mps": 11.367084067048479,
+        "mean_speed_mps": 1.7043636109418148
+      }
+    },
+    "min_foot_height_m": -0.05,
+    "foot_contact_frac": 0.51,
+    "provisional_labels": [
+      "locomotion",
+      "fast_hand_motion",
       "upright"
     ]
   }

@@ -1,14 +1,15 @@
 """Scan every AMC clip: FK the source skeleton, extract content features.
 
 Goals (M0 W3):
-  - verify parser/FK correctness numerically (skeleton size, feet near ground)
   - per-clip content features -> provisional action labels for the minimal set
   - flag anomalies (below-ground feet, teleports, nonfinite)
 
-Unit handling: raw AMC/ASF values share one consistent unit system
-(fk.py scales both root and bones by units_length=0.45 — self-consistent).
-Real-world scale empirically: meters = raw_unit / 0.45 * 0.0254 (raw*0.05644),
-which yields ~1.7 m human height. Recorded here as `SCALE_M` with method note.
+FK: mocap.humanoid21.ref_fk (official-CMU-viewer convention; legacy fk.py was
+found incorrect — see ref_fk.py / M0_AUDIT.md).
+
+Unit handling: ref_fk output is in "CMU units" (raw AMC/ASF x 0.45). Absolute
+meter scale is uncalibrated in M0; provisional calibration hip_height~0.95 m
+gives METERS_PER_UNIT ~= 0.11 (revisit at M1 retargeting).
 
 Output: content_scan.json next to this file.
 
@@ -28,31 +29,38 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.humanoid21.mocap.asf_parser import parse_asf
 from baseline.humanoid21.mocap.amc_parser import parse_amc
-from baseline.humanoid21.mocap.fk import compute_fk_batch
+from mocap.humanoid21.ref_fk import RefSkeleton, fk_batch
 
-RAW = PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw"
+RAW_DIRS = [
+    PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw",
+    Path("/data1/dev/combatbench_mocap/raw"),
+]
 OUT = Path(__file__).parent / "content_scan.json"
 
 FPS = 120.0
-# raw AMC/ASF unit -> meters (see module docstring for derivation)
-SCALE_M = 0.0254 / 0.45
-# fk.py already multiplies positions by units_length=0.45, so fk output is in
-# "0.45-scaled units"; meters = fk_value / 0.45 * 0.0254 -> fk_value * 0.05644
-FK_TO_M = 0.0254 / 0.45
+METERS_PER_UNIT = 0.11  # provisional: standing hip ~0.95 m / ~8.5 CMU units
 
-# bones used as end-effectors / contacts
-HAND_BONES = ["lhand", "rhand"]      # distal hand bone position
+HAND_BONES = ["lhand", "rhand"]          # use distal endpoints
 FOOT_BONES = ["lfoot", "rfoot", "ltoes", "rtoes"]
 
 
-def clip_features(skel, frames) -> dict:
+def _find_raw(name: str) -> Path:
+    for d in RAW_DIRS:
+        p = d / name
+        if p.exists():
+            return p
+    raise FileNotFoundError(name)
+
+
+def clip_features(skel: RefSkeleton, frames) -> dict:
     T = len(frames)
-    transforms = compute_fk_batch(skel, frames)
+    J, D, names = fk_batch(skel, frames)
+    idx = {n: i for i, n in enumerate(names)}
 
     def track(name):
-        return np.array([tr[name][1] for tr in transforms]) * FK_TO_M if name in transforms[0] else None
+        return D[:, idx[name]] * METERS_PER_UNIT if name in idx else None
 
-    root_pos = track("root")          # (T,3), meters; y is up in CMU FK convention
+    root_pos = J[:, idx["root"]] * METERS_PER_UNIT  # (T,3); y is up
     head_pos = track("head")
     feet = {n: track(n) for n in FOOT_BONES}
     hands = {n: track(n) for n in HAND_BONES}
@@ -78,15 +86,11 @@ def clip_features(skel, frames) -> dict:
         }
 
     # --- feet: height + contact estimate ---
-    foot_h = np.minimum(feet["lfoot"][:, 1], feet["rfoot"][:, 1]) if "lfoot" in feet else None
     all_foot_h = np.stack([v[:, 1] for v in feet.values()], axis=0).min(axis=0)
     foot_speed = np.stack(
         [np.linalg.norm(np.diff(v, axis=0), axis=1) / dt for v in feet.values()], axis=0
     ).min(axis=0)
     contact_est = (all_foot_h[1:] < 0.08) & (foot_speed < 0.5)
-    anomalies = {}
-    anomalies["min_foot_height_m"] = float(all_foot_h.min())
-    anomalies["max_root_speed_mps"] = float(horiz_speed.max())
 
     # --- simple labels ---
     labels = []
@@ -115,38 +119,36 @@ def clip_features(skel, frames) -> dict:
         "root_speed_mean_mps": round(float(horiz_speed.mean()), 2),
         "root_speed_max_mps": round(float(horiz_speed.max()), 2),
         "hands": hand_stats,
-        "min_foot_height_m": anomalies["min_foot_height_m"],
+        "min_foot_height_m": round(float(all_foot_h.min()), 2),
         "foot_contact_frac": round(contact_frac, 2),
         "provisional_labels": labels,
     }
 
 
 def main():
-    index_path = Path(__file__).parent / "assets_index.json"
-    assets = json.loads(index_path.read_text())
+    # collect all (asf, amc) pairs across raw dirs
+    amcs = {}
+    for d in RAW_DIRS:
+        for p in sorted(d.glob("*.amc")):
+            amcs.setdefault(p.stem, p)
     results = {}
-    for asf_name in sorted(assets["asf"]):
-        subj = asf_name.split(".")[0]
-        asf_path = RAW / asf_name
-        skel = parse_asf(str(asf_path))
-        for clip_name in sorted(assets["amc"]):
-            if not clip_name.startswith(f"{subj}_"):
-                continue
-            amc_path = RAW / f"{clip_name}.amc"
-            try:
-                frames = parse_amc(str(amc_path))
-                results[clip_name] = clip_features(skel, frames)
-                r = results[clip_name]
-                print(f"{clip_name:<7} {r['duration_s']:>6.1f}s "
-                      f"disp={r['root_horiz_displacement_m']:>5.2f}m "
-                      f"v={r['root_speed_mean_mps']:>4.1f}/{r['root_speed_max_mps']:>4.1f} "
-                      f"hand={r['hands']['lhand']['peak_speed_mps']:>4.1f}/"
-                      f"{r['hands']['rhand']['peak_speed_mps']:>4.1f} "
-                      f"minFoot={r['min_foot_height_m']:>5.2f} "
-                      f"{','.join(r['provisional_labels'])}")
-            except Exception as e:
-                results[clip_name] = {"error": f"{type(e).__name__}: {e}"}
-                print(f"{clip_name:<7} ERROR {e}")
+    for clip_name in sorted(amcs):
+        subj = clip_name.split("_")[0]
+        skel = RefSkeleton.from_asf(parse_asf(str(_find_raw(f"{subj}.asf"))))
+        try:
+            frames = parse_amc(str(amcs[clip_name]))
+            results[clip_name] = clip_features(skel, frames)
+            r = results[clip_name]
+            print(f"{clip_name:<7} {r['duration_s']:>6.1f}s "
+                  f"disp={r['root_horiz_displacement_m']:>5.2f}m "
+                  f"v={r['root_speed_mean_mps']:>4.1f}/{r['root_speed_max_mps']:>4.1f} "
+                  f"hand={r['hands']['lhand']['peak_speed_mps']:>4.1f}/"
+                  f"{r['hands']['rhand']['peak_speed_mps']:>4.1f} "
+                  f"minFoot={r['min_foot_height_m']:>5.2f} "
+                  f"{','.join(r['provisional_labels'])}")
+        except Exception as e:
+            results[clip_name] = {"error": f"{type(e).__name__}: {e}"}
+            print(f"{clip_name:<7} ERROR {e}")
     OUT.write_text(json.dumps(results, indent=2))
     print(f"\nwrote {OUT}")
 
