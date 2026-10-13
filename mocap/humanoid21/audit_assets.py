@@ -27,6 +27,9 @@ from baseline.humanoid21.mocap.asf_parser import parse_asf
 DATA_DIR = PROJECT_ROOT / "baseline/humanoid21/mocap/data"
 RAW = DATA_DIR / "raw"
 RET = DATA_DIR / "retargeted"
+# supplementary downloads (walk/punch clips to fill the minimal action set);
+# on the GPU server, data lives under /data1/dev per repo convention
+RAW_SUPPLEMENT = Path("/data1/dev/combatbench_mocap/raw")
 OUT = Path(__file__).parent / "assets_index.json"
 
 # CMU AMC sampling rate — standard for this dataset; marked as assumed until
@@ -131,17 +134,29 @@ def main() -> None:
         "asf": {}, "amc": {}, "retargeted": {},
     }
 
-    for p in sorted(RAW.glob("*.asf")):
-        try:
-            index["asf"][p.name] = audit_asf(p)
-        except Exception as e:
-            index["asf"][p.name] = {"error": f"{type(e).__name__}: {e}"}
+    for root, tag in ((RAW, "raw"), (RAW_SUPPLEMENT, "raw_supplement")):
+        if not root.exists():
+            continue
+        for p in sorted(root.glob("*.asf")):
+            key = p.name if tag == "raw" else f"{tag}:{p.name}"
+            try:
+                rec = audit_asf(p)
+                rec["path"] = str(p)
+                index["asf"][key] = rec
+            except Exception as e:
+                index["asf"][key] = {"error": f"{type(e).__name__}: {e}"}
 
-    for p in sorted(RAW.glob("*.amc")):
-        try:
-            index["amc"][p.stem] = audit_amc(p)
-        except Exception as e:
-            index["amc"][p.stem] = {"error": f"{type(e).__name__}: {e}"}
+    for root, tag in ((RAW, "raw"), (RAW_SUPPLEMENT, "raw_supplement")):
+        if not root.exists():
+            continue
+        for p in sorted(root.glob("*.amc")):
+            key = p.stem if tag == "raw" else f"{tag}:{p.stem}"
+            try:
+                rec = audit_amc(p)
+                rec["path"] = str(p)
+                index["amc"][key] = rec
+            except Exception as e:
+                index["amc"][key] = {"error": f"{type(e).__name__}: {e}"}
 
     for p in sorted(RET.glob("*.npy")):
         try:

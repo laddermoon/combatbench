@@ -141,6 +141,40 @@
         "9": "muscular, heavyset person's walk",
         "10": "boxing"
       }
+    },
+    "2": {
+      "subject_title": "various expressions and human behaviors",
+      "trials": {
+        "1": "walk",
+        "120": "<A HREF=\"badtrial.php?subjectnumber=2&motion=10\">Feedback</A>",
+        "2": "walk",
+        "3": "run/jog",
+        "4": "jump, balance",
+        "5": "punch/strike",
+        "6": "bend over, scoop up, rise, lift arm",
+        "7": "swordplay",
+        "8": "swordplay",
+        "9": "swordplay",
+        "10": "wash self"
+      }
+    },
+    "7": {
+      "subject_title": "walk",
+      "trials": {
+        "1": "walk",
+        "120": "<A HREF=\"badtrial.php?subjectnumber=7&motion=12\">Feedback</A>",
+        "2": "walk",
+        "3": "walk",
+        "4": "slow walk",
+        "5": "slow walk",
+        "6": "walk",
+        "7": "walk",
+        "8": "walk",
+        "9": "walk",
+        "10": "walk",
+        "11": "walk",
+        "12": "brisk walk"
+      }
     }
   }
 }

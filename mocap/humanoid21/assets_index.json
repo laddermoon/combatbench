@@ -10,7 +10,8 @@
       "total_dof": 56,
       "units_length": 0.45,
       "units_angle": "deg",
-      "root_order": "TX TY TZ RX RY RZ"
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13.asf"
     },
     "14.asf": {
       "sha256": "96a22ac52ac15bd464c296028936be0ae7d2f0ee4a056202b1aa17f4ad02ec7f",
@@ -19,7 +20,8 @@
       "total_dof": 56,
       "units_length": 0.45,
       "units_angle": "deg",
-      "root_order": "TX TY TZ RX RY RZ"
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/14.asf"
     },
     "15.asf": {
       "sha256": "70693bac5f31e3b0892c398fb08b52da7b4c00003f55ce57e36ab58e63d93960",
@@ -28,7 +30,8 @@
       "total_dof": 56,
       "units_length": 0.45,
       "units_angle": "deg",
-      "root_order": "TX TY TZ RX RY RZ"
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/15.asf"
     },
     "17.asf": {
       "sha256": "5ffc9575bb74fe327327db991b2f9bb87f00bd9b1a04c20583d955d396020304",
@@ -37,7 +40,28 @@
       "total_dof": 56,
       "units_length": 0.45,
       "units_angle": "deg",
-      "root_order": "TX TY TZ RX RY RZ"
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/17.asf"
+    },
+    "raw_supplement:02.asf": {
+      "sha256": "c9f5ff45b4437b279f58b95dacf017afd3135373096274df69436a9354d796cf",
+      "bytes": 7268,
+      "bones": 31,
+      "total_dof": 56,
+      "units_length": 0.45,
+      "units_angle": "deg",
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/dev/combatbench_mocap/raw/02.asf"
+    },
+    "raw_supplement:07.asf": {
+      "sha256": "c29414591d76a34885bff0b04a2666bf9659f869751a2549591c55277cf95b04",
+      "bytes": 7260,
+      "bones": 31,
+      "total_dof": 56,
+      "units_length": 0.45,
+      "units_angle": "deg",
+      "root_order": "TX TY TZ RX RY RZ",
+      "path": "/data1/dev/combatbench_mocap/raw/07.asf"
     }
   },
   "amc": {
@@ -85,7 +109,8 @@
       ],
       "root_tz_min": -6.92721,
       "root_tz_max": 5.19861,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_01.amc"
     },
     "13_02": {
       "sha256": "bfc7c128b32ad12304e4d94b788a2a8f86bcf868a8c62e2b144fd05a7ce89cd0",
@@ -131,7 +156,8 @@
       ],
       "root_tz_min": -8.94978,
       "root_tz_max": 5.39571,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_02.amc"
     },
     "13_03": {
       "sha256": "f314f14b177e3394dc2c2a573cdec6612aaefe87e39bdc51527ea322b9f4f657",
@@ -177,7 +203,8 @@
       ],
       "root_tz_min": -8.60532,
       "root_tz_max": 5.90488,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_03.amc"
     },
     "13_04": {
       "sha256": "bc5f5e5b6378413457f782e96c2beedf70c5abc6bdcabca513f8f5b0d966d7e9",
@@ -223,7 +250,8 @@
       ],
       "root_tz_min": -8.3256,
       "root_tz_max": 6.43468,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_04.amc"
     },
     "13_05": {
       "sha256": "d90d757885717b2931a8596f1aea305ce42295b51f64ef65f1514758a1f83df0",
@@ -269,7 +297,8 @@
       ],
       "root_tz_min": -8.55293,
       "root_tz_max": 4.28569,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_05.amc"
     },
     "13_06": {
       "sha256": "d4826e0ee48b3f20eaf38c695d2c1fe3bbc61a03174b0756f1955619b7b2a169",
@@ -315,7 +344,8 @@
       ],
       "root_tz_min": -7.66513,
       "root_tz_max": 7.41493,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_06.amc"
     },
     "13_07": {
       "sha256": "23b95d92a69ad137921182cc6bb64e24fd9b0a3358165706da68509f99249d5d",
@@ -361,7 +391,8 @@
       ],
       "root_tz_min": -4.52234,
       "root_tz_max": -4.08963,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_07.amc"
     },
     "13_08": {
       "sha256": "b3e9f75aa1c6e40deccbcb9125c0717a5811405e1f69217f565285ffbdebc1fb",
@@ -407,7 +438,8 @@
       ],
       "root_tz_min": 2.22937,
       "root_tz_max": 2.66454,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_08.amc"
     },
     "13_09": {
       "sha256": "d4cf7d478b417e7323358849638d7311f31f6cbd392f5e1a759bb2d3548bf09b",
@@ -453,7 +485,8 @@
       ],
       "root_tz_min": 3.51268,
       "root_tz_max": 4.29947,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_09.amc"
     },
     "13_10": {
       "sha256": "29f3e79f1eff4155afba93a29c363c8b079d42a4b154bc488656447a9da59b5d",
@@ -499,7 +532,8 @@
       ],
       "root_tz_min": -6.02483,
       "root_tz_max": 6.79763,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_10.amc"
     },
     "13_11": {
       "sha256": "68264edee72545214cebb6a6d6ac9c620232c9918ea3febd7a0bda1ad1691439",
@@ -545,7 +579,8 @@
       ],
       "root_tz_min": -14.0791,
       "root_tz_max": 10.5884,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_11.amc"
     },
     "13_12": {
       "sha256": "f850db3c91cd183c14ab88f94b90bb9a312f3e23274276077392ea963370cff9",
@@ -591,7 +626,8 @@
       ],
       "root_tz_min": -4.01271,
       "root_tz_max": 6.74798,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_12.amc"
     },
     "13_13": {
       "sha256": "84ce423bbf698a01acc83041ac09dd7d1f1f5aa39f525649f6a139b18371857b",
@@ -637,7 +673,8 @@
       ],
       "root_tz_min": -14.9989,
       "root_tz_max": 9.76757,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_13.amc"
     },
     "13_14": {
       "sha256": "75d6cfed6e11b185b67de6ba40e4dea150fc36f58f99aac7c8a392d5d337bd9f",
@@ -683,7 +720,8 @@
       ],
       "root_tz_min": -6.21586,
       "root_tz_max": 8.33848,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_14.amc"
     },
     "13_15": {
       "sha256": "2cc1fdb6e1b44024f3e2d8869a5b1b39f172f42cba28cc39e4688112c018d147",
@@ -729,7 +767,8 @@
       ],
       "root_tz_min": -3.66468,
       "root_tz_max": 5.62524,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_15.amc"
     },
     "13_16": {
       "sha256": "7b4a6d9d6c9ea3520d1113ed9eecb56296d65128ac36f8c97f7329140669b45f",
@@ -775,7 +814,8 @@
       ],
       "root_tz_min": -2.577,
       "root_tz_max": 5.67309,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_16.amc"
     },
     "13_17": {
       "sha256": "f024bfe30728fb01debc868c011df16be5d8cca95e8a734dfe00c59722c4cfd1",
@@ -821,7 +861,8 @@
       ],
       "root_tz_min": -5.68251,
       "root_tz_max": 5.3196,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_17.amc"
     },
     "13_18": {
       "sha256": "46f4cddbc8e7a3585d4e887bec6ccc5dc7e71382ad41e28607ff4ebd9b115cb8",
@@ -867,7 +908,8 @@
       ],
       "root_tz_min": -3.64088,
       "root_tz_max": 7.22055,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_18.amc"
     },
     "13_19": {
       "sha256": "debe61e856a9f798cab6d5e3f535d9b684ca1cd2a431a28f05615a3b1067f8fa",
@@ -913,7 +955,8 @@
       ],
       "root_tz_min": -14.9502,
       "root_tz_max": 13.2252,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_19.amc"
     },
     "13_20": {
       "sha256": "bdf153933ccecc9daca949360e8af66dd0d52490137a916bf8fe3200151a81c6",
@@ -959,7 +1002,8 @@
       ],
       "root_tz_min": -3.35579,
       "root_tz_max": 5.44368,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_20.amc"
     },
     "13_21": {
       "sha256": "30852b4d9291ad0ac37430ab2d108c86c63ea2e505b3b95648d320c8330c43d7",
@@ -1005,7 +1049,8 @@
       ],
       "root_tz_min": 4.48869,
       "root_tz_max": 7.8592,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_21.amc"
     },
     "13_22": {
       "sha256": "b36160924bd95070297ea859681e0d30cc2828814fd6ebc99f153e077c0487b8",
@@ -1051,7 +1096,8 @@
       ],
       "root_tz_min": 5.79264,
       "root_tz_max": 7.99593,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_22.amc"
     },
     "13_23": {
       "sha256": "9f4b829d7a67b4322522afa734c1bc50033da855626e5d488f70bcace982c005",
@@ -1097,7 +1143,8 @@
       ],
       "root_tz_min": -8.85756,
       "root_tz_max": 7.67647,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_23.amc"
     },
     "13_24": {
       "sha256": "191f3df32480526d815a835835bc09291cdc2b0f88032e52299a3adfbbc7c451",
@@ -1143,7 +1190,8 @@
       ],
       "root_tz_min": -8.77988,
       "root_tz_max": 12.746,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/13_24.amc"
     },
     "14_01": {
       "sha256": "a2648d51ea42461d8667557f8721fa8ff8463341838defdf7c2d32a96f19cba5",
@@ -1189,7 +1237,8 @@
       ],
       "root_tz_min": -10.2585,
       "root_tz_max": 4.80187,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/14_01.amc"
     },
     "14_02": {
       "sha256": "3360510306b378a2d2305255f63a6a075dbf6154697792ddf948efdbcceb612d",
@@ -1235,7 +1284,8 @@
       ],
       "root_tz_min": -8.53013,
       "root_tz_max": 4.54284,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/14_02.amc"
     },
     "14_03": {
       "sha256": "3685b0672edb82cf7038b225dfd8b6c8a67475b07589a2ed5b32dd69ff4df714",
@@ -1281,7 +1331,8 @@
       ],
       "root_tz_min": -8.6423,
       "root_tz_max": 4.4501,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/14_03.amc"
     },
     "15_13": {
       "sha256": "8fab4f693b1777cf7778b5971bce12a8d6a468ee494df1a9aa2bf9a0da2fae8b",
@@ -1327,7 +1378,8 @@
       ],
       "root_tz_min": -2.8732,
       "root_tz_max": 10.5857,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/15_13.amc"
     },
     "17_10": {
       "sha256": "0968175da227680ea94730c5488e735bda9e828bf7b97a1662967c3de7697651",
@@ -1373,7 +1425,384 @@
       ],
       "root_tz_min": -1.31302,
       "root_tz_max": 30.4109,
-      "nonfinite_values": 0
+      "nonfinite_values": 0,
+      "path": "/data1/mono/things/combatbench/baseline/humanoid21/mocap/data/raw/17_10.amc"
+    },
+    "raw_supplement:02_01": {
+      "sha256": "1503c481f4726e640c77888f0c841dd3be0694684bcd32296cf53685c6fc1492",
+      "bytes": 273444,
+      "frames": 343,
+      "duration_s_assumed_120hz": 2.86,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -30.1003,
+      "root_tz_max": 29.4538,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/02_01.amc"
+    },
+    "raw_supplement:02_02": {
+      "sha256": "2ece9e0c7791c5c0fef5a951eccfe7e985caeb734667b1d1ea089cfedffd8a6e",
+      "bytes": 238258,
+      "frames": 298,
+      "duration_s_assumed_120hz": 2.48,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -40.6931,
+      "root_tz_max": 30.8102,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/02_02.amc"
+    },
+    "raw_supplement:02_05": {
+      "sha256": "b370aae1972be9bf73d49a6c94ca74dda01a5cb5ab2f4cce7f61d4d08ca9a611",
+      "bytes": 1484013,
+      "frames": 1854,
+      "duration_s_assumed_120hz": 15.45,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -2.03841,
+      "root_tz_max": 0.801892,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/02_05.amc"
+    },
+    "raw_supplement:07_01": {
+      "sha256": "3ca8e8b834481c97c32e9dd555f8c9023e33b6c52d93c9d556c83570204bf3f2",
+      "bytes": 252663,
+      "frames": 316,
+      "duration_s_assumed_120hz": 2.63,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -31.7081,
+      "root_tz_max": 31.7462,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/07_01.amc"
+    },
+    "raw_supplement:07_06": {
+      "sha256": "2faa3808372f4253bf60da13cbcadb50563bc4a6a5e93acec27f20d4f83cc550",
+      "bytes": 333327,
+      "frames": 417,
+      "duration_s_assumed_120hz": 3.48,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -40.3324,
+      "root_tz_max": 35.6713,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/07_06.amc"
+    },
+    "raw_supplement:07_12": {
+      "sha256": "f017a78b4431e73ade6cd20d0d2323fc6e451dd4e43c247ddb19a19e6a2df6f2",
+      "bytes": 188416,
+      "frames": 245,
+      "duration_s_assumed_120hz": 2.04,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 1,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -38.972,
+      "root_tz_max": 30.3927,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/07_12.amc"
+    },
+    "raw_supplement:17_01": {
+      "sha256": "4db1b1c280354812595afd0f9c2f17d5bb5f0f597c5a55063500ea414039b580",
+      "bytes": 5033319,
+      "frames": 6305,
+      "duration_s_assumed_120hz": 52.54,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -13.7137,
+      "root_tz_max": 42.1109,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/17_01.amc"
+    },
+    "raw_supplement:17_03": {
+      "sha256": "6b4be366a5ae8d0a05b7172099d92bb1f33b997933ad5c1ae8747ba5b831abe7",
+      "bytes": 5074135,
+      "frames": 6353,
+      "duration_s_assumed_120hz": 52.94,
+      "bone_keys_frame0": [
+        "head",
+        "lclavicle",
+        "lfemur",
+        "lfingers",
+        "lfoot",
+        "lhand",
+        "lhumerus",
+        "lowerback",
+        "lowerneck",
+        "lradius",
+        "lthumb",
+        "ltibia",
+        "ltoes",
+        "lwrist",
+        "rclavicle",
+        "rfemur",
+        "rfingers",
+        "rfoot",
+        "rhand",
+        "rhumerus",
+        "root",
+        "rradius",
+        "rthumb",
+        "rtibia",
+        "rtoes",
+        "rwrist",
+        "thorax",
+        "upperback",
+        "upperneck"
+      ],
+      "frames_with_missing_bones": 0,
+      "root_pos_range_m": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "root_tz_min": -13.8072,
+      "root_tz_max": 41.6484,
+      "nonfinite_values": 0,
+      "path": "/data1/dev/combatbench_mocap/raw/17_03.amc"
     }
   },
   "retargeted": {
