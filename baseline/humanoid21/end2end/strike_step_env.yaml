@@ -42,10 +42,10 @@ parameters:
     default: "robot_b"
     description: "The moving target robot (pose-frozen kinematic)."
   oppo_speed_min:
-    default: 0.3
+    default: 0.15
     description: "Min per-episode target speed (m/s)."
   oppo_speed_max:
-    default: 0.9
+    default: 0.45
     description: "Max per-episode target speed (m/s)."
   oppo_min_avoid_distance:
     default: 0.6
