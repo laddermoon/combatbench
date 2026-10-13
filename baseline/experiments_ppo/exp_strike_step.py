@@ -30,6 +30,20 @@ Reward (new channel ``r_strike``, γ=0.99):
                        the withheld half IS the punishment)
     actor_weight = 1.0 — the event reward IS the task, no gating.
 
+``r_retract`` (γ=0.99): dense retract-phase guidance.  Pure masking
+turned out too sparse — s42b's retract_timeout RATE rose once the
+slowed target stopped walking away by itself and the learner had to
+actively create 0.5m separation with no reward telling it how.
+Potential-difference shaping on RETRACT frames:
+
+    φ = clip(d_opp/0.5, 0,1) + clip((0.8 − d_home)/0.25, 0,1) ∈ [0,2]
+    r[t] = 0.3 · (φ[t] − φ[t−1])          (first retract frame uses
+                                           the last SETTLE φ)
+
+Parking can't farm it (Δφ=0 while static; oscillation nets ~0 over a
+cycle) and the max total potential (0.6) stays below the withheld
+half for any decent hit.
+
 Phase gating: on RETRACT frames every shaping channel except r_fall
 and r_strike is masked (reward=0, actor_weight=0).  Post-hit the only
 remaining positive payoff is the withheld half — the inherited
@@ -82,16 +96,25 @@ class StrikeStep(AttackPrepStep):
     # event reward to dominate shaping.
     max_updates: int = 10000
 
-    # --- Strike channel ---
-    _channel_names = AttackPrepStep._channel_names + ("r_strike",)
+    # --- Strike channels ---
+    _channel_names = AttackPrepStep._channel_names + (
+        "r_strike", "r_retract")
     _channel_gammas = {
         **AttackPrepStep._channel_gammas,
         "r_strike": 0.99,
+        "r_retract": 0.99,
     }
 
     STRIKE_ACTOR_WEIGHT: float = 1.0
     # v1: withheld second half is the only retract-timeout cost.
     RETRACT_FAIL_PENALTY: float = 0.0
+
+    # Retract potential shaping (must match strike_step_env.yaml /
+    # StrikeSettlementPlugin defaults).
+    RETRACT_W: float = 0.3
+    _RET_SEP_REF: float = 0.5        # == retract_dist
+    _RET_HOME_REF: float = 0.55      # == hand_home_dist
+    _RET_EXTENDED_REF: float = 0.8   # ~fully extended arm
 
     # Phase-2 (RETRACT) frames: zero reward AND actor weight on every
     # shaping channel so nothing but the withheld second half (and the
@@ -153,9 +176,14 @@ class StrikeStep(AttackPrepStep):
             oo, strike_key, "damage_total", T_full)
         phase = extract_per_step_field(
             oo, strike_key, "phase", T_full)
+        d_opp = extract_per_step_field(
+            oo, strike_key, "d_opp", T_full)
+        d_home = extract_per_step_field(
+            oo, strike_key, "d_home", T_full)
 
         # RETRACT-phase masking: no shaping rewards after the settle
         # window — the withheld second half is the only prize left.
+        retract_mask = None
         if phase is not None:
             retract_mask = np.asarray(phase) == 2.0   # PHASE_RETRACT
             for t in trajs:
@@ -167,12 +195,33 @@ class StrikeStep(AttackPrepStep):
                         ch.reward[m] = 0.0
                         ch.actor_weight[m] = 0.0
 
+        # r_retract: potential-difference shaping on RETRACT frames —
+        # dense guidance toward the retract combo without a farmable
+        # level reward (Δφ=0 while parked, oscillation nets ~0).
+        r_retract = np.zeros(T_full, dtype=np.float64)
+        if retract_mask is not None and d_opp is not None \
+                and d_home is not None:
+            phi = (
+                np.clip(np.asarray(d_opp) / self._RET_SEP_REF, 0.0, 1.0)
+                + np.clip(
+                    (self._RET_EXTENDED_REF - np.asarray(d_home))
+                    / (self._RET_EXTENDED_REF - self._RET_HOME_REF),
+                    0.0, 1.0)
+            )
+            dphi = np.diff(phi, prepend=phi[0])
+            r_retract = self.RETRACT_W * dphi * retract_mask
+
         if step_damage is None or damage_total is None:
             for t in trajs:
                 T = t.obs.shape[0]
                 z = np.zeros(T, dtype=np.float32)
                 ref = t.channels["r_fall"]
                 t.channels["r_strike"] = ChannelData(
+                    reward=z.copy(),
+                    is_terminated=ref.is_terminated,
+                    actor_weight=z.copy(),
+                )
+                t.channels["r_retract"] = ChannelData(
                     reward=z.copy(),
                     is_terminated=ref.is_terminated,
                     actor_weight=z.copy(),
@@ -202,6 +251,11 @@ class StrikeStep(AttackPrepStep):
                 is_terminated=ref.is_terminated,
                 actor_weight=np.full(
                     T, self.STRIKE_ACTOR_WEIGHT, dtype=np.float32),
+            )
+            t.channels["r_retract"] = ChannelData(
+                reward=r_retract[:T].astype(np.float32),
+                is_terminated=ref.is_terminated,
+                actor_weight=np.full(T, 1.0, dtype=np.float32),
             )
         return trajs
 

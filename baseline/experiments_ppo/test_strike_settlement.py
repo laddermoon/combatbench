@@ -337,7 +337,7 @@ def test_observer_metrics_prefix_per_agent():
 # ----------------------------------------------------------------------
 
 def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
-                  phase=None):
+                  phase=None, d_home=None, d_opp=None):
     """Minimal Episode with the observer fields exp_strike_step reads."""
     from baseline.framework.rollout.episode import Episode
 
@@ -357,6 +357,11 @@ def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
         "step_damage": np.asarray(step_damage, dtype=np.float32),
         "damage_total": np.asarray(damage_total, dtype=np.float32),
         "retract_done": np.zeros(T),
+        "d_home": (np.zeros(T) if d_home is None
+                   else np.asarray(d_home, dtype=np.float32)),
+        "d_opp": (np.zeros(T) if d_opp is None
+                  else np.asarray(d_opp, dtype=np.float32)),
+        "gates": np.zeros(T),
     }
     records = {}
     if term_reason is not None:
@@ -458,3 +463,30 @@ def test_retract_phase_masks_shaping_channels():
     np.testing.assert_allclose(
         t.channels["r_potential"].actor_weight[:15],
         t.channels["r_potential"].actor_weight[0])
+
+
+def test_r_retract_potential_difference():
+    """r_retract pays W·Δφ only on phase-2 frames: progress toward the
+    retract combo is rewarded, parking earns nothing."""
+    from baseline.experiments_ppo.exp_strike_step import StrikeStep
+
+    T = 20
+    phase = np.zeros(T); phase[10:] = 2.0        # RETRACT from t=10
+    d_opp = np.full(T, 0.1)                      # close at first…
+    d_opp[12:] = 0.6                             # …then separated
+    d_home = np.full(T, 0.75)                    # arm out at first…
+    d_home[14:] = 0.4                            # …then home
+    ep = _make_episode(T, np.zeros(T), np.zeros(T),
+                       term_reason="retract_timeout", phase=phase,
+                       d_home=d_home, d_opp=d_opp)
+    trajs = StrikeStep()._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+    ch = trajs[0].channels["r_retract"]
+
+    # φ: d_opp term 0→1 at t=12; d_home term (0.8-d)/0.25: 0.2→1 at t=14
+    assert ch.reward[12] == pytest.approx(0.3 * (1.0 - 0.2))
+    assert ch.reward[14] == pytest.approx(0.3 * (1.0 - 0.2))
+    # No reward on non-RETRACT frames, none while parked.
+    assert ch.reward[:10].max() == 0.0
+    assert ch.reward[15:].max() == 0.0
+    np.testing.assert_allclose(ch.actor_weight, 1.0)

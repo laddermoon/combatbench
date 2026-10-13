@@ -9,6 +9,9 @@ per-step dict for trajectory building and eval:
     step_damage   locked-hand damage accumulated during this action step
     damage_total  cumulative locked-hand damage (Q)
     retract_done  1 once the retract combo completed
+    d_home        locked hand → own torso distance (0 before lock)
+    d_opp         locked hand → opp {head,torso} min dist (0 before lock)
+    gates         retract-gate bitmask (bit0 upright, bit1 home, bit2 sep)
 
 For the non-learner side (no settlement plugin attached) all fields
 stay 0 — the experiment only reads the learner's observer anyway.
@@ -25,7 +28,7 @@ class StrikeStateObserver(BaseObserverPlugin):
 
     _FIELDS = (
         "phase", "locked_hand", "step_damage", "damage_total",
-        "retract_done",
+        "retract_done", "d_home", "d_opp", "gates",
     )
 
     def __init__(self, agent_id: str = "robot_a") -> None:

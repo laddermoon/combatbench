@@ -47,6 +47,10 @@ Metrics written (per episode, keyed by learner agent id ``<aid>``):
     <aid>_strike_gates        int   bitmask of retract gates on the last
                                     RETRACT check: bit0 upright,
                                     bit1 hand home, bit2 separated
+    <aid>_strike_d_home       float locked hand → own torso distance (m),
+                                    written once a hand is locked
+    <aid>_strike_d_opp        float locked hand → opp {head,torso} min
+                                    distance (m), written once locked
 
 Termination reasons: ``strike_done`` / ``retract_timeout`` (issued for
 ALL agents — the episode ends; neither equals "timeout", so learners
@@ -277,12 +281,15 @@ class StrikeSettlementPlugin(BasePlugin):
     # Action-step bookkeeping: settle window, retract combo, timeout
     # ------------------------------------------------------------------
 
-    def _retract_geometry_ok(self, ctx: SimContext) -> bool:
+    def _update_geometry(self, ctx: SimContext) -> int:
+        """Compute retract-gate geometry; writes d_home / d_opp /
+        gates metrics every call.  Returns the gates bitmask
+        (bit0 upright, bit1 hand-home, bit2 separated)."""
         core = ctx.accessor.get_core_state()
         self_core = core.get(self.agent_id)
         if self_core is None:
             ctx.metrics[self._k("gates")] = 0
-            return False
+            return 0
 
         gates = 0
         # bit0: upright gate — root height
@@ -299,16 +306,14 @@ class StrikeSettlementPlugin(BasePlugin):
         if hand_raw is not None and torso_self_raw is not None:
             hand = np.asarray(hand_raw, dtype=np.float64)
 
-            # bit1: hand-home gate — the locked hand is back near the
-            # learner's own torso.  Covers both a chambered guard and a
-            # relaxed hanging arm; rejects arms still extended anywhere.
+            # hand → own torso, metric + bit1 gate
             d_home = float(np.linalg.norm(
                 hand - np.asarray(torso_self_raw, dtype=np.float64)))
+            ctx.metrics[self._k("d_home")] = d_home
             if d_home <= self.hand_home_dist:
                 gates |= 2
 
-            # bit2: separation gate — locked hand far from opponent
-            # {head,torso}
+            # hand → opp {head,torso} min, metric + bit2 gate
             targets = [
                 opp_bx.get(f"{p}_{self._osfx}") for p in ("head", "torso")
             ]
@@ -316,13 +321,25 @@ class StrikeSettlementPlugin(BasePlugin):
                 float(np.linalg.norm(hand - np.asarray(t, dtype=np.float64)))
                 for t in targets if t is not None
             ]
-            if dists and min(dists) >= self.retract_dist:
-                gates |= 4
+            if dists:
+                d_opp = min(dists)
+                ctx.metrics[self._k("d_opp")] = d_opp
+                if d_opp >= self.retract_dist:
+                    gates |= 4
 
         ctx.metrics[self._k("gates")] = gates
-        return gates == 0b111
+        return gates
+
+    def _retract_geometry_ok(self, ctx: SimContext) -> bool:
+        return self._update_geometry(ctx) == 0b111
 
     def on_post_action_step(self, ctx: SimContext) -> None:
+        # Once a hand is locked, keep the retract geometry metrics
+        # (d_home / d_opp / gates) current every action step — the
+        # experiment's r_retract channel consumes the series.
+        if self._locked_hand != HAND_NONE:
+            self._update_geometry(ctx)
+
         if self._phase == PHASE_SETTLE:
             self._settle_elapsed += 1
             if self._settle_elapsed >= self.settle_steps:
@@ -334,7 +351,7 @@ class StrikeSettlementPlugin(BasePlugin):
             start = self._retract_start_step or int(ctx.episode_step)
             if int(ctx.episode_step) - start >= self.retract_timeout_steps:
                 ctx.request_termination("retract_timeout")
-            elif self._retract_geometry_ok(ctx):
+            elif (ctx.metrics.get(self._k("gates"), 0) == 0b111):
                 self._hold_count += 1
                 if self._hold_count == self.hold_steps:
                     ctx.metrics[self._k("retract_done")] = 1
