@@ -20,6 +20,7 @@ from baseline.framework.sac.collection import SACFactSpec, SACJob
 from baseline.framework.sac.collection_rollouter import (
     SACCollectionError,
     SACParallelRollouter,
+    _worker_init,
 )
 from baseline.framework.sac.transition import (
     build_agent_transition_slice,
@@ -399,6 +400,21 @@ def test_parallel_same_blueprint_round_preserves_order():
     episodes = rollouter.collect(jobs)
     assert [ep.job_index for ep in episodes] == list(range(8))
     assert [ep.episode_seed for ep in episodes] == [200 + i for i in range(8)]
+
+
+def test_worker_init_clamps_torch_threads():
+    """Pool initializer must pin each spawn worker to single-threaded
+    BLAS — otherwise N workers × nproc OMP threads thrash the machine
+    (measured: 64 workers → rollout ~103s instead of ~5s)."""
+    import torch
+
+    prev = torch.get_num_threads()
+    try:
+        torch.set_num_threads(max(2, prev))
+        _worker_init()
+        assert torch.get_num_threads() == 1
+    finally:
+        torch.set_num_threads(prev)
 
 
 def test_collection_failure_aborts_round():

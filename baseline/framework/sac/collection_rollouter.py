@@ -30,6 +30,26 @@ class SACCollectionError(RuntimeError):
     """Raised when any collection job fails; no partial round is returned."""
 
 
+def _worker_init() -> None:  # pragma: no cover - runs in child
+    """Pool initializer: clamp torch to single-threaded BLAS.
+
+    Without this, each of N spawn workers defaults to ``nproc`` OMP
+    threads (192 on the GPU box) — N×192 threads thrash the machine and
+    the whole point of parallel rollout is lost.  Same measure PPO's
+    parallel_rollouter takes.
+    """
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+    except ImportError:
+        pass
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -263,7 +283,10 @@ class SACParallelRollouter:
     def _get_pool(self) -> "mp.pool.Pool":
         if self._pool is None:
             ctx = mp.get_context(self.mp_context)
-            self._pool = ctx.Pool(processes=self.num_workers)
+            self._pool = ctx.Pool(
+                processes=self.num_workers,
+                initializer=_worker_init,
+            )
         return self._pool
 
     def close(self) -> None:
