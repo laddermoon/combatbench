@@ -56,7 +56,36 @@
 
 ## W2 存量资产盘点
 
-（待执行）
+工具：`mocap/humanoid21/audit_assets.py`；结果：`assets_index.json`（sha256/帧数/质量指标全量）。
+
+### 原始数据（baseline/humanoid21/mocap/data/raw/，已在 git）
+
+- 4 个 ASF（subject 13/14/15/17）：31 bones、56 DOF、units_length=0.45（inch 系）、
+  units_angle=deg、root order `TX TY TZ RX RY RZ`——四者骨架定义一致。
+- 29 个 AMC：全部解析成功，无缺帧缺骨、无非有限值。
+  时长 3.5–77.8 s（按 CMU 标准 120 Hz 假定值折算，待 W4 官方描述交叉确认）。
+- 时长分布：13_01~24（9–48 s）、14_01~03（~46 s）、15_13（78 s）、17_10（23 s）。
+
+### 重定向产物（data/retargeted/，已在 git）
+
+- 29 组 `(T,21)` 角度 npy + 29 个 `_norm` 归一化版本，全部有限、零限位违例
+  （容差 1e-4°，最大超界 7e-15 即浮点噪声）、无冻结帧。
+- **6.5–15.6% 的关节值恰好压在限位上**——DOF-copy 重定向的裁剪痕迹，
+  人体关节角超出机器人限位时被静默截断（主要是肩/髋大幅动作帧）。
+- 数据只有关节角：无根部轨迹、无关键点、无接触、无速度。
+  **结论：可视为"低可信度的运动学近似"，不满足大纲对参考运动的最低信息要求。**
+
+### 旧代码可复用性裁定
+
+| 文件 | 裁定 | 依据 |
+|---|---|---|
+| `asf_parser.py` | 复用 | 4/4 ASF 解析正确，字段完整 |
+| `amc_parser.py` | 复用 | 29/29 AMC 解析正确；依赖"AMC 行序=ASF dof 序"约定（CMU 成立） |
+| `fk.py` | 复用（待 W3 数值验证） | CMU FK 约定实现完整；W3 用骨架尺寸合理性校验 |
+| `retarget.py` | 参考实现候选 | 走"FK→相对旋转→分解到真实关节轴"路线，含混合轴处理，思路正确；未经数值验证 |
+| `retarget_v2.py` | 过时 | DOF 直拷+符号猜测；肩/踝混合轴与 hip_x/hip_z 语义错位；当前 npy 均由它生成 |
+| `visualize.py` | 损坏 | `Humanoid21Meta.ARENA_XML` 不存在（实际在 simulator），且依赖交互 viewer |
+| `prepare_data.py` | 模式参考 | 写死 subject 列表与代理地址；下载流程可参考 |
 
 ## W3 片段内容核验
 
