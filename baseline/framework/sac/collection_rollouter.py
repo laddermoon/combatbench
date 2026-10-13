@@ -14,7 +14,7 @@ import os
 import pickle
 import time
 from dataclasses import replace
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.policy import PolicyBlueprint
@@ -247,6 +247,12 @@ class SACParallelRollouter:
             )
         self.num_workers = int(num_workers)
         self.mp_context = str(mp_context)
+        # Persistent pool: spawn-context worker startup costs ~1.6s each
+        # (interpreter boot + torch/mujoco import on first unpickle).
+        # A fresh pool per collect() would re-pay that every round and
+        # nullify the parallelism entirely — the pool must live as long
+        # as the rollouter itself (whole training run).
+        self._pool: Optional[mp.pool.Pool] = None
 
     def __enter__(self) -> "SACParallelRollouter":
         return self
@@ -254,8 +260,17 @@ class SACParallelRollouter:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def _get_pool(self) -> "mp.pool.Pool":
+        if self._pool is None:
+            ctx = mp.get_context(self.mp_context)
+            self._pool = ctx.Pool(processes=self.num_workers)
+        return self._pool
+
     def close(self) -> None:
-        return None
+        if self._pool is not None:
+            self._pool.terminate()
+            self._pool.join()
+            self._pool = None
 
     def collect(self, jobs: Iterable[SACJob]) -> List[CollectedEpisode]:
         job_list = list(jobs)
@@ -285,9 +300,7 @@ class SACParallelRollouter:
             [_serialize_job(j) for j in chunk]
             for chunk in _chunk_groups(groups, self.num_workers)
         ]
-        ctx = mp.get_context(self.mp_context)
-        with ctx.Pool(processes=min(self.num_workers, len(chunks))) as pool:
-            batches = pool.map(_run_job_batch, chunks)
+        batches = self._get_pool().map(_run_job_batch, chunks)
         return [episode for batch in batches for episode in batch]
 
 

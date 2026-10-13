@@ -372,6 +372,25 @@ def test_same_blueprint_jobs_are_chunked_for_workers():
     assert all(len(c) == 8 for c in chunks8)
 
 
+def test_persistent_pool_reused_across_collects():
+    """The worker pool must persist across collect() calls — a fresh
+    spawn pool per round re-pays ~1.6s/worker interpreter+import cost
+    and erases the parallelism win (measured: rollout ~104s/round)."""
+    rollouter = SACParallelRollouter(num_workers=2)
+    try:
+        assert rollouter._pool is None  # lazy until first parallel collect
+        jobs = [_job(i, seed=300 + i) for i in range(4)]
+        eps1 = rollouter.collect(jobs)
+        pool1 = rollouter._pool
+        assert pool1 is not None
+        eps2 = rollouter.collect(jobs)
+        assert rollouter._pool is pool1  # same pool, not re-spawned
+        assert [e.job_index for e in eps2] == [0, 1, 2, 3]
+    finally:
+        rollouter.close()
+    assert rollouter._pool is None
+
+
 def test_parallel_same_blueprint_round_preserves_order():
     """Same-blueprint jobs (the self-play shape) must still come back
     in job order through the chunked parallel path."""
