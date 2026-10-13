@@ -271,6 +271,14 @@ def _tick_metrics(step_stats: Mapping[str, Any], batch_size: int, replay_size: i
         ),
         "replay.size": float(replay_size),
     }
+    # U-mode observability: regularizer term visibility (zero for shannon
+    # since reg_term is None there — emit only when the trainer reports it).
+    if "reg_actor_term_mean" in step_stats:
+        metrics["actor.reg_term"] = float(step_stats["reg_actor_term_mean"])
+    if "regularizer_shannon" in step_stats:
+        metrics["regularizer.shannon"] = float(
+            step_stats["regularizer_shannon"]
+        )
     q_values = [
         float(v) for k, v in step_stats.items()
         if k.startswith("q1_mean_") or k.startswith("q2_mean_")

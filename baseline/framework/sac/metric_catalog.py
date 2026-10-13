@@ -138,6 +138,8 @@ DEFAULT_METRIC_SPECS = tuple(
             "actor.valid_count",
             "actor.weight.<channel>",
             "actor.weight_next.<channel>",
+            "actor.reg_term",
+            "regularizer.shannon",
             "temperature.alpha",
             "temperature.loss",
             "temperature.grad_norm",

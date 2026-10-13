@@ -145,3 +145,25 @@ def test_catalog_specs_match_emitted_keys():
     assert ("round", "behavior.explore_factor") in specs
     assert ("round", "behavior.random_start") in specs
     assert ("debug", "debug.request") in specs
+    # u-mode regularizer visibility keys (R2-6 regression prerequisite)
+    assert ("tick", "actor.reg_term") in specs
+    assert ("tick", "regularizer.shannon") in specs
+
+
+def test_tick_metrics_maps_u_mode_reg_keys():
+    """U-mode reg terms in step_stats must reach the tick event stream —
+    without this mapping u_floor training has no reg observability."""
+    from baseline.framework.sac.loop import _tick_metrics
+
+    m = _tick_metrics(
+        {"reg_actor_term_mean": -0.12, "regularizer_shannon": 0.0},
+        batch_size=4, replay_size=10, tau=0.05,
+    )
+    assert m["actor.reg_term"] == -0.12
+    assert m["regularizer.shannon"] == 0.0
+    # shannon path emits regularizer.shannon=1 but no actor.reg_term
+    m2 = _tick_metrics(
+        {"regularizer_shannon": 1.0}, batch_size=4, replay_size=10, tau=0.05,
+    )
+    assert "actor.reg_term" not in m2
+    assert m2["regularizer.shannon"] == 1.0
