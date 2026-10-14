@@ -4235,9 +4235,10 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
   max_pot≈0.4），比"一直 0.5"省掉高原段 ~0.5 tick/env 的冗余
   → 净省约 10-15% 墙钟。本次实验切在 2.0M 太晚（高原期已过 1.2M），
   总墙钟反而劣于 R1——分段调度的收益窗口只在前段。
-- **b1024 臂 bump 后爬升明显更慢**（b256 臂 ~400K env 到 success=1.0，
-  b1024 臂 ~500K env 才进突破带且仍在振荡）：大 batch 在高密度更新段
-  响应滞后 ~25% env——记为观察项，standup 推荐仍 b256。
+- **b1024 臂 bump 后爬升明显更慢**（b256：~400K env / ~332K tick 到
+  success=1.0；b1024：~650K env / ~500K tick 后仍在 0.19-0.38 振荡，
+  于 2.66M 主动停）：大 batch 在高密度更新段响应滞后 ~50% tick——
+  记为观察项，standup 推荐仍 b256。
 - **held-out 终证**：`opt_stage05_b256_s42/policy`（best-of-run，
   eval.success=0.969 时的快照）held-out 64 episode / 128 agent-row：
   **success=0.961**，max_pot=0.95——分段调度不损害泛化。
