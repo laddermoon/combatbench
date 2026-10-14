@@ -56,7 +56,9 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
             output_path=str(out_dir / f'{clip_id}_{tag}_track_eval.mp4')))
 
     rt.reset(seed=seed, options={'initial_distance': 6.0})
-    rec = {'reward': [], 'kp_err_m': [], 'q_rmse_deg': [], 'phase': []}
+    rec = {'reward': [], 'kp_err_m': [], 'kp_err_rel_m': [],
+           'root_dxy_m': [], 'root_dyaw_deg': [],
+           'q_rmse_deg': [], 'phase': []}
     obs_a, obs_b = rt.get_observation()
     while not rt.is_episode_over():
         aa, _ = pol.act(obs_a)
@@ -79,6 +81,11 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
         'reward_mean': float(np.mean(rec['reward'])) if n else 0.0,
         'kp_err_m_mean': float(np.mean(rec['kp_err_m'])) if n else 0.0,
         'kp_err_m_max': float(np.max(rec['kp_err_m'])) if n else 0.0,
+        'kp_err_rel_m_mean': float(np.mean(rec['kp_err_rel_m'])) if n else 0.0,
+        'root_dxy_m_mean': float(np.mean(rec['root_dxy_m'])) if n else 0.0,
+        'root_dxy_m_max': float(np.max(rec['root_dxy_m'])) if n else 0.0,
+        'root_dyaw_deg_mean': float(np.mean(np.abs(rec['root_dyaw_deg']))) if n else 0.0,
+        'root_dyaw_deg_max': float(np.max(np.abs(rec['root_dyaw_deg']))) if n else 0.0,
         'q_rmse_deg_mean': float(np.mean(rec['q_rmse_deg'])) if n else 0.0,
         'q_rmse_deg_max': float(np.max(rec['q_rmse_deg'])) if n else 0.0,
     }

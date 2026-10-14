@@ -3,12 +3,12 @@
 每控制步输出 dict，供 ``extract_per_step_field`` 抽取：
   reward / pose / vel / kp / height / kp_err_m / q_rmse_deg / frame
 
-reward = 0.40·r_pose + 0.10·r_vel + 0.30·r_kp + 0.10·r_height + 0.10·r_root
+reward = 0.35·r_pose + 0.10·r_vel + 0.25·r_kp + 0.10·r_height + 0.20·r_root
   r_pose   = exp(-2 · mean((q_norm − ref_q_norm)²))
   r_vel    = exp(-0.02 · mean((qv_norm − ref_qv_norm)²))
   r_kp     = exp(-40 · mean(||p_self − p_ref||²))   骨盆系关键点: torso/head/双手/双足
   r_height = exp(-20 · (root_z − ref_root_z)²)
-  r_root   = 0.5·exp(-8·dxy²) + 0.5·exp(-2·dyaw²)   根 yaw/xy 跟踪
+  r_root   = 0.5·exp(-3·dxy²) + 0.5·exp(-1·dyaw²)   根 yaw/xy 跟踪
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _HALF = np.array([
     for n in CONTROLLED_JOINTS
 ])
 
-W_POSE, W_VEL, W_KP, W_HEIGHT, W_ROOT = 0.40, 0.10, 0.30, 0.10, 0.10
+W_POSE, W_VEL, W_KP, W_HEIGHT, W_ROOT = 0.35, 0.10, 0.25, 0.10, 0.20
 
 
 class MotionTrackRewarder(BaseObserverPlugin):
@@ -83,8 +83,8 @@ class MotionTrackRewarder(BaseObserverPlugin):
 
         # 根级跟踪项：骨盆系 kp + 关节 pose 都不约束根 yaw/xy —— v3 拳击
         # 出现过"原地打拳"退化（mean yaw 误差 123°、xy 漂移 1.4m）。
-        # yaw 对齐 + xy 位置两项把轨迹跟随拉回来；权重适中避免重蹈
-        # 世界系全关键点过罚（v1）的问题。
+        # v5：核宽放宽（exp(-3·d²)/exp(-1·dy²)）让 1-2m / 90° 量级的
+        # 漂移区仍有有效梯度；权重 0.10→0.20，与 pose/kp 让位再平衡。
         self_pos = np.asarray(core['root_pos'], dtype=np.float64)
         ref_pos = np.asarray(mt['ref_root_pos'], dtype=np.float64)
         dxy = float(np.linalg.norm(self_pos[:2] - ref_pos[:2]))
@@ -95,8 +95,8 @@ class MotionTrackRewarder(BaseObserverPlugin):
         yaw_r = float(R.from_quat([q_ref[1], q_ref[2], q_ref[3], q_ref[0]]
                                  ).as_euler('xyz')[2])
         dyaw = float((yaw_s - yaw_r + np.pi) % (2 * np.pi) - np.pi)
-        r_root = 0.5 * float(np.exp(-8.0 * dxy ** 2)) \
-            + 0.5 * float(np.exp(-2.0 * dyaw ** 2))
+        r_root = 0.5 * float(np.exp(-3.0 * dxy ** 2)) \
+            + 0.5 * float(np.exp(-1.0 * dyaw ** 2))
 
         reward = (W_POSE * r_pose + W_VEL * r_vel
                   + W_KP * r_kp + W_HEIGHT * r_height + W_ROOT * r_root)

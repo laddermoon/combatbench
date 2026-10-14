@@ -9,8 +9,8 @@
 - ``set_action`` 每调用一次（20Hz 控制步）相位 +1；参考帧相位就是
   episode 时间轴。
 - 观测扩展（仅被跟踪机器人，对手保持 96 维）：
-    [phase(1), ref_q_norm(21), ref_qv_norm(21)*0.2, ref_root_linvel_local(3),
-     ref_root_pos(3), ref_yaw_sin_cos(2), ref_root_angvel_local(3)]
+    [phase(1), ref_q_norm(21), ref_qv_norm(21)*0.2, ref_root_linvel_ref(3),
+     root_disp_ego(3)*0.5, dyaw_sin_cos(2), ref_root_angvel_ref(3)]
   → obs_dim = 96 + 54 = 150。**参考帧取 frame+1（下一控制步目标），
   与步末奖励所对照的参考帧一致。**
 - ``get_derived_state`` 增加 ``motion_track`` 字段供奖励/终止插件使用：
@@ -128,17 +128,15 @@ class MotionTrackingSimulator(Humanoid21Simulator):
                 for n, bid in self._kp_ids.items()}
 
     def _ref_root_vel_local(self, rf: Dict[str, np.ndarray]) -> np.ndarray:
-        cache = self._robots[self._track_robot]
-        quat = self.data.qpos[cache['root_qpos_adr'] + 3:
-                              cache['root_qpos_adr'] + 7]
-        Rr = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        # 参考线速度投到**参考朝向**系：表达"目标朝向下的期望速度"，
+        # 与 dyaw 观测配合时语义一致（投到自身体系会随自身朝向漂移而失真）。
+        Rr = R.from_quat([rf['root_quat'][1], rf['root_quat'][2],
+                          rf['root_quat'][3], rf['root_quat'][0]])
         return Rr.inv().as_matrix() @ rf['root_linvel']
 
     def _ref_root_angvel_local(self, rf: Dict[str, np.ndarray]) -> np.ndarray:
-        cache = self._robots[self._track_robot]
-        quat = self.data.qpos[cache['root_qpos_adr'] + 3:
-                              cache['root_qpos_adr'] + 7]
-        Rr = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        Rr = R.from_quat([rf['root_quat'][1], rf['root_quat'][2],
+                          rf['root_quat'][3], rf['root_quat'][0]])
         return Rr.inv().as_matrix() @ rf['root_angvel']
 
     def get_derived_state(self, fields=None) -> Dict[str, Any]:
@@ -176,19 +174,31 @@ class MotionTrackingSimulator(Humanoid21Simulator):
         # 奖励在步末对照 ref[k+1] 评分；给 ref[k] 会引入一步目标滞后
         # （快速出拳段 ~10°/控制步 的系统性相位差）。
         rf = self.ref_at(self._frame + 1)
-        # 根级目标也必须可观测：否则策略只能间接从腿部目标推断
-        # 位移/转身意图 —— v3 拳击出现过 mean yaw 误差 123°、
-        # xy 漂移 1.4m 的"原地拳击"退化。
-        yaw = R.from_quat([rf['root_quat'][1], rf['root_quat'][2],
-                           rf['root_quat'][3], rf['root_quat'][0]]
-                          ).as_euler('xyz')[2]
+        # 根级目标必须可观测**且可比较**：96 维基础观测不含绝对 xy/yaw
+        # （OBSERVATION_zh.md §4 刻意设计），因此给绝对 ref_root_pos/ref_yaw
+        # 策略无从对照自身 —— v4 拳击 dxy 仍漂移 1.0m/47° 的直接原因。
+        # 这里改发 ego 系跟踪误差：disp = R_self⁻¹(ref_pos − self_pos)，
+        # dyaw = wrap(yaw_ref − yaw_self)。
+        cache = self._robots[self._track_robot]
+        self_pos = self.data.qpos[cache['root_qpos_adr']:
+                                  cache['root_qpos_adr'] + 3]
+        self_quat = self.data.qpos[cache['root_qpos_adr'] + 3:
+                                   cache['root_qpos_adr'] + 7]
+        R_self = R.from_quat([self_quat[1], self_quat[2],
+                              self_quat[3], self_quat[0]])
+        yaw_self = float(R_self.as_euler('xyz')[2])
+        yaw_ref = float(R.from_quat(
+            [rf['root_quat'][1], rf['root_quat'][2],
+             rf['root_quat'][3], rf['root_quat'][0]]).as_euler('xyz')[2])
+        dyaw = (yaw_ref - yaw_self + np.pi) % (2 * np.pi) - np.pi
+        disp_ego = R_self.inv().as_matrix() @ (rf['root_pos'] - self_pos)
         ext = np.concatenate([
             [rf['phase']],
             rf['q_norm'],
             rf['qv_norm'] * 0.2,
             self._ref_root_vel_local(rf),
-            rf['root_pos'],
-            [np.sin(yaw), np.cos(yaw)],
+            disp_ego * 0.5,
+            [np.sin(dyaw), np.cos(dyaw)],
             self._ref_root_angvel_local(rf),
         ]).astype(np.float32)
         out = {}
