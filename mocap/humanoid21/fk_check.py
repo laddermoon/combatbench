@@ -27,7 +27,40 @@ from baseline.humanoid21.mocap.asf_parser import parse_asf
 from baseline.humanoid21.mocap.amc_parser import parse_amc
 from baseline.humanoid21.mocap.fk import compute_fk
 
-from mocap.humanoid21.ref_fk import RefSkeleton, fk_frame
+from mocap.humanoid21.ref_fk import RefSkeleton, _Rx_Ry_Rz, _Rz_Ry_Rx, fk_frame
+from scipy.spatial.transform import Rotation
+
+
+def check_rotation_order() -> None:
+    x, y, z = 23.0, -34.0, 57.0
+    rx, ry, rz = (Rotation.from_euler(axis, angle, degrees=True).as_matrix()
+                  for axis, angle in zip("xyz", (x, y, z)))
+    np.testing.assert_allclose(_Rz_Ry_Rx(x, y, z), rz @ ry @ rx, atol=1e-14)
+    np.testing.assert_allclose(_Rx_Ry_Rz(x, y, z), rx @ ry @ rz, atol=1e-14)
+
+
+def check_elbow_flexion(skel: RefSkeleton) -> None:
+    frame = {"root": np.zeros(6), "lradius": np.array([45.0]),
+             "rradius": np.array([45.0])}
+    joint, distal, _ = fk_frame(skel, frame)
+    for side in ("l", "r"):
+        forearm = distal[f"{side}radius"] - joint[f"{side}radius"]
+        assert forearm[2] > 0.5 * np.linalg.norm(forearm), (side, forearm)
+
+
+def check_reference_arms(skel: RefSkeleton, frames, clip: str) -> None:
+    if clip == "07_01":
+        joint, distal, _ = fk_frame(skel, frames[0])
+        for side in ("l", "r"):
+            upper = distal[f"{side}humerus"] - joint[f"{side}humerus"]
+            assert upper[1] / np.linalg.norm(upper) < -0.85, (side, upper)
+    elif clip == "13_17":
+        joint, distal, _ = fk_frame(skel, frames[236])
+        across = joint["rhumerus"] - joint["lhumerus"]
+        facing = np.cross([0.0, 1.0, 0.0], across)
+        facing /= np.linalg.norm(facing)
+        reach = distal["rradius"] - joint["rhumerus"]
+        assert reach @ facing / np.linalg.norm(reach) > 0.6, reach
 
 
 def check_rest_pose(skel: RefSkeleton, asf) -> None:
@@ -74,7 +107,10 @@ def main() -> None:
     frames = parse_amc(args.amc)
     frame = frames[args.frame]
 
+    check_rotation_order()
     check_rest_pose(skel, asf)
+    check_elbow_flexion(skel)
+    check_reference_arms(skel, frames, Path(args.amc).stem)
     check_connectivity(skel, frame)
 
     joint_r, distal_r, F_r = fk_frame(skel, frame)

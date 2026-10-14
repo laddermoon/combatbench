@@ -2,22 +2,19 @@
 
 Faithful reimplementation of CMU's official ASF/AMC viewer
 (mocap.cs.cmu.edu `asf_amc_viewer`: skeleton.cxx / display.cxx / transform.cxx),
-which differs from `baseline/humanoid21/mocap/fk.py` in three ways:
+which differs from `baseline/humanoid21/mocap/fk.py` in two ways:
 
-1. Bone `axis` euler order: official C(b) = Rz(az) @ Ry(ay) @ Rx(ax)
-   (rotation declared 'XYZ', x applied to the vector first — extrinsic XYZ
-   in scipy terms). Legacy parser used intrinsic 'xyz' = Rx @ Ry @ Rz.
-2. ASF `direction` is a GLOBAL-frame vector (see skeleton.cxx comment
+1. ASF `direction` is a GLOBAL-frame vector (see skeleton.cxx comment
    "the bone's direction vector in global coordinate"); it is mapped to the
    bone local frame via dir_local = C(b)^T @ dir_global before FK.
-3. A child's joint position equals the PARENT bone's distal endpoint:
+2. A child's joint position equals the PARENT bone's distal endpoint:
    joint(child) = joint(parent) + F(parent) @ dir_local(parent) * len(parent),
    where F(b) is the bone's post-DOF world frame. Legacy fk.py instead used
    the child's own direction/length in the parent frame — producing
    disconnected/displaced segments (visible as "bizarre" preview renders).
 
 Frame recursion (per official drawBone / ComputeRotationToParentCoordSystem):
-    rot_pc(b) = C(b)^T @ C(parent)          # GL-transposed storage => this form
+    rot_pc(b) = C(parent)^T @ C(b)
     F(b)      = F(parent) @ rot_pc(b) @ R_dof(b)
     joint(b)  = joint(parent) + F(parent) @ dir_local(parent) * len(parent)
     distal(b) = joint(b) + F(b) @ dir_local(b) * len(b)   # children attach here
@@ -28,26 +25,17 @@ listed 'rx ry rz' order applied x-first). All CMU bones use 'rx ry rz' or
 subsets, matching this convention.
 
 Root is special-cased like the viewer: orientation = Rx(rx) @ Ry(ry) @ Rz(rz)
-(scipy intrinsic 'xyz'), root axis/orientation fields are ignored (all-zero in
+(scipy intrinsic `XYZ`), root axis/orientation fields are ignored (all-zero in
 CMU files), and root translations use AMC units (scaled by units_length).
 
 Rest-pose identity (zero AMC DOFs): F(b) = C(b), so each bone's world
 direction equals its ASF global `direction`. This is used as a numerical
 self-check in `mocap/humanoid21/fk_check.py`.
 
-Elbow hinge convention correction (DOF_SIGN):
-Under the literal viewer convention above, +rx on {l,r}radius rotates about
-the bone frame's +x axis — which for CMU's declared axis (180,-30,-90) /
-(180,30,90) is world +y at rest pose, folding the forearm BACKWARD
-(anatomically impossible hyperextension). Yet the ASF declares radius rx
-limits (-10, 170) — +rx is the flexion range — and CMU's own rendered
-videos (e.g. subjects/13/13_17.avi) show elbows flexing FORWARD with
-positive data values (+90..140). The consistent resolution is that the true
-elbow hinge axis is -e1 of the declared frame, i.e. the AMC rx value for
-the radius bones must be negated. Verified visually against official
-renders at multiple punch frames (boxing guard with flexed-forward
-forearms). Walking clips remain correct — arms hanging with slight
-forward flexion.
+Earlier code mistakenly swapped SciPy's intrinsic uppercase and extrinsic
+lowercase Euler conventions. The extra radius-rx sign reversal added to
+compensate for backward bending was also wrong; with the proper axis/DOF
+order, positive radius rx folds the forearm forward without a sign change.
 """
 from __future__ import annotations
 
@@ -67,18 +55,13 @@ from baseline.humanoid21.mocap.amc_parser import parse_amc
 
 
 def _Rz_Ry_Rx(rx: float, ry: float, rz: float) -> np.ndarray:
-    """Matrix Rz(rz) @ Ry(ry) @ Rx(rx) — extrinsic 'XYZ' (x applied first)."""
-    return Rotation.from_euler("XYZ", [rx, ry, rz], degrees=True).as_matrix()
-
-
-def _Rx_Ry_Rz(rx: float, ry: float, rz: float) -> np.ndarray:
-    """Matrix Rx(rx) @ Ry(ry) @ Rz(rz) — intrinsic 'xyz' (used for root)."""
+    """Matrix Rz(rz) @ Ry(ry) @ Rx(rx) — extrinsic 'xyz' (x applied first)."""
     return Rotation.from_euler("xyz", [rx, ry, rz], degrees=True).as_matrix()
 
 
-# Per-bone AMC value sign corrections — see module docstring (Elbow hinge
-# convention). Only the radius bones need it: they carry the elbow hinge.
-DOF_SIGN: Dict[str, float] = {"lradius": -1.0, "rradius": -1.0}
+def _Rx_Ry_Rz(rx: float, ry: float, rz: float) -> np.ndarray:
+    """Matrix Rx(rx) @ Ry(ry) @ Rz(rz) — intrinsic 'XYZ' (used for root)."""
+    return Rotation.from_euler("XYZ", [rx, ry, rz], degrees=True).as_matrix()
 
 
 @dataclass
@@ -128,9 +111,7 @@ def _dof_values(frame: Dict[str, np.ndarray], bone: str, dofs: List[str]) -> Tup
         raise ValueError(
             f"bone {bone}: AMC gives {len(vals)} values but ASF dof has {len(dofs)}: {dofs}"
         )
-    sign = DOF_SIGN.get(bone, 1.0)
     for name, v in zip(dofs, vals):
-        v = v * sign
         if name == "rx":
             rx = v
         elif name == "ry":
