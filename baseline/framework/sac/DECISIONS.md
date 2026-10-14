@@ -4203,10 +4203,13 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
 \* 前 ~50min 5 训练作业争抢 CPU（load~210/192 核）环境下的含噪吞吐；
 两条 utd0125 臂后期单独跑时 round train 降至 107-137s。
 
-**结论**：
-1. **update 次数主导墙钟**：utd 0.125（3200 upd/round）→ ~100 env/s，
-   比 utd 0.5 快 ~2.8×；每 env_step 学习曲线全程贴住 R1（甚至略优），
-   即 **standup 上 utd 0.5→0.125 是纯赚**。
+**结论（800K 探针 + 2M 延训完整版）**：
+1. **低 UTD 省墙钟是假的**——分阶段看本质：高原期（<800K）utd 0.125
+   的 per-env-step 学习完全贴住 R1（数据受限段，更新冗余），但突破期
+   （1.2M+）被拖慢 ~40%：R1 success=1.0 @~1.8M、R2_c（u_floor 同配置）
+   success=1.0 @1.56M，而两条 utd0125 臂到 2.0M 仅 max_pot 0.67-0.74
+   且无 success。**守恒货币是 critic tick 不是 env_step**：砍更新 4×，
+   突破所需 env 步数近似按比例膨胀，env/s 的赢面被突破延迟吃光。
 2. **batch 256→1024 在 launch-bound 下近乎免费**：同 update 数只贵
    ~5% env 吞吐；对学习无可见损益。大 batch 不是瓶颈，是冗余容量。
 3. **高 UTD × 大 batch 最差且不更稳**：utd05+b1024 组合早期 q_mean
@@ -4216,7 +4219,12 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
    并发实验数要受控，否则所有 timing 结论不可比。
 5. R1 实测 critic_tick/env=0.77（utd_credit 尾差滚动造成），名义 utd
    与实际更新数未必相等，比吞吐要用 tick 数不用配置值。
+6. **附带发现**：standup 上 u_floor（uncertainty）比 shannon 更快
+   达标（1.56M vs ~1.8M env_step 出 success=1.0）。
 
-**验收动作**：两个 utd0125 臂已无损 resume 延训至 2M
-（`_e` 后缀 run）验证 breakthrough 段（R1 在 ~1.5M 才出 success），
-结果补记于本条目下方。
+**分段 UTD 假设与验证**（进行中）：高原期低 UTD 白赚吞吐 +
+突破期补回高 UTD，期望净省 ~25-35% 墙钟。测试：两条 2M 延训臂的
+终态 checkpoint（max_pot≈0.7，已在爬升段）以 `--set utd_ratio=0.5`
+resume 续跑至 3M（`opt_stage05_b256_s42` / `opt_stage05_b1024_s42`），
+若在 ~300-500K env 内突破则分段调度成立——框架的 `--param
+sac_params.utd_ratio=X@ROUND` 正是为此存在。
