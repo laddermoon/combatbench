@@ -96,6 +96,7 @@ class StrikeSettlementPlugin(BasePlugin):
         force_scale: float = 100.0,
         phy_step_dt: float = 0.002,
         min_hit_force: float = 250.0,
+        end_after_settle: bool = False,
     ) -> None:
         if agent_id not in ("robot_a", "robot_b"):
             raise ValueError(f"agent_id must be robot_a/robot_b, got {agent_id!r}")
@@ -112,6 +113,12 @@ class StrikeSettlementPlugin(BasePlugin):
         self.force_scale = float(force_scale)
         self.phy_step_dt = float(phy_step_dt)
         self.min_hit_force = float(min_hit_force)
+        # Simplified scoring: the SETTLE window itself is the whole
+        # event — when it elapses, the episode ends "strike_done" with
+        # the accumulated locked-hand damage as the score.  No RETRACT
+        # phase, no hold, no retract timeout (user direction: drop the
+        # retract stage entirely — it was the dominant failure mode).
+        self.end_after_settle = bool(end_after_settle)
 
         self._phase = PHASE_PRE_HIT
         self._locked_hand = HAND_NONE
@@ -151,6 +158,7 @@ class StrikeSettlementPlugin(BasePlugin):
             "force_scale": self.force_scale,
             "phy_step_dt": self.phy_step_dt,
             "min_hit_force": self.min_hit_force,
+            "end_after_settle": self.end_after_settle,
         }
 
     @classmethod
@@ -353,9 +361,12 @@ class StrikeSettlementPlugin(BasePlugin):
         if self._phase == PHASE_SETTLE:
             self._settle_elapsed += 1
             if self._settle_elapsed >= self.settle_steps:
-                self._phase = PHASE_RETRACT
-                self._retract_start_step = int(ctx.episode_step)
-                self._hold_count = 0
+                if self.end_after_settle:
+                    ctx.request_termination("strike_done")
+                else:
+                    self._phase = PHASE_RETRACT
+                    self._retract_start_step = int(ctx.episode_step)
+                    self._hold_count = 0
 
         elif self._phase == PHASE_RETRACT:
             start = self._retract_start_step or int(ctx.episode_step)

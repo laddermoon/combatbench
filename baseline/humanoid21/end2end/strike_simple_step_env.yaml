@@ -1,0 +1,193 @@
+# Strike-once + retract task on the attack_prep stack.
+#
+# Single learning agent: random fallen state → stand up → step → chase
+# a moving target → land ONE hand strike → settle the damage window →
+# retract the arm → episode ends.
+#
+# Opponent (non-learning): RandomPoseInitPlugin samples a perturbed
+# standing/leaning pose at episode start; PoseMovePlugin then freezes
+# that pose and slides it around the arena at a per-episode sampled
+# speed with slow random heading drift.
+#
+# StrikeSettlementPlugin (world plugin, per learner) owns the
+# PRE_HIT→SETTLE→RETRACT state machine at physics-substep resolution:
+# first hand→{head,torso} contact locks the striking hand, locked-hand
+# damage accrues for settle_steps action steps (same locked hand only),
+# then the episode ends strike_done — simplified scoring, NO RETRACT
+# phase (user direction; see STRIKE_SPARSE_PLAN.md).  The
+# StrikeStateObserver mirrors its metrics per step for the reward
+# builder.
+#
+# Differs from attack_prep_step_env.yaml:
+#   - RandomMovePlugin → RandomPoseInitPlugin + PoseMovePlugin
+#     (random frozen pose, per-episode speed, drifting heading,
+#     smaller avoid distance so the target is actually reachable).
+#   - Adds StrikeSettlementPlugin + strike_state_{a,b} observers.
+#   - min_avoid_distance lowered to 0.6 m — the learner must be able
+#     to make contact.
+#
+# Reward channels = attack_prep recipe + r_strike (half of locked-hand
+# damage paid during settle, second half on retract completion).
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps (episodes usually end earlier on strike_done)."
+  agent_id:
+    default: "robot_a"
+    description: "The learning robot."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The moving target robot (pose-frozen kinematic)."
+  oppo_speed_min:
+    default: 0.15
+    description: "Min per-episode target speed (m/s)."
+  oppo_speed_max:
+    default: 0.45
+    description: "Max per-episode target speed (m/s)."
+  oppo_min_avoid_distance:
+    default: 0.6
+    description: "Minimum distance target keeps from learner — small enough to allow contact."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  # GaitClockSimulator appends 3 dims to obs (indices 96..98):
+  # cmd_L / cmd_R / window-progress — the stepping command the policy
+  # can see (aligned with clock_foot_weights on the reward side).
+  cls: "baseline.humanoid21.end2end.gait_clock_simulator:GaitClockSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    gait_period: 40
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.random_pose_init:RandomPoseInitPlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      max_attempts: 20
+      perturb_phy_steps: 100
+      settle_phy_steps: 100
+      action_scale: 0.6
+      min_height: 1.15
+      reset_interval: 50
+  # Push perturbation DISABLED for the strike stage (user decision:
+  # 循序渐进 — no extra difficulty while learning to strike).  The
+  # plugin code stays; re-enable by restoring this block.  The
+  # PushStateObserver below degrades gracefully (metrics absent →
+  # phase=0/clean=False → push_clean_bonus adds 0).
+  # - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+  #   config:
+  #     target_robots: ["${agent_id}"]
+  #     standing_height_threshold: 1.15
+  #     standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+  #     random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+  #     observe_steps: 20              # 施力后观察 1 秒
+  #     impulse_body: "torso"
+  #     force_threshold: 1.0           # 接触力阈值 (N)
+  - cls: "baseline.humanoid21.plugins.pose_move:PoseMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed_min: ${oppo_speed_min}
+      speed_max: ${oppo_speed_max}
+      min_avoid_distance: ${oppo_min_avoid_distance}
+      yaw_rate: 0.5
+  - cls: "baseline.humanoid21.plugins.strike_settlement:StrikeSettlementPlugin"
+    config:
+      agent_id: ${agent_id}
+      settle_steps: 10               # 命中后 0.5s 结算窗：同一锁定手累计伤害
+      end_after_settle: true         # 简化版：结算窗结束即 strike_done，无 RETRACT
+      retract_dist: 0.5              # retract 参数保留但不再被使用
+      hand_home_dist: 0.55
+      stand_height_min: 1.0
+      hold_steps: 3
+      retract_timeout_steps: 60
+      min_hit_force: 250.0           # graze <250N never triggers the event
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  # Non-foot body contact with arena walls — the wall-lean exploit.
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  # Push state machine per frame — clean-window survive bonus.
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_b"
+  # Follow: per-frame XY positions of self and opponent.
+  approach_velocity_a:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_a"
+  approach_velocity_b:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_b"
+  # Face: torso forward unit vector (XY projection).
+  face_opponent_a:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_a"
+  face_opponent_b:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_b"
+
+  # Arm state for punch shaping: elbow norms + hand/head/shoulder dists.
+  arm_state_a:
+    cls: "baseline.humanoid21.end2end.arm_state_observer:ArmStateObserver"
+    config:
+      agent_id: "robot_a"
+  arm_state_b:
+    cls: "baseline.humanoid21.end2end.arm_state_observer:ArmStateObserver"
+    config:
+      agent_id: "robot_b"
+
+  # Strike settlement state, mirrored from StrikeSettlementPlugin metrics.
+  strike_state_a:
+    cls: "baseline.humanoid21.end2end.strike_state_observer:StrikeStateObserver"
+    config:
+      agent_id: "robot_a"
+  strike_state_b:
+    cls: "baseline.humanoid21.end2end.strike_state_observer:StrikeStateObserver"
+    config:
+      agent_id: "robot_b"

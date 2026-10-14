@@ -574,3 +574,53 @@ def test_sparse_explore_factor_zones():
     obs[57], obs[58] = 0.3, 0.0                      # close BUT fallen
     obs[45] = 0.5
     assert _sparse_explore_factor(obs, 0) == _EF_LOW
+
+
+def test_end_after_settle_terminates_strike_done():
+    """Simplified scoring: settle window end → strike_done, never
+    reaches PHASE_RETRACT."""
+    from baseline.humanoid21.plugins.strike_settlement import (
+        PHASE_SETTLE)
+    p = _plugin(settle_steps=3, end_after_settle=True)
+    ctx = _Ctx(_Accessor())
+    p.on_pre_episode(ctx)
+    ctx.accessor._contacts = _contacts([_hit(400.0)])
+    p.on_post_phy_step(ctx)
+    assert p._phase == PHASE_SETTLE
+
+    for _ in range(2):
+        ctx.episode_step += 1
+        p.on_post_action_step(ctx)
+        assert not ctx.terminations
+    ctx.episode_step += 1
+    p.on_post_action_step(ctx)
+    assert ctx.terminations == ["strike_done"]
+    # no retract: phase stays SETTLE through termination
+    assert p._phase == PHASE_SETTLE
+
+
+def test_simple_streams_full_damage_no_retract_channel():
+    """StrikeSimpleStep: r_strike = step_damage×1.0 streamed; no
+    r_retract channel; no tail payment."""
+    from baseline.experiments_ppo.exp_strike_simple_step import (
+        StrikeSimpleStep)
+
+    T = 30
+    sd = np.zeros(T); sd[10:15] = 2.0       # 5 settle frames × 2 dmg
+    dt = np.cumsum(sd)                      # total = 10
+    ep = _make_episode(T, sd, dt, term_reason="strike_done")
+    trajs = StrikeSimpleStep()._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a", "standing_balance_a")
+
+    assert "r_retract" not in trajs[0].channels
+    assert "r_left_elbow" not in trajs[0].channels
+    ch = trajs[0].channels["r_strike"]
+    np.testing.assert_allclose(ch.reward[10:15], 2.0, atol=1e-6)
+    assert ch.reward[29] == 0.0             # NO 0.5×Q tail — streamed
+    assert ch.reward[:10].max() == 0.0
+    assert ch.reward[15:].max() == 0.0
+    np.testing.assert_allclose(ch.actor_weight, 1.0)
+
+    exp = StrikeSimpleStep()
+    assert "r_retract" not in exp._channel_names
+    assert len(exp._channel_names) == 9
