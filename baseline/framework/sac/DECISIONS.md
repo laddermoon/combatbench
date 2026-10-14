@@ -4222,9 +4222,22 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
 6. **附带发现**：standup 上 u_floor（uncertainty）比 shannon 更快
    达标（1.56M vs ~1.8M env_step 出 success=1.0）。
 
-**分段 UTD 假设与验证**（进行中）：高原期低 UTD 白赚吞吐 +
-突破期补回高 UTD，期望净省 ~25-35% 墙钟。测试：两条 2M 延训臂的
-终态 checkpoint（max_pot≈0.7，已在爬升段）以 `--set utd_ratio=0.5`
-resume 续跑至 3M（`opt_stage05_b256_s42` / `opt_stage05_b1024_s42`），
-若在 ~300-500K env 内突破则分段调度成立——框架的 `--param
-sac_params.utd_ratio=X@ROUND` 正是为此存在。
+**分段 UTD 假设与验证**（已验）：两条 2M 延训臂的终态 checkpoint
+以 `--set utd_ratio=0.5` resume 至 3M（`opt_stage05_b256_s42` /
+`opt_stage05_b1024_s42`）：
+
+- b256 臂 bump 后 ~400K env 内收敛 success=1.0（@2.41M 达标停训），
+  爬升段消耗 **~332K critic tick**（502K→834K）；
+- R1 同段（max_pot 0.7→1.0，~1.3M→1.8M env）消耗 **~310K tick**——
+  **tick 守恒模型定量成立**：爬升段的更新预算是刚性的，不受 utd
+  历史影响；低 UTD 省下的只是高原期的冗余更新。
+- **由此推算最优切换点**：高原期结束即 bump（standup ~800K env /
+  max_pot≈0.4），比"一直 0.5"省掉高原段 ~0.5 tick/env 的冗余
+  → 净省约 10-15% 墙钟。本次实验切在 2.0M 太晚（高原期已过 1.2M），
+  总墙钟反而劣于 R1——分段调度的收益窗口只在前段。
+- **b1024 臂 bump 后爬升明显更慢**（400K env 后仍 max_pot≈0.6，
+  同期 b256 已 0.9+）：大 batch 在高密度更新段可能欠拟合噪声结构
+  或另有交互——记为观察项，standup 推荐仍 b256。
+
+**实验设计教训**：`--param utd_ratio=X@ROUND` 的 from_round 是精确
+匹配（dict lookup），resume 后要手动算 next_round=collection_round+1。
