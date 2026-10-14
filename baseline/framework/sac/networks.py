@@ -18,6 +18,22 @@ import torch.nn as nn
 from .experiment import SACRewardChannel
 
 
+def _migrate_optimizer_state_to_device(opt: torch.optim.Optimizer) -> None:
+    """Move optimizer state tensors onto their param's device.
+
+    Checkpoints saved before fused Adam carry CPU ``step`` counters;
+    fused kernels reject mixed-device state.
+    """
+    for pg in opt.param_groups:
+        for p in pg["params"]:
+            st = opt.state.get(p)
+            if not st:
+                continue
+            for k, v in st.items():
+                if torch.is_tensor(v) and v.device != p.device:
+                    st[k] = v.to(p.device)
+
+
 # ---------------------------------------------------------------------------
 # Q Trunk + Heads
 # ---------------------------------------------------------------------------
@@ -123,12 +139,21 @@ class QTrunkGroup:
             p.requires_grad = False
         for p in self.q2_target.parameters():
             p.requires_grad = False
+        # Cached param lists for fused optimizer + foreach target updates —
+        # per-parameter kernel loops were a measurable launch-bound cost.
+        self._q1_params = list(self.q1.parameters())
+        self._q1_tparams = list(self.q1_target.parameters())
+        self._q2_params = list(self.q2.parameters())
+        self._q2_tparams = list(self.q2_target.parameters())
 
+        fused = device.type == "cuda"
         self.q1_optimizer = torch.optim.Adam(
             self.q1.parameters(), lr=3e-4,  # overridden by caller
+            fused=fused,
         )
         self.q2_optimizer = torch.optim.Adam(
             self.q2.parameters(), lr=3e-4,
+            fused=fused,
         )
 
     def set_lr(self, lr: float) -> None:
@@ -151,14 +176,12 @@ class QTrunkGroup:
 
     def soft_update(self, tau: float) -> None:
         with torch.no_grad():
-            for p, pt in zip(
-                self.q1.parameters(), self.q1_target.parameters()
-            ):
-                pt.data.mul_(1.0 - tau).add_(p.data, alpha=tau)
-            for p, pt in zip(
-                self.q2.parameters(), self.q2_target.parameters()
-            ):
-                pt.data.mul_(1.0 - tau).add_(p.data, alpha=tau)
+            torch._foreach_mul_(self._q1_tparams, 1.0 - tau)
+            torch._foreach_add_(
+                self._q1_tparams, self._q1_params, alpha=tau)
+            torch._foreach_mul_(self._q2_tparams, 1.0 - tau)
+            torch._foreach_add_(
+                self._q2_tparams, self._q2_params, alpha=tau)
 
     def state_dict(self) -> Dict[str, Any]:
         return {
@@ -197,6 +220,15 @@ class QTrunkGroup:
         self.q2_target.load_state_dict(sd["q2_target"])
         self.q1_optimizer.load_state_dict(sd["q1_optimizer"])
         self.q2_optimizer.load_state_dict(sd["q2_optimizer"])
+        # load_state_dict restores the saved param_groups — including a
+        # pre-fused-era "fused": False flag that would silently demote the
+        # optimizer back to the slow path, and CPU "step" counters that
+        # fused Adam rejects outright.  Migrate + re-assert on CUDA.
+        if self.device.type == "cuda":
+            for opt in (self.q1_optimizer, self.q2_optimizer):
+                _migrate_optimizer_state_to_device(opt)
+                for pg in opt.param_groups:
+                    pg["fused"] = True
 
 
 class MultiHeadQCritic:

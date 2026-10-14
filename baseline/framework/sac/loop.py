@@ -320,7 +320,15 @@ class DivergenceGuard:
 
     def check(self, stats: Mapping[str, float]) -> Optional[str]:
         warnings: List[str] = []
-        if abs(float(stats.get("q1_mean", 0.0))) > self.q_limit:
+        # Channel-scoped keys are q1_mean_<ch>/q2_mean_<ch> — a bare
+        # "q1_mean" key never exists, which previously made the magnitude
+        # check dead code.
+        q_max = max(
+            (abs(float(v)) for k, v in stats.items()
+             if k.startswith("q1_mean_") or k.startswith("q2_mean_")),
+            default=0.0,
+        )
+        if q_max > self.q_limit:
             warnings.append("Q magnitude explosion")
         if float(stats.get("critic_loss", 0.0)) > self.loss_limit:
             warnings.append("TD loss explosion")
@@ -444,13 +452,18 @@ def train_sac(
         channels=channels,
         device=device,
     )
-    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cp.learning_rate)
+    actor_optimizer = torch.optim.Adam(
+        actor.parameters(), lr=cp.learning_rate,
+        fused=device.type == "cuda",
+    )
     log_alpha = torch.tensor(
         np.log(sp.init_alpha), dtype=torch.float32, device=device,
         requires_grad=True,
     )
     alpha_optimizer = (
-        torch.optim.Adam([log_alpha], lr=sp.alpha_lr)
+        torch.optim.Adam(
+            [log_alpha], lr=sp.alpha_lr, fused=device.type == "cuda",
+        )
         if sp.auto_alpha else None
     )
     replay = SACReplayBuffer(
@@ -875,7 +888,11 @@ def train_sac(
                         tick_ring.append(
                             clocks=clocks,
                             metrics=tick_metrics,
-                            sample_ids=batch["sample_ids"].detach().cpu().tolist(),
+                            sample_ids=(
+                                batch["sample_ids_cpu"]
+                                if "sample_ids_cpu" in batch
+                                else batch["sample_ids"].detach().cpu().tolist()
+                            ),
                         )
                         if clocks.critic_tick % TICK_METRIC_INTERVAL == 0:
                             tick_metrics["timing.update_s"] = time.perf_counter() - update_start

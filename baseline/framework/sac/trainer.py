@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .experiment import SACParams, SACRewardChannel
-from .networks import MultiHeadQCritic
+from .networks import MultiHeadQCritic, _migrate_optimizer_state_to_device
 
 
 class SACTrainerError(RuntimeError):
@@ -81,6 +81,58 @@ def _validate_batch(
             raise SACTrainerError(f"{name} must have shape {(B,)}")
     if terminated.dtype != torch.bool or truncated.dtype != torch.bool:
         raise SACTrainerError("terminated/truncated must be bool")
+    if len(batch["source_keys"]) != B:
+        raise SACTrainerError("source_keys length does not match batch")
+    # GPU-side assertions are collected into ONE sync — this runs every
+    # update tick, and per-check .any()/.allclose() calls were each a
+    # device sync.  On failure the strict path re-runs to raise the
+    # precise error.
+    sample_ids = batch["sample_ids"]
+    sorted_ids, _ = torch.sort(sample_ids)
+    violations = torch.stack([
+        torch.logical_and(terminated, truncated).any(),
+        (terminated & (bootstrap != 0.0)).any(),
+        (truncated & (bootstrap != 1.0)).any(),
+        (actor_gate < 0).any(),
+        (actor_weight < 0).any(),
+        (actor_gate_next < 0).any(),
+        (actor_weight_next < 0).any(),
+        (actor_gate.sum(dim=1) <= 0).any(),
+        (actor_gate_next.sum(dim=1) <= 0).any(),
+        (sample_weight <= 0).any(),
+        (torch.diff(sorted_ids) == 0).any(),
+    ])
+    weight_ok = torch.stack([
+        torch.isclose(
+            actor_weight,
+            actor_gate / actor_gate.sum(dim=1)[:, None],
+            atol=1e-5, rtol=1e-5,
+        ).all(),
+        torch.isclose(
+            actor_weight_next,
+            actor_gate_next / actor_gate_next.sum(dim=1)[:, None],
+            atol=1e-5, rtol=1e-5,
+        ).all(),
+    ])
+    any_bad = torch.stack([violations.any(), ~weight_ok.all()])
+    if any_bad.any().item():
+        _validate_batch_strict(batch, channels)
+
+
+def _validate_batch_strict(
+    batch: Dict[str, Any],
+    channels: Tuple[SACRewardChannel, ...],
+) -> None:
+    """Detailed re-check after the batched fast path flags a violation —
+    raises with the specific reason."""
+    terminated = batch["terminated"]
+    truncated = batch["truncated"]
+    bootstrap = _require_tensor(batch, "bootstrap")
+    actor_gate = _require_tensor(batch, "actor_gate")
+    actor_weight = _require_tensor(batch, "actor_weight")
+    actor_gate_next = _require_tensor(batch, "actor_gate_next")
+    actor_weight_next = _require_tensor(batch, "actor_weight_next")
+    sample_weight = _require_tensor(batch, "sample_weight")
     if torch.logical_and(terminated, truncated).any():
         raise SACTrainerError("terminated and truncated cannot both be true")
     if (terminated & (bootstrap != 0.0)).any():
@@ -107,10 +159,7 @@ def _validate_batch(
             raise SACTrainerError(f"{label} weight must equal normalized gate")
     if (sample_weight <= 0).any():
         raise SACTrainerError("sample_weight must be positive")
-    if len(batch["source_keys"]) != B:
-        raise SACTrainerError("source_keys length does not match batch")
-    sample_ids = batch["sample_ids"]
-    if len(torch.unique(sample_ids)) != B:
+    if len(torch.unique(batch["sample_ids"])) != batch["obs"].shape[0]:
         raise SACTrainerError("SAC batch contains duplicate sample_id")
 
 
@@ -411,11 +460,39 @@ def sac_update_v2(
 
     alpha = log_alpha.exp().detach()
     stats: Dict[str, float] = {}
+    # Deferred GPU stat scalars — materialized with ONE DtoH sync at the
+    # end.  Per-scalar .item() calls here were ~200 device syncs per
+    # update and dominated the step's wall-clock on small models.
+    tstats: Dict[str, torch.Tensor] = {}
     if capture is not None:
         capture.clear()
     if expectation_rng is None:
         expectation_rng = torch.Generator()
         expectation_rng.manual_seed(0)
+
+    # One sync for every per-update branch decision (valid-channel masks,
+    # actor denominator, finiteness) — replaces ~2C+3 individual .item().
+    channel_mask_sums = torch.stack([
+        (channel_valid[:, c].float() * sample_weight).sum()
+        for c in range(len(channels))
+    ])
+    actor_rows = channel_valid.all(dim=1)
+    actor_den_t = (actor_rows.float() * sample_weight).sum()
+    branch_vals = torch.cat([
+        channel_mask_sums,
+        actor_den_t.view(1),
+        actor_rows.sum().view(1).float(),
+        torch.isfinite(channel_mask_sums).float(),
+        torch.isfinite(actor_den_t).view(1).float(),
+    ]).cpu()
+    bv = branch_vals.tolist()
+    C = len(channels)
+    mask_sums_f = bv[:C]
+    actor_den_f = bv[C]
+    actor_count_f = bv[C + 1]
+    mask_finite_f = bv[C + 2:C + 2 + C]
+    actor_den_finite_f = bv[C + 2 + C]
+
     target_info: Dict[str, torch.Tensor] = {}
     q_targets = compute_critic_targets(
         actor,
@@ -445,9 +522,9 @@ def sac_update_v2(
     updated_channels: list[str] = []
     for c, ch in enumerate(channels):
         mask = channel_valid[:, c].float() * sample_weight
-        mask_sum = mask.sum()
-        stats[f"critic_valid_weight_{ch.name}"] = float(mask_sum.item())
-        if not torch.isfinite(mask_sum) or mask_sum.item() <= 0:
+        mask_sum = channel_mask_sums[c]
+        stats[f"critic_valid_weight_{ch.name}"] = mask_sums_f[c]
+        if not mask_finite_f[c] or mask_sums_f[c] <= 0:
             stats[f"critic_updated_{ch.name}"] = 0.0
             continue
         q1_pred = critic.q1_forward(obs, actions, ch.name)
@@ -474,17 +551,17 @@ def sac_update_v2(
         updated_channels.append(ch.name)
         total_critic_loss = total_critic_loss + q1_loss.detach() + q2_loss.detach()
         stats[f"critic_updated_{ch.name}"] = 1.0
-        stats[f"q1_loss_{ch.name}"] = float(q1_loss.item())
-        stats[f"q2_loss_{ch.name}"] = float(q2_loss.item())
-        stats[f"q1_mean_{ch.name}"] = float(q1_pred.mean().item())
-        stats[f"q2_mean_{ch.name}"] = float(q2_pred.mean().item())
-        stats[f"td_abs_mean_{ch.name}"] = float(
-            (q1_pred.detach() - target).abs().mean().item()
-        )
-        stats[f"grad_norm_critic_{ch.name}"] = float(ch_grad_norm)
-        stats[f"critic_clip_applied_{ch.name}"] = float(
+        tstats[f"q1_loss_{ch.name}"] = q1_loss.detach()
+        tstats[f"q2_loss_{ch.name}"] = q2_loss.detach()
+        tstats[f"q1_mean_{ch.name}"] = q1_pred.detach().mean()
+        tstats[f"q2_mean_{ch.name}"] = q2_pred.detach().mean()
+        tstats[f"td_abs_mean_{ch.name}"] = (
+            q1_pred.detach() - target
+        ).abs().mean()
+        tstats[f"grad_norm_critic_{ch.name}"] = ch_grad_norm.detach().float()
+        tstats[f"critic_clip_applied_{ch.name}"] = (
             ch_grad_norm > grad_clip_norm
-        )
+        ).float().detach()
         if capture is not None:
             capture.setdefault("grad_norms", {})[ch.name] = {
                 "critic_pre_clip": float(ch_grad_norm),
@@ -493,12 +570,10 @@ def sac_update_v2(
     if not updated_channels:
         raise SACTrainerError("SAC batch has no valid critic channels")
 
-    actor_rows = channel_valid.all(dim=1)
     actor_mask = actor_rows.float() * sample_weight
-    actor_den = actor_mask.sum()
-    stats["actor_valid_weight"] = float(actor_den.item())
-    stats["actor_valid_count"] = float(actor_rows.sum().item())
-    if not torch.isfinite(actor_den) or actor_den.item() <= 0:
+    stats["actor_valid_weight"] = actor_den_f
+    stats["actor_valid_count"] = actor_count_f
+    if not actor_den_finite_f or actor_den_f <= 0:
         raise SACTrainerError("SAC batch has no actor-valid rows")
 
     M = int(sp.expectation_samples)
@@ -593,7 +668,7 @@ def sac_update_v2(
     actor_objective = weighted_q + (
         reg_term if reg_term is not None else torch.zeros_like(weighted_q)
     )
-    actor_loss = (actor_mask * actor_objective).sum() / actor_den
+    actor_loss = (actor_mask * actor_objective).sum() / actor_den_t
     actor_optimizer.zero_grad()
     actor_loss.backward()
     actor_grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -609,7 +684,6 @@ def sac_update_v2(
     # Entropy estimate for auto-alpha: the enumerated joint logπ
     # expectation −Σ_km w·logp (detached), per A4.7.
     logp_bar = (integ_w.detach() * new_log_probs.detach()).sum(dim=(1, 2))
-    alpha_loss_value = 0.0
     if alpha_optimizer is not None:
         target_entropy = (
             -float(actor.action_dim)
@@ -619,50 +693,52 @@ def sac_update_v2(
             actor_mask
             * log_alpha
             * (logp_bar + target_entropy)
-        ).sum() / actor_den
+        ).sum() / actor_den_t
         alpha_optimizer.zero_grad()
         alpha_loss.backward()
-        alpha_grad_norm = float(log_alpha.grad.norm().item())
+        tstats["grad_norm_alpha"] = log_alpha.grad.detach().norm()
         alpha_optimizer.step()
         with torch.no_grad():
             log_alpha.clamp_(sp.log_alpha_min, sp.log_alpha_max)
-        alpha_loss_value = float(alpha_loss.item())
-        stats["grad_norm_alpha"] = alpha_grad_norm
+        tstats["alpha_loss"] = alpha_loss.detach()
         if capture is not None:
             capture.setdefault("grad_norms", {})["alpha"] = {
-                "pre_step": alpha_grad_norm,
+                "pre_step": float(log_alpha.grad.norm().item()),
             }
 
     for channel_name in updated_channels:
         critic.soft_update_channel(channel_name, float(sp.tau))
 
-    stats.update({
-        "actor_loss": float(actor_loss.item()),
-        "critic_loss": float(total_critic_loss.item()),
-        "alpha_loss": alpha_loss_value,
-        "alpha": float(alpha.item()),
-        "log_prob_mean": float(logp_bar.mean().item()),
-        "entropy_proxy_mean": float((-logp_bar).mean().item()),
-        "grad_norm_actor": float(actor_grad_norm),
-        "target_pair1_frac": float(
-            target_info["pair_index"].float().mean().item()
-        ),
-        "actor_pair1_frac": float(pair_actor.float().mean().item()),
+    tstats.update({
+        "actor_loss": actor_loss.detach(),
+        "critic_loss": total_critic_loss.detach(),
+        "alpha": alpha.float(),
+        "log_prob_mean": logp_bar.mean(),
+        "entropy_proxy_mean": (-logp_bar).mean(),
+        "grad_norm_actor": actor_grad_norm.detach().float(),
+        "target_pair1_frac": target_info["pair_index"].float().mean(),
+        "actor_pair1_frac": pair_actor.float().mean(),
     })
     for c, ch in enumerate(channels):
-        stats[f"actor_weight_mean_{ch.name}"] = float(
-            actor_weight[:, c].mean().item()
-        )
-        stats[f"actor_weight_next_mean_{ch.name}"] = float(
-            actor_weight_next[:, c].mean().item()
+        tstats[f"actor_weight_mean_{ch.name}"] = actor_weight[:, c].mean()
+        tstats[f"actor_weight_next_mean_{ch.name}"] = (
+            actor_weight_next[:, c].mean()
         )
     stats["regularizer_shannon"] = 1.0 if is_shannon else 0.0
     if reg_term is not None:
-        stats["reg_actor_term_mean"] = float(
-            (actor_mask * reg_term.detach()).sum().item() / actor_den.item()
+        tstats["reg_actor_term_mean"] = (
+            (actor_mask * reg_term.detach()).sum() / actor_den_t
         )
     if capture is not None and "reg_next" in capture:
         stats["reg_next_mean"] = float(capture["reg_next"].mean().item())
+    if "alpha_loss" not in tstats:
+        stats["alpha_loss"] = 0.0
+    # The single materialization point for all deferred stats.
+    if tstats:
+        keys = list(tstats)
+        vals = torch.stack([t.float().reshape(()) for t in tstats.values()])
+        for k, v in zip(keys, vals.cpu().tolist()):
+            stats[k] = float(v)
     return stats
 
 
@@ -766,6 +842,16 @@ def load_trainer_state(
         raise SACTrainerError("alpha optimizer presence does not match checkpoint")
     if alpha_optimizer is not None:
         alpha_optimizer.load_state_dict(saved_alpha_opt)
+    # load_state_dict restores saved param_groups — a checkpoint written
+    # before fused Adam would demote the optimizers back to the slow path,
+    # and restores CPU "step" counters that fused Adam rejects.  Migrate
+    # state to the param device, then re-assert fused.
+    for opt in (actor_optimizer, alpha_optimizer):
+        if opt is not None:
+            _migrate_optimizer_state_to_device(opt)
+            for pg in opt.param_groups:
+                if all(p.is_cuda for p in pg["params"]):
+                    pg["fused"] = True
 
 
 __all__ = [

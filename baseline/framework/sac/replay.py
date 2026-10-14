@@ -293,6 +293,9 @@ class SACReplayBuffer:
                 "sample_weight": torch.as_tensor(self.sample_weight[slots], device=device),
                 "policy_action": torch.as_tensor(self.policy_action[slots], device=device),
                 "sample_ids": torch.as_tensor(sample_ids, device=device),
+                # CPU copy so per-tick bookkeeping (tick ring) does not pay
+                # a DtoH sync every update.
+                "sample_ids_cpu": sample_ids,
                 "draw_counts": torch.as_tensor(
                     self.draw_counts[slots], device=device,
                 ),
