@@ -43,7 +43,9 @@ class TrackWalk(CombatExperimentPPOBase):
 
     env_blueprint = "track_ref_env.yaml"
     agent_used = "robot_a"
-    max_steps: int = 200
+    clip_id: str = "cmu_07_01"          # --set clip_id=cmu_13_17 切片段
+    rsi: str = "random"
+    max_steps: int = 200                 # 需 >= clip 控制帧数
     init_distance_min: float = 6.0
     init_distance_max: float = 6.0
 
@@ -92,7 +94,8 @@ class TrackWalk(CombatExperimentPPOBase):
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True) -> List[Job]:
-        env_bp = self._env_pb().materialize(max_steps=self.max_steps)
+        env_bp = self._env_pb().materialize(
+            clip_id=self.clip_id, rsi=self.rsi, max_steps=self.max_steps)
         standing = self._standing_bp()
         sampling_a = SamplingSpec(explore_factor=self.explore_factor)
         jobs = []
