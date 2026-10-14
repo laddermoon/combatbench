@@ -806,16 +806,32 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     sv.add_argument("root", type=Path)
     sv.add_argument("--port", type=int, default=8766)
     sv.add_argument("--host", default="127.0.0.1")
+    vw = sub.add_parser(
+        "viewer",
+        help="interactive debug viewer (HTTP server + SPA)",
+    )
+    vw.add_argument("root", type=Path)
+    vw.add_argument("--port", type=int, default=8766)
+    vw.add_argument("--host", default="127.0.0.1")
+    vw.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.command == "serve":
-        from .debugserver import make_server
+    if args.command in ("serve", "viewer"):
+        from .debugserver import make_server, _root_mode
         server = make_server(args.root, args.port, args.host)
+        url = f"http://{args.host}:{args.port}/"
         print(
-            f"[sac-debug] serving {args.root} on "
-            f"http://{args.host}:{args.port}",
+            f"[sac-debug] serving {args.root} "
+            f"({_root_mode(args.root)}) on {url}",
             flush=True,
         )
+        if args.command == "viewer" and not args.no_browser:
+            try:
+                import webbrowser
+
+                webbrowser.open(url)
+            except Exception:
+                pass
         try:
             server.serve_forever()
         except KeyboardInterrupt:
@@ -861,7 +877,9 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             args.run_dir, key=args.metric, event=args.event,
         )
     elif args.command == "runs":
-        out = analysis.runs_index(args.runs_root)
+        from . import runview
+
+        out = runview.list_runs(args.runs_root)
     elif args.command == "run":
         out = analysis.run_summary(args.run_dir)
     elif args.command == "replay":

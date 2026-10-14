@@ -138,6 +138,7 @@ def runs_index(runs_root: Path) -> List[Dict[str, Any]]:
 
 def metric_series(
     run_dir: Path, key: str, event: Optional[str] = None,
+    max_points: Optional[int] = None,
 ) -> Dict[str, Any]:
     points: List[Dict[str, Any]] = []
     for ev in iter_events(run_dir):
@@ -151,11 +152,21 @@ def metric_series(
                 "clocks": ev.get("clocks"),
                 "timestamp_unix": ev.get("timestamp_unix"),
             })
+    total = len(points)
+    if max_points and total > max_points:
+        # Stride-downsample preserving first/last — dense tick series
+        # (millions of points) would otherwise swamp the viewer.
+        stride = (total + max_points - 1) // max_points
+        down = points[::stride]
+        if down[-1] is not points[-1]:
+            down.append(points[-1])
+        points = down
     return {
         "run_dir": str(run_dir),
         "metric": key,
         "event": event,
         "count": len(points),
+        "total": total,
         "points": points,
     }
 

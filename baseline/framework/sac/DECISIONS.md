@@ -3803,3 +3803,118 @@ survival_rate=1.0 (update 295, 1024 episodes/update, 96 workers).
 than PPO. The UTD ratio of 0.25 with a 1M buffer provides effective
 data reuse of ~26x per transition (buffer_size / batch_size × rounds_in_buffer).
 The grad step cap keeps wall-clock time reasonable (~52s/round).
+
+## R3.1a R3-W1 细计划：run 级页面对齐
+
+**目标**：SAC viewer 的 run 级页面与 PPO 同构——runs 索引（状态判定/搜索/排序/分页/compare 勾选）、experiments 索引+详情+launch、videos 页、run dashboard（六分区 catalog 驱动）、compare 页、log 分页、Round Detail。代码拷贝适配（PPO 概念→SAC 语义），零 import 依赖。
+
+### 数据契约决策（先于代码冻结）
+
+1. **flat 行表**（PPO `metrics[]` 的 SAC 对应物）：`run_events_table(run_dir)`
+   输出一行/round 事件：`{round, env_step, critic_tick, ...round metrics,
+   eval.*(按 collection_round 合并, 稀疏), tck.*(该 round 内 tick 指标聚合),
+   param_patches(context, 不入图), _ctx{utd_credit, dropped_updates, replay_stats}}`。
+2. **`tck.<metric>` = 该 round 内同名 tick 指标的均值**。alpha 等缓变量
+   mean≈last 足够；需要逐 tick 分辨率走 dump/tickline 工具页，不在 dashboard。
+3. **通道拆分 spec**：SAC 通道是 key 后缀（`critic.q1_loss.r_fall`），
+   PPO 的 `pc.<m>.<ch>` 中缀不同——新增 `{"ch": "<prefix>"}` /
+   `{"chm": "<name>", "metrics": [...]}` spec 形状（按最后一段切通道），
+   语义同 PPO pc/pcm。
+4. **run status 判定**（PPO 规则 SAC 化）：pid 存活→running；
+   terminal 事件 status=completed→finished，signal_stop/user→stopped，
+   error/diverged→failed；无 pid 但 train.log 90s 内活跃→running；
+   日志尾 terminal traceback→failed；其他→stopped/unknown。
+5. **API surface**（`/run/<n>` 命名空间化，同 PPO）：
+   `GET /api/mode|/api/catalog|/api/runs|/api/experiments|/api/experiment/<n>`；
+   `GET /run/<n>/api/run/{info,metrics,dumps,videos,log,replay,slice-ctx}`；
+   `GET /run/<n>/train.log`；`POST /run/<n>/api/run/dump-request`；
+   dump 端点挂 `/api/dump/<d>/...` 与 `/run/<n>/api/dump/<d>/...`。
+6. **dashboard x 轴 = round 位置索引**（同 PPO update 位置索引）；
+   游标 = selectedRoundIdx → Round Detail（该 round 生效参数 =
+   config + ≤该 round 的 param_patches 累积 + behavior.* 生效值）。
+
+### 文件划分
+
+- `metric_catalog.py`：+SECTIONS/ZONES/hints/`catalog()`/`metric_doc()`；
+  白名单保留不变。
+- 新 `runview.py`：run 级数据机械（status/log_tail/events_table/dumps/
+  videos/experiments scan/runs_index/query_runs_index）。
+- `analysis.py`：`metric_series` 加 `max_points` 降采样。
+- `debugserver.py`：重写分发层（读路径不变、分析函数不变）。
+- `sac_viewer.html`：重写——PPO CSS 原样保留（Layout 契约），JS 按 SAC
+  数据模型适配；dump 级页面本包只留入口占位（W2~W4 填）。
+- `debugkit.py`：+`viewer` 子命令（serve 包装）。
+
+### 出口标准
+
+- runs 索引状态判定五条规则各有测试；log 字节分页无重叠无缝隙测试；
+- `run_events_table` 对真实 run 产物验证（eval 合并/tck 聚合/patch 记录）；
+- catalog 六分区 + zone/ch spec 解析测试；
+- server 端点面 smoke（真 run 目录起服务逐端点 GET + POST dump-request）；
+- viewer 静态语法检查 + 页面骨架 parity checklist 逐项可见；
+- 全套 SAC 回归无破坏。
+
+## R3.1b R3-W1 结论：run 级页面对齐（完成）
+
+**实现**（对照细计划逐条落地）：
+
+- `runview.py`（新，~750 行）：`run_events_table`（flat round 行表：
+  round 指标 + eval 按 collection_round 稀疏合并 + `tck.*` tick 聚合
+  + `param_patches`/`_ctx` context）、`run_status`（五态判定）、
+  `read_log_window`（反向字节分页，无重叠无缝隙）、`dumps_list`
+  （manifest+clocks）、`videos_list`、`run_info`、`scan_run_summary`/
+  `list_runs`/`query_runs_index`（轻量 runs 索引：tail 扫描不做全量
+  事件迭代）、`scan_experiments`/`experiments_index`（AST 扫
+  experiments_sac 类属性表，含 MRO 合并）。
+- `metric_catalog.py`：六分区 SECTIONS（task/update/signal/explore/
+  sampling/cost）+ ZONES（eval.*/task.* 动态桶）+ hints/labels +
+  `{"ch"/"chm"}` 通道 spec（SAC key 后缀通道）+ `catalog()`/
+  `metric_doc()`；白名单校验不变。
+- `debugserver.py`（重写分发层）：三模式 root（runs/run/dump）+
+  PPO 形状 API（`/api/{mode,catalog,runs,experiments,experiment/<n>,
+  job-status}`；`/run/<n>/api/run/{info,metrics,metrics-series,dumps,
+  videos,log,replay,slice-ctx}`；`/run/<n>/{train.log,videos/<f>}`；
+  dump 端点 `…/api/dump/<d>/{inspect,manifest,spec,samples,trace,
+  recompute,attribute,decomp,drift,grad-attr}`）+ SPA 路由 +
+  `POST …/api/run/dump-request`（tmp+os.replace 原子写、pending 409）。
+- `analysis.py`：`metric_series` 加 `max_points`（保留末真实点）。
+- `sac_viewer.html`（重写，426→~2200 行）：PPO CSS/布局契约原样；
+  JS 按 SAC 数据模型——runs 索引（五态 badge/搜索/排序/分页/compare
+  勾选/10s 自动刷新）、experiments 索引+详情（tunables 表/diff 列/
+  launch 面板 `--algo sac --set --param`）、videos 页、run dashboard
+  （info/dumps/videos/round-detail/log 五卡 + catalog 驱动图集 +
+  底部 round 滑杆）、compare 页（chips/summary/metrics + 共享 round
+  游标）、dump 主页 ⑧ 模块卡（inspect+spec 一次拉取填 headline）+
+  通用 JSON 工具页（W3/W4 替换为模块专属页）、面包屑/上下文栏。
+- `debugkit.py`：`runs` 切到 runview 轻量索引；+`viewer` 子命令。
+- `loop.py`：round metrics 补 `collection.updates_executed`/
+  `collection.updates_dropped`（本轮前已提交）。
+
+**证据**：
+
+- 新测试 `tests/test_runview.py`：10 项——round 行表键与 tck 聚合
+  （含 `timing.update_s` sum 语义）、eval 稀疏合并不串行、log 反向
+  分页无重叠无缝隙、status finished/unknown、dumps manifest+clocks
+  解析、videos env_step 解析、runs 索引字段+查询过滤、run_info、
+  experiments AST 扫描。
+- `test_http_server_endpoints_share_analysis_layer` 改写为新路由
+  （同断言意图）；全套 245 passed。
+- 真 run 目录端到端 smoke（`baseline/runs` 起服）：
+  `/api/{mode,catalog,runs,experiments,experiment/sac_standup}`、
+  `/run/reg_standup_shannon_s42_d/api/run/{info,dumps,videos,log,
+  metrics}`（141 行 round 行表，eval.success=1.0 末轮合并正确）、
+  `/run/sac_standup_s01_s42/api/dump/critic_tick_00168970/{manifest,
+  inspect,spec,attribute,decomp}`、SPA `/run/<n>/dump/<d>/` 路由——
+  全部 200；POST dump-request 写盘+pending 409 双验证。
+- viewer JS 经 `node --check` 通过。
+
+**如实声明**：
+
+- `tck.*` 聚合的是已发射的 tick 事件（每 64 tick 一发的采样）；
+  `collection.updates_executed/updates_dropped` 由新码发射，在训的
+  旧快照 run 的 round 行缺这两个键（`_ctx.dropped_updates` 仍在），
+  dashboard 该图对新 run 生效。
+- dump 级页面为 W1 骨架：⑧ 模块卡 + 通用 JSON 工具页可导航可取证，
+  模块专属交互页在 W3/W4；pipeline 端点在 W2。
+- port 8766 存在 Oct-09 旧版 server 进程，本轮 smoke 用 8767/8768，
+  未触碰旧进程。

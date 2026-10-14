@@ -1043,6 +1043,8 @@ def train_sac(
                     "collection.wall_time_s": float(t_rollout),
                     "replay.transitions_added": float(transitions_added),
                     "replay.size": float(replay.size),
+                    "collection.updates_executed": float(n_grad_steps),
+                    "collection.updates_dropped": float(dropped_updates),
                     "timing.collection_s": float(t_rollout),
                     "timing.slice_s": float(t_buffer),
                     # A4.8: effective β-layer values applied this round.

@@ -537,15 +537,15 @@ def test_http_server_endpoints_share_analysis_layer(tmp_path):
             ) as resp:
                 return json.loads(resp.read())
 
+        mode = get("/api/mode")
+        assert mode["root_mode"] == "runs"
         runs = get("/api/runs")
-        assert any(r["name"] == "run" for r in runs)
-        run = get("/api/run?name=run")
+        assert any(r["name"] == "run" for r in runs["runs"])
+        run = get("/run/run/api/run/info")
         assert run["experiment_name"] == "fake_sac"
-        series = get(
-            "/api/run/metrics?name=run&key=collection.env_steps"
-        )
-        assert series["count"] >= 1
-        rep = get("/api/run/replay?name=run")
+        rows = get("/run/run/api/run/metrics")
+        assert rows and rows[-1]["collection.env_steps"] > 0
+        rep = get("/run/run/api/run/replay")
         assert rep["size"] > 0
         dump_dir = tmp_path / "debug_dumps" / "critic_tick_00000005"
         ins = get(f"/api/dump/inspect?path={dump_dir}")
@@ -570,10 +570,11 @@ def test_http_server_endpoints_share_analysis_layer(tmp_path):
         live_id = int(
             (rstate["sample_ids"][rstate["sample_ids"] >= 0])[0]
         )
-        sctx = get(f"/api/run/slice-ctx?name=run&sample_id={live_id}")
+        sctx = get(
+            f"/run/run/api/run/slice-ctx?sample_id={live_id}")
         assert sctx["live_count"] > 0 and sctx["slice_id"]
-        cat = get("/api/catalog?prefix=actor.")
-        assert all(s["name"].startswith("actor.") for s in cat)
+        cat = get("/api/catalog")
+        assert cat["sections"] and cat["zones"]
         with pytest.raises(HTTPError) as exc:
             get("/api/nope")
         assert exc.value.code == 404

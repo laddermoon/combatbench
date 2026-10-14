@@ -1,426 +1,2273 @@
-<!doctype html>
-<html lang="zh">
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <title>SAC Debug Viewer</title>
 <style>
-  body { font: 13px/1.5 monospace; margin: 0; background:#14161a; color:#d8dde3; }
-  header { padding:8px 14px; background:#1d2126; border-bottom:1px solid #2c3138;
-           position:sticky; top:0; display:flex; gap:14px; align-items:center; z-index:9; }
-  header b { color:#7fb3e0; }
-  #runs { width:340px; border-right:1px solid #2c3138; height:calc(100vh - 42px);
-          overflow-y:auto; float:left; }
-  #runs div { padding:6px 10px; cursor:pointer; border-bottom:1px solid #22262c; }
-  #runs div:hover { background:#1d2126; }
-  #runs div.sel { background:#26313d; }
-  #runs .sub { color:#8a929c; font-size:11px; }
-  #runs input[type=checkbox] { vertical-align:middle; }
-  #main { margin-left:360px; padding:12px; }
-  h3 { margin:14px 0 6px; color:#9db8d2; font-size:13px; }
-  h4 { margin:10px 0 4px; color:#9db8d2; font-size:12px; }
-  table { border-collapse:collapse; }
-  td,th { border:1px solid #2c3138; padding:2px 8px; text-align:right; }
-  th { color:#8a929c; font-weight:normal; }
-  canvas { background:#1d2126; border:1px solid #2c3138; margin:4px 8px 4px 0; }
-  pre { background:#1d2126; padding:8px; overflow:auto; max-height:400px; }
-  input,select,button { background:#1d2126; color:#d8dde3; border:1px solid #3a4149;
-          padding:3px 8px; font:inherit; }
-  button { cursor:pointer; }
-  button.on { background:#2d4356; border-color:#5a7f9d; }
-  .ok { color:#7fd18a; } .bad { color:#e07f7f; } .dim { color:#8a929c; }
-  .tabs { margin:8px 0; }
-  .tabs button { margin-right:4px; }
-  .card { background:#191d22; border:1px solid #2c3138; padding:8px 10px;
-          margin:6px 0; }
-  .warn { color:#e0b97f; }
-  a { color:#7fb3e0; }
+  /* ---- Layout & theme: same contract as the PPO dumpkit viewer ---- */
+  :root {
+    --bg: #0f1115;
+    --panel: #16181d;
+    --panel-alt: #1c1f26;
+    --border: #2a2e38;
+    --text: #cfd6e4;
+    --muted: #7a8194;
+    --accent: #4fa3ff;
+    --accent-dim: #2a5a8a;
+    --green: #3ddc84;
+    --red: #e06c75;
+    --orange: #d19a66;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 14px; overflow-x: hidden; }
+  #root { display: flex; flex-direction: column; height: 100vh; }
+  header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  #breadcrumb { font-size: 12px; color: var(--muted); }
+  #breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  #breadcrumb a:hover { text-decoration: underline; }
+  #breadcrumb span.sep { margin: 0 6px; }
+  #content { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .page { display: none; max-width: 1400px; margin: 0 auto; }
+  .page.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .card h2 { font-size: 13px; color: var(--text); margin-bottom: 10px; font-weight: 600; }
+  .card .desc { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  button { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); }
+  input, select { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); padding: 5px 8px; border-radius: 4px; font-size: 12px; }
+  /* Dump table */
+  .dump-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .dump-table th { text-align: left; padding: 6px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  .dump-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .dump-table tr:hover { background: var(--panel-alt); }
+  .dump-table tr.dump-active { background: var(--accent-dim); }
+  .dump-table tr { cursor: pointer; }
+  .muted { color: var(--muted); }
+  /* Run page sections */
+  .run-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .run-grid { grid-template-columns: 1fr; } }
+  #upd-detail-body table { font-size: 11px; }
+  #upd-detail-body td { padding: 2px 6px; }
+  #upd-detail-body td:first-child { color: var(--muted); }
+  #upd-slider { width: 100%; margin: 4px 0; }
+  #upd-cursor-label { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #run-log-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; max-height: 360px; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 4px; line-height: 1.4; }
+  .upd-nav { display: flex; gap: 6px; }
+  .upd-nav button { padding: 4px 10px; font-size: 12px; }
+  /* Runs index page */
+  .runs-toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .runs-toolbar input[type=text] { width: 260px; }
+  .runs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .runs-table th { text-align: left; padding: 7px 10px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; cursor: pointer; user-select: none; white-space: nowrap; }
+  .runs-table th:hover { color: var(--text); }
+  .runs-table th .sort-arrow { font-size: 10px; margin-left: 4px; }
+  .runs-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: nowrap; }
+  .runs-table tr.run-row:hover { background: var(--panel-alt); }
+  .runs-table tr.run-row { cursor: pointer; }
+  .run-name { color: var(--accent); }
+  .st-badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .st-badge.st-running { background: #1a3a2a; color: var(--green); }
+  .st-badge.st-finished { background: #1a2a3a; color: var(--accent); }
+  .st-badge.st-failed { background: #3a1a1a; color: var(--red); }
+  .st-badge.st-stopped { background: #3a2f1a; color: var(--orange); }
+  .st-badge.st-unknown { background: #2a2a2a; color: var(--muted); }
+  .prog-cell { display: flex; align-items: center; gap: 6px; }
+  .prog-bar { width: 64px; height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; display: inline-block; }
+  .prog-bar i { display: block; height: 100%; background: var(--accent); }
+  .index-nav { display: flex; gap: 4px; margin-bottom: 12px; }
+  .index-nav a { padding: 5px 14px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); cursor: pointer; font-size: 12px; text-decoration: none; }
+  .index-nav a:hover { color: var(--text); border-color: var(--accent); }
+  .index-nav a.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+  .vid-link { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .vid-link:hover { text-decoration: underline; }
+  /* Experiments page */
+  .launch-grid { display: grid; grid-template-columns: 190px 1fr; gap: 8px 12px; align-items: center; }
+  .launch-grid label { color: var(--muted); font-size: 12px; text-align: right; }
+  .launch-grid input, .launch-grid select { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tunables-title { grid-column: 1 / -1; color: var(--muted); font-size: 11px; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px; }
+  .exp-cmd { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; white-space: pre-wrap; margin-top: 10px; }
+  .exp-cmd-wrap { display: flex; gap: 8px; align-items: flex-start; }
+  .exp-cmd-wrap .exp-cmd { flex: 1; margin-top: 0; }
+  /* Videos page */
+  .videos-layout { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .videos-layout { grid-template-columns: 1fr; } }
+  #vid-player { width: 100%; background: #000; border-radius: 4px; }
+  .vid-nav { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  #vid-meta { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; margin-top: 8px; }
+  #vid-meta table { width: 100%; border-collapse: collapse; }
+  #vid-meta td { padding: 3px 4px; border-bottom: 1px solid var(--border); }
+  /* Vector/matrix rendering */
+  .vec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 2px 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+  .vec-grid .vec-cell { display: flex; gap: 2px; }
+  .vec-grid .vec-idx { color: var(--muted); min-width: 22px; text-align: right; }
+  .vec-grid .vec-val { color: var(--text); }
+  .vec-grid .vec-val.neg { color: var(--red); }
+  .vec-grid.collapsed { max-height: 80px; overflow: hidden; }
+  /* Section separator */
+  .section-sep { border-top: 1px solid var(--border); margin: 16px 0; }
+  .section-sep-label { background: var(--bg); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding: 0 8px; margin-top: -8px; margin-left: 16px; display: inline-block; position: relative; top: -8px; }
+  /* Charts */
+  .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .chart-container h3 { margin: 0 0 6px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  svg.chart { width: 100%; height: 140px; cursor: crosshair; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; }
+  .chart-legend .leg-item { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  .chart-legend .leg-item.disabled { opacity: 0.4; }
+  .chart-legend .leg-color { width: 12px; height: 2px; }
+  /* Data tables */
+  .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .data-table { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .data-table h3 { margin: 0 0 8px 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .data-table table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .data-table th { text-align: left; padding: 4px 6px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .data-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  .data-table td.num { color: var(--green); text-align: right; }
+  .data-table td.neg { color: var(--red); text-align: right; }
+  .data-table td.bool { color: var(--orange); }
+  .data-table td.muted { color: var(--muted); }
+  .timeline-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .summary-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+  .summary-stat .label { color: var(--muted); font-size: 11px; }
+  .summary-stat .value { color: var(--text); font-size: 16px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .summary-stat .value.warn { color: var(--orange); }
+  .summary-stat .value.danger { color: var(--red); }
+  /* Misc */
+  .loading { color: var(--muted); padding: 40px; text-align: center; }
+  .error-msg { color: var(--red); padding: 20px; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .badge.green { background: #1a3a1a; color: var(--green); }
+  .badge.red { background: #3a1a1a; color: var(--red); }
+  .badge.orange { background: #3a2a1a; color: var(--orange); }
+  .badge.muted { background: #2a2a2a; color: var(--muted); }
+  .toggle-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; align-items: center; }
+  .toggle-bar .toggle-group { display: flex; gap: 4px; align-items: center; }
+  .toggle-bar .toggle-label { color: var(--muted); font-size: 11px; }
+  .toggle-bar input[type="checkbox"] { cursor: pointer; }
+  .toggle-bar label { cursor: pointer; font-size: 11px; color: var(--text); }
+  /* Large image modal */
+  .img-modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 2000; display: none; align-items: center; justify-content: center; }
+  .img-modal-overlay.visible { display: flex; }
+  .img-modal-overlay img { max-width: 90vw; max-height: 90vh; }
+  .img-modal-overlay .modal-close { position: absolute; top: 16px; right: 24px; color: var(--text); font-size: 28px; cursor: pointer; }
+  /* Compare page */
+  .cmp-open-link { font-size: 12px; font-weight: 400; color: var(--accent); cursor: pointer; text-decoration: none; margin-left: 8px; }
+  .cmp-open-link:hover { text-decoration: underline; }
+  .cmp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .cmp-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-alt); border: 1px solid var(--border); border-radius: 12px; padding: 4px 10px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .cmp-chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .cmp-chip .chip-prog { color: var(--muted); font-size: 11px; }
+  .cmp-chip .x { cursor: pointer; color: var(--muted); margin-left: 2px; }
+  .cmp-chip .x:hover { color: var(--red); }
+  .cmp-chip.cmp-err { border-color: var(--red); }
+  .cmp-add { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .cmp-check { cursor: pointer; }
+  table.cmp-summary { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.cmp-summary th { text-align: left; padding: 6px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+  table.cmp-summary td { padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; font-family: ui-monospace, monospace; }
+  table.cmp-summary td .rundot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  /* --- Pipeline stage cards (dump home) --- */
+  .stage-card { cursor: default; }
+  .stage-head { display: flex; align-items: baseline; gap: 10px; }
+  .stage-head h2 { margin: 0; flex: 1; }
+  .stage-num { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .stage-open { font-size: 12px; color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .stage-open:hover { text-decoration: underline; }
+  .stage-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 8px 0; font-size: 12px; }
+  .stage-stats .kv { display: flex; gap: 5px; }
+  .stage-stats .k { color: var(--muted); }
+  .stage-stats .v { font-family: ui-monospace, monospace; }
+  .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
+  .gs-scope { color: var(--muted); font-size: 11px; font-weight: 400; }
+  .upd-bar { margin: 4px 0 8px; }
+  .upd-bar-track { position: relative; height: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .upd-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(61, 220, 132, .30); }
+  .upd-bar-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .upd-bar-stop { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); }
+  .upd-bar-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .mini-hist { background: var(--panel-alt); border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; }
+  .mini-hist .mh-title { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+  /* --- Tool page header --- */
+  .tool-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
+  .tool-head .t-title { font-weight: 600; font-size: 13px; }
+  .tool-head .t-sel { display: flex; align-items: center; gap: 6px; }
+  .tool-head select, .tool-head input[type=number] { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .tool-head input[type=number] { width: 80px; }
+  .tool-head .t-nav { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 9px; cursor: pointer; font-size: 12px; }
+  .tool-head .t-nav:hover { border-color: var(--accent); }
+  .tool-head .t-nav.sel { border-color: var(--accent); color: var(--accent); }
+  .tool-head .t-info { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .ve-params { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
+  .ve-params .p-group { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .ve-params .p-name { color: var(--muted); font-weight: 600; }
+  .ve-params input[type=range] { width: 160px; }
+  .ve-params .p-val { font-family: ui-monospace, monospace; min-width: 46px; }
+  .ve-params .p-cur { font-size: 11px; color: var(--muted); }
+  .method-tabs { display: flex; gap: 6px; }
+  .method-tab { background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: ui-monospace, monospace; }
+  .method-tab.active { border-color: var(--accent); color: var(--accent); }
+  .method-tab.current::after { content: " ·trained"; color: var(--muted); font-size: 10px; }
+  /* Generic JSON inspector (W1 tool stub) */
+  .json-pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; background: var(--bg); padding: 12px; border-radius: 4px; max-height: 560px; overflow-y: auto; line-height: 1.45; }
+  /* Context bar */
+  #context-bar { position: fixed; bottom: 0; left: 0; right: 0; display: flex; gap: 18px; align-items: center; padding: 6px 20px; background: var(--panel); border-top: 1px solid var(--border); font-size: 11px; z-index: 100; }
+  #context-bar .ctx-item { display: none; gap: 5px; }
+  #context-bar .ctx-item.show { display: flex; }
+  #context-bar .ctx-label { color: var(--muted); }
+  #context-bar .ctx-value { color: var(--accent); font-family: ui-monospace, monospace; }
+  #content { padding-bottom: 44px; }
 </style>
 </head>
 <body>
-<header><b>SAC Debug Viewer</b><span id="hdr" class="dim">loading…</span>
-  <button onclick="loadRuns()">refresh</button>
-  <span class="dim">R2-4 workspaces: run / compare / replay / dump-chain</span>
-</header>
-<div id="runs"></div>
-<div id="main"><p class="dim">select a run</p></div>
-<script>
-const api = p => fetch(p).then(r => r.json());
-const fmt = x => typeof x==='number' ? +x.toFixed(4) : JSON.stringify(x);
-const COLORS = ['#7fb3e0','#7fd18a','#e0b97f','#e07f7f','#b78ce0','#7fd1c8',
-                '#d1a0a0','#a0c87f','#8a92e0','#e0d17f','#c87fa0','#9db8d2'];
-let curRun = null, curDump = null, cmpRuns = new Set(), xAxis = 'env_step';
+<div id="root">
+  <header>
+    <h1>SAC Debug Viewer</h1>
+    <span class="meta" id="header-meta"></span>
+    <span id="breadcrumb"></span>
+  </header>
+  <div id="content">
 
-/* ---------------- runs list ---------------- */
-
-async function loadRuns() {
-  const runs = await api('/api/runs');
-  const el = document.getElementById('runs');
-  el.innerHTML = '';
-  document.getElementById('hdr').textContent = runs.length + ' runs';
-  runs.sort((a,b)=>(b.last_clocks?.env_step||0)-(a.last_clocks?.env_step||0));
-  for (const r of runs) {
-    const d = document.createElement('div');
-    const ev = r.last_eval ? Object.entries(r.last_eval)
-        .filter(([k])=>/success|survival/.test(k))
-        .map(([k,v])=>k.split('.').pop()+'='+(+v).toFixed(3)).join(' ') : '';
-    const cb = cmpRuns.has(r.name) ? 'checked' : '';
-    d.innerHTML = `<input type="checkbox" ${cb}
-        onclick="event.stopPropagation();toggleCmp('${r.name}',this.checked)">
-      <b>${r.name}</b><br><span class="sub">${r.experiment_name||''} `
-      + `${r.knobs?.actor_arch||''} env=${r.last_clocks?.env_step??'-'} ${ev}</span>`;
-    d.onclick = () => { selectRun(r.name); };
-    el.appendChild(d);
-  }
-  const cmp = document.createElement('div');
-  cmp.innerHTML = `<button style="width:100%" onclick="compareView()">compare selected (${cmpRuns.size})</button>`;
-  el.appendChild(cmp);
-}
-function toggleCmp(name, on) {
-  on ? cmpRuns.add(name) : cmpRuns.delete(name); loadRuns();
-}
-
-/* ---------------- chart helper ---------------- */
-
-function chart(parent, series, title, xlab) {
-  // series: [{label, color, pts:[[x,y],...]}]
-  const cv = document.createElement('canvas'); cv.width=720; cv.height=190;
-  const ctx = cv.getContext('2d');
-  parent.appendChild(cv);
-  ctx.fillStyle='#8a929c'; ctx.fillText(title,8,14);
-  const all = series.flatMap(s=>s.pts);
-  if (!all.length) { ctx.fillText('no data',60,100); return; }
-  const xs = all.map(p=>p[0]), ys = all.map(p=>p[1]);
-  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
-  const X=v=>50+(v-x0)/((x1-x0)||1)*650, Y=v=>160-(v-y0)/((y1-y0)||1e-12)*130;
-  ctx.strokeStyle='#3a4149'; ctx.strokeRect(50,20,660,140);
-  ctx.fillText(y1.toPrecision(3),4,30); ctx.fillText(y0.toPrecision(3),4,158);
-  ctx.fillText(x0,50,175); ctx.fillText(x1,700,175); ctx.fillText(xlab||'x',340,178);
-  series.forEach((s,i)=>{
-    ctx.strokeStyle=s.color||COLORS[i%COLORS.length];
-    ctx.beginPath();
-    s.pts.forEach(([x,y],j)=> j?ctx.lineTo(X(x),Y(y)):ctx.moveTo(X(x),Y(y)));
-    ctx.stroke();
-    ctx.fillStyle=s.color||COLORS[i%COLORS.length];
-    ctx.fillText(s.label, 60+i*120, 14);
-  });
-}
-const clockOf = p => (xAxis==='critic_tick')
-  ? (p.clocks?.critic_tick ?? 0) : (p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0);
-
-/* ---------------- run dashboard ---------------- */
-
-async function selectRun(name) {
-  curRun = name; curDump = null;
-  document.querySelectorAll('#runs div').forEach(x=>x.classList.remove('sel'));
-  const s = await api('/api/run?name='+name);
-  const m = document.getElementById('main');
-  m.innerHTML = `<h3>${name} <span class="dim">${s.experiment_name||''}</span></h3>
-    <div class="tabs">
-      <button class="on" id="tab_dash" onclick="runTab('dash')">dashboard</button>
-      <button id="tab_replay" onclick="runTab('replay')">replay</button>
-      <span class="dim" style="margin-left:14px">x-axis:</span>
-      <select onchange="xAxis=this.value"><option value="env_step">env_step</option>
-        <option value="critic_tick">critic_tick</option></select>
+    <!-- Runs index (runs-root mode) -->
+    <div class="page" id="page-runs">
+      <div class="index-nav">
+        <a data-nav="runs" class="active">Runs</a>
+        <a data-nav="experiments">Experiments</a>
+      </div>
+      <div class="card">
+        <div class="runs-toolbar">
+          <input type="text" id="runs-search" placeholder="search name / experiment…">
+          <select id="runs-size">
+            <option value="20">20 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+          </select>
+          <button id="runs-refresh">Refresh</button>
+          <button id="runs-cmp-btn" disabled>Compare</button>
+          <span class="meta" id="runs-count"></span>
+        </div>
+        <div id="runs-table-container"><div class="loading">loading...</div></div>
+        <div class="runs-toolbar" id="runs-pager" style="margin-top:8px"></div>
+      </div>
     </div>
-    <div id="ws"></div>`;
-  window._summary = s;
-  runTab('dash');
-}
-function runTab(t) {
-  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
-  (document.getElementById('tab_'+t)||{}).classList?.add('on');
-  if (t==='dash') dashView();
-  else replayView();
-}
 
-async function dashView() {
-  const s = window._summary, name = curRun;
-  const ws = document.getElementById('ws');
-  ws.innerHTML = `<pre>${JSON.stringify({clocks:s.last_clocks, knobs:s.knobs,
-    last_eval:s.last_eval, events:s.event_counts, terminal:s.terminal||null},null,1)}</pre>
-    <h3>metrics <span class="dim">(click to plot, ctrl=multi overlay)</span></h3>
-    <div id="mlist"></div><div id="chart"></div>
-    <h3>videos</h3><div id="vids"></div>
-    <h3>dumps <span class="dim">click → dump workspace</span></h3>
-    <div id="dumps"></div><div id="dumpws"></div>`;
-  const vv = document.getElementById('vids');
-  for (const v of (s.videos || []).slice(-12)) {
-    const a = document.createElement('a');
-    a.href = `/videos/${name}/${v}`; a.textContent = v; a.target = '_blank';
-    a.style.marginRight = '10px'; vv.appendChild(a);
-  }
-  const cat = await api('/api/catalog');
-  const ml = document.getElementById('mlist');
-  const picks = cat.filter(c=>/^(eval\.|temperature\.|actor\.|critic\.|collection\.|task\.|behavior\.|replay\.)/.test(c.name));
-  window._picked = new Set();
-  for (const c of picks.slice(0, 60)) {
-    const b = document.createElement('button');
-    b.textContent = c.name; b.style.margin='2px';
-    b.onclick = (ev) => {
-      if (!ev.ctrlKey && !ev.metaKey) { window._picked.clear(); }
-      window._picked.has(c.name) ? window._picked.delete(c.name)
-                                 : window._picked.add({name:c.name, ev:c.event_type});
-      [...ml.children].forEach(x=>x.classList.remove('on'));
-      [...ml.children].filter((x,i)=>[...window._picked].some(p=>p.name===x.textContent))
-        .forEach(x=>x.classList.add('on'));
-      plotMetrics(name, [...window._picked]);
-    };
-    ml.appendChild(b);
-  }
-  const dl = document.getElementById('dumps');
-  for (const dn of (s.dumps || [])) {
-    const b = document.createElement('button');
-    b.textContent = dn; b.style.margin='2px';
-    b.onclick = () => dumpWorkspace(name, dn);
-    dl.appendChild(b);
-  }
-}
+    <!-- Experiments index (runs-root mode) -->
+    <div class="page" id="page-experiments">
+      <div class="index-nav">
+        <a data-nav="runs">Runs</a>
+        <a data-nav="experiments" class="active">Experiments</a>
+      </div>
+      <div class="card">
+        <div class="runs-toolbar">
+          <button id="exps-refresh">Refresh</button>
+          <span class="meta" id="exps-count"></span>
+        </div>
+        <div id="exps-table-container"><div class="loading">loading...</div></div>
+      </div>
+    </div>
 
-async function plotMetrics(run, keys) {
-  const div = document.getElementById('chart'); div.innerHTML='';
-  if (!keys.length) return;
-  const series = [];
-  for (const [i,k] of keys.entries()) {
-    const d = await api(`/api/run/metrics?name=${run}&key=${k.name}&event=${k.ev||''}`);
-    series.push({label:k.name, color:COLORS[i%COLORS.length],
-      pts:d.points.map(p=>[clockOf(p), p.value])});
-  }
-  chart(div, series, `${run} :: ${keys.length} metric(s)`, xAxis);
-}
+    <!-- Experiment detail + launcher -->
+    <div class="page" id="page-experiment">
+      <div class="card">
+        <h2 id="exp-title">-</h2>
+        <div class="desc" id="exp-sub"></div>
+        <div class="desc" id="exp-doc-wrap"><span id="exp-doc"></span></div>
+      </div>
+      <div class="card">
+        <h2>Parameters</h2>
+        <div id="exp-params"><div class="loading">loading...</div></div>
+      </div>
+      <div class="card">
+        <h2>Runs <span class="muted" id="exp-runs-count"></span></h2>
+        <div id="exp-runs"><div class="loading">loading...</div></div>
+      </div>
+      <div class="card">
+        <h2>Launch</h2>
+        <div class="desc">拼装 train.py 命令（SAC 实验统一走 <code>--algo sac</code>；类属性经 <code>--set KEY=VALUE</code> 覆盖，round 调度经 <code>--param</code>）。</div>
+        <div id="exp-launch"></div>
+        <div class="exp-cmd-wrap" style="margin-top:10px">
+          <div class="exp-cmd" id="exp-cmd"></div>
+          <button id="exp-copy">Copy</button>
+        </div>
+      </div>
+    </div>
 
-/* ---------------- compare workspace ---------------- */
+    <!-- Run home -->
+    <div class="page" id="page-run">
+      <div class="run-grid">
+        <div class="card">
+          <h2>Run Info <a class="cmp-open-link" id="run-cmp-link">compare →</a></h2>
+          <div id="run-info-panel"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
+          <h2>Debug Dumps <span class="gs-scope" id="run-dumps-count"></span></h2>
+          <div class="desc">训练循环在 critic tick 边界抓取的取证包。点击打开 dump 主页。</div>
+          <div id="run-dumps-body"><div class="loading">loading...</div></div>
+          <div class="runs-toolbar" style="margin-top:10px">
+            <input type="text" id="dump-hypothesis" placeholder="hypothesis (optional)" style="flex:1">
+            <button id="dump-request-btn">Request dump</button>
+            <span class="meta" id="dump-request-status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="run-grid">
+        <div class="card">
+          <h2>Eval Videos <span class="gs-scope" id="run-videos-count"></span></h2>
+          <div id="run-videos-body"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
+          <h2>Round Detail <span class="gs-scope">sched + ctx of selected round</span></h2>
+          <div id="upd-detail-body"><div class="loading">select a round on the charts below</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Metrics <span class="gs-scope" id="upd-cursor-label"></span></h2>
+        <div id="run-metrics-container"><div class="loading">loading...</div></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+          <button id="upd-btn-prev" class="upd-nav">◀</button>
+          <input id="upd-slider" type="range" min="0" max="0" value="0">
+          <button id="upd-btn-next" class="upd-nav">▶</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>train.log <span class="gs-scope" id="run-log-info"></span></h2>
+        <div id="run-log-body"><div class="loading">loading...</div></div>
+        <div class="runs-toolbar" style="margin-top:8px">
+          <button id="run-log-more-btn">load earlier</button>
+        </div>
+      </div>
+    </div>
 
-async function compareView() {
-  const m = document.getElementById('main');
-  m.innerHTML = `<h3>compare <span class="dim">${[...cmpRuns].join(', ')}</span></h3>
-    <div>metric key: <input id="cmpkey" value="eval.success" size="26">
-      event: <select id="cmpev"><option value="">auto</option><option>tick</option>
-        <option>round</option><option>eval</option></select>
-      x: <select id="cmpx"><option value="env_step">env_step</option>
-        <option value="critic_tick">critic_tick</option></select>
-      <button onclick="plotCompare()">plot</button></div>
-    <div id="cmpchart"></div><div id="cmptable"></div>`;
-}
-async function plotCompare() {
-  const key = document.getElementById('cmpkey').value;
-  const ev = document.getElementById('cmpev').value;
-  const ax = document.getElementById('cmpx').value;
-  const series = [];
-  for (const [i,name] of [...cmpRuns].entries()) {
-    try {
-      const d = await api(`/api/run/metrics?name=${name}&key=${key}&event=${ev}`);
-      series.push({label:name, color:COLORS[i%COLORS.length],
-        pts:d.points.map(p=>[
-          ax==='critic_tick' ? (p.clocks?.critic_tick??0)
-                             : (p.clocks?.env_step ?? p.clocks?.critic_tick ?? 0),
-          p.value])});
-    } catch(e) { /* run lacks the metric — leave the gap visible */ }
-  }
-  const div = document.getElementById('cmpchart'); div.innerHTML='';
-  chart(div, series, `compare :: ${key}`, ax);
-}
+    <!-- Videos page (run scoped) -->
+    <div class="page" id="page-videos">
+      <div class="videos-layout">
+        <div class="card">
+          <h2>Eval Videos</h2>
+          <div id="videos-list-container"><div class="loading">loading...</div></div>
+        </div>
+        <div class="card">
+          <h2 id="videos-title">-</h2>
+          <video id="vid-player" controls></video>
+          <div class="vid-nav">
+            <button id="vid-prev">◀ prev</button>
+            <span class="meta" id="vid-pos"></span>
+            <button id="vid-next">next ▶</button>
+          </div>
+          <div id="vid-meta"></div>
+        </div>
+      </div>
+    </div>
 
-/* ---------------- replay workspace ---------------- */
+    <!-- Dump home — SAC computation-chain module cards -->
+    <div class="page" id="page-home">
+      <div class="card">
+        <h2>Dump Overview <span class="gs-scope" id="dump-overview-scope"></span></h2>
+        <div class="stage-stats" id="dump-overview"><div class="loading">loading...</div></div>
+      </div>
+      <div id="dump-stages"></div>
+    </div>
 
-async function replayView() {
-  const ws = document.getElementById('ws');
-  ws.innerHTML = '<p class="dim">loading replay report…</p>';
-  const r = await api(`/api/run/replay?name=${curRun}`);
-  let h = `<h3>replay demographics</h3><pre>${JSON.stringify({
-    size:r.size, capacity:r.capacity, total_inserted:r.total_inserted,
-    overwritten:r.overwritten, sample_age:r.sample_age, reuse:r.reuse,
-    collection_round_counts:r.collection_round_counts,
-    policy_fingerprint_counts:r.policy_fingerprint_counts,
-    explore_factor_counts:r.explore_factor_counts,
-    random_start_rows:r.random_start_rows}, null, 1)}</pre>
-    <h3>slice context</h3>
-    <div>sample_id <input id="sc_sid" size="8"> or source_key <input id="sc_sk" size="40">
-      <button onclick="sliceCtx()">query</button>
-      <span class="dim">resolves the newest checkpoint's replay.pt; evicted frames are shown as gaps</span></div>
-    <div id="sctx"></div>`;
-  ws.innerHTML = h;
-}
-async function sliceCtx() {
-  const sid = document.getElementById('sc_sid').value;
-  const sk = document.getElementById('sc_sk').value;
-  const q = sid ? `sample_id=${sid}` : `source_key=${encodeURIComponent(sk)}`;
-  const d = await api(`/api/run/slice-ctx?name=${curRun}&${q}`);
-  const el = document.getElementById('sctx');
-  let h = `<div class="card"><b>${d.slice_id}</b> <span class="dim">${d.episode_prefix}</span><br>
-    live=${d.live_count} range=${JSON.stringify(d.frame_index_range)}
-    gaps=${JSON.stringify(d.missing_frame_indices)}<br>
-    <span class="dim">${d.note}</span></div>`;
-  h += '<table><tr><th>frame</th><th>sample_id</th><th>draws</th><th>reward</th><th>end</th></tr>';
-  for (const f of d.live_frames) {
-    h += `<tr><td>${f.frame_index}</td><td>${f.sample_id}</td><td>${f.draw_count}</td>
-      <td>${fmt(f.reward_sum)}</td><td>${f.terminated?'T':(f.truncated?'~':'')}</td></tr>`;
-  }
-  el.innerHTML = h + '</table>';
-}
+    <!-- Generic dump tool page (W1 stub — per-module pages land in W3/W4) -->
+    <div class="page" id="page-tool">
+      <div class="tool-head" id="tool-head"></div>
+      <div class="card">
+        <h2 id="tool-title">Tool</h2>
+        <div class="desc" id="tool-desc"></div>
+        <div id="tool-body"><div class="loading">loading...</div></div>
+      </div>
+    </div>
 
-/* ---------------- dump workspace (computation chain) ---------------- */
+    <!-- Compare page -->
+    <div class="page" id="page-compare">
+      <div class="card">
+        <div class="cmp-chips" id="cmp-chips"></div>
+      </div>
+      <div class="card">
+        <h2>Summary</h2>
+        <div id="cmp-summary"></div>
+      </div>
+      <div class="card">
+        <h2>Training Metrics</h2>
+        <div class="desc">Each line is one run (same color everywhere). Click a chart to set a shared round cursor.</div>
+        <div id="cmp-metrics-container"><div class="loading">loading...</div></div>
+      </div>
+    </div>
+  </div>
 
-async function dumpWorkspace(run, dn) {
-  curDump = dn;
-  const host = document.getElementById('dumpws');
-  host.innerHTML = `<h3>dump ${dn}</h3>
-    <div class="tabs" id="dtabs">
-      <button class="on" data-t="inspect" onclick="dumpTab('inspect')">inspect</button>
-      <button data-t="samples" onclick="dumpTab('samples')">samples</button>
-      <button data-t="target" onclick="dumpTab('target')">target/critic</button>
-      <button data-t="actor" onclick="dumpTab('actor')">actor/temp</button>
-      <button data-t="drift" onclick="dumpTab('drift')">drift</button>
-      <button data-t="grad" onclick="dumpTab('grad')">grad-attr</button>
-      <button data-t="attr" onclick="dumpTab('attr')">attribution</button>
-    </div><div id="dws"></div>`;
-  host.scrollIntoView();
-  dumpTab('inspect');
-}
-function dumpTab(t) {
-  document.querySelectorAll('#dtabs button').forEach(b=>b.classList.remove('on'));
-  document.querySelector(`#dtabs button[data-t=${t}]`).classList.add('on');
-  const fn = {inspect:dInspect, samples:dSamples, target:dTarget,
-              actor:dActor, drift:dDrift, grad:dGrad, attr:dAttr}[t];
-  fn();
-}
-const dumpApi = p => api(`/api/dump/${p}${p.includes('?')?'&':'?'}run=${curRun}&name=${curDump}`);
+  <div class="img-modal-overlay" id="img-modal">
+    <span class="modal-close" id="img-modal-close">✕</span>
+    <img id="img-modal-src" src="" alt="" />
+  </div>
 
-async function dInspect() {
-  const d = await dumpApi('inspect');
-  document.getElementById('dws').innerHTML =
-    `<pre>${JSON.stringify({clocks:d.clocks, hypothesis:d.hypothesis,
-      consistency:d.consistency, batch:d.batch, pair_index:d.pair_index,
-      per_channel:d.per_channel, update_stats:d.update_stats,
-      param_delta:d.param_delta}, null, 1)}</pre>`;
-}
+  <div id="context-bar">
+    <div class="ctx-item" data-pages="run home tool"><span class="ctx-label">Run:</span> <span class="ctx-value" id="ctx-run">-</span></div>
+    <div class="ctx-item" data-pages="home tool"><span class="ctx-label">Dump:</span> <span class="ctx-value" id="ctx-dump">-</span></div>
+    <div class="ctx-item" data-pages="run"><span class="ctx-label">Round:</span> <span class="ctx-value" id="ctx-round">-</span></div>
+    <div class="ctx-item" data-pages="tool"><span class="ctx-label">Sample:</span> <span class="ctx-value" id="ctx-sample">-</span></div>
+  </div>
+</div>
 
-async function dSamples() {
-  const sm = await dumpApi('samples&sort=td_abs&limit=40');
-  let h = `<h4>samples <span class="dim">sorted by |td| — row actions:
-      trace / decomp / slice-ctx (run newest ckpt replay)</span></h4>
-    <table><tr><th>sample_id</th><th>round</th><th>reward</th><th>|td|</th>
-    <th>q_mean</th><th>logp̄</th><th>draws</th><th>end</th><th></th></tr>`;
-  for (const r of sm.rows) {
-    h += `<tr><td>${r.sample_id}</td><td>${r.collection_round??''}</td>
-      <td>${fmt(r.reward_sum)}</td><td>${fmt(r.td_abs)}</td>
-      <td>${fmt(r.q_mean)}</td><td>${fmt(r.logp_expectation)}</td>
-      <td>${r.draw_count}</td><td>${r.terminated?'T':(r.truncated?'~':'')}</td>
-      <td><button onclick="dTrace(${r.sample_id})">trace</button>
-        <button onclick="dDecompRow(${r.sample_id})">decomp</button>
-        <button onclick="dSliceCtx(${r.sample_id})">slice-ctx</button></td></tr>`;
-  }
-  document.getElementById('dws').innerHTML = h + '</table><div id="drill"></div>';
-}
-async function dTrace(sid) {
-  const d = await dumpApi(`trace&sample_id=${sid}`);
-  document.getElementById('drill').innerHTML =
-    `<h4>trace ${sid}</h4><pre>${JSON.stringify(d,null,1)}</pre>`;
-}
-async function dDecompRow(sid) {
-  const d = await dumpApi(`decomp&sample_id=${sid}`);
-  document.getElementById('drill').innerHTML =
-    `<h4>decomp ${sid}</h4><pre>${JSON.stringify(d.row,null,1)}</pre>`;
-}
-async function dSliceCtx(sid) {
-  const d = await api(`/api/run/slice-ctx?name=${curRun}&sample_id=${sid}`);
-  document.getElementById('drill').innerHTML =
-    `<h4>slice-ctx ${sid} → ${d.slice_id}</h4><pre>${JSON.stringify(d,null,1)}</pre>`;
-}
+<script>
+(() => {
+  'use strict';
 
-async function dTarget() {
-  const d = await dumpApi('decomp');
-  const ins = await dumpApi('inspect');
-  let h = '<h4>target decomposition <span class="dim">target = r·scale + γ·b·(softQ + reg)</span></h4><table>' +
-    '<tr><th>channel</th><th>reward</th><th>softQ</th><th>reg</th><th>total</th><th>|td|max</th><th>grad_norm</th></tr>';
-  for (const [ch, p] of Object.entries(d.summary.target)) {
-    const gn = ins.update_stats?.[`grad_norm_critic_${ch}`];
-    const td = ins.per_channel?.[ch]?.td_abs_max;
-    h += `<tr><td>${ch}</td><td>${fmt(p.reward_term.mean)}</td>
-      <td>${fmt(p.softq_term.mean)}</td><td>${fmt(p.reg_term.mean)}</td>
-      <td>${fmt(p.total.mean)}</td><td>${fmt(td??NaN)}</td><td>${fmt(gn??NaN)}</td></tr>`;
-  }
-  h += `</table><div class="dim">check.target_max_abs_err=${d.check.target_max_abs_err.toExponential(2)}</div>`;
-  h += `<h4>per-channel critic stats</h4><pre>${JSON.stringify(ins.per_channel,null,1)}</pre>`;
-  document.getElementById('dws').innerHTML = h;
-}
+  // --- Global state ---
+  const state = {
+    mode: 'runs',          // 'runs' | 'run' | 'dump'
+    rootMode: null,
+    runName: null,
+    expName: null,
+    expDetail: null,
+    runsQ: {q: '', page: 1, size: 20, sort: 'created', order: 'desc'},
+    videosList: null,
+    selectedVideoIdx: null,
+    dumpName: null,
+    manifest: null,
+    runInfo: null,
+    runDumps: null,
+    runMetrics: null,      // flat round rows from /api/run/metrics
+    selectedRoundIdx: null,
+    cmpRuns: [],
+    cmpData: {},
+    cmpCursor: null,
+    cmpSel: new Set(),
+    _chartSpecs: {},
+    _chartSeq: 0,
+    _chartHidden: {},
+    catalog: null,
+    // dump-level
+    dumpInspect: null,
+    toolEp: null,          // generic tool page endpoint (W1 stub)
+    toolParams: {sample_id: '', group_by: 'collection_round',
+                 source_key: '', slice_id: '', sort: 'td_abs', limit: 50},
+    selectedSampleId: null, // shared SAC cursor (cross-tool, W3+)
+    currentPage: 'runs',
+  };
 
-async function dActor() {
-  const d = await dumpApi('decomp');
-  const ins = await dumpApi('inspect');
-  let h = '<h4>actor objective decomposition <span class="dim">objective = Σ_ch w·Q + entropy + reg</span></h4><table>' +
-    '<tr><th>part</th><th>mean</th><th>std</th></tr>';
-  for (const [ch, p] of Object.entries(d.summary.actor.per_channel_q)) {
-    h += `<tr><td>Q·${ch}</td><td>${fmt(p.mean)}</td><td>${fmt(p.std)}</td></tr>`;
-  }
-  h += `<tr><td>entropy_term</td><td>${fmt(d.summary.actor.entropy_term.mean)}</td><td></td></tr>
-    <tr><td>reg_term</td><td>${fmt(d.summary.actor.reg_term.mean)}</td><td></td></tr>
-    <tr><td><b>total</b></td><td><b>${fmt(d.summary.actor.total.mean)}</b></td><td></td></tr></table>
-    <div class="dim">mode=${d.regularizer_mode} check.objective_max_abs_err=${d.check.objective_max_abs_err.toExponential(2)}</div>`;
-  h += `<h4>temperature / pair selection</h4><pre>${JSON.stringify({
-    alpha:ins.update_stats?.alpha, alpha_loss:ins.update_stats?.alpha_loss,
-    grad_norm_alpha:ins.update_stats?.grad_norm_alpha,
-    actor_grad_norm:ins.update_stats?.grad_norm_actor,
-    actor_pair1_frac:ins.update_stats?.actor_pair1_frac,
-    target_pair1_frac:ins.update_stats?.target_pair1_frac},null,1)}</pre>`;
-  document.getElementById('dws').innerHTML = h;
-}
+  // --- DOM helpers ---
+  const $ = id => document.getElementById(id);
+  const pages = {
+    runs: $('page-runs'),
+    experiments: $('page-experiments'),
+    experiment: $('page-experiment'),
+    run: $('page-run'),
+    videos: $('page-videos'),
+    home: $('page-home'),
+    tool: $('page-tool'),
+    compare: $('page-compare'),
+  };
 
-async function dDrift() {
-  document.getElementById('dws').innerHTML = '<p class="dim">rebuilding pre/post models…</p>';
-  const d = await dumpApi('drift');
-  let h = `<h4>fixed-input drift <span class="dim">pre→post on this batch's obs (n=${d.n_probe_rows})</span></h4>
-    <pre>${JSON.stringify({det_action_drift:d.det_action_drift,
-      logp_drift:d.logp_drift, alpha_delta:d.alpha_delta,
-      per_channel:d.per_channel},null,1)}</pre>`;
-  document.getElementById('dws').innerHTML = h;
-}
-
-async function dGrad() {
-  document.getElementById('dws').innerHTML =
-    `<p class="warn">grad-attr is heavy: it rebuilds pre-state models and runs
-     (groups×channels + 3) backwards. <button onclick="dGradRun()">compute</button></p>
-     <div id="gradout"></div>`;
-}
-async function dGradRun() {
-  document.getElementById('gradout').innerHTML = '<p class="dim">computing…</p>';
-  const d = await dumpApi('grad-attr');
-  let h = `<h4>actor term gradients <span class="dim">total ‖g‖=${fmt(d.actor.total_grad_norm)}</span></h4>
-    <table><tr><th>term</th><th>loss</th><th>‖g‖</th><th>cos→total</th></tr>`;
-  for (const t of d.actor.terms) {
-    h += `<tr><td>${t.term}</td><td>${fmt(t.loss)}</td><td>${fmt(t.grad_norm)}</td>
-      <td>${t.cos_to_total===null?'—':fmt(t.cos_to_total)}</td></tr>`;
-  }
-  h += '</table><h4>critic per-group gradients</h4>';
-  for (const [ch, e] of Object.entries(d.critic)) {
-    h += `<h4>${ch} <span class="dim">total ‖g‖=${fmt(e.total_grad_norm)}</span></h4>
-      <table><tr><th>${d.group_by}</th><th>rows</th><th>‖g‖</th><th>cos→total</th></tr>`;
-    for (const g of e.groups) {
-      h += `<tr><td>${g.key}</td><td>${g.rows}</td><td>${fmt(g.grad_norm)}</td>
-        <td>${g.cos_to_total===null?'—':fmt(g.cos_to_total)}</td></tr>`;
+  // --- URL helpers ---
+  // Runs mode: run-scoped API under /run/<name>/api/...; dump-scoped under
+  // /run/<name>/api/dump/<d>/<ep>.  Run mode: /api/run/* + /api/dump/<d>/<ep>.
+  // Dump mode: /api/dump/<ep> (root IS the dump).
+  function api(path) {
+    const pre = (state.rootMode === 'runs' && state.runName)
+      ? `/run/${encodeURIComponent(state.runName)}` : '';
+    if (path.startsWith('dump/')) {
+      const ep = path.slice(5);
+      if (state.rootMode === 'dump') return `/api/dump/${ep}`;
+      return `${pre}/api/dump/${encodeURIComponent(state.dumpName)}/${ep}`;
     }
-    h += '</table>';
+    return `${pre}/api/${path}`;
   }
-  h += `<h4>alpha group contributions <span class="dim">sum=${fmt(d.alpha.total_grad)}</span></h4>
-    <pre>${JSON.stringify(d.alpha.groups,null,1)}</pre>`;
-  document.getElementById('gradout').innerHTML = h;
-}
 
-async function dAttr() {
-  const d = await dumpApi('attribute&group_by=collection_round');
-  let h = `<h4>provenance × contribution <span class="dim">group_by=collection_round</span></h4>
-    <table><tr><th>round</th><th>rows</th><th>share</th>
-    ${Object.keys(d.groups[0]?.critic_loss_share||{}).map(c=>`<th>loss·${c}</th>`).join('')}
-    <th>actor_share</th></tr>`;
-  for (const g of d.groups) {
-    h += `<tr><td>${g.key}</td><td>${g.rows}</td><td>${fmt(g.batch_share)}</td>` +
-      Object.values(g.critic_loss_share).map(v=>`<td>${v===null?'—':fmt(v)}</td>`).join('') +
-      `<td>${g.actor_objective_share===null?'—':fmt(g.actor_objective_share)}</td></tr>`;
+  function videoUrl(name) {
+    if (state.rootMode === 'runs' && state.runName) {
+      return `/run/${encodeURIComponent(state.runName)}/videos/${encodeURIComponent(name)}`;
+    }
+    return `/videos/${encodeURIComponent(name)}`;
   }
-  document.getElementById('dws').innerHTML = h + '</table>';
-}
 
-loadRuns();
-setInterval(loadRuns, 60000);
+  function urlForCurrent() {
+    const p = state.currentPage;
+    if (state.mode === 'runs') {
+      if (p === 'experiments') return '/experiments';
+      if (p === 'experiment' && state.expName)
+        return `/experiment/${encodeURIComponent(state.expName)}`;
+      if (p === 'compare')
+        return `/compare/${state.cmpRuns.map(encodeURIComponent).join(',')}`;
+      return '/';
+    }
+    if (state.mode === 'run') {
+      const pre = state.rootMode === 'runs'
+        ? `/run/${encodeURIComponent(state.runName)}` : '';
+      if (p === 'videos') return `${pre}/videos`;
+      if (state.dumpName) {
+        const d = encodeURIComponent(state.dumpName);
+        if (p === 'tool') return `${pre}/dump/${d}/${state.toolEp}`;
+        return `${pre}/dump/${d}/`;
+      }
+      return `${pre}/`;
+    }
+    // dump mode — root IS the dump
+    if (p === 'tool') return `/${state.toolEp}`;
+    return '/';
+  }
+
+  function navigate(page) {
+    state.currentPage = page;
+    const url = urlForCurrent();
+    history.pushState({}, '', url);
+    applyRoute(url);
+  }
+
+  function showPage(name) {
+    state.currentPage = name;
+    Object.entries(pages).forEach(([k, el]) => {
+      if (el) el.classList.toggle('active', k === name);
+    });
+    updateContextBarVisibility();
+    updateBreadcrumb();
+  }
+
+  function updateContextBarVisibility() {
+    const items = document.querySelectorAll('#context-bar .ctx-item');
+    items.forEach(it => {
+      const p = it.dataset.pages.split(' ');
+      it.classList.toggle('show', p.includes(state.currentPage));
+    });
+  }
+
+  function updateContextBar() {
+    $('ctx-run').textContent = state.runName || '-';
+    $('ctx-dump').textContent = state.dumpName || '-';
+    const row = state.runMetrics && state.selectedRoundIdx != null
+      ? state.runMetrics[state.selectedRoundIdx] : null;
+    $('ctx-round').textContent = row ? `r${row.round} · s${row.env_step}` : '-';
+    $('ctx-sample').textContent =
+      state.selectedSampleId != null ? `#${state.selectedSampleId}` : '-';
+  }
+
+  function updateBreadcrumb() {
+    const bc = $('breadcrumb');
+    const parts = [];
+    if (state.mode === 'runs') {
+      parts.push({label: 'Runs', page: 'runs'});
+      if (state.currentPage === 'experiments')
+        parts.push({label: 'Experiments'});
+      else if (state.currentPage === 'experiment' && state.expName)
+        parts.push({label: 'Experiments', page: 'experiments'},
+                   {label: state.expName});
+      else if (state.currentPage === 'compare')
+        parts.push({label: 'Compare'});
+    } else {
+      if (state.rootMode === 'runs')
+        parts.push({label: 'Runs', page: 'runs'});
+      parts.push({label: state.runName || 'run', page: 'run'});
+      if (state.currentPage === 'videos')
+        parts.push({label: 'Videos'});
+      else if (state.dumpName) {
+        parts.push({label: state.dumpName, page: 'home'});
+        if (state.currentPage === 'tool')
+          parts.push({label: state.toolEp});
+      }
+    }
+    bc.innerHTML = parts.map((p, i) => {
+      const sep = i > 0 ? '<span class="sep">›</span>' : '';
+      const body = p.page
+        ? `<a data-bc="${p.page}">${escapeHtml(p.label)}</a>`
+        : escapeHtml(p.label);
+      return sep + body;
+    }).join('');
+    bc.querySelectorAll('a[data-bc]').forEach(a => {
+      a.addEventListener('click', () => navigate(a.dataset.bc));
+    });
+  }
+
+  // --- Fetch helpers ---
+  async function fetchJson(url) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      const t = await r.text();
+      let m = t;
+      try { m = JSON.parse(t).error || t; } catch (e) { /* raw text */ }
+      throw new Error(m);
+    }
+    return r.json();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  function fmt(v, digits = 3) {
+    if (v === null || v === undefined || isNaN(v)) return '-';
+    if (Math.abs(v) >= 10000) return v.toExponential(2);
+    return Number(v).toFixed(digits);
+  }
+
+  // --- SVG chart helper (same renderer contract as the PPO viewer) ---
+  const CHART_COLORS = ['#4da6ff', '#ff5c57', '#3ddc84', '#ffc233', '#c77dff', '#ff8c42'];
+  const DASH_PATTERNS = {dot: '2,3', dash: '6,3', longdash: '10,4', dashdot: '8,3,2,3'};
+  const METRIC_DASH = {min: 'dot', max: 'longdash', std: 'dash', mean: null};
+
+  function makeChart(dataSeries, options = {}) {
+    const width = options.width || 800;
+    const height = options.height || 200;
+    const n = dataSeries.length > 0 ? dataSeries[0].data.length : 0;
+    const isNum = v => typeof v === 'number' && !isNaN(v);
+    const visibleSeries = dataSeries.filter(s => s.visible !== false);
+    const leftSeries = visibleSeries.filter(s => s.axis !== 'right');
+    const rightSeries = visibleSeries.filter(s => s.axis === 'right');
+    const leftVals = leftSeries.flatMap(s => s.data).filter(isNum);
+    const rightVals = rightSeries.flatMap(s => s.data).filter(isNum);
+    if ((leftVals.length === 0 && rightVals.length === 0) || n === 0) {
+      return '<div class="loading">no data</div>';
+    }
+
+    function yDomain(vals) {
+      if (vals.length === 0) return {lo: 0, hi: 1};
+      const yMin = Math.min(...vals);
+      const yMax = Math.max(...vals);
+      const yPad = (yMax - yMin) * 0.1 || 1;
+      return {lo: yMin - yPad, hi: yMax + yPad};
+    }
+    const ld = yDomain(leftVals);
+    const rd = yDomain(rightVals);
+    const hasRight = rightSeries.length > 0;
+    const margin = {top: 10, right: hasRight ? 40 : 10, bottom: 20, left: 50};
+    const w = width - margin.left - margin.right;
+    const h = height - margin.top - margin.bottom;
+    const xScale = i => margin.left + (n <= 1 ? 0 : (i / (n - 1)) * w);
+    const yScale = v => margin.top + h - ((v - ld.lo) / (ld.hi - ld.lo)) * h;
+    const yScaleR = v => margin.top + h - ((v - rd.lo) / (rd.hi - rd.lo)) * h;
+    const yFor = (s, v) => s.axis === 'right' ? yScaleR(v) : yScale(v);
+
+    let svg = `<svg class="chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" data-chart-n="${n}">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = margin.top + (h / 4) * i;
+      const val = ld.hi - (i / 4) * (ld.hi - ld.lo);
+      svg += `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+      svg += `<text x="${margin.left - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${fmt(val, 2)}</text>`;
+    }
+    if (hasRight) {
+      for (let i = 0; i <= 4; i++) {
+        const y = margin.top + (h / 4) * i;
+        const val = rd.hi - (i / 4) * (rd.hi - rd.lo);
+        svg += `<text x="${width - 4}" y="${y + 3}" text-anchor="end" fill="var(--muted)" font-size="10">${fmt(val, 2)}</text>`;
+      }
+    }
+    if (ld.lo < 0 && ld.hi > 0) {
+      const yz = yScale(0);
+      svg += `<line x1="${margin.left}" y1="${yz}" x2="${width - margin.right}" y2="${yz}" stroke="var(--muted)" stroke-width="0.5" stroke-dasharray="2,2"/>`;
+    }
+    if (options.vMarkers) {
+      for (const m of options.vMarkers) {
+        if (m < 0 || m >= n) continue;
+        const x = xScale(m);
+        svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--red)" stroke-width="1.2" stroke-dasharray="4,2" opacity="0.8"/>`;
+      }
+    }
+    visibleSeries.forEach(s => {
+      if (s.data.length < 2) return;
+      let pts = '';
+      s.data.forEach((v, i) => {
+        if (!isNum(v)) return;
+        pts += `${xScale(i)},${yFor(s, v)} `;
+      });
+      const dash = s.dash || (s.dashed ? 'dash' : null);
+      const dashAttr = dash ? ` stroke-dasharray="${DASH_PATTERNS[dash] || dash}"` : '';
+      svg += `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="${s.width || 1.5}"${dashAttr}/>`;
+    });
+    if (options.currentFrame !== undefined && options.currentFrame >= 0 && options.currentFrame < n) {
+      const x = xScale(options.currentFrame);
+      svg += `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${margin.top + h}" stroke="var(--accent)" stroke-width="1" opacity="0.6"/>`;
+      const cf = options.currentFrame;
+      const lastVal = s => {
+        if (s.event) {
+          const i = Math.min(cf, s.data.length - 1);
+          return isNum(s.data[i]) ? {i, v: s.data[i]} : null;
+        }
+        for (let i = Math.min(cf, s.data.length - 1); i >= 0; i--) {
+          if (isNum(s.data[i])) return {i, v: s.data[i]};
+        }
+        return null;
+      };
+      const labels = visibleSeries
+        .map(s => ({s, lv: lastVal(s)}))
+        .filter(x => x.lv !== null);
+      const labelH = 13;
+      let labelIdx = 0;
+      labels.forEach(({s, lv}) => {
+        const y = yFor(s, lv.v);
+        const ly = margin.top + 2 + labelIdx * labelH;
+        const tag = s.dim ? s.dim.split('_').pop() + ' ' : '';
+        const text = tag + fmt(lv.v, 4);
+        svg += `<rect x="${x + 3}" y="${ly - 9}" width="${text.length * 6 + 4}" height="12" fill="var(--bg)" opacity="0.85" rx="2"/>`;
+        svg += `<circle cx="${x + 5}" cy="${ly - 3}" r="2" fill="${s.color}"/>`;
+        svg += `<text x="${x + 10}" y="${ly}" fill="${s.color}" font-size="10" font-family="ui-monospace,monospace">${text}</text>`;
+        svg += `<circle cx="${xScale(lv.i)}" cy="${y}" r="2.5" fill="${s.color}" stroke="var(--bg)" stroke-width="0.5"/>`;
+        labelIdx++;
+      });
+    }
+    svg += `</svg>`;
+
+    let legend = '';
+    if (options.legendGroups || options.legendDims) {
+      if (options.legendGroups) {
+        legend += '<div class="chart-legend">';
+        options.legendGroups.forEach(g => {
+          const off = options.hiddenGroups && options.hiddenGroups.has(g.name) ? ' disabled' : '';
+          legend += `<div class="leg-item${off}" data-g="${escapeHtml(g.name)}"><div class="leg-color" style="background:${g.color}"></div>${escapeHtml(g.name)}</div>`;
+        });
+        legend += '</div>';
+      }
+      if (options.legendDims) {
+        legend += '<div class="chart-legend">';
+        options.legendDims.forEach(d => {
+          const off = options.hiddenDims && options.hiddenDims.has(d.name) ? ' disabled' : '';
+          const pat = d.dash ? (DASH_PATTERNS[d.dash] || d.dash) : 'none';
+          legend += `<div class="leg-item${off}" data-d="${escapeHtml(d.name)}"><svg width="16" height="4" style="flex:none"><line x1="0" y1="2" x2="16" y2="2" stroke="#cfd6e4" stroke-width="1.5" stroke-dasharray="${pat}"/></svg>${escapeHtml(d.name)}</div>`;
+        });
+        legend += '</div>';
+      }
+    } else {
+      legend = '<div class="chart-legend">';
+      dataSeries.forEach((s, i) => {
+        const disabled = s.visible === false ? ' disabled' : '';
+        const dash = s.dash || (s.dashed ? 'dash' : null);
+        const pat = dash ? (DASH_PATTERNS[dash] || dash) : 'none';
+        legend += `<div class="leg-item${disabled}" data-leg-idx="${i}"><svg width="14" height="4" style="flex:none"><line x1="0" y1="2" x2="14" y2="2" stroke="${s.color}" stroke-width="1.5" stroke-dasharray="${pat}"/></svg>${escapeHtml(s.label)}</div>`;
+      });
+      legend += '</div>';
+    }
+    return svg + legend;
+  }
+
+  // --- Dashboard chart pipeline (catalog-driven) ---
+  // Flat row keys emitted by /api/run/metrics (runview.run_events_table):
+  //   row identity: round / env_step / critic_tick
+  //   round metrics verbatim, eval.* merged by collection_round (sparse),
+  //   tck.<metric> = per-round tick aggregate.
+  // Chart spec kinds (from /api/catalog sections):
+  //   {title, keys:[...], right:[...]}      merged multi-series chart
+  //   {ch: '<metric>'}                     per-channel tck.<metric>.<ch>
+  //   {chm: name, metrics:[...]}           merged per-channel multi-metric
+  //   {zone_all|zone_rest|zone_pick}       dynamic zone buckets
+  const ROW_META = new Set([
+    'round', 'env_step', 'critic_tick', 'param_patches', '_ctx']);
+
+  function labelFor(key) {
+    const labels = (state.catalog && state.catalog.labels) || {};
+    const bare = key.startsWith('tck.') ? key.slice(4) : key;
+    return labels[bare] || bare;
+  }
+
+  function suppressHit(key) {
+    const cat = state.catalog || {};
+    if ((cat.suppress || []).includes(key)) return true;
+    return (cat.suppress_prefixes || []).some(p => key.startsWith(p));
+  }
+
+  function seriesFor(rows, key) {
+    return rows.map(r => {
+      const v = r[key];
+      return (typeof v === 'number') ? v : NaN;
+    });
+  }
+
+  function channelKeys(allKeys, prefix) {
+    const pre = `tck.${prefix}.`;
+    const out = [];
+    allKeys.forEach(k => {
+      if (k.startsWith(pre)) out.push({key: k, channel: k.slice(pre.length)});
+    });
+    out.sort((a, b) => a.channel.localeCompare(b.channel));
+    return out;
+  }
+
+  function buildMetricsCharts(rows, cmpNames) {
+    // cmpNames: null → single-run dashboard; array → compare mode where
+    // `rows` is {name → rowArray} and x-axis is the union round index.
+    const cat = state.catalog;
+    if (!cat) return [];
+    const boxes = [];
+    const allKeys = new Set();
+    if (cmpNames) {
+      cmpNames.forEach(nm => {
+        (rows[nm] || []).forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+      });
+    } else {
+      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+    }
+
+    const mkSeries = (key, color, axis, extra = {}) => {
+      if (cmpNames) {
+        return cmpNames.map((nm, i) => ({
+          label: nm, color: CHART_COLORS[i % CHART_COLORS.length],
+          axis, data: cmpSeries(nm, key), ...extra,
+        }));
+      }
+      return [{label: labelFor(key), color, axis, data: seriesFor(rows, key), ...extra}];
+    };
+
+    const boxFor = (spec, series, extra = {}) => {
+      const vis = series.filter(s => s.data.some(v => typeof v === 'number' && !isNaN(v)));
+      if (!vis.length) return null;
+      return {title: spec.title || series[0].label,
+              subtitle: spec.subtitle || '', guide: spec.guide || '',
+              series, ...extra};
+    };
+
+    const consumed = new Set();
+    const push = spec => {
+      let series = [], extra = {};
+      if (spec.ch) {
+        // per-channel chart: tck.<ch>.<channel>
+        const cks = channelKeys(allKeys, spec.ch);
+        cks.forEach((c, i) => {
+          consumed.add(c.key);
+          series.push(...mkSeries(c.key, CHART_COLORS[i % CHART_COLORS.length], null,
+                                  cmpNames ? {} : {label: c.channel, group: c.channel}));
+        });
+        if (!cmpNames) {
+          extra.legendGroups = cks.map((c, i) => ({
+            name: c.channel, color: CHART_COLORS[i % CHART_COLORS.length]}));
+        }
+      } else if (spec.chm) {
+        // merged per-channel multi-metric: color=channel, dash=metric
+        const chans = new Set();
+        const found = {};
+        spec.metrics.forEach(m => {
+          channelKeys(allKeys, m).forEach(c => {
+            chans.add(c.channel);
+            (found[c.channel] = found[c.channel] || []).push({m, key: c.key});
+          });
+        });
+        const chanList = [...chans].sort();
+        chanList.forEach((ch, ci) => {
+          spec.metrics.forEach((m, mi) => {
+            const hit = (found[ch] || []).find(f => f.m === m);
+            if (!hit) return;
+            consumed.add(hit.key);
+            const dash = mi === 0 ? null : Object.keys(DASH_PATTERNS)[(mi - 1) % 4];
+            series.push(...mkSeries(hit.key, CHART_COLORS[ci % CHART_COLORS.length], null,
+                                    cmpNames ? {} : {label: `${ch}·${m.split('.').pop()}`,
+                                                     group: ch, dim: m, dash}));
+          });
+        });
+        if (!cmpNames) {
+          extra.legendGroups = chanList.map((c, i) => ({
+            name: c, color: CHART_COLORS[i % CHART_COLORS.length]}));
+          extra.legendDims = spec.metrics.map((m, mi) => ({
+            name: m.split('.').pop(),
+            dash: mi === 0 ? null : Object.keys(DASH_PATTERNS)[(mi - 1) % 4]}));
+        }
+      } else {
+        (spec.keys || []).forEach((k, i) => {
+          consumed.add(k);
+          series.push(...mkSeries(k, CHART_COLORS[i % CHART_COLORS.length], null));
+        });
+        (spec.right || []).forEach((k, i) => {
+          consumed.add(k);
+          series.push(...mkSeries(k, CHART_COLORS[(i + (spec.keys || []).length) % CHART_COLORS.length], 'right'));
+        });
+      }
+      const b = boxFor(spec, series, extra);
+      if (b) boxes.push(b);
+    };
+
+    // 1. curated layout in catalog order
+    (cat.layout || []).forEach(spec => {
+      if (spec.zone_all || spec.zone_rest || spec.zone_pick) {
+        // handled below as zone charts
+        return;
+      }
+      push(spec);
+    });
+
+    // 2. zone charts — dynamic experiment/eval buckets
+    const zones = cat.zones || [];
+    const zoneCharts = [];
+    zones.forEach(z => {
+      const keys = [...allKeys].filter(k =>
+        k.startsWith(z.prefix) && !consumed.has(k) && !suppressHit(k)).sort();
+      if (!keys.length) return;
+      keys.forEach(k => consumed.add(k));
+      const series = [];
+      keys.forEach((k, i) =>
+        series.push(...mkSeries(k, CHART_COLORS[i % CHART_COLORS.length], null,
+                                {event: !!z.sparse})));
+      zoneCharts.push({title: `${z.title}`, subtitle: z.hint || '',
+                       guide: z.hint || '', series, zone: z.zone});
+    });
+
+    // 3. fallback: uncharted framework keys
+    const rest = [...allKeys].filter(k =>
+      !consumed.has(k) && !ROW_META.has(k) && !suppressHit(k) &&
+      !k.startsWith('eval.')).sort();
+    if (rest.length) {
+      const series = [];
+      rest.forEach((k, i) =>
+        series.push(...mkSeries(k, CHART_COLORS[i % CHART_COLORS.length], null)));
+      boxes.push({title: 'Other metrics', subtitle: '未进入 curated/zone 的键',
+                  series});
+    }
+    return [...boxes.slice(0, 0), ...boxes, ...zoneCharts];
+  }
+
+  // --- chart mount: SVG + click-to-cursor + legend toggles ---
+  // Hidden-state keys: "g:<group>" / "d:<dim>" / "s:<label>" — a series is
+  // hidden when ANY of its keys is in the page's hidden set.
+  function _seriesKeys(s) {
+    const keys = [];
+    if (s.group != null) keys.push(`g:${s.group}`);
+    if (s.dim != null) keys.push(`d:${s.dim}`);
+    keys.push(`s:${s.label}`);
+    return keys;
+  }
+
+  function chartBox(box, key, cursor) {
+    const div = document.createElement('div');
+    div.className = 'chart-container';
+    const hid = state._chartHidden[key] || (state._chartHidden[key] = new Set());
+    const series = box.series.map(s => ({
+      ...s,
+      visible: !_seriesKeys(s).some(k => hid.has(k)),
+    }));
+    const hiddenGroups = new Set(
+      (box.legendGroups || []).map(g => g.name).filter(n => hid.has(`g:${n}`)));
+    const hiddenDims = new Set(
+      (box.legendDims || []).map(d => d.name).filter(n => hid.has(`d:${n}`)));
+    const html = makeChart(series, {
+      currentFrame: cursor,
+      legendGroups: box.legendGroups,
+      legendDims: box.legendDims,
+      hiddenGroups, hiddenDims,
+      vMarkers: box.vMarkers,
+    });
+    div.innerHTML = `<h3>${escapeHtml(box.title)}</h3>` +
+      (box.subtitle ? `<div class="desc">${escapeHtml(box.subtitle)}</div>` : '') +
+      html +
+      (box.guide ? `<div class="desc" style="margin-top:6px">${escapeHtml(box.guide).replace(/\n/g, '<br>')}</div>` : '');
+    const rerender = () => {
+      const parent = div.parentElement;
+      if (!parent) return;
+      const fresh = chartBox(box, key, cursor);
+      parent.replaceChild(fresh, div);
+      wireChartClick(fresh, box, key);
+    };
+    div.querySelectorAll('.leg-item').forEach(li => {
+      li.addEventListener('click', () => {
+        const g = li.dataset.g, d = li.dataset.d, i2 = li.dataset.legIdx;
+        if (g != null) {
+          const k = `g:${g}`;
+          hid.has(k) ? hid.delete(k) : hid.add(k);
+        } else if (d != null) {
+          const k = `d:${d}`;
+          hid.has(k) ? hid.delete(k) : hid.add(k);
+        } else if (i2 != null) {
+          const s = box.series[parseInt(i2)];
+          if (s) {
+            const k = `s:${s.label}`;
+            hid.has(k) ? hid.delete(k) : hid.add(k);
+          }
+        }
+        rerender();
+      });
+    });
+    return div;
+  }
+
+  function wireChartClick(div, box, key) {
+    const svg = div.querySelector('svg.chart');
+    if (!svg) return;
+    svg.addEventListener('click', ev => {
+      const rect = svg.getBoundingClientRect();
+      const n = parseInt(svg.dataset.chartN || '0');
+      if (!n) return;
+      const frac = (ev.clientX - rect.left - 50 * rect.width / 800) /
+        ((800 - 50 - 10) * rect.width / 800);
+      const idx = Math.round(frac * (n - 1));
+      if (state.currentPage === 'compare') {
+        state.cmpCursor = Math.max(0, Math.min(n - 1, idx));
+        renderCompare();
+      } else {
+        state.selectedRoundIdx = Math.max(0, Math.min(n - 1, idx));
+        renderRoundDetail();
+        renderMetricsCharts();
+        updateContextBar();
+      }
+    });
+  }
+
+  function renderMetricsCharts() {
+    const cont = $('run-metrics-container');
+    if (!state.runMetrics || !state.runMetrics.length) {
+      cont.innerHTML = '<div class="loading">no round events yet</div>';
+      return;
+    }
+    cont.innerHTML = '';
+    const boxes = buildMetricsCharts(state.runMetrics, null);
+    if (!boxes.length) {
+      cont.innerHTML = '<div class="loading">no metrics</div>';
+      return;
+    }
+    boxes.forEach((b, i) => {
+      const el = chartBox(b, `rm${i}`, state.selectedRoundIdx);
+      cont.appendChild(el);
+      wireChartClick(el, b, `rm${i}`);
+    });
+    const row = state.runMetrics[state.selectedRoundIdx];
+    $('upd-cursor-label').textContent = row
+      ? `round ${row.round} · env_step ${row.env_step}` : '';
+  }
+
+  function renderRoundDetail() {
+    const el = $('upd-detail-body');
+    const row = state.runMetrics && state.runMetrics[state.selectedRoundIdx];
+    if (!row) {
+      el.innerHTML = '<div class="loading">select a round on the charts below</div>';
+      return;
+    }
+    let html = '<table>';
+    const kv = (k, v) => {
+      html += `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`;
+    };
+    kv('round', row.round);
+    kv('env_step', row.env_step);
+    kv('critic_tick', row.critic_tick);
+    const schedKeys = ['behavior.explore_factor', 'behavior.random_start',
+                       'tck.target.tau', 'tck.temperature.alpha'];
+    schedKeys.forEach(k => {
+      if (row[k] != null) kv(k.replace('tck.', ''), fmt(row[k], 4));
+    });
+    const patches = row.param_patches || {};
+    const pk = Object.keys(patches);
+    if (pk.length) {
+      pk.forEach(k => kv(`patch: ${k}`, JSON.stringify(patches[k])));
+    }
+    const ctx = row._ctx || {};
+    ['utd_credit', 'dropped_updates', 'tick_ring_size'].forEach(k => {
+      if (ctx[k] != null) kv(k, typeof ctx[k] === 'object'
+        ? JSON.stringify(ctx[k]) : ctx[k]);
+    });
+    if (ctx.replay_stats) {
+      const rs = ctx.replay_stats;
+      ['size', 'capacity', 'n_slices', 'reuse_mean'].forEach(k => {
+        if (rs[k] != null) kv(`replay.${k}`, fmt(rs[k], 3));
+      });
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  // --- Run home page ---
+  function renderRunInfoPanel() {
+    const el = $('run-info-panel');
+    const info = state.runInfo;
+    if (!info) { el.innerHTML = '<div class="loading">loading...</div>'; return; }
+    let html = '<table>';
+    const kv = (k, v) => {
+      if (v == null || v === '') return;
+      html += `<tr><td style="color:var(--muted)">${escapeHtml(k)}</td>` +
+        `<td>${escapeHtml(String(v))}</td></tr>`;
+    };
+    kv('run', info.run_name);
+    kv('experiment', info.experiment_name);
+    kv('algo', info.algorithm);
+    const st = info.status || 'unknown';
+    kv('status', st + (info.error ? ` (${info.error})` : ''));
+    kv('created', info.created ? fmtDate(info.created) : null);
+    kv('dumps', info.n_dumps);
+    kv('dump pending', info.dump_pending ? 'yes' : null);
+    const term = info.terminal || {};
+    kv('terminal', term.status ? `${term.status} ${term.reason || ''}` : null);
+    const snap = info.code_snapshot || {};
+    kv('snapshot', snap.branch ? `${snap.branch} @ ${String(snap.commit || '').slice(0, 8)}` : null);
+    html += '</table>';
+    const cfg = info.config || {};
+    const exp = cfg.experiment || {};
+    const params = {...(exp.common_params || {}), ...(exp.knobs || {})};
+    const keys = Object.keys(params).sort();
+    if (keys.length) {
+      html += '<details style="margin-top:8px"><summary class="muted" ' +
+        `style="cursor:pointer">${keys.length} config params</summary><table>`;
+      keys.forEach(k => {
+        html += `<tr><td style="color:var(--muted)">${escapeHtml(k)}</td>` +
+          `<td>${escapeHtml(JSON.stringify(params[k]))}</td></tr>`;
+      });
+      html += '</table></details>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderRunDumps() {
+    const el = $('run-dumps-body');
+    const dumps = state.runDumps || [];
+    $('run-dumps-count').textContent = `(${dumps.length})`;
+    if (!dumps.length) {
+      el.innerHTML = '<div class="muted">no dumps yet — use "Request dump" ' +
+        'to capture at the next critic-tick boundary</div>';
+      return;
+    }
+    let html = '<table class="dump-table"><thead><tr>' +
+      '<th>name</th><th>tick</th><th>round</th><th>level</th><th>captured</th>' +
+      '</tr></thead><tbody>';
+    dumps.forEach(d => {
+      html += `<tr data-name="${escapeHtml(d.name)}">` +
+        `<td class="run-name">${escapeHtml(d.name)}</td>` +
+        `<td>${d.critic_tick ?? '-'}</td>` +
+        `<td>${d.collection_round ?? '-'}</td>` +
+        `<td>${escapeHtml(d.evidence_level || '-')}</td>` +
+        `<td>${d.mtime ? fmtDate(d.mtime) : '-'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.querySelectorAll('tr[data-name]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        selectDump(tr.dataset.name);
+      });
+    });
+  }
+
+  function renderRunVideosCard() {
+    const el = $('run-videos-body');
+    const vids = state.videosList || [];
+    $('run-videos-count').textContent = `(${vids.length})`;
+    if (!vids.length) {
+      el.innerHTML = '<div class="muted">no eval videos yet</div>';
+      return;
+    }
+    let html = '<table class="dump-table"><thead><tr>' +
+      '<th>env_step</th><th>name</th><th>size</th><th>mtime</th>' +
+      '</tr></thead><tbody>';
+    vids.slice(0, 12).forEach(v => {
+      html += `<tr data-name="${escapeHtml(v.name)}">` +
+        `<td>${v.env_step ?? '-'}</td>` +
+        `<td class="run-name">${escapeHtml(v.name)}</td>` +
+        `<td>${v.size ? (v.size / 1e6).toFixed(1) + ' MB' : '-'}</td>` +
+        `<td>${v.mtime ? fmtDate(v.mtime) : '-'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    if (vids.length > 12) {
+      html += `<div class="muted" style="margin-top:6px">… and ${vids.length - 12} more — see Videos page</div>`;
+    }
+    el.innerHTML = html;
+    el.querySelectorAll('tr[data-name]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        navigate('videos');
+      });
+    });
+  }
+
+  const LOG_CHUNK = 300;
+  let logCursor = null;   // byte offset for paging backwards
+
+  async function renderRunLog(initial) {
+    const el = $('run-log-body');
+    try {
+      const q = `lines=${LOG_CHUNK}` +
+        (logCursor != null ? `&before=${logCursor}` : '');
+      const d = await fetchJson(api(`run/log?${q}`));
+      if (initial) {
+        el.textContent = d.lines.join('\n') || '(empty log)';
+      } else {
+        el.textContent = d.lines.join('\n') + '\n' + el.textContent;
+      }
+      logCursor = d.start;
+      $('run-log-info').textContent =
+        `bytes ${d.start}–${d.end} / ${d.total_bytes}`;
+      $('run-log-more-btn').disabled = !d.has_more;
+      if (initial) el.scrollTop = el.scrollHeight;
+    } catch (e) {
+      if (initial) el.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function renderRunHome() {
+    if (state.mode !== 'run') return;
+    renderRunInfoPanel();
+    try {
+      state.runDumps = await fetchJson(api('run/dumps'));
+      state.videosList = await fetchJson(api('run/videos'));
+      state.runMetrics = await fetchJson(api('run/metrics'));
+    } catch (e) {
+      $('run-metrics-container').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    renderRunDumps();
+    renderRunVideosCard();
+    if (state.selectedRoundIdx == null && state.runMetrics.length) {
+      state.selectedRoundIdx = state.runMetrics.length - 1;
+    }
+    const sl = $('upd-slider');
+    sl.max = Math.max(0, state.runMetrics.length - 1);
+    sl.value = state.selectedRoundIdx ?? 0;
+    renderMetricsCharts();
+    renderRoundDetail();
+    updateContextBar();
+    logCursor = null;
+    renderRunLog(true);
+  }
+
+  function selectRoundIdx(i) {
+    if (!state.runMetrics || !state.runMetrics.length) return;
+    state.selectedRoundIdx = Math.max(0, Math.min(state.runMetrics.length - 1, i));
+    $('upd-slider').value = state.selectedRoundIdx;
+    renderRoundDetail();
+    renderMetricsCharts();
+    updateContextBar();
+  }
+
+  $('upd-slider').addEventListener('input', e =>
+    selectRoundIdx(parseInt(e.target.value)));
+  $('upd-btn-prev').addEventListener('click', () =>
+    selectRoundIdx((state.selectedRoundIdx ?? 0) - 1));
+  $('upd-btn-next').addEventListener('click', () =>
+    selectRoundIdx((state.selectedRoundIdx ?? 0) + 1));
+  $('run-log-more-btn').addEventListener('click', () => renderRunLog(false));
+
+  $('dump-request-btn').addEventListener('click', async () => {
+    const st = $('dump-request-status');
+    try {
+      const hyp = $('dump-hypothesis').value || '';
+      const r = await fetch(
+        `${state.rootMode === 'runs' ? `/run/${encodeURIComponent(state.runName)}` : ''}` +
+        `/api/run/dump-request`,
+        {method: 'POST',
+         headers: {'Content-Type': 'application/json'},
+         body: JSON.stringify({hypothesis: hyp})});
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'request failed');
+      st.textContent = 'queued — capture at next critic-tick boundary';
+      st.style.color = 'var(--green)';
+    } catch (e) {
+      st.textContent = e.message;
+      st.style.color = 'var(--red)';
+    }
+  });
+
+  // --- Videos page ---
+  async function renderVideos() {
+    if (state.mode !== 'run') return;
+    const cont = $('videos-list-container');
+    try {
+      state.videosList = await fetchJson(api('run/videos'));
+    } catch (e) {
+      cont.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const vids = state.videosList;
+    if (!vids.length) {
+      cont.innerHTML = '<div class="loading">no eval videos in this run</div>';
+      $('videos-title').textContent = '-';
+      $('vid-player').removeAttribute('src');
+      $('vid-meta').innerHTML = '';
+      $('vid-pos').textContent = '';
+      return;
+    }
+    if (state.selectedVideoIdx === null ||
+        state.selectedVideoIdx >= vids.length) {
+      state.selectedVideoIdx = 0;
+    }
+    let html = '<table class="dump-table"><thead><tr>' +
+      '<th>env_step</th><th>name</th><th>size</th></tr></thead><tbody>';
+    vids.forEach((v, i) => {
+      html += `<tr data-i="${i}"><td>${v.env_step ?? '-'}</td>` +
+        `<td>${escapeHtml(v.name)}</td>` +
+        `<td>${v.size ? (v.size / 1e6).toFixed(1) + ' MB' : '-'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    cont.innerHTML = html;
+    cont.querySelectorAll('tr[data-i]').forEach(tr => {
+      tr.addEventListener('click', () => selectVideo(parseInt(tr.dataset.i)));
+    });
+    renderVideoPlayer();
+  }
+
+  function selectVideo(i) {
+    const vids = state.videosList || [];
+    if (!vids.length) return;
+    state.selectedVideoIdx = Math.max(0, Math.min(vids.length - 1, i));
+    renderVideoPlayer();
+  }
+
+  function renderVideoPlayer() {
+    const vids = state.videosList || [];
+    const v = vids[state.selectedVideoIdx];
+    if (!v) return;
+    $('videos-list-container').querySelectorAll('tr[data-i]').forEach(tr =>
+      tr.classList.toggle(
+        'dump-active', parseInt(tr.dataset.i) === state.selectedVideoIdx));
+    $('videos-title').textContent = `env_step ${v.env_step ?? '?'}`;
+    $('vid-pos').textContent = `${state.selectedVideoIdx + 1} / ${vids.length}`;
+    $('vid-prev').disabled = state.selectedVideoIdx <= 0;
+    $('vid-next').disabled = state.selectedVideoIdx >= vids.length - 1;
+    $('vid-player').src = videoUrl(v.name);
+    const rows = [
+      ['file', v.name],
+      ['env_step', v.env_step],
+      ['size', v.size ? (v.size / 1e6).toFixed(1) + ' MB' : null],
+      ['mtime', v.mtime ? fmtDate(v.mtime) : null],
+    ];
+    $('vid-meta').innerHTML = '<table>' + rows.map(([k, val]) =>
+      `<tr><td style="color:var(--muted)">${k}</td>` +
+      `<td>${val ?? '-'}</td></tr>`).join('') + '</table>';
+  }
+
+  $('vid-prev').addEventListener('click', () =>
+    selectVideo((state.selectedVideoIdx ?? 0) - 1));
+  $('vid-next').addEventListener('click', () =>
+    selectVideo((state.selectedVideoIdx ?? 0) + 1));
+
+  // --- Runs index page ---
+  function fmtDate(ts) {
+    const d = new Date(ts * 1000);
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+      `${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function fmtAgo(ts) {
+    const s = Math.max(0, Date.now() / 1000 - ts);
+    if (s < 90) return `${Math.round(s)}s ago`;
+    if (s < 3600) return `${Math.round(s / 60)}m ago`;
+    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  }
+
+  async function renderRunsIndex() {
+    if (state.rootMode !== 'runs' || state.currentPage !== 'runs') return;
+    const q = state.runsQ;
+    const url = `/api/runs?q=${encodeURIComponent(q.q)}&page=${q.page}` +
+      `&size=${q.size}&sort=${q.sort}&order=${q.order}`;
+    let data;
+    try {
+      data = await fetchJson(url);
+    } catch (e) {
+      $('runs-table-container').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    $('runs-count').textContent = `${data.total} run${data.total === 1 ? '' : 's'}`;
+    const cols = [
+      ['status', 'status'], ['name', 'name'], ['experiment', 'experiment'],
+      ['env_step', 'env_step'], ['success', 'eval'], [null, 'dumps'],
+      [null, 'videos'], ['created', 'created'], ['activity', 'activity'],
+    ];
+    let html = '<table class="runs-table"><thead><tr><th></th>';
+    cols.forEach(([key, label]) => {
+      const arrow = (key && q.sort === key)
+        ? (q.order === 'asc' ? '▲' : '▼') : '';
+      html += `<th data-sort="${key || ''}">${label}` +
+        `<span class="sort-arrow">${arrow}</span></th>`;
+    });
+    html += '</tr></thead><tbody>';
+    if (!data.runs.length) {
+      html += '<tr><td colspan="10" style="color:var(--muted);' +
+        'padding:24px;text-align:center">no runs found</td></tr>';
+    }
+    data.runs.forEach(r => {
+      const prog = (r.env_step != null && r.max_env_steps)
+        ? `${r.env_step}/${r.max_env_steps}` : (r.env_step != null ? `${r.env_step}` : '-');
+      const pct = (r.env_step != null && r.max_env_steps)
+        ? Math.min(100, 100 * r.env_step / r.max_env_steps) : 0;
+      const evalV = r.eval_success != null ? r.eval_success : r.eval_survival_rate;
+      html += `<tr class="run-row" data-name="${escapeHtml(r.name)}">`;
+      html += `<td><input type="checkbox" class="cmp-check" ` +
+        `data-name="${escapeHtml(r.name)}"` +
+        `${state.cmpSel.has(r.name) ? ' checked' : ''}></td>`;
+      html += `<td><span class="st-badge st-${r.status}"` +
+        (r.error ? ` title="${escapeHtml(r.error)}">${escapeHtml(r.status)} ⚠` : `>${r.status}`) +
+        `</span></td>`;
+      html += `<td class="run-name">${escapeHtml(r.name)}</td>`;
+      html += `<td>${escapeHtml((r.experiment || '?') + (r.algo ? ' · ' + r.algo : ''))}</td>`;
+      html += `<td><div class="prog-cell"><div class="prog-bar">` +
+        `<i style="width:${pct}%"></i></div>${prog}</div></td>`;
+      html += `<td>${evalV != null ? fmt(evalV, 2) : '-'}</td>`;
+      html += `<td>${r.n_dumps}</td>`;
+      html += `<td>${r.n_videos
+        ? `<a class="vid-link" data-name="${escapeHtml(r.name)}">▶ ${r.n_videos}</a>`
+        : '-'}</td>`;
+      html += `<td>${r.created ? fmtDate(r.created) : '-'}</td>`;
+      html += `<td>${r.activity ? fmtAgo(r.activity) : '-'}</td>`;
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    $('runs-table-container').innerHTML = html;
+    $('runs-table-container').querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.dataset.sort;
+        if (!k) return;
+        if (q.sort === k) q.order = (q.order === 'asc' ? 'desc' : 'asc');
+        else { q.sort = k; q.order = 'desc'; }
+        renderRunsIndex();
+      });
+    });
+    $('runs-table-container').querySelectorAll('tr.run-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+    $('runs-table-container').querySelectorAll('.cmp-check').forEach(cb => {
+      cb.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', () => {
+        if (cb.checked) state.cmpSel.add(cb.dataset.name);
+        else state.cmpSel.delete(cb.dataset.name);
+        updateCmpBtn();
+      });
+    });
+    $('runs-table-container').querySelectorAll('.vid-link').forEach(a => {
+      a.addEventListener('click', e => {
+        e.stopPropagation();
+        const p = `/run/${encodeURIComponent(a.dataset.name)}/videos`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+    const nPages = Math.max(1, Math.ceil(data.total / q.size));
+    if (q.page > nPages) q.page = nPages;
+    const pager = $('runs-pager');
+    pager.innerHTML = '';
+    const mk = (label, dis, fn) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.disabled = dis;
+      b.addEventListener('click', fn);
+      pager.appendChild(b);
+    };
+    mk('◀ prev', q.page <= 1, () => { q.page--; renderRunsIndex(); });
+    const info = document.createElement('span');
+    info.textContent = `page ${q.page} / ${nPages}`;
+    pager.appendChild(info);
+    mk('next ▶', q.page >= nPages, () => { q.page++; renderRunsIndex(); });
+  }
+
+  let _runsSearchTimer = null;
+  $('runs-search').addEventListener('input', e => {
+    clearTimeout(_runsSearchTimer);
+    _runsSearchTimer = setTimeout(() => {
+      state.runsQ.q = e.target.value;
+      state.runsQ.page = 1;
+      renderRunsIndex();
+    }, 250);
+  });
+  $('runs-size').addEventListener('change', e => {
+    state.runsQ.size = parseInt(e.target.value);
+    state.runsQ.page = 1;
+    renderRunsIndex();
+  });
+  $('runs-refresh').addEventListener('click', () => renderRunsIndex());
+
+  function updateCmpBtn() {
+    const b = $('runs-cmp-btn');
+    const n = state.cmpSel.size;
+    b.textContent = n ? `Compare (${n})` : 'Compare';
+    b.disabled = n === 0;
+  }
+  $('runs-cmp-btn').addEventListener('click', () => {
+    if (!state.cmpSel.size) return;
+    state.cmpRuns = [...state.cmpSel];
+    state.cmpCursor = null;
+    navigate('compare');
+  });
+  $('run-cmp-link').addEventListener('click', () => {
+    if (!state.runName) return;
+    state.cmpRuns = [state.runName];
+    state.cmpCursor = null;
+    navigate('compare');
+  });
+
+  // --- Experiments pages ---
+  async function renderExperiments() {
+    if (state.rootMode !== 'runs' || state.currentPage !== 'experiments') return;
+    let data;
+    try {
+      data = await fetchJson('/api/experiments');
+    } catch (e) {
+      $('exps-table-container').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    $('exps-count').textContent = `${data.length} experiments`;
+    let html = '<table class="runs-table"><thead><tr>' +
+      '<th>experiment</th><th>class</th><th>runs</th><th>running</th>' +
+      '<th>best eval</th><th>attrs</th><th>doc</th>' +
+      '</tr></thead><tbody>';
+    data.forEach(e => {
+      html += `<tr class="run-row exp-row" data-name="${escapeHtml(e.name)}">` +
+        `<td class="run-name">${escapeHtml(e.name)}</td>` +
+        `<td>${escapeHtml(e.class || '-')}</td>` +
+        `<td>${e.n_runs}</td>` +
+        `<td>${e.n_running ? `<span class="badge green">${e.n_running}</span>` : '-'}</td>` +
+        `<td>${e.best_eval != null ? fmt(e.best_eval, 3) : '-'}</td>` +
+        `<td>${Object.keys(e.tunables || {}).length}</td>` +
+        `<td style="white-space:normal;color:var(--muted)">${escapeHtml((e.docstring || '').split('\n')[0])}</td>` +
+        `</tr>`;
+    });
+    html += '</tbody></table>';
+    $('exps-table-container').innerHTML = html;
+    $('exps-table-container').querySelectorAll('tr.exp-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        state.expName = tr.dataset.name;
+        navigate('experiment');
+      });
+    });
+  }
+  $('exps-refresh').addEventListener('click', () => renderExperiments());
+  document.querySelectorAll('.index-nav a').forEach(a => {
+    a.addEventListener('click', () => navigate(a.dataset.nav));
+  });
+
+  async function renderExperiment() {
+    if (state.currentPage !== 'experiment' || !state.expName) return;
+    let d;
+    try {
+      d = await fetchJson(`/api/experiment/${encodeURIComponent(state.expName)}`);
+    } catch (e) {
+      $('exp-title').textContent = state.expName;
+      $('exp-sub').innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    state.expDetail = d;
+    $('exp-title').textContent = d.name;
+    $('exp-sub').textContent = `sac · ${d.class} · ${d.file}`;
+    $('exp-doc').textContent = d.docstring || '';
+    $('exp-doc-wrap').style.display = d.docstring ? '' : 'none';
+    _renderExpParams(d);
+    _renderExpRuns(d);
+    _renderLaunch(d);
+  }
+
+  function _renderExpParams(d) {
+    const el = $('exp-params');
+    let html = '';
+    const tun = d.tunables || {};
+    const keys = Object.keys(tun);
+    if (keys.length) {
+      html += '<div class="muted" style="margin-bottom:6px">' +
+        '可通过 --set KEY=VALUE 覆盖的类属性（默认值来自类定义）：</div>' +
+        '<table class="runs-table"><thead><tr><th>key</th><th>type</th>' +
+        '<th>default</th></tr></thead><tbody>';
+      keys.forEach(k => {
+        const v = tun[k];
+        html += `<tr><td class="run-name">${escapeHtml(k)}</td>` +
+          `<td>${escapeHtml(v === null ? 'None' : typeof v)}</td>` +
+          `<td>${escapeHtml(JSON.stringify(v))}</td></tr>`;
+      });
+      html += '</tbody></table>';
+    }
+    el.innerHTML = html || '<div class="muted">no parameter info</div>';
+  }
+
+  function _renderExpRuns(d) {
+    const el = $('exp-runs');
+    const runs = d.runs || [];
+    $('exp-runs-count').textContent = `(${runs.length})`;
+    // diff columns: params that vary across runs
+    const allKeys = new Set();
+    runs.forEach(r => Object.keys(r.params || {}).forEach(k => allKeys.add(k)));
+    const diffKeys = [...allKeys].filter(k => {
+      const vals = new Set(runs.map(r => JSON.stringify((r.params || {})[k] ?? null)));
+      return vals.size > 1;
+    }).sort();
+    let html = '<table class="runs-table"><thead><tr>' +
+      '<th>status</th><th>run</th><th>env_step</th><th>eval</th>';
+    diffKeys.forEach(k => { html += `<th>${escapeHtml(k)}</th>`; });
+    html += '<th>created</th><th>activity</th></tr></thead><tbody>';
+    if (!runs.length) {
+      html += `<tr><td colspan="${5 + diffKeys.length}" class="muted" ` +
+        'style="padding:20px;text-align:center">no runs yet</td></tr>';
+    }
+    runs.forEach(r => {
+      const prog = (r.env_step != null && r.max_env_steps)
+        ? `${r.env_step}/${r.max_env_steps}`
+        : (r.env_step != null ? `${r.env_step}` : '-');
+      const evalV = r.eval_success != null ? r.eval_success : r.eval_survival_rate;
+      html += `<tr class="run-row exp-run-row" data-name="${escapeHtml(r.name)}">` +
+        `<td><span class="st-badge st-${r.status}"` +
+        (r.error ? ` title="${escapeHtml(r.error)}">${escapeHtml(r.status)} ⚠` : `>${r.status}`) +
+        `</span></td>` +
+        `<td class="run-name">${escapeHtml(r.name)}</td>` +
+        `<td>${prog}</td>` +
+        `<td>${evalV != null ? fmt(evalV, 2) : '-'}</td>`;
+      diffKeys.forEach(k => {
+        const v = (r.params || {})[k];
+        html += `<td>${v == null ? '-'
+          : escapeHtml(typeof v === 'number' ? fmt(v, 4) : String(v))}</td>`;
+      });
+      html += `<td>${r.created ? fmtDate(r.created) : '-'}</td>` +
+        `<td>${r.activity ? fmtAgo(r.activity) : '-'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.querySelectorAll('tr.exp-run-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const p = `/run/${encodeURIComponent(tr.dataset.name)}/`;
+        history.pushState({}, '', p);
+        applyRoute(p);
+      });
+    });
+  }
+
+  function _renderLaunch(d) {
+    const el = $('exp-launch');
+    const ts = new Date();
+    const p2 = n => String(n).padStart(2, '0');
+    const stamp = `${ts.getFullYear()}${p2(ts.getMonth() + 1)}${p2(ts.getDate())}` +
+      `_${p2(ts.getHours())}${p2(ts.getMinutes())}${p2(ts.getSeconds())}`;
+    let html = '<div class="launch-grid">';
+    html += `<label>run-name</label><input type="text" id="lz-name" ` +
+      `value="train_${d.name}_sac_${stamp}">`;
+    html += '<label>resume-from</label><select id="lz-resume">' +
+      '<option value="">(from scratch)</option>';
+    (d.checkpoints || []).forEach(c => {
+      html += `<option value="${escapeHtml(c.path)}">` +
+        `${escapeHtml(c.run)} · ${escapeHtml(c.name)}</option>`;
+    });
+    html += '</select>';
+    html += '<label>CUDA_VISIBLE_DEVICES</label>' +
+      '<input type="text" id="lz-cuda" placeholder="(all GPUs)">';
+    html += '<label>flags</label><span>' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-bg" checked> --background</label> ' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-nosnap"> --no-snapshot</label> ' +
+      '<label style="color:var(--text)"><input type="checkbox" id="lz-smoke"> --smoke</label></span>';
+    const tun = d.tunables || {};
+    const tkeys = Object.keys(tun);
+    if (tkeys.length) {
+      html += '<div class="tunables-title">--set overrides（与默认值不同才生成）</div>';
+      tkeys.forEach(k => {
+        const dv = String(tun[k]);
+        html += `<label>${escapeHtml(k)}</label>` +
+          `<input type="text" class="lz-set" data-key="${escapeHtml(k)}" ` +
+          `data-default="${escapeHtml(dv)}" value="${escapeHtml(dv)}">`;
+      });
+    }
+    html += '<label>--param</label>' +
+      '<input type="text" id="lz-param" placeholder="KEY=VALUE@ROUND (space-separated, optional)">';
+    html += '</div>';
+    el.innerHTML = html;
+    el.querySelectorAll('input,select').forEach(i =>
+      i.addEventListener('input', () => _updateCmd(d)));
+    _updateCmd(d);
+    $('exp-copy').onclick = () => {
+      navigator.clipboard.writeText($('exp-cmd').textContent).then(() => {
+        $('exp-copy').textContent = 'Copied ✓';
+        setTimeout(() => { $('exp-copy').textContent = 'Copy'; }, 1200);
+      });
+    };
+  }
+
+  function _updateCmd(d) {
+    const g = id => (document.getElementById(id) || {}).value || '';
+    const chk = id => !!(document.getElementById(id) || {}).checked;
+    const parts = ['PYTHONPATH=.'];
+    if (g('lz-cuda').trim()) parts.push(`CUDA_VISIBLE_DEVICES=${g('lz-cuda').trim()}`);
+    parts.push('python3 -B baseline/framework/train.py');
+    parts.push(`--experiment ${d.name}`);
+    parts.push('--algo sac');
+    if (g('lz-name').trim()) parts.push(`--run-name ${g('lz-name').trim()}`);
+    if (g('lz-resume')) parts.push(`--resume-from ${g('lz-resume')}`);
+    if (chk('lz-bg')) parts.push('--background');
+    if (chk('lz-nosnap')) parts.push('--no-snapshot');
+    if (chk('lz-smoke')) parts.push('--smoke');
+    document.querySelectorAll('.lz-set').forEach(inp => {
+      const v = inp.value.trim();
+      if (v && v !== inp.dataset.default) {
+        parts.push(`--set ${inp.dataset.key}=${v}`);
+      }
+    });
+    g('lz-param').trim().split(/\s+/).filter(Boolean).forEach(p => {
+      parts.push(`--param ${p}`);
+    });
+    $('exp-cmd').textContent = `cd ${d.cwd || '/data1/mono/things/combatbench'} && ` + parts.join(' ');
+  }
+
+  // Auto-refresh the runs index while visible.
+  setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (state.currentPage === 'runs') renderRunsIndex();
+    else if (state.currentPage === 'experiments') renderExperiments();
+  }, 10000);
+
+  // --- Dump home (SAC computation-chain module cards) ---
+  // Eight modules along the SAC update path — the SAC analog of PPO's
+  // stage cards.  W2 adds a dedicated pipeline endpoint with per-module
+  // stats; for now cards render headline numbers from existing endpoints.
+  const DUMP_STAGES = [
+    {id: 'collection', num: '⓪', title: 'Round & Collection',
+     desc: '本轮采集了什么：episodes → slices → replay 注入。',
+     tool: 'inspect'},
+    {id: 'batch', num: '①', title: 'Replay → Batch',
+     desc: '本 batch 的样本构成：provenance（collection_round / slice）、权重。',
+     tool: 'attribute'},
+    {id: 'target', num: '②', title: 'Reward → Target',
+     desc: 'r·scale + γ(1−d)·Q̄′ − α·logp′ − reg —— 逐通道目标分解。',
+     tool: 'decomp'},
+    {id: 'critic', num: '③', title: 'TD → Critic',
+     desc: 'td = Q − target 的分布与尾部；per-channel 双 critic 损失与梯度。',
+     tool: 'recompute'},
+    {id: 'actor', num: '④', title: 'Actor Objective',
+     desc: 'J = Σw·Q + entropy + reg —— 三分解与 pair 选择。',
+     tool: 'decomp'},
+    {id: 'regularizer', num: '⑤', title: 'Temperature & Regularizer',
+     desc: 'shannon α 自适应；U 模式 U(s) 分布 vs floor。',
+     tool: 'decomp'},
+    {id: 'tickline', num: '⑥', title: 'Update Process',
+     desc: '本 dump 在 round 内 tick 时间线上的位置（W4）。',
+     tool: 'inspect'},
+    {id: 'postupdate', num: '⑦', title: 'Post Update',
+     desc: '参数增量：trainer_pre/post 的 per-layer Δ（W4）。',
+     tool: 'recompute'},
+    {id: 'drift', num: '⑧', title: 'Drift & Context',
+     desc: '固定输入上前后策略漂移 + slice-ctx 回看（W4）。',
+     tool: 'drift'},
+  ];
+
+  async function loadDump(name) {
+    if (state.dumpName === name && state.manifest) return;
+    state.dumpName = name;
+    state.manifest = await fetchJson(api('dump/manifest'));
+    state.dumpInspect = null;
+    state.selectedSampleId = null;
+  }
+
+  async function selectDump(name) {
+    try {
+      await loadDump(name);
+    } catch (e) {
+      $('run-dumps-body').innerHTML =
+        `<div class="error-msg">Failed to load dump ${escapeHtml(name)}: ${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    setDumpHeader();
+    navigate('home');
+  }
+
+  function setDumpHeader() {
+    const m = state.manifest || {};
+    $('header-meta').textContent =
+      `${state.runName || ''} · dump @critic_tick ${m.critic_tick ?? '?'} · ` +
+      `round ${m.collection_round ?? '?'} · ${m.kind || ''}`;
+  }
+
+  async function renderDumpHome() {
+    const m = state.manifest || {};
+    $('dump-overview-scope').textContent =
+      `${state.dumpName || '(dump root)'} · schema ${m.schema_version || '?'}`;
+    const kv = (k, v) =>
+      `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
+    $('dump-overview').innerHTML = [
+      kv('critic_tick', m.critic_tick),
+      kv('kind', m.kind),
+      kv('evidence', m.evidence_level),
+      kv('files', Object.keys(m.files || {}).length),
+    ].join('');
+    // Stage cards
+    const host = $('dump-stages');
+    host.innerHTML = '';
+    DUMP_STAGES.forEach(s => {
+      const card = document.createElement('div');
+      card.className = 'card stage-card';
+      card.innerHTML =
+        `<div class="stage-head"><span class="stage-num">${s.num}</span>` +
+        `<h2>${escapeHtml(s.title)}</h2>` +
+        `<a class="stage-open" data-tool="${s.tool}">open tool →</a></div>` +
+        `<div class="stage-stats" id="sum-${s.id}"><div class="loading">…</div></div>` +
+        `<div class="desc">${escapeHtml(s.desc)}</div>`;
+      host.appendChild(card);
+      card.querySelector('.stage-open').addEventListener('click', () => {
+        state.toolEp = s.tool;
+        navigate('tool');
+      });
+    });
+    // Fill headline stats from inspect + spec (two fetches for all cards).
+    try {
+      const [d, spec] = await Promise.all([
+        fetchJson(api('dump/inspect')),
+        fetchJson(api('dump/spec')).catch(() => null),
+      ]);
+      state.dumpInspect = d;
+      _fillStageStats(d, spec);
+    } catch (e) {
+      $('sum-collection').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _kvSpan(k, v) {
+    return `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
+  }
+
+  function _fillStageStats(d, spec) {
+    const set = (id, html) => {
+      const el = $(`sum-${id}`);
+      if (el) el.innerHTML = html;
+    };
+    const clocks = d.clocks || {};
+    const batch = d.batch || {};
+    const us = d.update_stats || {};
+    const rs = d.replay_stats || {};
+    const pc = d.per_channel || {};
+    const chans = Object.keys(pc);
+    const sacParams = ((spec || {}).sac_params) || {};
+    const specChans = ((spec || {}).channels) || [];
+
+    set('collection', [
+      _kvSpan('round', clocks.collection_round ?? '-'),
+      _kvSpan('env_step', clocks.env_step ?? '-'),
+      _kvSpan('replay', rs.size != null
+        ? `${rs.size}/${rs.capacity}` : '-'),
+    ].join(''));
+    const provRounds = Object.keys(batch.collection_round_counts || {});
+    set('batch', [
+      _kvSpan('batch n', batch.size ?? '-'),
+      _kvSpan('src rounds', provRounds.length || '-'),
+      _kvSpan('policies',
+        Object.keys(batch.policy_fingerprint_counts || {}).length || '-'),
+      _kvSpan('terminated', batch.terminated_rows ?? '-'),
+    ].join(''));
+    const tgtMeans = chans.map(c =>
+      `${c}: ${fmt((pc[c] || {}).targets_mean, 3)}`).join(' · ');
+    set('target', [
+      _kvSpan('channels', chans.join(',') || '-'),
+      _kvSpan('γ', specChans.length ? specChans[0].gamma : '-'),
+      _kvSpan('targets μ', tgtMeans || '-'),
+    ].join(''));
+    const tdMax = Math.max(...chans.map(c =>
+      Math.abs((pc[c] || {}).td_abs_max || 0)), 0);
+    set('critic', [
+      _kvSpan('td |max|', fmt(tdMax, 3)),
+      _kvSpan('critic_loss', us.critic_loss != null
+        ? fmt(us.critic_loss, 5) : '-'),
+      _kvSpan('q_mean', us.q1_mean_r_potential != null
+        ? fmt(us.q1_mean_r_potential, 3)
+        : fmt(us['q1_mean_' + chans[0]], 3)),
+    ].join(''));
+    set('actor', [
+      _kvSpan('actor_loss', us.actor_loss != null
+        ? fmt(us.actor_loss, 4) : '-'),
+      _kvSpan('entropy', us.entropy_proxy_mean != null
+        ? fmt(us.entropy_proxy_mean, 3) : '-'),
+      _kvSpan('valid', us.actor_valid_count ?? '-'),
+    ].join(''));
+    const mode = sacParams.regularizer_mode || 'shannon';
+    set('regularizer', [
+      _kvSpan('mode', mode),
+      _kvSpan('α', us.alpha != null ? fmt(us.alpha, 5) : '-'),
+      _kvSpan('α_loss', us.alpha_loss != null
+        ? fmt(us.alpha_loss, 4) : '-'),
+    ].join(''));
+    set('tickline', [
+      _kvSpan('critic_tick', d.critic_tick ?? '-'),
+      _kvSpan('target_tick', clocks.target_tick ?? '-'),
+      _kvSpan('temp_tick', clocks.temperature_tick ?? '-'),
+    ].join(''));
+    const pd = d.param_delta || {};
+    set('postupdate', [
+      _kvSpan('actor Δ·l2', pd.actor_state_dict
+        ? fmt(pd.actor_state_dict.l2, 5) : '-'),
+      _kvSpan('critic Δ·l2', pd.critic_state_dict
+        ? fmt(pd.critic_state_dict.l2, 5) : '-'),
+    ].join(''));
+    const cons = d.consistency || {};
+    set('drift', [
+      _kvSpan('consistency', cons.checked
+        ? `${cons.violations ? Object.keys(cons.violations).length : 0} violations`
+        : '—'),
+      _kvSpan('hypothesis', d.hypothesis || '—'),
+    ].join(''));
+  }
+
+  // --- Generic dump tool page (W1 stub) ---
+  const TOOL_PARAMS = {
+    samples: ['sort', 'channel', 'limit'],
+    trace: ['sample_id', 'source_key'],
+    decomp: ['sample_id'],
+    attribute: ['group_by'],
+    'grad-attr': ['group_by'],
+    'slice-ctx': ['source_key', 'slice_id', 'sample_id'],
+    recompute: [],
+    drift: [],
+    inspect: [],
+  };
+
+  async function renderTool() {
+    const ep = state.toolEp;
+    const params = TOOL_PARAMS[ep] || [];
+    $('tool-title').textContent = `dump/${ep}`;
+    $('tool-desc').textContent =
+      `analysis.${ep} — W1 通用视图（模块专属页面在 W3/W4）`;
+    const head = $('tool-head');
+    head.innerHTML = `<span class="t-title">${escapeHtml(state.dumpName)}</span>` +
+      params.map(p => {
+        const v = state.toolParams[p] ?? '';
+        if (p === 'sort') {
+          return `<span class="t-sel"><span class="t-info">sort</span>` +
+            `<select id="tp-sort"><option value="td_abs">td_abs</option>` +
+            `<option value="sample_id">sample_id</option></select></span>`;
+        }
+        if (p === 'group_by') {
+          return `<span class="t-sel"><span class="t-info">group</span>` +
+            `<select id="tp-group_by">` +
+            `<option value="collection_round">collection_round</option>` +
+            `<option value="slice_id">slice_id</option>` +
+            `<option value="channel">channel</option>` +
+            `</select></span>`;
+        }
+        const w = p === 'source_key' || p === 'slice_id' ? 140 : 70;
+        return `<span class="t-sel"><span class="t-info">${p}</span>` +
+          `<input type="text" id="tp-${p}" value="${escapeHtml(String(v))}" ` +
+          `style="width:${w}px"></span>`;
+      }).join('') +
+      `<button class="t-nav" id="tool-run">run</button>`;
+    if (params.includes('sort')) $('tp-sort').value = state.toolParams.sort;
+    if (params.includes('group_by'))
+      $('tp-group_by').value = state.toolParams.group_by;
+    params.forEach(p => {
+      const el = $(`tp-${p}`);
+      if (el) el.addEventListener('input', () => {
+        state.toolParams[p] = el.value;
+      });
+      const sel = $(`tp-${p}`) || $(p === 'sort' ? 'tp-sort' : 'tp-group_by');
+    });
+    $('tool-run').addEventListener('click', () => _runTool());
+    await _runTool();
+  }
+
+  async function _runTool() {
+    const ep = state.toolEp;
+    const body = $('tool-body');
+    body.innerHTML = '<div class="loading">loading...</div>';
+    const qs = [];
+    const p = state.toolParams;
+    if (p.sample_id !== '') qs.push(`sample_id=${encodeURIComponent(p.sample_id)}`);
+    if (p.source_key) qs.push(`source_key=${encodeURIComponent(p.source_key)}`);
+    if (p.slice_id) qs.push(`slice_id=${encodeURIComponent(p.slice_id)}`);
+    if ((TOOL_PARAMS[ep] || []).includes('group_by'))
+      qs.push(`group_by=${encodeURIComponent(p.group_by)}`);
+    if ((TOOL_PARAMS[ep] || []).includes('sort'))
+      qs.push(`sort=${encodeURIComponent(p.sort)}`);
+    if ((TOOL_PARAMS[ep] || []).includes('limit'))
+      qs.push(`limit=${encodeURIComponent(p.limit || 50)}`);
+    try {
+      // slice-ctx is a run-level endpoint (replay view); the rest are
+      // dump-scoped analysis endpoints.
+      const base = ep === 'slice-ctx' ? api(`run/${ep}`) : api(`dump/${ep}`);
+      const d = await fetchJson(base +
+        (qs.length ? `?${qs.join('&')}` : ''));
+      if (p.sample_id !== '' && !isNaN(parseInt(p.sample_id))) {
+        state.selectedSampleId = parseInt(p.sample_id);
+        updateContextBar();
+      }
+      body.innerHTML = `<pre class="json-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>`;
+    } catch (e) {
+      body.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // --- Compare page ---
+  function pushCompareUrl() {
+    const url = `/compare/${state.cmpRuns.map(encodeURIComponent).join(',')}`;
+    history.replaceState({}, '', url);
+  }
+
+  async function cmpRunObjs() {
+    const out = {};
+    await Promise.all(state.cmpRuns.map(async name => {
+      if (state.cmpData[name]) { out[name] = state.cmpData[name]; return; }
+      try {
+        const rows = await fetchJson(
+          `/run/${encodeURIComponent(name)}/api/run/metrics`);
+        const byRound = new Map();
+        rows.forEach(r => byRound.set(r.round, r));
+        out[name] = {entries: rows, byRound};
+      } catch (e) {
+        out[name] = {error: e.message};
+      }
+    }));
+    state.cmpData = {...state.cmpData, ...out};
+    return out;
+  }
+
+  const CMP_SUCC_KEYS = ['eval.success', 'eval.survival_rate'];
+
+  function _cmpSuccKey(entries) {
+    for (const k of CMP_SUCC_KEYS) {
+      if (entries.some(r => typeof r[k] === 'number')) return k;
+    }
+    return CMP_SUCC_KEYS[0];
+  }
+
+  function renderCmpChips(data) {
+    const el = $('cmp-chips');
+    let html = '';
+    state.cmpRuns.forEach((name, i) => {
+      const d = data[name] || {};
+      const err = d.error ? ' cmp-err' : '';
+      const last = (d.entries || [])[(d.entries || []).length - 1];
+      const prog = last ? `r${last.round}` : '';
+      html += `<span class="cmp-chip${err}">` +
+        `<i style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></i>` +
+        `<span>${escapeHtml(name)}</span>` +
+        `<span class="chip-prog">${prog}</span>` +
+        `<span class="x" data-name="${escapeHtml(name)}">✕</span></span>`;
+    });
+    html += '<input type="text" class="cmp-add" id="cmp-add-input" placeholder="+ add run">';
+    el.innerHTML = html;
+    el.querySelectorAll('.x').forEach(x => {
+      x.addEventListener('click', () => {
+        state.cmpRuns = state.cmpRuns.filter(n => n !== x.dataset.name);
+        pushCompareUrl();
+        renderCompare();
+      });
+    });
+    const inp = $('cmp-add-input');
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && inp.value.trim()) {
+        state.cmpRuns.push(inp.value.trim());
+        pushCompareUrl();
+        renderCompare();
+      }
+    });
+  }
+
+  function renderCmpSummary(data) {
+    const el = $('cmp-summary');
+    let html = '<table class="cmp-summary"><thead><tr>' +
+      '<th>run</th><th>progress</th><th>eval≥0.5</th><th>eval≥0.9</th>' +
+      '<th>last-10 eval</th><th>upd drop-rate</th><th>updates/round</th>' +
+      '<th>train time</th><th>total time</th></tr></thead><tbody>';
+    state.cmpRuns.forEach((name, i) => {
+      const d = data[name] || {};
+      const color = CHART_COLORS[i % CHART_COLORS.length];
+      if (d.error) {
+        html += `<tr><td><span class="rundot" style="background:${color}"></span>` +
+          `${escapeHtml(name)}</td><td colspan="8" class="muted">${escapeHtml(d.error)}</td></tr>`;
+        return;
+      }
+      const rows = d.entries || [];
+      const last = rows[rows.length - 1] || {};
+      const sk = _cmpSuccKey(rows);
+      const succRows = rows.filter(r => typeof r[sk] === 'number');
+      const firstAt = t => {
+        const hit = succRows.find(r => r[sk] >= t);
+        return hit ? `r${hit.round} (s${hit.env_step})` : '-';
+      };
+      const last10 = succRows.slice(-10);
+      const l10 = last10.length
+        ? last10.reduce((a, r) => a + r[sk], 0) / last10.length : null;
+      const dropped = rows.filter(r => (r['collection.updates_dropped'] || 0) > 0);
+      const dropRate = rows.length ? dropped.length / rows.length : 0;
+      const upds = rows.map(r => r['collection.updates_executed'])
+        .filter(v => typeof v === 'number');
+      const meanUpd = upds.length ? upds.reduce((a, b) => a + b, 0) / upds.length : null;
+      const trainS = rows.reduce((a, r) => a + (r['tck.timing.update_s'] || 0), 0);
+      const totS = rows.reduce((a, r) =>
+        a + (r['timing.collection_s'] || 0) + (r['timing.slice_s'] || 0) +
+        (r['tck.timing.update_s'] || 0) + (r['timing.eval_s'] || 0), 0);
+      html += `<tr><td><span class="rundot" style="background:${color}"></span>` +
+        `${escapeHtml(name)}</td>` +
+        `<td>r${last.round ?? '-'} · s${last.env_step ?? '-'}</td>` +
+        `<td>${firstAt(0.5)}</td><td>${firstAt(0.9)}</td>` +
+        `<td>${l10 != null ? fmt(l10, 3) : '-'}</td>` +
+        `<td>${fmt(dropRate * 100, 1)}%</td>` +
+        `<td>${meanUpd != null ? fmt(meanUpd, 0) : '-'}</td>` +
+        `<td>${fmt(trainS / 60, 1)} min</td>` +
+        `<td>${fmt(totS / 3600, 2)} h</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }
+
+  let cmpUnionRounds = [];
+  function cmpSeries(name, key) {
+    const d = state.cmpData[name] || {};
+    const byRound = d.byRound || new Map();
+    return cmpUnionRounds.map(r => {
+      const row = byRound.get(r);
+      const v = row ? row[key] : null;
+      return typeof v === 'number' ? v : NaN;
+    });
+  }
+
+  function renderCmpCharts() {
+    const cont = $('cmp-metrics-container');
+    const rowsMap = {};
+    state.cmpRuns.forEach(n => {
+      const d = state.cmpData[n] || {};
+      rowsMap[n] = d.entries || [];
+    });
+    const rounds = new Set();
+    state.cmpRuns.forEach(n => (rowsMap[n] || []).forEach(r => rounds.add(r.round)));
+    cmpUnionRounds = [...rounds].sort((a, b) => a - b);
+    const boxes = buildMetricsCharts(rowsMap, state.cmpRuns);
+    cont.innerHTML = '';
+    if (!boxes.length) {
+      cont.innerHTML = '<div class="loading">no metrics</div>';
+      return;
+    }
+    boxes.forEach((b, i) => {
+      const el = chartBox(b, `cmp${i}`, state.cmpCursor);
+      cont.appendChild(el);
+      wireChartClick(el, b, `cmp${i}`);
+    });
+  }
+
+  async function renderCompare() {
+    if (state.currentPage !== 'compare') return;
+    const data = await cmpRunObjs();
+    renderCmpChips(data);
+    renderCmpSummary(data);
+    renderCmpCharts();
+  }
+
+  // --- Init & routing ---
+  async function init() {
+    try {
+      const modeRes = await fetchJson('/api/mode');
+      state.rootMode = modeRes.root_mode || modeRes.mode;
+      state.mode = state.rootMode === 'dump' ? 'dump' : state.rootMode;
+      state.catalog = await fetchJson('/api/catalog').catch(() => null);
+      if (state.mode === 'run') {
+        state.runInfo = await fetchJson('/api/run/info');
+        state.runName = state.runInfo.run_name;
+        state.runDumps = await fetchJson(api('run/dumps'));
+        $('header-meta').textContent =
+          `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ` +
+          `${state.runInfo.n_dumps} dumps`;
+      } else if (state.mode === 'dump') {
+        await loadDump(null);
+        setDumpHeader();
+      } else {
+        $('header-meta').textContent = 'runs index';
+      }
+      await applyRoute(location.pathname);
+    } catch (e) {
+      $('content').innerHTML =
+        `<div class="error-msg">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  // Runs mode: /, /experiments, /experiment/<n>, /compare/<a,b>,
+  //            /run/<n>/, /run/<n>/videos, /run/<n>/dump/<d>/...
+  // Run mode:  /, /videos, /dump/<d>/, /dump/<d>/<tool>
+  // Dump mode: /, /<tool>
+  async function applyRoute(path) {
+    let sub = path;
+    if (state.rootMode === 'runs') {
+      const em = path.match(/^\/experiment\/([^/?]+)\/?$/);
+      if (path === '/experiments' || path === '/experiments/') {
+        state.runName = null; state.dumpName = null; state.expName = null;
+        state.mode = 'runs';
+        $('header-meta').textContent = 'experiments';
+        showPage('experiments');
+        renderExperiments();
+        return;
+      }
+      if (em) {
+        state.runName = null; state.dumpName = null;
+        state.mode = 'runs';
+        state.expName = decodeURIComponent(em[1]);
+        $('header-meta').textContent = `experiment · ${state.expName}`;
+        showPage('experiment');
+        renderExperiment();
+        return;
+      }
+      const cm = path.match(/^\/compare\/([^/?]+)\/?$/);
+      if (cm) {
+        state.runName = null; state.dumpName = null; state.expName = null;
+        state.mode = 'runs';
+        state.cmpRuns = cm[1].split(',').map(decodeURIComponent).filter(Boolean);
+        state.cmpCursor = null;
+        $('header-meta').textContent = `compare · ${state.cmpRuns.length} runs`;
+        showPage('compare');
+        renderCompare();
+        return;
+      }
+      const rm = path.match(/^\/run\/([^/?]+)(\/.*)?$/);
+      if (!rm) {
+        state.runName = null; state.dumpName = null; state.expName = null;
+        state.mode = 'runs';
+        $('header-meta').textContent = 'runs index';
+        showPage('runs');
+        renderRunsIndex();
+        return;
+      }
+      const name = decodeURIComponent(rm[1]);
+      if (state.runName !== name || state.mode !== 'run') {
+        state.runName = name;
+        state.mode = 'run';
+        state.dumpName = null;
+        state.manifest = null;
+        state.videosList = null;
+        state.selectedVideoIdx = null;
+        state.selectedRoundIdx = null;
+        try {
+          state.runInfo = await fetchJson(api('run/info'));
+          state.runDumps = await fetchJson(api('run/dumps'));
+        } catch (e) {
+          $('content').innerHTML =
+            `<div class="error-msg">Run not found: ${escapeHtml(name)} (${escapeHtml(e.message)})</div>`;
+          return;
+        }
+        $('header-meta').textContent =
+          `${state.runInfo.run_name} · ${state.runInfo.experiment_name || ''} · ` +
+          `${state.runInfo.n_dumps} dumps`;
+      }
+      sub = rm[2] || '/';
+    }
+    if (state.mode === 'run') {
+      const m = sub.match(/^\/dump\/([^/?]+)(\/.*)?$/);
+      if (!m) {
+        if (sub.startsWith('/videos')) {
+          showPage('videos');
+          renderVideos();
+        } else {
+          showPage('run');
+          renderRunHome();
+        }
+        return;
+      }
+      try {
+        await loadDump(decodeURIComponent(m[1]));
+      } catch (e) {
+        $('content').innerHTML =
+          `<div class="error-msg">Dump not found: ${escapeHtml(m[1])}</div>`;
+        return;
+      }
+      setDumpHeader();
+      sub = m[2] || '/';
+    }
+    applySubRoute(sub);
+  }
+
+  function applySubRoute(sub) {
+    // dump-scoped tool routes: /<ep> where ep is a known endpoint
+    const mm = sub.match(/^\/([a-z-]+)\/?$/);
+    if (mm && TOOL_PARAMS.hasOwnProperty(mm[1])) {
+      state.toolEp = mm[1];
+      showPage('tool');
+      renderTool();
+      return;
+    }
+    showPage('home');
+    renderDumpHome();
+  }
+
+  window.addEventListener('popstate', () => {
+    applyRoute(location.pathname);
+  });
+
+  // image modal
+  $('img-modal-close').addEventListener('click', () =>
+    $('img-modal').classList.remove('visible'));
+  $('img-modal').addEventListener('click', e => {
+    if (e.target === $('img-modal')) $('img-modal').classList.remove('visible');
+  });
+
+  init();
+})();
 </script>
 </body>
 </html>
