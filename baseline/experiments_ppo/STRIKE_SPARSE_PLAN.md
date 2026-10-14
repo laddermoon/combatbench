@@ -96,3 +96,11 @@ attack_prep 的 4 个手臂塑形通道完全不存在（无对应 critic）。
 - eval `Q`（打击质量）与 `t2hit`（接近效率）
 - `r_strike` critic EV/conf（稀疏信号的可学习性）
 - 界内行为视频：接近后是否主动发起攻击而非贴住目标
+
+## 修订 v2（用户确认 2026-10-14）：去掉 RETRACT 阶段
+
+**动机**：u234 dump 分析显示 retract_timeout 的 66% 是"手收回但距离拉不开"；且成功局的分离主要靠靶子自己飘远（学习者径向位移反而是 −0.60m，在追）。r_retract 梯度范数（0.03）被 r_face（~19）淹没约 600 倍，EV-confidence 加权系统性偏袒稠密塑形通道。
+
+**新结算**：第一个 ≥250N 锁定手命中 → settle_steps（10，~0.5s）窗口内同一手的伤害累计 → 窗口结束即 `strike_done`。无 RETRACT、无收手尾款扣留。
+
+**新实验**：`strike_simple_step(_mbs)` — 9 通道（无 r_retract），r_strike 全量流式发放 step_damage。新 env：`strike_simple_step_env.yaml`（`end_after_settle: true`）。与 s42c 隔离文件，避免运行中进程读到新键崩溃。
