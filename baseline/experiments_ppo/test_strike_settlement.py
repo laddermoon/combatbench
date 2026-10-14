@@ -554,3 +554,23 @@ def test_sparse_zone_masking():
     np.testing.assert_allclose(
         t.channels["r_face"].actor_weight[10:], 1.0)
     np.testing.assert_allclose(t.channels["r_strike"].actor_weight, 1.0)
+
+
+def test_sparse_explore_factor_zones():
+    """Distance-gated ef: σ×0.5 fallen, σ×2.0 inside engagement,
+    σ×1.0 standing outside."""
+    from baseline.experiments_ppo.exp_strike_sparse_step import (
+        _sparse_explore_factor)
+    from baseline.experiments_ppo.exp_step import _EF_LOW, _EF_STAND
+
+    obs = np.zeros(96, dtype=np.float32)
+    obs[45] = 1.25                                   # standing
+    obs[57], obs[58] = 0.4, 0.3                      # dist 0.5 ≤ 0.9
+    assert _sparse_explore_factor(obs, 0) == _EF_STAND
+
+    obs[57], obs[58] = 1.5, 0.0                      # dist 1.5 > 0.9
+    assert _sparse_explore_factor(obs, 0) == 0.0
+
+    obs[57], obs[58] = 0.3, 0.0                      # close BUT fallen
+    obs[45] = 0.5
+    assert _sparse_explore_factor(obs, 0) == _EF_LOW

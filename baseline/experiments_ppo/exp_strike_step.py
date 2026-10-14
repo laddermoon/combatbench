@@ -272,9 +272,13 @@ class StrikeStep(AttackPrepStep):
     # Jobs — FollowStep's recipe (speed now sampled inside the plugin)
     # ------------------------------------------------------------------
 
+    def _sampling_spec(self):
+        from baseline.framework.rollout import SamplingSpec
+        return SamplingSpec(explore_factor=_balance_explore_factor)
+
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True):
-        from baseline.framework.rollout import Job, SamplingSpec
+        from baseline.framework.rollout import Job
         env_bps: Dict[str, Any] = {
             aid: self._env_pb().materialize(
                 max_steps=self.max_steps,
@@ -286,7 +290,7 @@ class StrikeStep(AttackPrepStep):
             for aid in self._AGENT_IDS
         }
         rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec(explore_factor=_balance_explore_factor)
+        sampling = self._sampling_spec()
         force = self.current_force
         dur_min, dur_max = self.current_duration_range
         jobs = []

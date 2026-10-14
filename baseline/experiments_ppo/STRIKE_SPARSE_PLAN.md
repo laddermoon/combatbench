@@ -53,10 +53,21 @@ attack_prep 的 4 个手臂塑形通道完全不存在（无对应 critic）。
 
 ## 探索参数
 
-| 参数 | 值 | 相对 s42e |
+| 参数 | 值 | 说明 |
 |---|---|---|
-| `episodes_per_update` | 1024 | ×2 |
-| `uncertainty_floor` | 0.6 | 0.4 → 0.6 |
+| `episodes_per_update` | 1024 | ×2 规模 |
+| rollout `explore_factor` | 函数化 | 见下 |
+
+### 函数化 explore_factor（σ 倍率 = 3^ef）
+
+| 状态 | ef | σ 倍率 | 意图 |
+|---|---|---|---|
+| 倒地（h<1.1m） | −0.631 | ×0.5 | 保护起身技能 |
+| 站立且 dist ≤ D_ENGAGE | +0.631 | ×2.0 | 在稀疏奖励区加强探索 |
+| 站立且 dist > D_ENGAGE | 0 | ×1.0 | 界外不加强探索 |
+
+`uncertainty_floor` 回到继承默认 0.4（函数化 ef 上岗后，全局地板会
+让界外也被迫高探索，与本设计意图冲突）。
 
 ## 已做的解释性决策（可否决）
 
@@ -66,6 +77,8 @@ attack_prep 的 4 个手臂塑形通道完全不存在（无对应 critic）。
    议改为软过渡带（如 0.9→0.7m 线性衰减）。
 3. `D_ENGAGE = 0.9m` 先取 FOLLOW_DIST_MAX 对齐值，具体数值待训练
    观察后再调。
+4. 函数化 ef 替代全局 `uncertainty_floor` 提升（floor 回到 0.4）—
+   探索强度改由距离门控的 σ 倍率承担，界外不加强探索。
 
 ## 实验对照
 
