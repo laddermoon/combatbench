@@ -34,6 +34,20 @@ CMU files), and root translations use AMC units (scaled by units_length).
 Rest-pose identity (zero AMC DOFs): F(b) = C(b), so each bone's world
 direction equals its ASF global `direction`. This is used as a numerical
 self-check in `mocap/humanoid21/fk_check.py`.
+
+Elbow hinge convention correction (DOF_SIGN):
+Under the literal viewer convention above, +rx on {l,r}radius rotates about
+the bone frame's +x axis — which for CMU's declared axis (180,-30,-90) /
+(180,30,90) is world +y at rest pose, folding the forearm BACKWARD
+(anatomically impossible hyperextension). Yet the ASF declares radius rx
+limits (-10, 170) — +rx is the flexion range — and CMU's own rendered
+videos (e.g. subjects/13/13_17.avi) show elbows flexing FORWARD with
+positive data values (+90..140). The consistent resolution is that the true
+elbow hinge axis is -e1 of the declared frame, i.e. the AMC rx value for
+the radius bones must be negated. Verified visually against official
+renders at multiple punch frames (boxing guard with flexed-forward
+forearms). Walking clips remain correct — arms hanging with slight
+forward flexion.
 """
 from __future__ import annotations
 
@@ -60,6 +74,11 @@ def _Rz_Ry_Rx(rx: float, ry: float, rz: float) -> np.ndarray:
 def _Rx_Ry_Rz(rx: float, ry: float, rz: float) -> np.ndarray:
     """Matrix Rx(rx) @ Ry(ry) @ Rz(rz) — intrinsic 'xyz' (used for root)."""
     return Rotation.from_euler("xyz", [rx, ry, rz], degrees=True).as_matrix()
+
+
+# Per-bone AMC value sign corrections — see module docstring (Elbow hinge
+# convention). Only the radius bones need it: they carry the elbow hinge.
+DOF_SIGN: Dict[str, float] = {"lradius": -1.0, "rradius": -1.0}
 
 
 @dataclass
@@ -109,7 +128,9 @@ def _dof_values(frame: Dict[str, np.ndarray], bone: str, dofs: List[str]) -> Tup
         raise ValueError(
             f"bone {bone}: AMC gives {len(vals)} values but ASF dof has {len(dofs)}: {dofs}"
         )
+    sign = DOF_SIGN.get(bone, 1.0)
     for name, v in zip(dofs, vals):
+        v = v * sign
         if name == "rx":
             rx = v
         elif name == "ry":
