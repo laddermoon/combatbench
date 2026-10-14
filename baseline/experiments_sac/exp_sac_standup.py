@@ -163,15 +163,20 @@ class SacStandup(CombatExperimentSACBase):
         is_new_best = mean_max_pot > self._best_potential
         if is_new_best:
             self._best_potential = mean_max_pot
+        info = {
+            "max_pot": round(mean_max_pot, 3),
+            "final_pot": round(mean_final_pot, 3),
+            "max_stage": round(mean_max_stage, 2),
+            "max_h": round(mean_max_h, 3),
+            "success": round(success_rate, 3),
+        }
+        stop = self._early_stop_check(info, env_step)
+        if stop:
+            info["early_stop"] = 1.0
         return {
             "is_new_best": is_new_best,
-            "info": {
-                "max_pot": round(mean_max_pot, 3),
-                "final_pot": round(mean_final_pot, 3),
-                "max_stage": round(mean_max_stage, 2),
-                "max_h": round(mean_max_h, 3),
-                "success": round(success_rate, 3),
-            },
+            "info": info,
+            "stop_training": stop,
         }
 
     def eval_episode_details(self, episodes: List[Any]) -> List[Dict[str, Any]]:
@@ -201,11 +206,13 @@ class SacStandup(CombatExperimentSACBase):
         return {
             "best_potential": self._best_potential,
             "success_rate": self._success_rate,
+            **self._early_stop_state(),
         }
 
     def load_state(self, state: dict) -> None:
         self._best_potential = float(state.get("best_potential", -1.0))
         self._success_rate = float(state.get("success_rate", 0.0))
+        self._early_stop_load(state)
 
 
 EXPERIMENT_CLASS = SacStandup

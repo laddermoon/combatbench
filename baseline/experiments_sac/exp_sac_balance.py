@@ -249,12 +249,17 @@ class SacBalance(CombatExperimentSACBase):
         if is_new_best:
             self._best_survived = survived_metric
 
+        info = {
+            "survived": survived_metric,
+            "survival_rate": round(survival_rate, 3),
+        }
+        stop = self._early_stop_check(info, env_step)
+        if stop:
+            info["early_stop"] = 1.0
         return {
             "is_new_best": is_new_best,
-            "info": {
-                "survived": survived_metric,
-                "survival_rate": round(survival_rate, 3),
-            },
+            "info": info,
+            "stop_training": stop,
         }
 
     def eval_episode_details(self, episodes: List[Any]) -> List[Dict[str, Any]]:
@@ -276,11 +281,13 @@ class SacBalance(CombatExperimentSACBase):
         return {
             "survival_rate": self._survival_rate,
             "best_survived": self._best_survived,
+            **self._early_stop_state(),
         }
 
     def load_state(self, state: dict) -> None:
         self._survival_rate = float(state.get("survival_rate", 0.0))
         self._best_survived = float(state.get("best_survived", -1.0))
+        self._early_stop_load(state)
 
 
 EXPERIMENT_CLASS = SacBalance

@@ -371,7 +371,7 @@ def test_param_patches_cli_wins_and_bad_field_rejected(tmp_path) -> None:
             _Bad(),
             run_dir=tmp_path / "run2",
             rollouter=_FakeRollouter(),
-            param_patches=[(1, "sac_params.batch_size", 999)],
+            param_patches=[(1, "sac_params.tau", 0.9)],
         )
 
 

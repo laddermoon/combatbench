@@ -379,9 +379,11 @@ def train_sac(
         "experiment.random_start_transitions",
         "sac_params.utd_ratio",
         "sac_params.max_grad_steps_per_round",
+        "sac_params.batch_size",
         "common_params.episodes_per_update",
         "common_params.eval_interval",
         "common_params.eval_episodes",
+        "common_params.max_env_steps",
     )
     _patch_map: Dict[Tuple[int, str], Any] = {}
     for from_round, field, value in (experiment.param_overrides() or ()):
@@ -416,6 +418,10 @@ def train_sac(
             cp = dataclasses.replace(cp, eval_interval=value)
         elif field == "common_params.eval_episodes":
             cp = dataclasses.replace(cp, eval_episodes=value)
+        elif field == "sac_params.batch_size":
+            sp = dataclasses.replace(sp, batch_size=int(value))
+        elif field == "common_params.max_env_steps":
+            cp = dataclasses.replace(cp, max_env_steps=int(value))
         else:  # pragma: no cover - allowlist validated up front
             raise ValueError(f"unpatchable SAC field {field!r}")
 

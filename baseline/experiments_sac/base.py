@@ -138,6 +138,15 @@ class CombatExperimentSACBase(ExperimentSAC):
     u_floor: float = 0.0
     u_kind: str = "native"
 
+    # --- Early stop (opt-in; empty metric disables) ---
+    # Stops the run cleanly once `early_stop_metric` from on_eval's info
+    # stays >= `early_stop_threshold` for `early_stop_consecutive`
+    # consecutive evals, past `early_stop_min_env_steps`.
+    early_stop_metric: str = ""
+    early_stop_threshold: float = 0.0
+    early_stop_consecutive: int = 3
+    early_stop_min_env_steps: int = 0
+
     # --- Behavior exploration (A4.8 β layer) ---
     behavior_explore: float = 0.0
     random_start_transitions: int = 0
@@ -392,6 +401,42 @@ class CombatExperimentSACBase(ExperimentSAC):
                 metadata=metadata,
             ))
         return jobs
+
+    # ------------------------------------------------------------------
+    # Early stop
+    # ------------------------------------------------------------------
+
+    _early_stop_hits: int = 0
+
+    def _early_stop_check(
+        self, info: Dict[str, Any], env_step: int,
+    ) -> bool:
+        """Consecutive-threshold eval goal.
+
+        Returns True once ``early_stop_metric`` (a key in on_eval's info
+        dict) has been >= ``early_stop_threshold`` for
+        ``early_stop_consecutive`` consecutive evals at or beyond
+        ``early_stop_min_env_steps``.  Disabled when the metric name is
+        empty.  The hit counter persists through ``_early_stop_state`` /
+        ``_early_stop_load`` so resume keeps the streak.
+        """
+        metric = str(self.early_stop_metric or "")
+        if not metric:
+            return False
+        v = info.get(metric)
+        hit = (
+            isinstance(v, (int, float))
+            and int(env_step) >= int(self.early_stop_min_env_steps)
+            and float(v) >= float(self.early_stop_threshold)
+        )
+        self._early_stop_hits = self._early_stop_hits + 1 if hit else 0
+        return self._early_stop_hits >= int(self.early_stop_consecutive)
+
+    def _early_stop_state(self) -> dict:
+        return {"early_stop_hits": int(self._early_stop_hits)}
+
+    def _early_stop_load(self, state: dict) -> None:
+        self._early_stop_hits = int(state.get("early_stop_hits", 0))
 
     # ------------------------------------------------------------------
     # State persistence
