@@ -85,10 +85,14 @@ class RotateSpawnPlugin(BasePlugin):
 class ReachGuardPlugin(BasePlugin):
     def __init__(self, track_robot: str = 'robot_a',
                  goal_radius: float = 0.8,
-                 fall_height: float = 0.55) -> None:
+                 fall_height: float = 0.55,
+                 done_height: float = 0.9) -> None:
         self.track_robot = track_robot
         self.goal_radius = float(goal_radius)
         self.fall_height = float(fall_height)
+        # 到达必须直立：否则前扑触地前的瞬间会被计为成功（v2 发现的
+        # dive-and-tag exploit——无先验臂学到扑过去而不是走过去）。
+        self.done_height = float(done_height)
 
     @property
     def name(self) -> str:
@@ -97,7 +101,8 @@ class ReachGuardPlugin(BasePlugin):
     def to_blueprint(self) -> Dict[str, Any]:
         return {'track_robot': self.track_robot,
                 'goal_radius': self.goal_radius,
-                'fall_height': self.fall_height}
+                'fall_height': self.fall_height,
+                'done_height': self.done_height}
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> 'ReachGuardPlugin':
@@ -109,7 +114,8 @@ class ReachGuardPlugin(BasePlugin):
         if float(pos[2]) < self.fall_height:
             ctx.request_termination('reach_fall')
             return
-        if float(np.linalg.norm(pos[:2])) < self.goal_radius:
+        if (float(np.linalg.norm(pos[:2])) < self.goal_radius
+                and float(pos[2]) > self.done_height):
             ctx.request_termination('reach_done')
 
 
@@ -143,7 +149,9 @@ class ReachRewarder(BaseObserverPlugin):
     def on_post_action_step(self, ctx: ReadOnlySimContext) -> None:
         d = self._dist(ctx)
         prog = (self._prev_dist - d) * 20.0 if self._prev_dist is not None else 0.0
-        done = 1.0 if d < self.goal_radius else 0.0
+        z = float(np.asarray(
+            ctx.accessor.get_core_state()[self.agent_id]['root_pos'])[2])
+        done = 1.0 if (d < self.goal_radius and z > 0.9) else 0.0
         r = self.w_prog * prog + self.w_goal * done + self.w_alive
         self._output = {'reward': float(r), 'dist': d,
                         'progress': float(prog), 'reached': done}

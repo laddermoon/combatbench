@@ -62,9 +62,9 @@ class ReachCenter(CombatExperimentPPOBase):
     minibatch_size: int = 4096
 
     episodes_per_update: int = 256
-    max_updates: int = 400
+    max_updates: int = 800
     eval_interval: int = 5
-    eval_episodes: int = 16
+    eval_episodes: int = 32
     video_eval_interval: int = 10
 
     _REWARD_KEY = "reach_reward_a"
