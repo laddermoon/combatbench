@@ -414,6 +414,173 @@ def dump_samples(
     }
 
 
+def pipeline_summary(dump_dir: Path) -> Dict[str, Any]:
+    """Dump-home pipeline payload — one call, per-module headline stats.
+
+    SAC analog of the PPO dumpkit ``/api/pipeline``: the dump homepage's
+    nine stage cards each render their scalar slice from ``stages``.
+    Everything here is precomputed at capture (analysis.json/spec.json)
+    or scalar-level (inspect's param_delta) — the heavy per-row views
+    live on the tool pages.
+    """
+    ins = dump_inspect(Path(dump_dir))
+    dump_dir = Path(dump_dir)
+    spec: Dict[str, Any] = {}
+    manifest: Dict[str, Any] = {}
+    for name, dst in (("spec.json", "spec"), ("manifest.json", "manifest")):
+        p = dump_dir / name
+        if p.exists():
+            try:
+                if dst == "spec":
+                    spec = json.loads(p.read_text(encoding="utf-8"))
+                else:
+                    manifest = json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+    clocks = ins.get("clocks") or {}
+    batch = ins.get("batch") or {}
+    us = ins.get("update_stats") or {}
+    rs = ins.get("replay_stats") or {}
+    if not isinstance(rs, dict):
+        rs = {}
+    pc = ins.get("per_channel") or {}
+    sac_params = spec.get("sac_params") or {}
+    spec_channels = spec.get("channels") or []
+    channels = [c.get("name") for c in spec_channels
+                if isinstance(c, dict)] or sorted(pc.keys())
+
+    target_channels = []
+    for ch in pc:
+        e = pc[ch] or {}
+        target_channels.append({
+            "name": ch,
+            "targets_mean": e.get("targets_mean"),
+            "targets_absmax": e.get("targets_absmax"),
+            "td_abs_mean": e.get("td_abs_mean"),
+            "td_abs_max": e.get("td_abs_max"),
+            "gamma": next(
+                (c.get("gamma") for c in spec_channels
+                 if isinstance(c, dict) and c.get("name") == ch), None),
+        })
+    critic_channels = []
+    for ch in pc:
+        critic_channels.append({
+            "name": ch,
+            "q1_loss": us.get(f"q1_loss_{ch}"),
+            "q2_loss": us.get(f"q2_loss_{ch}"),
+            "q1_mean": us.get(f"q1_mean_{ch}"),
+            "q2_mean": us.get(f"q2_mean_{ch}"),
+            "valid_weight": us.get(f"critic_valid_weight_{ch}"),
+            "updated": us.get(f"critic_updated_{ch}"),
+            "td_abs_mean": us.get(f"td_abs_mean_{ch}"),
+        })
+    actor_weights = {
+        ch: {
+            "weight": us.get(f"actor_weight_mean_{ch}"),
+            "weight_next": us.get(f"actor_weight_next_mean_{ch}"),
+        } for ch in pc
+    }
+    pd = ins.get("param_delta") or {}
+    pd_out = {}
+    for k, v in pd.items():
+        if isinstance(v, dict):
+            pd_out[k] = {
+                "l2": v.get("l2"),
+                "max_abs_delta": v.get("max_abs_delta"),
+                "elements": v.get("elements"),
+                "by_key": {
+                    kk: {"l2": vv.get("l2"),
+                         "max_abs_delta": vv.get("max_abs_delta")}
+                    for kk, vv in (v.get("by_key") or {}).items()
+                },
+            }
+    cons = ins.get("consistency") or {}
+    if not isinstance(cons, dict):
+        cons = {}
+
+    stages = {
+        "collection": {
+            "collection_round": clocks.get("collection_round"),
+            "env_step": clocks.get("env_step"),
+            "agent_transition": clocks.get("agent_transition"),
+            "replay_size": rs.get("size"),
+            "replay_capacity": rs.get("capacity"),
+            "replay_utilization": rs.get("utilization"),
+            "sample_age_mean": rs.get("sample_age_mean"),
+            "draw_count_mean": rs.get("draw_count_mean"),
+            "draw_count_max": rs.get("draw_count_max"),
+            "overwritten": rs.get("overwritten"),
+        },
+        "batch": {
+            "size": batch.get("size"),
+            "sample_id_range": batch.get("sample_id_range"),
+            "n_collection_rounds": len(
+                batch.get("collection_round_counts") or {}),
+            "collection_round_counts": batch.get(
+                "collection_round_counts"),
+            "n_policies": len(
+                batch.get("policy_fingerprint_counts") or {}),
+            "terminated_rows": batch.get("terminated_rows"),
+            "truncated_rows": batch.get("truncated_rows"),
+        },
+        "target": {
+            "channels": target_channels,
+            "reward_scale": sac_params.get("reward_scale"),
+            "regularizer_mode": sac_params.get(
+                "regularizer_mode", "shannon"),
+        },
+        "critic": {
+            "channels": critic_channels,
+            "critic_loss": us.get("critic_loss"),
+            "td_abs_max": max(
+                ((pc[c] or {}).get("td_abs_max") or 0.0 for c in pc),
+                default=None),
+        },
+        "actor": {
+            "actor_loss": us.get("actor_loss"),
+            "entropy_proxy_mean": us.get("entropy_proxy_mean"),
+            "log_prob_mean": us.get("log_prob_mean"),
+            "valid_count": us.get("actor_valid_count"),
+            "valid_weight": us.get("actor_valid_weight"),
+            "pair1_frac": us.get("actor_pair1_frac"),
+            "grad_norm": us.get("grad_norm_actor"),
+            "channel_weights": actor_weights,
+        },
+        "regularizer": {
+            "mode": sac_params.get("regularizer_mode", "shannon"),
+            "alpha": us.get("alpha"),
+            "alpha_loss": us.get("alpha_loss"),
+            "regularizer_shannon": us.get("regularizer_shannon"),
+            "u_floor": sac_params.get("u_floor"),
+            "reg_lambda": sac_params.get("reg_lambda"),
+        },
+        "tickline": {
+            "clocks": clocks,
+            "critic_tick": ins.get("critic_tick"),
+        },
+        "postupdate": {
+            "param_delta": pd_out,
+        },
+        "drift": {
+            "consistency_checked": cons.get("checked"),
+            "n_violations": len(cons.get("violations") or {}),
+            "violations": cons.get("violations"),
+        },
+    }
+    return {
+        "dump_dir": str(dump_dir),
+        "schema_version": ins.get("schema_version"),
+        "kind": manifest.get("kind"),
+        "evidence_level": manifest.get("evidence_level"),
+        "files": manifest.get("files"),
+        "critic_tick": ins.get("critic_tick"),
+        "clocks": clocks,
+        "hypothesis": ins.get("hypothesis") or "",
+        "consistency": cons,
+        "stages": stages,
+    }
+
+
 def dump_trace(
     dump_dir: Path,
     *,

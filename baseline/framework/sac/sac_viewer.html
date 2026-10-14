@@ -1690,8 +1690,9 @@
 
   // --- Dump home (SAC computation-chain module cards) ---
   // Eight modules along the SAC update path — the SAC analog of PPO's
-  // stage cards.  W2 adds a dedicated pipeline endpoint with per-module
-  // stats; for now cards render headline numbers from existing endpoints.
+  // stage cards.  Cards render their headline slice of the single
+  // /pipeline payload (analysis.pipeline_summary); deep data lives on
+  // the tool pages.
   const DUMP_STAGES = [
     {id: 'collection', num: '⓪', title: 'Round & Collection',
      desc: '本轮采集了什么：episodes → slices → replay 注入。',
@@ -1723,10 +1724,9 @@
   ];
 
   async function loadDump(name) {
-    if (state.dumpName === name && state.manifest) return;
+    if (state.dumpName === name && state.dumpPipeline) return;
     state.dumpName = name;
-    state.manifest = await fetchJson(api('dump/manifest'));
-    state.dumpInspect = null;
+    state.dumpPipeline = await fetchJson(api('dump/pipeline'));
     state.selectedSampleId = null;
   }
 
@@ -1743,25 +1743,21 @@
   }
 
   function setDumpHeader() {
-    const m = state.manifest || {};
+    const d = state.dumpPipeline || {};
+    const clocks = d.clocks || {};
     $('header-meta').textContent =
-      `${state.runName || ''} · dump @critic_tick ${m.critic_tick ?? '?'} · ` +
-      `round ${m.collection_round ?? '?'} · ${m.kind || ''}`;
+      `${state.runName || ''} · dump @critic_tick ${d.critic_tick ?? '?'} · ` +
+      `round ${clocks.collection_round ?? '?'} · ${d.kind || ''}`;
   }
 
   async function renderDumpHome() {
-    const m = state.manifest || {};
+    const m = state.dumpPipeline || {};
     $('dump-overview-scope').textContent =
       `${state.dumpName || '(dump root)'} · schema ${m.schema_version || '?'}`;
     const kv = (k, v) =>
       `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
       `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
-    $('dump-overview').innerHTML = [
-      kv('critic_tick', m.critic_tick),
-      kv('kind', m.kind),
-      kv('evidence', m.evidence_level),
-      kv('files', Object.keys(m.files || {}).length),
-    ].join('');
+    $('dump-overview').innerHTML = '<div class="loading">loading...</div>';
     // Stage cards
     const host = $('dump-stages');
     host.innerHTML = '';
@@ -1780,14 +1776,13 @@
         navigate('tool');
       });
     });
-    // Fill headline stats from inspect + spec (two fetches for all cards).
+    // Single /pipeline payload feeds the overview and all nine cards;
+    // loadDump() may already have cached it for the header.
     try {
-      const [d, spec] = await Promise.all([
-        fetchJson(api('dump/inspect')),
-        fetchJson(api('dump/spec')).catch(() => null),
-      ]);
-      state.dumpInspect = d;
-      _fillStageStats(d, spec);
+      const d = state.dumpPipeline ||
+        (state.dumpPipeline = await fetchJson(api('dump/pipeline')));
+      _fillOverview(d, kv);
+      _fillStageStats(d.stages || {});
     } catch (e) {
       $('sum-collection').innerHTML =
         `<div class="error-msg">${escapeHtml(e.message)}</div>`;
@@ -1799,83 +1794,106 @@
       `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
   }
 
-  function _fillStageStats(d, spec) {
+  function _fillOverview(d, kv) {
+    const cons = d.consistency || {};
+    const nViol = cons.violations
+      ? Object.keys(cons.violations).length : 0;
+    $('dump-overview').innerHTML = [
+      kv('critic_tick', d.critic_tick),
+      kv('kind', d.kind),
+      kv('evidence', d.evidence_level),
+      kv('files', (d.files || []).length || Object.keys(d.files || {}).length),
+      kv('consistency', cons.checked != null
+        ? (cons.checked ? `${nViol} violations` : 'unchecked') : '—'),
+      kv('hypothesis', d.hypothesis || '—'),
+    ].join('');
+  }
+
+  function _fillStageStats(st) {
     const set = (id, html) => {
       const el = $(`sum-${id}`);
       if (el) el.innerHTML = html;
     };
-    const clocks = d.clocks || {};
-    const batch = d.batch || {};
-    const us = d.update_stats || {};
-    const rs = d.replay_stats || {};
-    const pc = d.per_channel || {};
-    const chans = Object.keys(pc);
-    const sacParams = ((spec || {}).sac_params) || {};
-    const specChans = ((spec || {}).channels) || [];
-
+    const col = st.collection || {};
     set('collection', [
-      _kvSpan('round', clocks.collection_round ?? '-'),
-      _kvSpan('env_step', clocks.env_step ?? '-'),
-      _kvSpan('replay', rs.size != null
-        ? `${rs.size}/${rs.capacity}` : '-'),
+      _kvSpan('round', col.collection_round ?? '-'),
+      _kvSpan('env_step', col.env_step ?? '-'),
+      _kvSpan('replay', col.replay_size != null
+        ? `${col.replay_size}/${col.replay_capacity}` : '-'),
+      _kvSpan('age μ', col.sample_age_mean != null
+        ? fmt(col.sample_age_mean, 0) : '-'),
+      _kvSpan('draw μ/max', col.draw_count_mean != null
+        ? `${fmt(col.draw_count_mean, 1)}/${col.draw_count_max}` : '-'),
     ].join(''));
-    const provRounds = Object.keys(batch.collection_round_counts || {});
+    const bt = st.batch || {};
     set('batch', [
-      _kvSpan('batch n', batch.size ?? '-'),
-      _kvSpan('src rounds', provRounds.length || '-'),
-      _kvSpan('policies',
-        Object.keys(batch.policy_fingerprint_counts || {}).length || '-'),
-      _kvSpan('terminated', batch.terminated_rows ?? '-'),
+      _kvSpan('batch n', bt.size ?? '-'),
+      _kvSpan('src rounds', bt.n_collection_rounds ?? '-'),
+      _kvSpan('policies', bt.n_policies ?? '-'),
+      _kvSpan('terminated', bt.terminated_rows ?? '-'),
+      _kvSpan('sid range', Array.isArray(bt.sample_id_range)
+        ? bt.sample_id_range.join('–') : '-'),
     ].join(''));
-    const tgtMeans = chans.map(c =>
-      `${c}: ${fmt((pc[c] || {}).targets_mean, 3)}`).join(' · ');
+    const tg = st.target || {};
+    const tgtMeans = (tg.channels || []).map(c =>
+      `${c.name}: ${fmt(c.targets_mean, 3)}`).join(' · ');
+    const gamma = ((tg.channels || [])[0] || {}).gamma;
     set('target', [
-      _kvSpan('channels', chans.join(',') || '-'),
-      _kvSpan('γ', specChans.length ? specChans[0].gamma : '-'),
+      _kvSpan('channels', (tg.channels || []).map(c => c.name).join(',') || '-'),
+      _kvSpan('γ / scale', `${gamma ?? '-'} / ${tg.reward_scale ?? '-'}`),
       _kvSpan('targets μ', tgtMeans || '-'),
+      _kvSpan('mode', tg.regularizer_mode || '-'),
     ].join(''));
-    const tdMax = Math.max(...chans.map(c =>
-      Math.abs((pc[c] || {}).td_abs_max || 0)), 0);
+    const cr = st.critic || {};
     set('critic', [
-      _kvSpan('td |max|', fmt(tdMax, 3)),
-      _kvSpan('critic_loss', us.critic_loss != null
-        ? fmt(us.critic_loss, 5) : '-'),
-      _kvSpan('q_mean', us.q1_mean_r_potential != null
-        ? fmt(us.q1_mean_r_potential, 3)
-        : fmt(us['q1_mean_' + chans[0]], 3)),
+      _kvSpan('td |max|', fmt(cr.td_abs_max, 3)),
+      _kvSpan('critic_loss', cr.critic_loss != null
+        ? fmt(cr.critic_loss, 5) : '-'),
+      _kvSpan('q1/q2 μ', (cr.channels || []).map(c =>
+        `${c.name}: ${fmt(c.q1_mean, 2)}/${fmt(c.q2_mean, 2)}`).join(' · ') || '-'),
     ].join(''));
+    const ac = st.actor || {};
     set('actor', [
-      _kvSpan('actor_loss', us.actor_loss != null
-        ? fmt(us.actor_loss, 4) : '-'),
-      _kvSpan('entropy', us.entropy_proxy_mean != null
-        ? fmt(us.entropy_proxy_mean, 3) : '-'),
-      _kvSpan('valid', us.actor_valid_count ?? '-'),
+      _kvSpan('actor_loss', ac.actor_loss != null
+        ? fmt(ac.actor_loss, 4) : '-'),
+      _kvSpan('entropy', ac.entropy_proxy_mean != null
+        ? fmt(ac.entropy_proxy_mean, 3) : '-'),
+      _kvSpan('valid', `${ac.valid_count ?? '-'} (pair1 ${fmt(ac.pair1_frac, 3)})`),
+      _kvSpan('|∇|', fmt(ac.grad_norm, 4)),
     ].join(''));
-    const mode = sacParams.regularizer_mode || 'shannon';
+    const rg = st.regularizer || {};
     set('regularizer', [
-      _kvSpan('mode', mode),
-      _kvSpan('α', us.alpha != null ? fmt(us.alpha, 5) : '-'),
-      _kvSpan('α_loss', us.alpha_loss != null
-        ? fmt(us.alpha_loss, 4) : '-'),
+      _kvSpan('mode', rg.mode),
+      _kvSpan('α', rg.alpha != null ? fmt(rg.alpha, 5) : '-'),
+      _kvSpan('α_loss', rg.alpha_loss != null
+        ? fmt(rg.alpha_loss, 4) : '-'),
+      rg.mode === 'u_floor'
+        ? _kvSpan('floor/λ', `${rg.u_floor ?? '-'} / ${rg.reg_lambda ?? '-'}`)
+        : _kvSpan('shannon', fmt(rg.regularizer_shannon, 4)),
     ].join(''));
+    const tk = (st.tickline || {}).clocks || {};
     set('tickline', [
-      _kvSpan('critic_tick', d.critic_tick ?? '-'),
-      _kvSpan('target_tick', clocks.target_tick ?? '-'),
-      _kvSpan('temp_tick', clocks.temperature_tick ?? '-'),
+      _kvSpan('critic_tick', (st.tickline || {}).critic_tick ?? '-'),
+      _kvSpan('actor_tick', tk.actor_tick ?? '-'),
+      _kvSpan('target_tick', tk.target_tick ?? '-'),
+      _kvSpan('temp_tick', tk.temperature_tick ?? '-'),
     ].join(''));
-    const pd = d.param_delta || {};
+    const pd = (st.postupdate || {}).param_delta || {};
     set('postupdate', [
       _kvSpan('actor Δ·l2', pd.actor_state_dict
         ? fmt(pd.actor_state_dict.l2, 5) : '-'),
       _kvSpan('critic Δ·l2', pd.critic_state_dict
         ? fmt(pd.critic_state_dict.l2, 5) : '-'),
+      _kvSpan('temp Δ·l2', pd.log_alpha_state_dict
+        ? fmt(pd.log_alpha_state_dict.l2, 5) : '-'),
     ].join(''));
-    const cons = d.consistency || {};
+    const dr = st.drift || {};
     set('drift', [
-      _kvSpan('consistency', cons.checked
-        ? `${cons.violations ? Object.keys(cons.violations).length : 0} violations`
+      _kvSpan('consistency', dr.consistency_checked != null
+        ? (dr.consistency_checked
+          ? `${dr.n_violations ?? 0} violations` : 'unchecked')
         : '—'),
-      _kvSpan('hypothesis', d.hypothesis || '—'),
+      _kvSpan('note', '固定输入漂移 + slice-ctx → tool'),
     ].join(''));
   }
 

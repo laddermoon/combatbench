@@ -3918,3 +3918,64 @@ The grad step cap keeps wall-clock time reasonable (~52s/round).
   模块专属交互页在 W3/W4；pipeline 端点在 W2。
 - port 8766 存在 Oct-09 旧版 server 进程，本轮 smoke 用 8767/8768，
   未触碰旧进程。
+
+## R3.2a R3-W2 细计划：dump 骨架
+
+**目标**：dump 主页成为 SAC 计算链的导航骨架——八模块卡各显示
+headline 统计（一次 `pipeline` 拉取），卡片链到模块工具页；
+面包屑/上下文栏与 PPO 同构。
+
+### 调研结论
+
+- PPO `full_pipeline(ds)` = `pipeline_summary`（各 stage 标量）+
+  gradsig/postupdate/delta/rollout 补段，一次 `/api/pipeline` 返回。
+- SAC dump 的 `analysis.json` 已预算好 card 需要的几乎全部标量：
+  `replay_stats`（provenance/age/draw_count）、`update_stats`（21 项：
+  losses/alpha/entropy/pair_frac/valid/weights）、`consistency`、
+  `evidence_level`；`param_delta` 由 inspect 现场算（pre/post.pt diff，
+  标量级便宜）。只有 γ/reward_scale/regularizer_mode 在 `spec.json`。
+- 因此 `pipeline_summary` = `dump_inspect` + `spec.json` 裁剪重组，
+  零重算成本；深度数据（trace/decomp/grad-attr）留在工具页按需拉。
+
+### 设计
+
+1. `analysis.pipeline_summary(dump_dir)` →
+   `{schema_version, kind, evidence_level, critic_tick, clocks,
+   hypothesis, consistency, stages}`；
+   `stages` 键与前端卡 id 一致：
+   `collection`(clocks+replay_stats 摘要)、`batch`(size/provenance/
+   fingerprints/term-trunc/sample_id_range)、`target`(channels+γ+
+   reward_scale+targets_mean/td_abs_max)、`critic`(q1/q2 loss+td max+
+   grad norms)、`actor`(loss/entropy/valid/pair1/weights)、
+   `regularizer`(mode/alpha/alpha_loss/entropy_proxy/reg_term)、
+   `tickline`(clocks 全景)、`postupdate`(param_delta 两级 l2/max_abs)、
+   `drift`(consistency 摘要 + availability)。
+2. server：`pipeline` dump 端点（`_dump_endpoint` 一行挂接）。
+3. debugkit：`pipeline` 子命令（与 server 同函数，CLI/HTTP 语义同源）。
+4. viewer：`renderDumpHome` 单拉 `/pipeline` 填 overview+八卡；
+   overview 卡补 clocks/hypothesis/consistency；context-bar 的
+   Dump/Sample 字段在 dump 页生效（W1 已接线）。
+
+### 出口标准
+
+- `pipeline_summary` 对合成 dump 返回九段齐全；HTTP `pipeline` 端点
+  200；CLI `pipeline` 与 HTTP 同 payload；全套回归。
+
+## R3.2b R3-W2 完成：dump 骨架
+
+- **`analysis.pipeline_summary(dump_dir)`**：一次调用返回
+  `{schema_version, kind, evidence_level, files, critic_tick, clocks,
+  hypothesis, consistency, stages}`；`stages` 九键与前端卡 id 一致。
+  全部由 capture 时刻的 analysis.json/spec.json + 标量级 param_delta
+  组成，零重算。
+- **server**：`/api/dump/<d>/pipeline`（run 命名空间内同路由）。
+- **debugkit**：`pipeline` 子命令，与 HTTP 同函数同 payload。
+- **viewer**：`renderDumpHome` 单拉 pipeline（`loadDump` 缓存供 header
+  复用），overview 卡 + 八模块卡各渲染其 `stages.<id>` 切片：
+  collection(replay size/age/draw)、batch(provenance 计数)、
+  target(γ/scale/逐通道 targets μ)、critic(逐通道 q1/q2/loss)、
+  actor(loss/entropy/valid/pair1/|∇|)、regularizer(mode/α/floor·λ)、
+  tickline(clocks)、postupdate(param_delta)、drift(consistency)。
+- **验证**：合成 dump 单测（九段齐全）；真实 sac_dump_v3 dump
+  `critic_tick_00168970` CLI+HTTP 输出核对；SPA dump 首页 200；
+  JS `node --check` 通过；全套回归 **246 passed**。

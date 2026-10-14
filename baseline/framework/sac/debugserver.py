@@ -107,6 +107,8 @@ def _dump_endpoint(path: str, root: Path, q: Dict[str, list]) -> Any:
 
     if path == "inspect":
         return analysis.dump_inspect(_resolve_dump(root, q))
+    if path == "pipeline":
+        return analysis.pipeline_summary(_resolve_dump(root, q))
     if path == "manifest":
         dump = _resolve_dump(root, q)
         return json.loads(

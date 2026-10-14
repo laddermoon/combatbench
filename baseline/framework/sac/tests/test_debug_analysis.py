@@ -90,6 +90,29 @@ def test_dump_inspect_reports_v3_detail(tmp_path):
     assert "actor_state_dict" in out["param_delta"]
 
 
+def test_pipeline_summary_nine_stages(tmp_path):
+    """R3-W2: /pipeline feeds the dump home — one payload with every
+    stage card's headline slice, composed from capture-time stats."""
+    dump_dir = _make_dump(tmp_path)
+    out = analysis.pipeline_summary(dump_dir)
+    assert out["schema_version"] == "sac_dump_v3"
+    assert out["critic_tick"] == 5
+    stages = out["stages"]
+    assert set(stages) == {
+        "collection", "batch", "target", "critic", "actor",
+        "regularizer", "tickline", "postupdate", "drift",
+    }
+    assert stages["collection"]["collection_round"] == 2
+    assert stages["batch"]["size"] == 16
+    assert stages["target"]["channels"]
+    assert stages["critic"]["critic_loss"] is not None
+    assert stages["actor"]["actor_loss"] is not None
+    assert stages["regularizer"]["mode"] == "shannon"
+    assert stages["tickline"]["clocks"]["collection_round"] == 2
+    assert "actor_state_dict" in stages["postupdate"]["param_delta"]
+    assert stages["drift"]["consistency_checked"] is True
+
+
 def test_param_delta_counts_nested_critic_state(tmp_path):
     """R2-W03 (G6): critic state dicts nest by group → network/optimizer;
     a shallow loop reported elements=0 despite real weight changes."""

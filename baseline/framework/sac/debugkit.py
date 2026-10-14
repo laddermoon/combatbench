@@ -718,7 +718,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         description="Inspect SAC runs and dump bundles (v2/v3)"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("summary", "recompute", "inspect"):
+    for name in ("summary", "recompute", "inspect", "pipeline"):
         p = sub.add_parser(name)
         p.add_argument("dump", type=Path)
     find = sub.add_parser("find-sample")
@@ -844,6 +844,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = recompute_dump(args.dump)
     elif args.command == "inspect":
         out = analysis.dump_inspect(args.dump)
+    elif args.command == "pipeline":
+        out = analysis.pipeline_summary(args.dump)
     elif args.command == "find-sample":
         out = find_sample(args.dump, sample_id=args.sample_id)
     elif args.command == "catalog":
