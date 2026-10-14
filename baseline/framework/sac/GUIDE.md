@@ -96,7 +96,7 @@ PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
 
 # 自定义 run 名 / 恢复
 --run-name my_run_v2
---resume-from baseline/runs/<run>/checkpoints/checkpoint_s00100000
+--resume-from baseline/runs_sac/<run>/checkpoints/checkpoint_s00100000
 --config-lock   # 严格模式：除白名单外任何配置差异都拒绝 resume
 ```
 
@@ -167,8 +167,8 @@ config fingerprint 默认校验：除 `RESUME_ALLOWED_OVERRIDES`（lr/critic_lr/
 ```bash
 DK="python3 -m baseline.framework.sac.debugkit"
 
-$DK runs baseline/runs                     # run 总览
-$DK run  baseline/runs/<run>               # 单 run 状态+配置+最近 eval
+$DK runs baseline/runs_sac                     # run 总览
+$DK run  baseline/runs_sac/<run>               # 单 run 状态+配置+最近 eval
 $DK series <run_dir> --metric critic.q_mean        # 指标时间序列
 $DK dump  <run_dir> [--hypothesis "..."] [--at-tick N]
       # 写 dump_request.json 哨兵 → 运行中的 loop 下一个 critic tick 捕获截面
@@ -185,7 +185,7 @@ $DK drift <dump_dir>                       # pre/post 在 batch obs 上的 det-a
 $DK grad-attr <dump_dir> [--group-by ...]  # 重型离线梯度归因（重建+autograd，不在训练路径）
 $DK slice-ctx <run|ckpt|replay.pt> --sample-id N
       # 重建该样本所在 slice 的 live 帧序列+逐出缺口（FIFO）
-$DK serve baseline/runs --port 8766 --host 0.0.0.0
+$DK serve baseline/runs_sac --port 8766 --host 0.0.0.0
       # 只读 JSON API + HTML viewer（http://<host>:8766/）
 ```
 
@@ -221,12 +221,12 @@ POST `run/dump-request` + `dump/<d>/job`——全部与 CLI 共用 `analysis` �
 ```bash
 # 评 checkpoint 的 actor（默认最新完整 bundle）
 PYTHONPATH=. python3 -m baseline.framework.sac.held_out_eval \
-    --run baseline/runs/<run> [--checkpoint checkpoints/checkpoint_sXXXXXXXX] \
+    --run baseline/runs_sac/<run> [--checkpoint checkpoints/checkpoint_sXXXXXXXX] \
     [--episodes 64] [--seed-offset 900000] [--workers 32]
 
 # 评 policy/ 导出（best-of-run 确定性蓝图；与 checkpoint 互斥）
 PYTHONPATH=. python3 -m baseline.framework.sac.held_out_eval \
-    --run baseline/runs/<run> --policy policy
+    --run baseline/runs_sac/<run> --policy policy
 ```
 
 输出 `held_out_eval.json`：聚合指标 `eval` + `episode_details[]`

@@ -69,7 +69,8 @@ def _parse_args() -> Tuple[argparse.Namespace, argparse.ArgumentParser]:
     )
     parser.add_argument(
         "--run-dir", type=str, default=None,
-        help="Explicit run output directory (default: baseline/runs/<run_name>).",
+        help="Explicit run output directory (default: baseline/runs/<run_name>"
+             " for ppo, baseline/runs_sac/<run_name> for sac).",
     )
     parser.add_argument(
         "--background", action="store_true",
@@ -467,7 +468,8 @@ def main() -> None:
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()
     else:
-        run_dir = Path(__file__).resolve().parent.parent / "runs" / run_name
+        runs_root = "runs_sac" if algo == "sac" else "runs"
+        run_dir = Path(__file__).resolve().parent.parent / runs_root / run_name
 
     if run_dir.exists():
         raise SystemExit(f"Error: run_dir already exists: {run_dir}")

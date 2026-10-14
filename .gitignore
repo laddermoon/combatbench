@@ -7,6 +7,7 @@ __pycache__/
 todo.md
 compareversion/
 runs/
+runs_sac/
 
 # Large assets (kept on disk, not in git)
 1.1 T800 模型资源/

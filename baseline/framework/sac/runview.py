@@ -402,13 +402,39 @@ def _load_config(run_dir: Path) -> Dict[str, Any]:
 
 
 def _last_eval_metrics(run_dir: Path) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    for ev in iter_events(run_dir):
-        if ev.get("event_type") == "eval":
-            for k, v in (ev.get("metrics") or {}).items():
-                if isinstance(v, (int, float)):
-                    out[k] = float(v)
-    return out
+    """Metrics of the most recent eval event — backward tail scan.
+
+    events.jsonl reaches tens of MB on long runs; a full forward scan
+    per run made the runs index O(total bytes).  Read expanding tail
+    windows (512KB, doubling, capped at the file size) and stop at the
+    first eval event found from the end.
+    """
+    path = Path(run_dir) / EVENTS_NAME
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return {}
+    window = 512 * 1024
+    while True:
+        lines = _read_log_tail_lines(path, min(window, size))
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("event_type") != "eval":
+                continue
+            return {
+                k: float(v)
+                for k, v in (ev.get("metrics") or {}).items()
+                if isinstance(v, (int, float))
+            }
+        if window >= size:
+            return {}
+        window *= 4
 
 
 def dumps_list(run_dir: Path) -> List[Dict[str, Any]]:

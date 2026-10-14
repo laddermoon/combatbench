@@ -4134,3 +4134,27 @@ JSON 页（W4 接专属页）。
 - **文档**：GUIDE viewer 段落重写为 R3 三层架构 + 九卡 + 七工具页
   + job 槽真实形态（原文还停在 R2-4 六工作区描述）。
 - **回归**：247 passed。R3 五个工作包全部收口。
+
+## R3.6 SAC run 目录独立：baseline/runs → baseline/runs_sac
+
+- **动机**：runs 索引要扫 `baseline/runs` 下全部 981 个 run（PPO+SAC
+  混居），`scan_run_summary` 对每个 run tail events/统计文件，首屏很慢；
+  前一版用 `algo=sac` 过滤只解决了"显示"，没解决"扫描成本"。
+- **决策**：SAC 物理分目录 `baseline/runs_sac/`：
+  - `train.py` 默认 run_dir 按 algo 分流：ppo→`baseline/runs`，
+    sac→`baseline/runs_sac`（`--run-dir` 仍可显式覆盖）；
+  - `.gitignore` 增加 `runs_sac/`；
+  - 45 个已完成 SAC run 实体迁移；3 个**在训** run
+    （reg_balance_shannon_s42 / reg_balance_ufloor_s42 /
+    reg_standup_ufloor_s42_b）不能移动——训练进程持有启动时解析的
+    run_dir 路径，mv 后 checkpoint/dump 写入会在旧路径重建目录造成
+    数据分裂。以 `runs_sac/<name> -> ../runs/<name>` 符号链接过渡，
+    viewer/CLI 读路径透明；
+  - server 8766 root 切到 `baseline/runs_sac`；`/api/runs` 的
+    `algo=sac` 默认过滤保留（兜底 + `?algo=all` 逃生口）。
+- **待办**：3 条在训 run 结束后，把符号链接替换为实体迁移
+  （`rm link; mv baseline/runs/<n> baseline/runs_sac/`），
+  之后 `baseline/runs` 纯 PPO。
+- **文档**：GUIDE / DEBUG_PLAYBOOK / REGRESSION 中 SAC 命令的
+  `baseline/runs` 引用全部改为 `baseline/runs_sac`；DECISIONS 历史
+  条目保留原路径（当时事实）。

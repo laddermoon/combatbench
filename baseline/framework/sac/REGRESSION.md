@@ -95,11 +95,11 @@ smoke 不过 → 调参（λ/f）并重冒烟，不进全量。
 
 ```bash
 # 进度与最近 eval
-PYTHONPATH=. python3 -m baseline.framework.sac.debugkit run baseline/runs/<run>
+PYTHONPATH=. python3 -m baseline.framework.sac.debugkit run baseline/runs_sac/<run>
 # 单指标曲线（--metric 每次一个；常用 eval.success / critic.q_mean /
 # temperature.alpha；u_floor run 再看 actor.reg_term）
 PYTHONPATH=. python3 -m baseline.framework.sac.debugkit series \
-  baseline/runs/<run> --metric eval.success
+  baseline/runs_sac/<run> --metric eval.success
 ```
 
 停训/异常处理：
@@ -114,7 +114,7 @@ PYTHONPATH=. python3 -m baseline.framework.sac.debugkit series \
 
 ```bash
 PYTHONPATH=. python3 -m baseline.framework.sac.held_out_eval \
-    --run baseline/runs/<run> --policy policy \
+    --run baseline/runs_sac/<run> --policy policy \
     --episodes 64 --workers 32
 ```
 

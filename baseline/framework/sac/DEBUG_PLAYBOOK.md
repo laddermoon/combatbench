@@ -12,7 +12,7 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 
 | 目的 | 命令 |
 |---|---|
-| run 总览 | `DK runs baseline/runs` / `DK run <run_dir>` |
+| run 总览 | `DK runs baseline/runs_sac` / `DK run <run_dir>` |
 | 指标序列 | `DK series <run_dir> --metric <key> [--event tick]` |
 | 按需截面 | `DK dump <run_dir> --hypothesis "..." [--at-tick N]`（训练在线时生效） |
 | dump 总览 | `DK inspect <run_dir>/debug_dumps/critic_tick_NNNNNNNN` |
@@ -25,7 +25,7 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | slice 上下文 | `DK slice-ctx <run|ckpt|replay.pt> [--source-key K|--slice-id S|--sample-id N]` |
 | replay 人口学 | `DK replay <run_dir>` |
 | 精确复算 | `DK recompute <dump>`（全正则模式，应 `max_abs_diff≈0`） |
-| JSON API | `DK serve baseline/runs --port 8766` |
+| JSON API | `DK serve baseline/runs_sac --port 8766` |
 
 ## 1. 不收敛 / 回报平台期
 
