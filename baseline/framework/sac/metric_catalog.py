@@ -40,6 +40,7 @@ _ALLOWED_PREFIXES = {
         "replay.",
         "timing.",
         "debug.",
+        "regularizer.",
     ),
     "eval": ("eval.", "collection.", "timing.", "task."),
     "export": ("export.", "timing."),

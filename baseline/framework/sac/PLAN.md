@@ -2,9 +2,30 @@
 
 > 类型：记录
 
-> 状态：第一轮七阶段已全部收口（含用户接受的已知边界，见 DECISIONS.md P6.4~P6.7 与 G6.x/G7.x 联合收口表）。**第二轮（R2）深化**以 PPO 的实际设计与实现深度为对照，差距调研已完成，下方为本轮有效路线图；R2-0 细计划见 DECISIONS.md。
-> 本文顶部为本轮有效路线图；下方「历史参考区」完整保留第一轮路线图与更早规划，不构成本轮约束。
+> 状态：第一轮七阶段已全部收口；第二轮（R2-0 ~ R2-6）深化已全部收口（证据见 DECISIONS.md R2.17）。**第三轮（R3）SAC Debug 系统对齐 PPO** 已立项，总体规划见 [DESIGN_debug_system.md](DESIGN_debug_system.md)；下方为本轮有效路线图。
+> 本文顶部为本轮有效路线图；下方「历史参考区」完整保留第一/二轮路线图与更早规划，不构成本轮约束。
 > 原始需求：[bootstrip.md](bootstrip.md)。历史决策与阶段证据：[DECISIONS.md](DECISIONS.md)。
+
+## R3：SAC Debug 系统达到 PPO 同等深度（viewer 层）
+
+用户三条硬约束：
+
+1. 页面框架和 Layout 与 PPO 相同（代码不复用，交互概念拷而不引）；
+2. 页面逻辑与 PPO 保持一致（三模式入口/面包屑/上下文栏/共享游标/单 job 槽/离线等价）；
+3. 功能不照抄 PPO——dump 管线模块按 SAC 计算链重定义（§2 of DESIGN_debug_system.md）。
+
+阶段划分（详表含出口标准见 DESIGN_debug_system.md §5）：
+
+| 包 | 内容 |
+|---|---|
+| R3-W0 | 契约冻结：parity checklist + SAC 管线模块表 + API surface |
+| R3-W1 | run 级对齐：sectioned catalog + 六分区 dashboard + runs 索引/状态 + compare + log 分页 |
+| R3-W2 | dump 骨架：主页八模块卡 + pipeline 端点 + 面包屑/上下文栏 |
+| R3-W3 | 工具页批 1：⓪~⑤ + samples/trace/decomp/attribute + 共享 sample 游标 |
+| R3-W4 | 工具页批 2：⑥⑦⑧ + 单 job 槽 + POST dump-request |
+| R3-W5 | dogfood（R2_b/R4 在训 run 抓 u_floor dump 走全链路）+ 文档 + 回归收口 |
+
+# 历史参考区：第二轮路线图（R2-0 ~ R2-6，已全部收口）
 
 ## 本轮目标与定位
 
