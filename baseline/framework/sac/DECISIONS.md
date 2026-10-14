@@ -4048,3 +4048,70 @@ JSON 页（W4 接专属页）。
   其余端点名仍走通用 JSON 页。
 - **验证**：真实 dump 四 API 端点 + 四 SPA 路由 200；`node --check` 通过
   （修复一处未闭合模板串）；回归 **246 passed**。
+
+## R3.4a R3-W4 细计划：工具页批 2（⑥⑦⑧ + job 槽 + dump-request）
+
+**调研结论**：
+
+- tick 事件的 `clocks.collection_round`/`critic_tick` 齐全 → tickline
+  = 单遍扫 events.jsonl 取目标 round 的 tick 序列，dump tick 标
+  vMarker；数据量 ~200 tick/round，轻量。
+- `policy_drift` payload：det_action_drift(l2_mean/max/abs_max)、
+  logp_drift、per_channel q_drift_sa + q_drift_at_det_action、
+  alpha_delta、n_probe_rows —— 一次 no_grad forward，同步 GET 可承受。
+- `slice_context`：run 级端点（run dir → 最新 checkpoint replay.pt），
+  返回 live_frames/gaps/同 episode slices —— 同步 GET + loading。
+- PPO job 槽：全局单槽，`debug.py <kind>` 子进程、log 文件、
+  `/api/job-status` 轮询 → SAC 对应重端点 `grad-attr`（help 已标
+  HEAVY）；`recompute`/`drift` 也纳入同机制可选。
+
+### 设计
+
+**后端**：
+1. `analysis.round_tick_series(run_dir, round)` → `{round, ticks:
+   [{critic_tick, **metrics}]}`；server `/api/run/tickline?round=N`。
+2. `debugserver` 全局单 job 槽：`POST .../api/dump/<d>/job`
+   `{"kind","params"}` → spawn `debugkit <kind> <dump> [args]` stdout
+   → `<dump>/job_<kind>.json`；`GET /api/job-status`；`GET
+   .../api/dump/<d>/job-result?kind=`。kinds: grad-attr/drift/recompute。
+3. dump-request POST 已存在（W1），本轮接 UI。
+
+**前端**：
+- `page-tickline`（⑥）：round 内 tick 线图（q_mean/td/loss/actor/
+  α），dump tick 竖标；dump 模式显示不可用说明。
+- `page-postupdate`（⑦）：param_delta 分组表（actor/critic/opt/α，
+  by_key l2/max_abs/elements）+ update_stats 摘要。
+- `page-drift`（⑧）：drift 四卡 + slice-ctx 面板（游标 sample_id
+  预填；live_frames 表 + 同 episode slice 计数 + 缺口帧）。
+- 通用 tool 页对 job kinds 显示"run job"按钮 + 状态轮询 + 结果渲染。
+- run 页 dumps 卡：hypothesis 输入 + request dump 按钮 + 状态回显。
+- 卡映射：⑥→tickline ⑦→postupdate ⑧→drift；TOOL_PAGES 扩三页。
+
+### 出口标准
+
+- 真实 dump/run 三页 + tickline 数据正确；job 槽 POST→status→result
+  链路 200/409；dump-request UI 冒烟；JS check；回归绿。
+
+## R3.4b R3-W4 完成：工具页批 2 + job 槽 + dump-request
+
+- **`analysis.round_tick_series(run_dir, round)`**：单遍扫 events，
+  返回目标 round 全部 tick 行（critic_tick + 完整 metrics）；
+  server `/api/run/tickline?round=N`。
+- **单 job 槽**（PPO viewer 同构）：`POST .../api/dump/<d>/job`
+  `{kind, params}` → spawn `debugkit <kind>` 子进程，stdout(JSON)
+  → `job_<kind>.json`、stderr → `job_<kind>.log`（分离避免 warning
+  污染结果）；`GET /api/job-status` 全局；`GET .../job-result?kind=`。
+  kinds: grad-attr/drift/recompute；并发第二 job → 409。
+- **三专属页**：
+  - `tickline`（⑥）：round 内 tick 多线图（q_mean/td/loss/actor/α/
+    reg），dump tick 竖标；dump 模式提示需父 run。
+  - `postupdate`（⑦）：update_stats 摘要 + param_delta 分组
+    per-tensor l2/max_abs 条图。
+  - `drift`（⑧）：det action/logπ/Q drift 三卡 + slice-ctx 面板
+    （游标 sample_id 预填，live_frames/缺口/同 episode slices）。
+- **job UI**：通用 tool 页对 job kinds 显示 run job / last result /
+  状态轮询（2s）。
+- **dump-request UI**：W1 已接线（hypothesis 输入 + POST + 状态回显）。
+- **验证**：真实 run tickline round17=156 tick；drift job
+  POST→status→result 全链路；并发 job 409；SPA 三路由 200；
+  JS check；回归 **247 passed**。

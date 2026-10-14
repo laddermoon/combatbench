@@ -14,18 +14,23 @@ API surface (PPO-shaped, SAC semantics):
     GET /api/runs?q=&page=&size=&sort=&order=
     GET /api/experiments | /api/experiment/<name>
     GET /run/<n>/api/run/{info,metrics,dumps,videos,log,replay,
-                         slice-ctx,metrics-series}
+                         slice-ctx,metrics-series,tickline}
     GET /run/<n>/train.log            (streamed file)
     GET /run/<n>/videos/<file>        (mp4)
     GET /api/run/{...}                (run mode — root IS the run)
     GET /api/dump/<d>/<endpoint>      (dump endpoints; d resolves under
                                        run root or, in dump mode, root)
     POST /run/<n>/api/run/dump-request {hypothesis}
+    POST .../api/dump/<d>/job {kind, params}   (single job slot:
+                                       grad-attr|drift|recompute →
+                                       <dump>/job_<kind>.json)
+    GET  .../api/dump/<d>/job-result?kind=
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -153,6 +158,16 @@ def _dump_endpoint(path: str, root: Path, q: Dict[str, list]) -> Any:
             _resolve_dump(root, q),
             group_by=_opt("group_by", "collection_round"),
         )
+    if path == "job-result":
+        dump = _resolve_dump(root, q)
+        kind = _opt("kind", "")
+        if kind not in _JOB_KINDS:
+            raise KeyError(f"unknown job kind {kind!r}")
+        out = dump / f"job_{kind}.json"
+        if not out.exists():
+            raise KeyError(
+                f"no {kind} result for {dump.name} yet — POST a job first")
+        return json.loads(out.read_text(encoding="utf-8"))
     raise KeyError(f"unknown dump endpoint {path!r}")
 
 
@@ -187,6 +202,9 @@ def _run_endpoint(
         )
     if path == "replay":
         return analysis.replay_report(run_dir)
+    if path == "tickline":
+        return analysis.round_tick_series(
+            run_dir, int(_opt("round", 0)))
     if path == "slice-ctx":
         target = (
             Path(_opt("replay")) if _opt("replay") else run_dir
@@ -224,7 +242,7 @@ def _dispatch(
     if path == "/api/catalog":
         return _catalog()
     if path == "/api/job-status":
-        return {"job": None}  # single-job slot lands in R3-W4
+        return _job_status()
     if path == "/api/runs":
         return runview.query_runs_index(
             runview.list_runs(root),
@@ -306,6 +324,130 @@ class _StreamFile(Exception):
         super().__init__(str(path))
         self.path = Path(path)
         self.ctype = ctype
+
+
+# ---------------------------------------------------------------------------
+# Single heavy-compute job slot — one debugkit subprocess at a time for the
+# whole server (PPO viewer parity).  Results land in the dump dir as
+# job_<kind>.json so a later GET can pick them up.
+# ---------------------------------------------------------------------------
+
+_JOB_LOCK = threading.Lock()
+_JOB: Optional[Dict[str, Any]] = None
+
+_JOB_KINDS = {
+    "grad-attr": lambda p: ["--group-by",
+                          str(p.get("group_by", "collection_round"))],
+    "recompute": lambda p: [],
+    "drift": lambda p: [],
+}
+
+
+def _job_status() -> Dict[str, Any]:
+    with _JOB_LOCK:
+        job = _JOB
+        if job is None:
+            return {"job": None}
+        rc = job["proc"].poll()
+        if rc is not None:
+            for k in ("log_f", "err_f"):
+                if job.get(k) is not None:
+                    job[k].close()
+                    job[k] = None
+        status = "running" if rc is None else ("done" if rc == 0 else "error")
+        return {"job": {
+            "kind": job["kind"],
+            "dump": job["dump"],
+            "status": status,
+            "returncode": rc,
+            "started": job["started"],
+            "log": job["log"],
+        }}
+
+
+def _start_job(kind: str, dump_dir: Path,
+               params: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    """Spawn `debugkit <kind> <dump>` writing stdout to job_<kind>.json."""
+    global _JOB
+    import subprocess
+    import sys
+
+    if kind not in _JOB_KINDS:
+        return 400, {"error": f"unknown job kind {kind!r}"}
+    with _JOB_LOCK:
+        if _JOB is not None and _JOB["proc"].poll() is None:
+            j = _JOB
+            return 409, {
+                "error": f"a {j['kind']} job is already running "
+                         f"({j['dump']})",
+            }
+        repo_root = Path(__file__).resolve().parents[3]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (
+            str(repo_root) + os.pathsep + env.get("PYTHONPATH", ""))
+        out_path = dump_dir / f"job_{kind}.json"
+        err_path = dump_dir / f"job_{kind}.log"
+        # stdout carries the JSON result; stderr (warnings, tracebacks)
+        # goes to a separate log so job_<kind>.json stays parseable.
+        out_f = open(out_path, "w", encoding="utf-8")
+        err_f = open(err_path, "w", encoding="utf-8")
+        cmd = [
+            sys.executable, "-B",
+            "-m", "baseline.framework.sac.debugkit",
+            kind, str(dump_dir),
+            *_JOB_KINDS[kind](params or {}),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=out_f, stderr=err_f,
+                cwd=str(repo_root), env=env)
+        except OSError as e:
+            out_f.close()
+            err_f.close()
+            return 500, {"error": f"failed to spawn {kind}: {e}"}
+        _JOB = {
+            "kind": kind, "dump": dump_dir.name, "proc": proc,
+            "log_f": out_f, "err_f": err_f, "started": time.time(),
+            "log": str(err_path), "result": str(out_path),
+        }
+        return 200, {
+            "ok": True, "kind": kind, "dump": dump_dir.name,
+            "result": str(out_path),
+        }
+
+
+def _post_job(root: Path, mode: str, path: str,
+              body: bytes) -> Tuple[int, Dict[str, Any]]:
+    """POST .../api/dump/<d>/job {"kind": ..., "params": {...}}."""
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except json.JSONDecodeError as exc:
+        return 400, {"error": f"bad json body: {exc}"}
+    kind = str(payload.get("kind") or "")
+    params = payload.get("params") or {}
+    # resolve the dump: run-mode path embeds the dump name; dump-mode
+    # root IS the dump.
+    if mode == "dump":
+        dump_dir = root
+    else:
+        m = re.match(r"^/api/dump/([^/]+)/job$", path)
+        run_name = None
+        dump_name = None
+        if path.startswith("/run/"):
+            m = re.match(
+                r"^/run/([^/]+)/api/dump/([^/]+)/job$", path)
+            if m:
+                run_name = m.group(1)
+                dump_name = m.group(2)
+        elif m:
+            dump_name = m.group(1)
+        if not dump_name:
+            return 400, {"error": f"bad job path {path!r}"}
+        base = _resolve_run(root, run_name) if run_name else root
+        dump_dir = base / "debug_dumps" / dump_name
+        if not dump_dir.is_dir():
+            return 404, {"error": f"dump not found: {dump_dir}"}
+    return _start_job(kind, dump_dir, params)
 
 
 def _post_dump_request(run_dir: Path, body: bytes) -> Dict[str, Any]:
@@ -431,6 +573,9 @@ def make_server(
                         run_dir = _resolve_run(root, run_name)
                     return self._send(
                         200, _post_dump_request(run_dir, body))
+                if path.endswith("/job") and "/api/dump/" in path:
+                    code, resp = _post_job(root, mode, path, body)
+                    return self._send(code, resp)
                 return self._send(404, {"error": f"unknown POST {path}"})
             except KeyError as exc:
                 self._send(409, {"error": str(exc)})

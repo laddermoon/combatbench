@@ -113,6 +113,37 @@ def test_pipeline_summary_nine_stages(tmp_path):
     assert stages["drift"]["consistency_checked"] is True
 
 
+def test_round_tick_series_filters_by_round(tmp_path):
+    """R3-W4: tickline endpoint — all tick events of one collection
+    round, each row carrying critic_tick + the full metric dict."""
+    run_dir = tmp_path / "run"
+    (run_dir / "metrics").mkdir(parents=True)
+    ev_path = run_dir / "metrics" / "events.jsonl"
+    with ev_path.open("w", encoding="utf-8") as fh:
+        for rnd, tick, loss in ((1, 64, 2.0), (1, 128, 4.0),
+                                (2, 192, 6.0), (2, 256, 8.0)):
+            fh.write(json.dumps({
+                "event_type": "tick",
+                "clocks": {"collection_round": rnd,
+                           "critic_tick": tick},
+                "metrics": {"critic.loss": loss, "critic.q_mean": 1.0},
+            }) + "\n")
+        fh.write(json.dumps({
+            "event_type": "round",
+            "clocks": {"collection_round": 2, "critic_tick": 300},
+            "metrics": {"collection.episodes": 64.0},
+        }) + "\n")
+    out = analysis.round_tick_series(run_dir, 2)
+    assert out["collection_round"] == 2
+    assert out["n_ticks"] == 2
+    assert [t["critic_tick"] for t in out["ticks"]] == [192, 256]
+    assert out["ticks"][0]["critic.loss"] == 6.0
+    assert "critic.q_mean" in out["keys"]
+    # different round → different window
+    assert analysis.round_tick_series(run_dir, 1)["n_ticks"] == 2
+    assert analysis.round_tick_series(run_dir, 9)["n_ticks"] == 0
+
+
 def test_param_delta_counts_nested_critic_state(tmp_path):
     """R2-W03 (G6): critic state dicts nest by group → network/optimizer;
     a shallow loop reported elements=0 despite real weight changes."""

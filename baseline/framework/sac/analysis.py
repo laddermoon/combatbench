@@ -171,6 +171,35 @@ def metric_series(
     }
 
 
+def round_tick_series(
+    run_dir: Path, collection_round: int,
+) -> Dict[str, Any]:
+    """All tick events of one collection round — the in-round update
+    timeline a critic-tick dump sits on (module ⑥).  Single pass over
+    events.jsonl; each row carries its critic_tick plus the full tick
+    metric dict so the viewer can chart any key."""
+    ticks: List[Dict[str, Any]] = []
+    for ev in iter_events(run_dir):
+        if ev.get("event_type") != "tick":
+            continue
+        clocks = ev.get("clocks") or {}
+        if clocks.get("collection_round") != int(collection_round):
+            continue
+        ticks.append({
+            "critic_tick": clocks.get("critic_tick"),
+            **(ev.get("metrics") or {}),
+        })
+    keys = sorted(
+        {k for t in ticks for k in t if k != "critic_tick"})
+    return {
+        "run_dir": str(run_dir),
+        "collection_round": int(collection_round),
+        "n_ticks": len(ticks),
+        "keys": keys,
+        "ticks": ticks,
+    }
+
+
 def metric_catalog(prefix: Optional[str] = None) -> List[Dict[str, str]]:
     return [
         {"name": s.name, "event_type": s.event_type,

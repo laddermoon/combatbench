@@ -189,6 +189,7 @@
   .smp-table tr.smp-row { cursor: pointer; }
   .smp-table tr.smp-row:hover { background: var(--panel-alt); }
   .smp-table tr.smp-row.smp-sel { background: var(--accent-dim); }
+  .part-table tr.smp-sel { background: var(--accent-dim); }
   .smp-scroll { max-height: 560px; overflow-y: auto; }
 
   .hist { display: flex; align-items: flex-end; gap: 1px; height: 56px; margin: 8px 0 4px; }
@@ -442,7 +443,32 @@
       <div id="atr-body"><div class="loading">loading...</div></div>
     </div>
 
-    <!-- Generic dump tool page (W4 tools still render raw JSON here) -->
+    <!-- Tool ⑥ Tickline — the in-round update timeline this dump sits
+         on: tick-level metric curves of the dump's collection_round,
+         with the dump's critic_tick marked. -->
+    <div class="page" id="page-tickline">
+      <div class="tool-head" id="tkl-tool-head"></div>
+      <div id="tkl-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Tool ⑦ Post Update — what this update did to the trainer:
+         param_delta per group (actor/critic/optimizers/α) plus the
+         captured update_stats scalars. -->
+    <div class="page" id="page-postupdate">
+      <div class="tool-head" id="pu-tool-head"></div>
+      <div id="pu-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Tool ⑧ Drift & Context — fixed-input pre/post policy+Q drift
+         over the dump batch, plus slice-ctx (replay live-frame view)
+         anchored on the shared sample cursor. -->
+    <div class="page" id="page-drift">
+      <div class="tool-head" id="drf-tool-head"></div>
+      <div id="drf-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Generic dump tool page (grad-attr runs via the job slot here;
+           remaining endpoints render raw JSON) -->
     <div class="page" id="page-tool">
       <div class="tool-head" id="tool-head"></div>
       <div class="card">
@@ -475,10 +501,10 @@
   </div>
 
   <div id="context-bar">
-    <div class="ctx-item" data-pages="run home tool samples trace decomp attribute"><span class="ctx-label">Run:</span> <span class="ctx-value" id="ctx-run">-</span></div>
-    <div class="ctx-item" data-pages="home tool samples trace decomp attribute"><span class="ctx-label">Dump:</span> <span class="ctx-value" id="ctx-dump">-</span></div>
+    <div class="ctx-item" data-pages="run home tool samples trace decomp attribute tickline postupdate drift"><span class="ctx-label">Run:</span> <span class="ctx-value" id="ctx-run">-</span></div>
+    <div class="ctx-item" data-pages="home tool samples trace decomp attribute tickline postupdate drift"><span class="ctx-label">Dump:</span> <span class="ctx-value" id="ctx-dump">-</span></div>
     <div class="ctx-item" data-pages="run"><span class="ctx-label">Round:</span> <span class="ctx-value" id="ctx-round">-</span></div>
-    <div class="ctx-item" data-pages="tool samples trace decomp attribute"><span class="ctx-label">Sample:</span> <span class="ctx-value" id="ctx-sample">-</span></div>
+    <div class="ctx-item" data-pages="tool samples trace decomp attribute drift"><span class="ctx-label">Sample:</span> <span class="ctx-value" id="ctx-sample">-</span></div>
   </div>
 </div>
 
@@ -535,12 +561,16 @@
     trace: $('page-trace'),
     decomp: $('page-decomp'),
     attribute: $('page-attribute'),
+    tickline: $('page-tickline'),
+    postupdate: $('page-postupdate'),
+    drift: $('page-drift'),
     tool: $('page-tool'),
     compare: $('page-compare'),
   };
 
   // Pages backed by dedicated renderers vs. generic JSON tool page.
-  const TOOL_PAGES = {samples: 1, trace: 1, decomp: 1, attribute: 1};
+  const TOOL_PAGES = {samples: 1, trace: 1, decomp: 1, attribute: 1,
+                      tickline: 1, postupdate: 1, drift: 1};
 
   // --- URL helpers ---
   // Runs mode: run-scoped API under /run/<name>/api/...; dump-scoped under
@@ -1800,14 +1830,14 @@
      desc: 'shannon α 自适应；U 模式 U(s) 分布 vs floor。',
      page: 'decomp', focus: 'reg'},
     {id: 'tickline', num: '⑥', title: 'Update Process',
-     desc: '本 dump 在 round 内 tick 时间线上的位置（W4）。',
-     tool: 'inspect'},
+     desc: '本 dump 所在 round 的 tick 时间线：update 如何一步步走到这次捕获。',
+     page: 'tickline'},
     {id: 'postupdate', num: '⑦', title: 'Post Update',
-     desc: '参数增量：trainer_pre/post 的 per-layer Δ（W4）。',
-     tool: 'inspect'},
+     desc: '参数增量：trainer_pre/post 的 per-layer Δ 与 update 统计。',
+     page: 'postupdate'},
     {id: 'drift', num: '⑧', title: 'Drift & Context',
-     desc: '固定输入上前后策略漂移 + slice-ctx 回看（W4）。',
-     tool: 'drift'},
+     desc: '固定输入上前后策略/Q 漂移 + slice-ctx 回看游标样本的 replay 邻域。',
+     page: 'drift'},
   ];
 
   async function loadDump(name) {
@@ -2509,6 +2539,253 @@
     $('atr-body').innerHTML = html;
   }
 
+  // --- Tool ⑥ Tickline ---
+  const TKL_KEYS = [
+    'critic.q_mean', 'critic.td_mean', 'critic.loss',
+    'actor.loss', 'temperature.alpha', 'regularizer.shannon',
+    'actor.reg_term', 'actor.log_prob_mean',
+  ];
+
+  async function renderTickline() {
+    const head = $('tkl-tool-head');
+    const p = state.dumpPipeline || {};
+    const round = (p.clocks || {}).collection_round;
+    const dumpTick = p.critic_tick;
+    head.innerHTML =
+      `<span class="t-title">tickline · ${escapeHtml(state.dumpName || 'dump')}</span>` +
+      `<span class="t-info">round ${round ?? '?'} · dump @tick ${dumpTick ?? '?'}</span>`;
+    if (state.rootMode === 'dump' || state.mode !== 'run') {
+      $('tkl-body').innerHTML = '<div class="card"><div class="desc">' +
+        'tickline needs the parent run — open this dump from its run ' +
+        'page (runs root mode).</div></div>';
+      return;
+    }
+    $('tkl-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(
+        api('run/tickline') + `?round=${round}`);
+      _renderTickline(d, dumpTick);
+    } catch (e) {
+      $('tkl-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderTickline(d, dumpTick) {
+    const ticks = d.ticks || [];
+    if (!ticks.length) {
+      $('tkl-body').innerHTML = '<div class="card"><div class="desc">' +
+        `no tick events found for round ${d.collection_round} — the ` +
+        'dump may predate tick metric emission.</div></div>';
+      return;
+    }
+    const keys = TKL_KEYS.filter(k =>
+      ticks.some(t => typeof t[k] === 'number'));
+    const markIdx = ticks.findIndex(t => t.critic_tick === dumpTick);
+    let html = `<div class="card"><h2>Round ${d.collection_round} · ` +
+      `${d.n_ticks} ticks <span class="gs-scope">dump @critic_tick ` +
+      `${dumpTick}${markIdx < 0 ? ' (outside this round)' : ''}</span></h2>`;
+    html += '<div id="tkl-charts"></div></div>';
+    $('tkl-body').innerHTML = html;
+    const cont = $('tkl-charts');
+    keys.forEach((k, i) => {
+      const box = {
+        title: k,
+        series: [{
+          label: k,
+          data: ticks.map(t =>
+            typeof t[k] === 'number' ? t[k] : NaN),
+          color: CHART_COLORS[i % CHART_COLORS.length],
+        }],
+        vMarkers: markIdx >= 0 ? [markIdx] : [],
+      };
+      cont.appendChild(chartBox(box, `tkl${i}`, markIdx));
+    });
+  }
+
+  // --- Tool ⑦ Post Update ---
+  async function renderPostupdate() {
+    $('pu-tool-head').innerHTML =
+      `<span class="t-title">post-update · ${escapeHtml(state.dumpName || 'dump')}</span>`;
+    $('pu-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(api('dump/inspect'));
+      _renderPostupdate(d);
+    } catch (e) {
+      $('pu-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderPostupdate(d) {
+    const pd = d.param_delta || {};
+    const us = d.update_stats || {};
+    const kv = (k, v) =>
+      `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
+    let html = '<div class="trc-grid">';
+    html += `<div class="card"><h2>Update scalars <span class="gs-scope">captured update_stats</span></h2>` +
+      '<div class="stage-stats">' +
+      kv('critic_loss', fmt(us.critic_loss, 5)) +
+      kv('actor_loss', fmt(us.actor_loss, 4)) +
+      kv('α_loss', fmt(us.alpha_loss, 4)) +
+      kv('α', fmt(us.alpha, 6)) +
+      kv('|∇actor|', fmt(us.grad_norm_actor, 4)) +
+      kv('entropy', fmt(us.entropy_proxy_mean, 4)) +
+      kv('pair1 tgt/act', `${fmt(us.target_pair1_frac, 3)}/${fmt(us.actor_pair1_frac, 3)}`) +
+      '</div></div>';
+    html += `<div class="card"><h2>Δ summary <span class="gs-scope">|post − pre| over state dicts</span></h2>` +
+      '<div class="stage-stats">' +
+      Object.entries(pd).filter(([, v]) => v && typeof v === 'object')
+        .map(([k, v]) => kv(
+          k.replace('_state_dict', ''),
+          `l2 ${fmt(v.l2, 5)} · max ${fmt(v.max_abs_delta, 5)}`))
+        .join('') +
+      '</div></div>';
+    Object.entries(pd).forEach(([group, v]) => {
+      if (!v || typeof v !== 'object' || !v.by_key) return;
+      const keys = Object.entries(v.by_key)
+        .sort((a, b) => (b[1].l2 || 0) - (a[1].l2 || 0));
+      const mx = Math.max(...keys.map(([, s]) => s.l2 || 0), 1e-12);
+      html += `<div class="card full"><h2>${escapeHtml(group)} ` +
+        `<span class="gs-scope">${keys.length} tensors · ` +
+        `${v.elements ?? '-'} elements</span></h2>`;
+      keys.forEach(([k, s]) => {
+        const w = (s.l2 || 0) / mx * 100;
+        html += `<div class="bar-row">` +
+          `<span class="bar-label" title="${escapeHtml(k)}">${escapeHtml(k.length > 34 ? '…' + k.slice(-33) : k)}</span>` +
+          `<div class="bar-track"><i style="width:${w}%;background:var(--accent)"></i></div>` +
+          `<span class="bar-val">${fmt(s.l2, 5)} / ${fmt(s.max_abs_delta, 4)}</span></div>`;
+      });
+      html += '</div>';
+    });
+    html += '</div>';
+    $('pu-body').innerHTML = html;
+  }
+
+  // --- Tool ⑧ Drift & Context ---
+  async function renderDrift() {
+    $('drf-tool-head').innerHTML =
+      `<span class="t-title">drift · ${escapeHtml(state.dumpName || 'dump')}</span>`;
+    $('drf-body').innerHTML = '<div class="loading">loading...</div>';
+    let drift = null, err = null;
+    try {
+      drift = await fetchJson(api('dump/drift'));
+    } catch (e) { err = e; }
+    _renderDrift(drift, err);
+  }
+
+  function _renderDrift(d, err) {
+    const kv = (k, v) =>
+      `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
+    let html = '<div class="trc-grid">';
+    if (err) {
+      html += `<div class="card"><div class="error-msg">${escapeHtml(err.message)}</div></div>`;
+    } else {
+      const ad = d.det_action_drift || {};
+      const lp = d.logp_drift || {};
+      html += `<div class="card"><h2>Policy drift <span class="gs-scope">` +
+        `deterministic action + logπ on ${d.n_probe_rows} fixed rows</span></h2>` +
+        '<div class="stage-stats">' +
+        kv('Δa_det l2 μ', fmt(ad.l2_mean, 5)) +
+        kv('Δa_det l2 max', fmt(ad.l2_max, 5)) +
+        kv('Δa_det |max|', fmt(ad.abs_max, 5)) +
+        kv('Δlogπ μ', fmt(lp.mean, 5)) +
+        kv('Δlogπ |max|', fmt(lp.abs_max, 5)) +
+        kv('Δlogα', fmt(d.alpha_delta, 6)) +
+        '</div></div>';
+      html += `<div class="card"><h2>Q drift <span class="gs-scope">` +
+        'per channel · at recorded action / at post-det action</span></h2>' +
+        '<table class="part-table"><thead><tr><th>channel</th>' +
+        '<th>ΔQ(s,a) μ</th><th>ΔQ(s,a)|max|</th>' +
+        '<th>ΔQ(s,π′) μ</th><th>ΔQ(s,π′)|max|</th></tr></thead><tbody>' +
+        Object.entries(d.per_channel || {}).map(([ch, p]) =>
+          `<tr><td>${escapeHtml(ch)}</td>` +
+          `<td class="num">${fmt(p.q_drift_sa?.mean, 5)}</td>` +
+          `<td class="num">${fmt(p.q_drift_sa?.abs_max, 5)}</td>` +
+          `<td class="num">${fmt(p.q_drift_at_det_action?.mean, 5)}</td>` +
+          `<td class="num">${fmt(p.q_drift_at_det_action?.abs_max, 5)}</td></tr>`)
+          .join('') +
+        '</tbody></table></div>';
+    }
+    // slice-ctx panel — anchored on the shared sample cursor
+    html += `<div class="card full"><h2>Slice context <span class="gs-scope">` +
+      'replay live frames of the cursor sample\'s slice (run-level)</span></h2>' +
+      `<div class="gamma-row"><span class="t-info">sample_id</span>` +
+      `<input type="number" id="drf-sid" value="${state.selectedSampleId ?? ''}" ` +
+      `style="width:110px">` +
+      `<button class="t-nav" id="drf-slice-run">slice-ctx</button></div>` +
+      `<div id="drf-slice-body"><div class="desc">` +
+      'rebuilds the live frames of one slice from the run\'s latest ' +
+      'replay.pt — which frames still exist, which were FIFO-evicted, ' +
+      'and the sibling slices of the same episode.</div></div></div>';
+    html += '</div>';
+    $('drf-body').innerHTML = html;
+    const runSlice = async () => {
+      const v = parseInt($('drf-sid').value);
+      if (isNaN(v)) {
+        $('drf-slice-body').innerHTML =
+          '<div class="error-msg">enter a sample_id (shared cursor ' +
+          'pre-fills it from samples/trace)</div>';
+        return;
+      }
+      setSampleCursor(v);
+      if (state.mode !== 'run') {
+        $('drf-slice-body').innerHTML =
+          '<div class="error-msg">slice-ctx needs the parent run ' +
+          '(runs root mode)</div>';
+        return;
+      }
+      $('drf-slice-body').innerHTML = '<div class="loading">loading replay...</div>';
+      try {
+        const r = await fetchJson(
+          api('run/slice-ctx') + `?sample_id=${v}`);
+        _renderSliceCtx(r);
+      } catch (e) {
+        $('drf-slice-body').innerHTML =
+          `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      }
+    };
+    $('drf-slice-run').addEventListener('click', runSlice);
+    $('drf-sid').addEventListener('keydown', e => {
+      if (e.key === 'Enter') runSlice();
+    });
+  }
+
+  function _renderSliceCtx(r) {
+    const frames = r.live_frames || [];
+    const gaps = r.missing_frame_indices || [];
+    const sibs = r.same_episode_live_slices || {};
+    let html = '<div class="stage-stats">' +
+      _kvSpan('slice', r.slice_id) +
+      _kvSpan('live frames', r.live_count) +
+      _kvSpan('frame range', (r.frame_index_range || []).join('–')) +
+      _kvSpan('evicted gaps', gaps.length) +
+      '</div>';
+    html += '<table class="part-table"><thead><tr>' +
+      '<th>frame</th><th>sample_id</th><th>draws</th><th>r_sum</th>' +
+      '<th>term</th></tr></thead><tbody>' +
+      frames.map(f =>
+        `<tr${f.sample_id === state.selectedSampleId ? ' class="smp-sel"' : ''}>` +
+        `<td class="num">${f.frame_index}</td>` +
+        `<td class="num">${f.sample_id}</td>` +
+        `<td class="num">${f.draw_count}</td>` +
+        `<td class="num">${fmt(f.reward_sum, 4)}</td>` +
+        `<td>${f.terminated ? 'T' : ''}${f.truncated ? '✂' : ''}</td></tr>`)
+        .join('') +
+      '</tbody></table>';
+    if (gaps.length) {
+      html += `<div class="desc">evicted frame indices: ` +
+        `${gaps.slice(0, 30).join(', ')}${gaps.length > 30 ? ' …' : ''}</div>`;
+    }
+    html += '<div class="desc">same-episode live slices: ' +
+      Object.entries(sibs).map(([k, v]) =>
+        `${escapeHtml(k.split('/').pop())}×${v}`).join(' · ') +
+      ` — ${escapeHtml(r.note || '')}</div>`;
+    $('drf-slice-body').innerHTML = html;
+  }
+
   // --- Generic dump tool page (W1 stub) ---
   const TOOL_PARAMS = {
     samples: ['sort', 'channel', 'limit'],
@@ -2522,12 +2799,20 @@
     inspect: [],
   };
 
+  // Kinds that run through the single background job slot instead of a
+  // synchronous GET (grad-attr is the HEAVY recompute; recompute/drift
+  // can also go through it).
+  const JOB_KINDS = {'grad-attr': 1, 'recompute': 1, 'drift': 1};
+
   async function renderTool() {
     const ep = state.toolEp;
     const params = TOOL_PARAMS[ep] || [];
+    const isJob = !!JOB_KINDS[ep];
     $('tool-title').textContent = `dump/${ep}`;
-    $('tool-desc').textContent =
-      `analysis.${ep} — W1 通用视图（模块专属页面在 W3/W4）`;
+    $('tool-desc').textContent = isJob
+      ? `analysis.${ep} — runs in the single background job slot ` +
+        `(debugkit subprocess → job_${ep}.json)`
+      : `analysis.${ep} — synchronous generic view`;
     const head = $('tool-head');
     head.innerHTML = `<span class="t-title">${escapeHtml(state.dumpName)}</span>` +
       params.map(p => {
@@ -2541,8 +2826,9 @@
           return `<span class="t-sel"><span class="t-info">group</span>` +
             `<select id="tp-group_by">` +
             `<option value="collection_round">collection_round</option>` +
-            `<option value="slice_id">slice_id</option>` +
-            `<option value="channel">channel</option>` +
+            `<option value="policy_fingerprint">policy_fingerprint</option>` +
+            `<option value="explore_factor">explore_factor</option>` +
+            `<option value="random_start">random_start</option>` +
             `</select></span>`;
         }
         const w = p === 'source_key' || p === 'slice_id' ? 140 : 70;
@@ -2550,7 +2836,11 @@
           `<input type="text" id="tp-${p}" value="${escapeHtml(String(v))}" ` +
           `style="width:${w}px"></span>`;
       }).join('') +
-      `<button class="t-nav" id="tool-run">run</button>`;
+      (isJob
+        ? `<button class="t-nav" id="tool-run">run job</button>` +
+          `<button class="t-nav" id="tool-last">last result</button>` +
+          `<span class="t-info" id="tool-job-status"></span>`
+        : `<button class="t-nav" id="tool-run">run</button>`);
     if (params.includes('sort')) $('tp-sort').value = state.toolParams.sort;
     if (params.includes('group_by'))
       $('tp-group_by').value = state.toolParams.group_by;
@@ -2559,10 +2849,87 @@
       if (el) el.addEventListener('input', () => {
         state.toolParams[p] = el.value;
       });
-      const sel = $(`tp-${p}`) || $(p === 'sort' ? 'tp-sort' : 'tp-group_by');
     });
-    $('tool-run').addEventListener('click', () => _runTool());
-    await _runTool();
+    if (isJob) {
+      $('tool-run').addEventListener('click', () => _startToolJob());
+      $('tool-last').addEventListener('click', () => _loadToolJobResult());
+      await _pollToolJob(true);
+    } else {
+      $('tool-run').addEventListener('click', () => _runTool());
+      await _runTool();
+    }
+  }
+
+  function _toolJobUrl() {
+    const pre = (state.rootMode === 'runs' && state.runName)
+      ? `/run/${encodeURIComponent(state.runName)}` : '';
+    const d = state.rootMode === 'dump'
+      ? '_' : encodeURIComponent(state.dumpName);
+    return `${pre}/api/dump/${d}/job`;
+  }
+
+  async function _startToolJob() {
+    const st = $('tool-job-status');
+    try {
+      const params = {};
+      if (state.toolParams.group_by)
+        params.group_by = state.toolParams.group_by;
+      const r = await fetch(_toolJobUrl(), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({kind: state.toolEp, params}),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'job failed');
+      st.textContent = `${state.toolEp} job started…`;
+      st.style.color = 'var(--muted)';
+      _pollToolJob(false);
+    } catch (e) {
+      st.textContent = e.message;
+      st.style.color = 'var(--red)';
+    }
+  }
+
+  async function _pollToolJob(silent) {
+    const st = $('tool-job-status');
+    if (!st) return;
+    try {
+      const d = await fetchJson('/api/job-status');
+      const job = d.job;
+      if (job && job.status === 'running') {
+        st.textContent = `${job.kind} running…`;
+        st.style.color = 'var(--muted)';
+        setTimeout(() => _pollToolJob(false), 2000);
+        return;
+      }
+      if (job && job.status === 'done' &&
+          job.kind === state.toolEp && job.dump === state.dumpName) {
+        st.textContent = `${job.kind} done — loading result`;
+        st.style.color = 'var(--green)';
+        await _loadToolJobResult();
+        return;
+      }
+      if (!silent && job && job.status === 'error')
+        st.textContent = `${job.kind} failed (rc=${job.returncode})`;
+      else if (!silent && !job)
+        st.textContent = 'no job running';
+    } catch (e) {
+      if (!silent) st.textContent = e.message;
+    }
+  }
+
+  async function _loadToolJobResult() {
+    const body = $('tool-body');
+    body.innerHTML = '<div class="loading">loading result...</div>';
+    try {
+      const d = await fetchJson(
+        api('dump/job-result') + `?kind=${encodeURIComponent(state.toolEp)}`);
+      body.innerHTML =
+        `<pre class="json-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>`;
+    } catch (e) {
+      body.innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
   }
 
   async function _runTool() {
@@ -2880,7 +3247,9 @@
       state.toolEp = mm[1];
       showPage(mm[1]);
       ({samples: renderSamples, trace: renderTrace,
-        decomp: renderDecomp, attribute: renderAttribute})[mm[1]]();
+        decomp: renderDecomp, attribute: renderAttribute,
+        tickline: renderTickline, postupdate: renderPostupdate,
+        drift: renderDrift})[mm[1]]();
       return;
     }
     if (mm && TOOL_PARAMS.hasOwnProperty(mm[1])) {
