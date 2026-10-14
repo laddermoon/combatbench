@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 from mocap.humanoid21.robot_kin import CONTROLLED_JOINTS, joint_limits
@@ -49,16 +50,32 @@ class MotionTrackRewarder(BaseObserverPlugin):
 
         kn = mt['ref_keypoint_names']
         self_kp = mt['self_keypoints']
-        sq = []
+        sq_world, sq_rel = [], []
+        ref_kp = np.asarray(mt['ref_keypoints'], dtype=np.float64)
+        if 'pelvis' in kn and 'pelvis' in self_kp:
+            pi = kn.index('pelvis')
+            p_ref_origin = ref_kp[pi]
+            p_self_origin = np.asarray(self_kp['pelvis'], dtype=np.float64)
+            q_ref = np.asarray(mt['ref_root_quat'], dtype=np.float64)
+            R_ref = R.from_quat([q_ref[1], q_ref[2], q_ref[3], q_ref[0]])
+            q_self = np.asarray(core['root_rot'], dtype=np.float64)
+            R_self = R.from_quat([q_self[1], q_self[2], q_self[3], q_self[0]])
+        else:
+            p_ref_origin = p_self_origin = None
         for n in KP_SUBSET:
             if n in kn and n in self_kp:
                 j = kn.index(n)
-                sq.append(float(np.sum(
-                    (np.asarray(self_kp[n], dtype=np.float64)
-                     - np.asarray(mt['ref_keypoints'][j], dtype=np.float64)) ** 2)))
-        kp_mse = float(np.mean(sq)) if sq else 0.0
+                p_self = np.asarray(self_kp[n], dtype=np.float64)
+                p_ref = ref_kp[j]
+                sq_world.append(float(np.sum((p_self - p_ref) ** 2)))
+                if p_ref_origin is not None:
+                    e_self = R_self.inv().as_matrix() @ (p_self - p_self_origin)
+                    e_ref = R_ref.inv().as_matrix() @ (p_ref - p_ref_origin)
+                    sq_rel.append(float(np.sum((e_self - e_ref) ** 2)))
+        kp_mse_world = float(np.mean(sq_world)) if sq_world else 0.0
+        kp_mse = float(np.mean(sq_rel)) if sq_rel else kp_mse_world
         r_kp = float(np.exp(-40.0 * kp_mse))
-        kp_err_m = float(np.sqrt(kp_mse))
+        kp_err_m = float(np.sqrt(kp_mse_world))  # 世界系误差仅作指标上报
 
         z_err = float(core['root_pos'][2] - mt['ref_root_pos'][2])
         r_height = float(np.exp(-20.0 * z_err ** 2))
@@ -68,7 +85,8 @@ class MotionTrackRewarder(BaseObserverPlugin):
         return {
             'reward': reward, 'pose': r_pose, 'vel': r_vel,
             'kp': r_kp, 'height': r_height,
-            'kp_err_m': kp_err_m, 'q_rmse_deg': q_rmse_deg,
+            'kp_err_m': kp_err_m, 'kp_err_rel_m': float(np.sqrt(kp_mse)),
+            'q_rmse_deg': q_rmse_deg,
             'frame': float(mt['frame']), 'phase': float(mt['phase']),
         }
 
