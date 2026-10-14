@@ -4,6 +4,7 @@ Checks per clip (joint_space=humanoid21_v2 only):
   - joint range violations & max overshoot
   - hamstring fixed-tendon coupling: 0.5*hip_y - 0.5*knee in [-0.3, 2.0] rad
   - joint velocity spikes / frame-to-frame jumps vs slew cap
+  - root rotation jumps and inverted head-to-pelvis frames
   - foot penetration below ground
   - nonfinite / missing frames (valid_mask)
   - retarget residuals p95/max per chain
@@ -22,6 +23,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,8 +37,8 @@ FOOT_Z_MIN = -0.005             # m — penetration tolerance
 TENDON_LO, TENDON_HI = -0.3, 2.0  # hamstring: 0.5*hip_y - 0.5*knee range
 
 KINETIC_ISSUES = ("joint_limit_violations", "tendon_violations",
-                  "joint_velocity_spike", "frame_jump",
-                  "foot_penetration", "invalid_frames")
+                  "joint_velocity_spike", "frame_jump", "root_orientation_jump",
+                  "head_below_pelvis", "foot_penetration", "invalid_frames")
 
 
 def check_clip(npz_path: Path) -> dict:
@@ -78,6 +80,12 @@ def check_clip(npz_path: Path) -> dict:
     fl = kp[:, kn.index("foot_left"), 2]
     fr_ = kp[:, kn.index("foot_right"), 2]
     foot_min = float(min(fl.min(), fr_.min()))
+    head_below_pelvis = int((kp[:, kn.index("head"), 2] <
+                             kp[:, kn.index("pelvis"), 2]).sum())
+    root_quat = np.asarray(d["root_quat"], float)
+    root_rot = Rotation.from_quat(root_quat[:, [1, 2, 3, 0]])
+    root_jump_deg = float(np.rad2deg(
+        (root_rot[1:] * root_rot[:-1].inv()).magnitude().max()))
 
     nonfinite = int((~np.isfinite(q)).sum() + (~np.isfinite(kp)).sum())
     invalid = int((~valid).sum())
@@ -100,6 +108,10 @@ def check_clip(npz_path: Path) -> dict:
         issues.append("joint_velocity_spike")
     if max_jump > np.rad2deg(SLEW_CAP) + 0.5:
         issues.append("frame_jump")
+    if root_jump_deg > 25.0:
+        issues.append("root_orientation_jump")
+    if head_below_pelvis:
+        issues.append("head_below_pelvis")
     if foot_min < FOOT_Z_MIN:
         issues.append("foot_penetration")
     if invalid or nonfinite:
@@ -109,6 +121,8 @@ def check_clip(npz_path: Path) -> dict:
             "max_overshoot_deg": round(max_over, 2),
             "tendon": tendon,
             "max_frame_jump_deg": round(max_jump, 2),
+            "root_orientation_jump_deg": round(root_jump_deg, 2),
+            "head_below_pelvis_frames": head_below_pelvis,
             "max_joint_vel_rad_s": round(vel_max, 1),
             "foot_z_min": round(foot_min, 4),
             "nonfinite": nonfinite, "invalid_frames": invalid,
