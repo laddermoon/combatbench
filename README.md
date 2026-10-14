@@ -65,7 +65,7 @@ World plugins and observer plugins are **orthogonal extension axes**: to change 
 
 ### 3. Baseline: Four-Stage Curriculum + Safety Gate
 
-> **About the baseline**: CombatBench's baseline policies are **trained entirely with reinforcement learning** — pure PPO end to end, with **no imitation learning data, no motion capture data, and no human demonstrations** (zero IL, zero demos, zero trajectory imitation). This is intentional: we want to see how far a pure-RL approach can go on adversarial tasks.
+> **About the baseline**: the baseline policies shipped today are **trained entirely with reinforcement learning** — pure PPO end to end, with no imitation learning data, no motion capture data, and no human demonstrations. That describes **the current baseline's training recipe**, not a project stance: a motion-prior track is under construction in `mocap/humanoid21/` (CMU mocap → humanoid21 retargeting, motion-tracking training in progress). The two tracks are complementary — RL optimizes for winning; motion priors aim at fighting beautifully.
 >
 > The current baseline capability is still limited: the robot can stand stably, track opponents, and land valid strikes, but it is still far from "beautiful combat with diverse strategies." The baseline is here as **a starting point to spark ideas** — a comparable reference for the community, not a ceiling. We expect participants to push beyond it with better training methods, stronger network architectures, or by injecting prior knowledge.
 >
