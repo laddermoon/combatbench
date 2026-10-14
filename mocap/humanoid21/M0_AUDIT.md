@@ -116,12 +116,11 @@
 
 ### 预览素材（v2 —— 修正 FK 后重渲）
 
-**2026-10-13 FK 重大修正**：旧 `baseline/.../fk.py` 的三处约定与 CMU 官方
-viewer 不符，早期预览视频 `preview/*.mp4` 全部作废：
+**2026-10-13 FK 重大修正**：旧 `baseline/.../fk.py` 的两处约定与 CMU 官方
+viewer 不符，早期预览视频 `preview/*.mp4` 全部作废。曾列出的“旧解析器 axis 欧拉序写反”系误判：SciPy 小写 `xyz` 正是 `Rz·Ry·Rx`。
 
-1. `axis` 欧拉序写反（应为 `Rz·Ry·Rx`，x 先作用；旧代码用 `Rx·Ry·Rz`）
-2. ASF `direction` 是全局向量，需 `dir_local = C⁻¹·dir` 转局部（旧代码直接当局部量）
-3. **子关节应继承父骨的 dir/len 与父骨 DOF 后姿态系**（旧代码用了子骨几何——
+1. ASF `direction` 是全局向量，需 `dir_local = C⁻¹·dir` 转局部（旧代码直接当局部量）
+2. **子关节应继承父骨的 dir/len 与父骨 DOF 后姿态系**（旧代码用了子骨几何——
    导致 lfemur 起点被错放整个股骨长度之外，骨架断裂怪异）
 
 依据：CMU 官方 asf_amc_viewer 源码（`skeleton.cxx`/`display.cxx`/`transform.cxx`，
@@ -135,7 +134,7 @@ viewer 不符，早期预览视频 `preview/*.mp4` 全部作废：
 （拳击 p99 手速 5–11 m/s 合理；绝对米标度为髋高校准 0.11 m/unit 的暂定值，
 M1 再定标）。
 
-新预览：`/data1/dev/combatbench_mocap/preview_v2/*.mp4`（不入库）。
+历史预览：`/data1/dev/combatbench_mocap/preview_v2/*.mp4`（不入库）。**2026-10-14 修订**：M1-W5c 查出 `ref_fk.py` 自身将 SciPy 大小写 Euler 约定误用（见 M1_AUDIT.md）；v2、v3、v4、`content_scan.json` v2 及以上旧数值均不再作为有效资产，重新导出、复核中的 v5 取代之。
 
 ## W4 许可核验
 
