@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -27,8 +28,8 @@ from baseline.humanoid21.mocap.asf_parser import parse_asf
 from baseline.humanoid21.mocap.amc_parser import parse_amc
 from baseline.humanoid21.mocap.fk import compute_fk
 
-from mocap.humanoid21.ref_fk import RefSkeleton, _Rx_Ry_Rz, _Rz_Ry_Rx, fk_frame
-from scipy.spatial.transform import Rotation
+from mocap.humanoid21.ref_fk import RefSkeleton, _Rz_Ry_Rx, fk_frame
+from mocap.humanoid21.retarget import _abdomen_angles
 
 
 def check_rotation_order() -> None:
@@ -36,7 +37,8 @@ def check_rotation_order() -> None:
     rx, ry, rz = (Rotation.from_euler(axis, angle, degrees=True).as_matrix()
                   for axis, angle in zip("xyz", (x, y, z)))
     np.testing.assert_allclose(_Rz_Ry_Rx(x, y, z), rz @ ry @ rx, atol=1e-14)
-    np.testing.assert_allclose(_Rx_Ry_Rz(x, y, z), rx @ ry @ rz, atol=1e-14)
+    angles = _abdomen_angles(np.eye(3), rz @ ry @ rx)
+    np.testing.assert_allclose(angles, np.deg2rad([x, y, z]), atol=1e-14)
 
 
 def check_elbow_flexion(skel: RefSkeleton) -> None:
@@ -61,6 +63,14 @@ def check_reference_arms(skel: RefSkeleton, frames, clip: str) -> None:
         facing /= np.linalg.norm(facing)
         reach = distal["rradius"] - joint["rhumerus"]
         assert reach @ facing / np.linalg.norm(reach) > 0.6, reach
+
+        torso = []
+        for fr in frames[335:371]:
+            joints, ends, rotations = fk_frame(skel, fr)
+            assert ends["head"][1] > joints["root"][1]
+            torso.append(rotations["thorax"])
+        relative = Rotation.from_matrix(torso[1:]) * Rotation.from_matrix(torso[:-1]).inv()
+        assert np.rad2deg(relative.magnitude()).max() < 15.0
 
 
 def check_rest_pose(skel: RefSkeleton, asf) -> None:

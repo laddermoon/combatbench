@@ -74,6 +74,10 @@ def _unit(v):
     return v / n if n > 1e-12 else v
 
 
+def _abdomen_angles(R_torso: np.ndarray, R_pelvis: np.ndarray) -> np.ndarray:
+    return Rotation.from_matrix(R_torso.T @ R_pelvis).as_euler("xyz")
+
+
 @dataclass
 class FrameResult:
     q: Dict[str, float]
@@ -174,7 +178,7 @@ class Retargeter:
 
         # 2) abdomen <- human pelvis frame
         R_pelvis_t = cmu_rot_to_mj(F_cmu["root"])
-        ex, ey, ez = Rotation.from_matrix(R_torso.T @ R_pelvis_t).as_euler("XYZ")
+        ex, ey, ez = _abdomen_angles(R_torso, R_pelvis_t)
         for name, val in (("abdomen_x", ex), ("abdomen_y", ey), ("abdomen_z", ez)):
             lo, hi = joint_limits(name)
             q[name] = float(np.clip(val, lo, hi))

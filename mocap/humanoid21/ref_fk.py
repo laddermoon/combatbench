@@ -1,6 +1,6 @@
-"""Reference-compatible ASF/AMC forward kinematics.
+"""ASF/AMC forward kinematics checked against CMU motion videos.
 
-Faithful reimplementation of CMU's official ASF/AMC viewer
+Bone transforms follow CMU's ASF/AMC viewer
 (mocap.cs.cmu.edu `asf_amc_viewer`: skeleton.cxx / display.cxx / transform.cxx),
 which differs from `baseline/humanoid21/mocap/fk.py` in two ways:
 
@@ -24,9 +24,11 @@ DOF rotation composition follows the viewer's hardcoded glRotate order
 listed 'rx ry rz' order applied x-first). All CMU bones use 'rx ry rz' or
 subsets, matching this convention.
 
-Root is special-cased like the viewer: orientation = Rx(rx) @ Ry(ry) @ Rz(rz)
-(scipy intrinsic `XYZ`), root axis/orientation fields are ignored (all-zero in
-CMU files), and root translations use AMC units (scaled by units_length).
+Root uses the same AMC channel order Rz(rz) @ Ry(ry) @ Rx(rx) as the bones;
+root axis/orientation fields are ignored (all-zero in CMU files), and root
+translations use AMC units (scaled by units_length). Unlike the viewer's
+root glRotate calls, this order preserves continuous upright poses in the
+published 13_17 AVI; Rx @ Ry @ Rz causes spurious inversions near gimbal turns.
 
 Rest-pose identity (zero AMC DOFs): F(b) = C(b), so each bone's world
 direction equals its ASF global `direction`. This is used as a numerical
@@ -57,11 +59,6 @@ from baseline.humanoid21.mocap.amc_parser import parse_amc
 def _Rz_Ry_Rx(rx: float, ry: float, rz: float) -> np.ndarray:
     """Matrix Rz(rz) @ Ry(ry) @ Rx(rx) — extrinsic 'xyz' (x applied first)."""
     return Rotation.from_euler("xyz", [rx, ry, rz], degrees=True).as_matrix()
-
-
-def _Rx_Ry_Rz(rx: float, ry: float, rz: float) -> np.ndarray:
-    """Matrix Rx(rx) @ Ry(ry) @ Rz(rz) — intrinsic 'XYZ' (used for root)."""
-    return Rotation.from_euler("XYZ", [rx, ry, rz], degrees=True).as_matrix()
 
 
 @dataclass
@@ -146,7 +143,7 @@ def fk_frame(
     F: Dict[str, np.ndarray] = {}
 
     joint["root"] = root_vals[0:3] * u
-    F["root"] = _Rx_Ry_Rz(root_vals[3], root_vals[4], root_vals[5])
+    F["root"] = _Rz_Ry_Rx(root_vals[3], root_vals[4], root_vals[5])
     distal["root"] = joint["root"]  # root dir = (0,0,0): children sit at root joint
 
     for b in skel.bone_names[1:]:
