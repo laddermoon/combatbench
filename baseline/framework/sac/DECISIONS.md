@@ -4235,9 +4235,24 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
   max_pot≈0.4），比"一直 0.5"省掉高原段 ~0.5 tick/env 的冗余
   → 净省约 10-15% 墙钟。本次实验切在 2.0M 太晚（高原期已过 1.2M），
   总墙钟反而劣于 R1——分段调度的收益窗口只在前段。
-- **b1024 臂 bump 后爬升明显更慢**（400K env 后仍 max_pot≈0.6，
-  同期 b256 已 0.9+）：大 batch 在高密度更新段可能欠拟合噪声结构
-  或另有交互——记为观察项，standup 推荐仍 b256。
+- **b1024 臂 bump 后爬升明显更慢**（b256 臂 ~400K env 到 success=1.0，
+  b1024 臂 ~500K env 才进突破带且仍在振荡）：大 batch 在高密度更新段
+  响应滞后 ~25% env——记为观察项，standup 推荐仍 b256。
+- **held-out 终证**：`opt_stage05_b256_s42/policy`（best-of-run，
+  eval.success=0.969 时的快照）held-out 64 episode / 128 agent-row：
+  **success=0.961**，max_pot=0.95——分段调度不损害泛化。
 
-**实验设计教训**：`--param utd_ratio=X@ROUND` 的 from_round 是精确
-匹配（dict lookup），resume 后要手动算 next_round=collection_round+1。
+**Opt-P4 最终建议（standup）**：
+- 默认保持 `utd_ratio=0.5, batch_size=256` 不变——低 UTD 全程方案已被
+  证伪（突破期 tick 刚性），不值得改默认；
+- **推荐生产做法**：起步 `--set utd_ratio=0.125` 跑高原期省吞吐 +
+  `--param sac_params.utd_ratio=0.5@<round>` 在 max_pot≈0.4-0.5 时切换；
+  预估净省 ~10-15% 墙钟（高原段冗余更新约占 R1 总预算的 1/4）。
+  切换点判据：eval.max_pot 连续 2-3 次越过 ~0.5（框架的
+  round-boundary patch + eval 事件正适合监控驱动切换）。
+- balance 未做对称验证（默认 utd 0.25 + 2000 封顶已是不同 regime）；
+  要迁移结论需单独探针。
+- **实验设计教训**：`--param utd_ratio=X@ROUND` 的 from_round 是精确
+  匹配（dict lookup），resume 后要手动算 next_round=collection_round+1；
+  `--set`/`--param` 的优先级（CLI 覆盖实验侧 param_overrides）在
+  分段实验里已多次依赖。
