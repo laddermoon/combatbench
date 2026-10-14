@@ -71,6 +71,12 @@ class TrackWalk(CombatExperimentPPOBase):
     _OBS_KEY = "track_a"
     _best_score: float = -1.0
 
+    def build_actor(self, device):
+        """obs_dim=142（96 + 46 跟踪特征），蓝图默认 96 需显式覆盖。"""
+        blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
+        bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
+        return bp.build(obs_dim=self.obs_dim).to(device)
+
     # robot_b 用已训练的站立策略，96 维 obs
     @staticmethod
     def _standing_bp() -> PolicyBlueprint:

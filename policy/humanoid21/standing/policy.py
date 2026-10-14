@@ -76,3 +76,13 @@ class StandingCombatPolicy(Policy):
     def reset(self, seed: Optional[int] = None) -> None:
         # Stateless deterministic policy; ignore the seed.
         return None
+
+    def sample(
+        self,
+        observation: Any,
+        ctx: Optional[Any] = None,
+        want_extra: bool = False,
+    ) -> Tuple[np.ndarray, None]:
+        # Deterministic sample == act; 使该策略可作为 stochastic rollout
+        # 中的场景机器人（SamplingPolicy 包装器要求实现 sample()）。
+        return self.act(observation, want_extra=want_extra)
