@@ -3757,6 +3757,34 @@ PPO doesn't need this because GAE naturally amplifies credit assignment.
 
 ---
 
+## [2026-10-14] R2.18 — SAC 回归 R1 结果（reg_standup_shannon_s42_d）
+
+**运行配置：**
+- experiment: `sac_standup`, actor_arch=s01, seed=42
+- entropy: shannon + `target_entropy=0`, `q_layer_norm=true`
+- budget: 2M env steps
+- 恢复链：`_a`（115200）→ `_b`（140800）→ `_c`（204800）→ `_d`（2M completed）
+- 代码：包含 rollout 分块、持久池、worker torch 线程钳制（94cf9779）
+
+**训练结果：**
+- 157 rounds / critic_tick=1,550,554
+- 末段 eval success：1.000 / 1.000 / 1.000 / 0.938 / 1.000
+- 终态：`env_step=2,009,600`, `status=completed`
+
+**held-out 复核：**
+```bash
+PYTHONPATH=/data1/mono/things/combatbench python3 -B -m baseline.framework.sac.held_out_eval \
+  --run baseline/runs/reg_standup_shannon_s42_d --policy policy \
+  --episodes 64 --workers 64
+```
+- 输出：`baseline/runs/reg_standup_shannon_s42_d/held_out_eval_shannon_standup_s42.json`
+- **held-out success rate: 1.000**（64 episodes × 2 agents = 128 agent rows，denominator=agents）
+- mean max_pot: 0.981；mean final_pot: 0.880
+
+**对照：** 第一轮验收 `sac_standup_s01_s42_te0_ln` held-out 0.992；R1 为 **1.000**，无退化。
+
+**结论：** R2 改动后 Shannon 基线复现成功，SAC 滚动修复未引入回归。
+
 ## [2026-08-27] N9 — Training scale: matching PPO's env step budget
 
 **Context:** PPO `basic_balance` requires ~27M env steps to first reach
