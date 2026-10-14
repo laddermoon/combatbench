@@ -4257,3 +4257,34 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
   匹配（dict lookup），resume 后要手动算 next_round=collection_round+1；
   `--set`/`--param` 的优先级（CLI 覆盖实验侧 param_overrides）在
   分段实验里已多次依赖。
+
+## Opt-3 balance 侧探针：振荡主因是 replay 记忆长度，不是梯度噪声
+
+**背景**：balance 任务 wall-clock 天然快（episodes 短 → ~440 env/s），
+瓶颈是 **eval.survival_rate 的长振荡**（R3 shannon 7.58M / R4 u_floor
+5.9M env 一直在 0.4-1.0 间震荡，从未稳定达标）。
+
+**探针矩阵**（seed42，early_stop=survival_rate≥0.95×3，min 300K，cap 4M）：
+
+| 臂 | regularizer | batch | replay | 结果 |
+|---|---|---|---|---|
+| optb_sh_b256 | shannon | 256 | 500K | 振荡至 ~2.4M 主动停 |
+| optb_sh_b1024 | shannon | 1024 | 500K | 运气窗 1.72M 早停（0.97→0.98→1.0） |
+| optb_uf_b256 | u_floor | 256 | 500K | 1.0→0.09 剧烈振荡，~3.8M 停 |
+| optb_uf_b1024 | u_floor | 1024 | 500K | 1.0→0.31 剧烈振荡，~3.5M 停 |
+| **optb_uf_b256_r2m** | u_floor | 256 | **2M** | **616K env ~45min 干净达标（0.33→0.63→1.0×3 零回落）** |
+| **optb_sh_b1024_r2m** | shannon | 1024 | **2M** | **1.35M env ~1.5h 达标（1.0→1.0→0.97）** |
+
+**结论**：
+1. **500K replay ≈ 12 rounds / ~18min 记忆 → 灾难性遗忘循环**是
+   balance 振荡的主因；2M replay（~75min）直接消除（u_floor）或大幅
+   压缩（shannon）振荡——batch 1024 不能防振荡（对照臂照样 1.0→0.09）。
+2. **达标早停第一次生产实战立功**：u_floor+r2m 以 1/6-1/12 的
+   env 和 ~45min 墙钟达成比 R3/R4 更稳的终态（连续 1.0 而非靠
+   best-of-run 快照撞运气）。
+3. balance 生产配方：**u_floor + replay_buffer_size=2M + 早停**
+   (0.95×3)；shannon 侧 b1024+r2m 可用但略噪。
+4. shannon 自动 alpha 在 balance 上塌到 0.007-0.009（target_entropy=-10
+   仍偏低）——观察项，u_floor 的固定 α=0.2 反而更稳。
+5. balance tick/env 仅 ~0.05（2000 cap 常驻），与 standup 的 0.77
+   完全不同 regime——standup 的 UTD 结论不可迁移，本轮已实测。
