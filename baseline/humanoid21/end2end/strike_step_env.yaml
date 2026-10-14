@@ -84,15 +84,20 @@ plugins:
       action_scale: 0.6
       min_height: 1.15
       reset_interval: 50
-  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
-    config:
-      target_robots: ["${agent_id}"]
-      standing_height_threshold: 1.15
-      standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
-      random_delay_max_steps: 10     # 0~0.5 秒随机延迟
-      observe_steps: 20              # 施力后观察 1 秒
-      impulse_body: "torso"
-      force_threshold: 1.0           # 接触力阈值 (N)
+  # Push perturbation DISABLED for the strike stage (user decision:
+  # 循序渐进 — no extra difficulty while learning to strike).  The
+  # plugin code stays; re-enable by restoring this block.  The
+  # PushStateObserver below degrades gracefully (metrics absent →
+  # phase=0/clean=False → push_clean_bonus adds 0).
+  # - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+  #   config:
+  #     target_robots: ["${agent_id}"]
+  #     standing_height_threshold: 1.15
+  #     standing_settle_steps: 20      # 站稳满 1 秒 (20 action steps)
+  #     random_delay_max_steps: 10     # 0~0.5 秒随机延迟
+  #     observe_steps: 20              # 施力后观察 1 秒
+  #     impulse_body: "torso"
+  #     force_threshold: 1.0           # 接触力阈值 (N)
   - cls: "baseline.humanoid21.plugins.pose_move:PoseMovePlugin"
     config:
       target_robot: ${oppo_agent_id}
