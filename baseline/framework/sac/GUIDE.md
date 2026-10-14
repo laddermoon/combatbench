@@ -189,16 +189,24 @@ $DK serve baseline/runs --port 8766 --host 0.0.0.0
       # 只读 JSON API + HTML viewer（http://<host>:8766/）
 ```
 
-浏览器 viewer（R2-4 重构为六工作区 SPA）：run 侧 `dashboard`（指标多选叠加，
-ctrl 多键同图，x 轴 env_step/critic_tick 可切）+ `replay`（人口学 + slice-ctx
-查询器）；runs 侧 checkbox → `compare`（多 run 同图叠加）；dump 侧七页签按
-计算链组织：inspect → samples（行内 trace/decomp/slice-ctx 三级钻取）→
-target/critic（目标三分解+通道梯度范数）→ actor/temp（actor 项分解+α）→
-drift（pre/post 固定输入漂移）→ grad-attr（分组梯度归因，按需重算）→
-attribution（来源×贡献联合分布）。缺数据显式标 `—`，不补零。
-API：`/api/dump/{inspect,samples,trace,recompute,attribute,decomp,drift,grad-attr}`、
-`/api/run/{metrics,replay,dumps,slice-ctx}`、`/api/{runs,catalog}`——全部与
-CLI 共用 `analysis` 层。
+浏览器 viewer（R3 重构为 PPO 同构三层 SPA）：runs 索引（状态/搜索/排序/分页/
+compare 选择）→ run 页（六分区 catalog 驱动 dashboard + round detail +
+log 字节分页 + videos + dumps 列表 + request-dump 按钮）→ dump 主页（九张
+计算链模块卡，单拉 `/api/pipeline`）→ 七个专属工具页。
+dump 工具页按 SAC 计算链组织，全部接在共享 sample 游标上：
+samples（①③ batch 浏览：td_abs 直方图 + 排序表，行点击→trace）→
+trace（单样本全链路：provenance / per-channel 目标分解 + γ 滑杆重算 /
+actor 侧）→ decomp（②④⑤ batch 级 target 三段 + actor 四段分解 +
+游标行）→ attribute（⓪① 来源×贡献联合归因）→ tickline（⑥ 本 dump 所在
+round 的 tick 时间线，dump tick 竖标）→ postupdate（⑦ param_delta 分组
+per-tensor 条图）→ drift（⑧ 固定输入 pre/post 策略+Q 漂移 + slice-ctx
+游标面板）。重型端点（grad-attr/drift/recompute）走单 job 槽：POST
+`.../api/dump/<d>/job` → debugkit 子进程 → `job_<kind>.json`，
+`/api/job-status` 轮询，并发第二 job 返回 409。
+API：run 级 `info/metrics/metrics-series/dumps/videos/log/replay/
+slice-ctx/tickline`；dump 级 `pipeline/manifest/spec/inspect/samples/
+trace/decomp/attribute/drift/recompute/grad-attr/job-result`；
+POST `run/dump-request` + `dump/<d>/job`——全部与 CLI 共用 `analysis` 层。
 
 ---
 

@@ -4115,3 +4115,22 @@ JSON 页（W4 接专属页）。
 - **验证**：真实 run tickline round17=156 tick；drift job
   POST→status→result 全链路；并发 job 409；SPA 三路由 200；
   JS check；回归 **247 passed**。
+
+## R3.5 R3-W5 完成：dogfood + 收口
+
+- **真实 u_floor dump 全链路**：在训 `reg_balance_ufloor_s42`
+  （round 107）上 `debugkit dump` 哨兵 → 下一 critic tick 抓到
+  `critic_tick_00212684`（sac_dump_v3，manifest/spec/clocks/forward/
+  batch/trainer_pre/post/analysis 八件齐）。
+- **u_floor 语义贯通验证**：pipeline `regularizer` 卡正确显示
+  mode=u_floor + floor=0.5 + λ=0.5（auto_alpha off → α 恒 0.2、
+  α_loss=0）；decomp `actor.reg_term` mean=0.096（floor 惩罚活跃），
+  target reg_term=−0.095/通道——即 R4 训练里 u_floor 正则真实参与的
+  直接证据。
+- **端点全过**：pipeline/samples/trace/decomp/attribute/drift/
+  tickline(round107=31 tick)/job-result 均 200；SPA 九路由 200；
+  drift job POST→status→result 链路在 u_floor dump 上重验；
+  job-result 未跑时按设计 404。
+- **文档**：GUIDE viewer 段落重写为 R3 三层架构 + 九卡 + 七工具页
+  + job 槽真实形态（原文还停在 R2-4 六工作区描述）。
+- **回归**：247 passed。R3 五个工作包全部收口。
