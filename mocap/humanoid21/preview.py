@@ -73,7 +73,7 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
     # fixed axis limits from global extents; normalize around body height
     allp = np.concatenate([J[idxs].reshape(-1, 3), D[idxs].reshape(-1, 3)], axis=0)
     body_h = float(allp[:, 1].max() - allp[:, 1].min())
-    span = max(0.35 * body_h, float(allp[:, 0].std()) * 2.5, 0.3 * body_h)
+    span = max(0.6 * body_h, float(allp[:, 0].std()) * 2.5)
     ymax = allp[:, 1].max() * 1.08
 
     # Smoothed facing per frame (CMU coords, y-up): facing = up x shoulder-line.
