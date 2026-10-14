@@ -1,0 +1,61 @@
+# M4 受控任务环境：走到场地中心（target-reaching locomotion）。
+#
+# robot_a 在 -x 侧出生面向 +x（目标=世界原点，arena_center_local
+# 观测已覆盖）；robot_b 站立于对侧仅作场景。到达 |xy|<goal_radius
+# 记 reach_done；根高度过低记 reach_fall。
+#
+# A/B 对照：amp_style_a observer 恒在，r_style 通道是否进 actor
+# 优势由实验侧 actor_weight 控制（同一 env/obs/网络/预算）。
+
+parameters:
+  initial_distance:
+    default: 8.0
+    description: "两机间距（m）；A 到中心 = distance/2。"
+  max_steps:
+    default: 200
+    description: "最长控制帧（20Hz，10s）。"
+  goal_radius:
+    default: 0.8
+    description: "到达判定半径（m）。"
+  disc_path:
+    default: "/data1/dev/combatbench_mocap/prior/disc_v4.pt"
+    description: "AMP 判别器 checkpoint。"
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "mocap.humanoid21.reach_task:ReachGuardPlugin"
+    config:
+      track_robot: "robot_a"
+      goal_radius: ${goal_radius}
+      fall_height: 0.55
+  - cls: "envs.framework.common_plugins:TimeoutPlugin"
+    config:
+      max_steps: ${max_steps}
+
+observer_plugins:
+  reach_reward_a:
+    cls: "mocap.humanoid21.reach_task:ReachRewarder"
+    config:
+      agent_id: "robot_a"
+      goal_radius: ${goal_radius}
+      w_prog: 1.0
+      w_goal: 5.0
+      w_alive: 0.02
+  amp_style_a:
+    cls: "mocap.humanoid21.prior.observer:AmpStyleObserver"
+    config:
+      agent_id: "robot_a"
+      disc_path: ${disc_path}
+      reward_clip: 5.0
