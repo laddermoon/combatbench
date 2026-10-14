@@ -10,7 +10,8 @@
   episode 时间轴。
 - 观测扩展（仅被跟踪机器人，对手保持 96 维）：
     [phase(1), ref_q_norm(21), ref_qv_norm(21)*0.2, ref_root_linvel_local(3)]
-  → obs_dim = 96 + 46 = 142。
+  → obs_dim = 96 + 46 = 142。**参考帧取 frame+1（下一控制步目标），
+  与步末奖励所对照的参考帧一致。**
 - ``get_derived_state`` 增加 ``motion_track`` 字段供奖励/终止插件使用：
   ref_q_norm / ref_qv_norm / ref_root_pos / ref_keypoints(15,3) /
   self_keypoints / frame / phase / ended。
@@ -77,10 +78,10 @@ class MotionTrackingSimulator(Humanoid21Simulator):
         if 'start_frame' in opts:
             k0 = int(opts['start_frame'])
         elif self._rsi == 'first':
-            k0 = 0
+            k0 = self.ref.min_start_ctrl
         else:
             rng = np.random.default_rng(seed)
-            k0 = int(rng.integers(0, self.ref.n_ctrl))
+            k0 = int(rng.integers(self.ref.min_start_ctrl, self.ref.n_ctrl))
         k0 = int(np.clip(k0, 0, self.ref.n_ctrl - 1))
         self._frame = k0
 
@@ -162,7 +163,10 @@ class MotionTrackingSimulator(Humanoid21Simulator):
         if '_obs_track' in self._data_cache:
             return self._data_cache['_obs_track']
         base = super().get_observation()
-        rf = self.ref_at()
+        # 观测给“下一帧”目标：本控制步内 robot 从 frame k 运动到 k+1，
+        # 奖励在步末对照 ref[k+1] 评分；给 ref[k] 会引入一步目标滞后
+        # （快速出拳段 ~10°/控制步 的系统性相位差）。
+        rf = self.ref_at(self._frame + 1)
         ext = np.concatenate([
             [rf['phase']],
             rf['q_norm'],

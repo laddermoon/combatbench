@@ -292,6 +292,30 @@ def retarget_clip(asf_path: str, amc_path: str) -> dict:
         for k in res_keys:
             resid[k][t] = r.residuals[k]
 
+    # Leading-edge repair: frame 0 is solved from the default standing
+    # seed and can land on a wrong IK branch; the DQ_MAX slew clamp then
+    # smears the correction over the next frames (~50 rad/s fake
+    # velocities at the clip start, fatal for RSI init). Detect the
+    # transient and re-solve the window BACKWARD, warm-starting from the
+    # converged interior solution.
+    qmax = np.abs(np.diff(qang, axis=0)).max(axis=1)
+    t_end = 0
+    for t in range(1, min(240, T - 4)):
+        if np.all(qmax[t:t + 4] < 0.08):
+            t_end = t
+            break
+    if t_end >= 1:
+        bwd = Retargeter()
+        bwd.prev_q = dict(zip(CONTROLLED_JOINTS, qang[t_end]))
+        for t in range(t_end - 1, -1, -1):
+            j, d, F = fk_frame(skel, frames[t])
+            r = bwd.retarget_frame(j, d, F)
+            rpos[t] = r.root_pos          # root_pos depends on q
+            for i, n in enumerate(CONTROLLED_JOINTS):
+                qang[t, i] = r.q.get(n, 0.0)
+            for k in res_keys:
+                resid[k][t] = r.residuals[k]
+
     # grounding: uniform z shift so min sole ~ 0
     sole_min = np.inf
     for t in range(0, T, 4):

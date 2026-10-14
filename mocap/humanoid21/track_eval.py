@@ -84,6 +84,8 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f'{clip_id}_track_eval.json').write_text(
         json.dumps(metrics, indent=1))
+    np.savez(out_dir / f'{clip_id}_track_eval_trace.npz',
+             **{k: np.asarray(v) for k, v in rec.items()})
     rt.close()
     return metrics
 

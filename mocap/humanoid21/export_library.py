@@ -202,6 +202,7 @@ def robot_export(skel, frames, asf_path: Path, amc_path: Path):
         keypoints=kp.astype(np.float32),
         keypoint_names=np.array(ROBOT_KEYPOINTS),
         foot_contacts=contacts,
+        lead_stable_frame=np.int32(_lead_stable_frame(qang)),
         valid_mask=np.ones(T, dtype=np.uint8),
         retarget_residuals=resid.astype(np.float32),
         residual_names=np.array(["leg_left", "leg_right", "ankle_left",
@@ -211,6 +212,20 @@ def robot_export(skel, frames, asf_path: Path, amc_path: Path):
                      "p95": float(np.percentile(v, 95)),
                      "max": float(v.max())}
                  for k, v in out["residuals"].items()}
+
+
+def _lead_stable_frame(qang: np.ndarray, win: int = 6,
+                       thresh: float = 0.08) -> int:
+    """首个连续 `win` 帧关节变化 < thresh rad 的帧号。
+
+    片段开头可能有残余 IK 分支瞬态或源数据毛刺（AMC 单帧 >20deg
+    跳变）。RSI/确定性回放应从该帧之后初始化。
+    """
+    dq = np.abs(np.diff(qang, axis=0)).max(axis=1)
+    for t in range(len(dq)):
+        if np.all(dq[t:t + win] < thresh):
+            return t
+    return 0
 
 
 def kinematic_issues(npz, resid_stats):

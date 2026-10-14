@@ -64,6 +64,10 @@ class RefClip:
 
         self.n_ctrl = self.q_norm.shape[0]
         self.duration_s = self.n_ctrl / CTRL_FPS
+        # 片段引导区可能含 IK 分支瞬态或源数据毛刺（导出时标记）。
+        # RSI 应从该控制帧之后采样。
+        lead = int(z['lead_stable_frame']) if 'lead_stable_frame' in z else 0
+        self.min_start_ctrl = int(np.ceil(lead / REF_STRIDE))
 
     def at(self, k: int) -> Dict[str, np.ndarray]:
         k = int(np.clip(k, 0, self.n_ctrl - 1))
