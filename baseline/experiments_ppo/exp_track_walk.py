@@ -48,6 +48,9 @@ class TrackWalk(CombatExperimentPPOBase):
     max_steps: int = 200                 # 需 >= clip 控制帧数
     init_distance_min: float = 6.0
     init_distance_max: float = 6.0
+    # 漂移早停（DeepMimic 式）：None=关闭；v6 拳击起用 0.8m/75°
+    drift_dxy: float | None = None
+    drift_dyaw_deg: float | None = None
 
     # --- Reward ---
     _channel_name = "r_track"
@@ -95,7 +98,8 @@ class TrackWalk(CombatExperimentPPOBase):
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True) -> List[Job]:
         env_bp = self._env_pb().materialize(
-            clip_id=self.clip_id, rsi=self.rsi, max_steps=self.max_steps)
+            clip_id=self.clip_id, rsi=self.rsi, max_steps=self.max_steps,
+            drift_dxy=self.drift_dxy, drift_dyaw_deg=self.drift_dyaw_deg)
         standing = self._standing_bp()
         sampling_a = SamplingSpec(explore_factor=self.explore_factor)
         jobs = []

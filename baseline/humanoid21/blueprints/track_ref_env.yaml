@@ -19,6 +19,12 @@ parameters:
   fall_height:
     default: 0.55
     description: "torso_z 低于此值判摔倒"
+  drift_dxy:
+    default: null
+    description: "根 xy 与参考分离超过此值判 track_drift（null=关闭）"
+  drift_dyaw_deg:
+    default: null
+    description: "根 yaw 与参考偏差超过此度数判 track_drift（null=关闭）"
 
 runtime:
   phy_steps_per_action: 25
@@ -41,6 +47,8 @@ plugins:
     config:
       track_robot: "robot_a"
       fall_height: ${fall_height}
+      drift_dxy: ${drift_dxy}
+      drift_dyaw_deg: ${drift_dyaw_deg}
 
 observer_plugins:
   track_a:
