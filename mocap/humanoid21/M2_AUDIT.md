@@ -85,6 +85,11 @@ M2 要求 state-non-overwriting：t=0 初始化一次，之后只靠控制输入
 
 - v1 整段确定性回放（旧 obs 语义）：`track_clip_end` 完成，q_rmse≈13°，
   kp_err 0.43m（误差集中在首尾过渡与系统性 ~7cm 躯干下沉）。
+- **v3（next-frame obs）u00955 确定性整段回放：track_clip_end 完成，
+  kp_err 0.35m（max 1.01）、q_rmse 10.3°（max 17.9°）**。
+  从 lead_stable 起始帧（ctrl 2）出发；从原始帧 0（引导瞬态区、
+  真实 mid-stride 高速段）出发仍在 ~50% 相位处摔倒——引导区不
+  计入 L2 判分。
 - 广播视频抽帧目测：迈步、换脚、手臂摆动均正确。
 - **L2 候选**：待视觉复核后在 index 标记。
 
@@ -121,6 +126,15 @@ M2 要求 state-non-overwriting：t=0 初始化一次，之后只靠控制输入
    ——观测语义即接口契约，变更需同步重训。
 3. 奖励：世界系关键点误差换**骨盆相对系**（位移/朝向漂移不再
    过罚），世界系误差保留为评估指标。
+4. **`policy/` best 导出会陈旧**：best 评分（survive−0.5·fall）
+   在历史快照打平/倒退时不再覆盖——v3 走路 best 目录里的权重比
+   最新更新差 19% fall rate。**评估一律用 `policy_exports/uNNNN`
+   的最新导出**，不用 `policy/`。
+5. 训练 eval 的 `complete_rate` 含 **RSI 相位偏差**：随机起点
+   episode 只需存活到片段尾（起点越晚越占便宜）；完整回放判定
+   必须走 `track_eval` 从稳定起始帧的确定性全段。
+   `track_eval` 也不再显式 `start_frame=0`，由 `rsi='first'` 取
+   `lead_stable` 后的首个控制帧。
 
 ## L2 判据（定稿）
 
