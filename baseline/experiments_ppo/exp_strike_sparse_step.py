@@ -103,6 +103,37 @@ class StrikeSparseStep(StrikeStep):
         from baseline.framework.rollout import SamplingSpec
         return SamplingSpec(explore_factor=_sparse_explore_factor)
 
+    def _verify_explore_factor_flow(self, trajs) -> None:
+        """Sparse schedule check: ef<0 fallen, ef>0 engaged, ef==0 far."""
+        if not trajs:
+            return
+        t0 = trajs[0]
+        ef = (t0.sampling_ctx or {}).get("explore_factor")
+        if ef is None:
+            print("  [ef-verify] FAIL: sampling_ctx has no explore_factor",
+                  flush=True)
+            return
+        ef = np.asarray(ef, dtype=np.float32)
+        obs = np.asarray(t0.obs, dtype=np.float32)
+        standing = obs[:, 45] >= _H_EF_SWITCH
+        dist = np.hypot(obs[:, 57], obs[:, 58])
+        engaged = dist <= self.D_ENGAGE
+        ok_low = (bool(np.all(ef[~standing] < 0))
+                  if (~standing).any() else True)
+        in_m = standing & engaged
+        out_m = standing & ~engaged
+        ok_in = (bool(np.all(ef[in_m] == _EF_STAND))
+                 if in_m.any() else True)
+        ok_out = (bool(np.all(ef[out_m] == 0.0))
+                  if out_m.any() else True)
+        print(
+            f"  [ef-verify-sparse] T={len(ef)} "
+            f"low={int((~standing).sum())} ef<0: {'OK' if ok_low else 'FAIL'} "
+            f"| engaged={int(in_m.sum())} ef=hi: {'OK' if ok_in else 'FAIL'} "
+            f"| far={int(out_m.sum())} ef=0: {'OK' if ok_out else 'FAIL'}",
+            flush=True,
+        )
+
     # ------------------------------------------------------------------
     # Trajectories — FollowStep recipe (skip AttackPrepStep's arm
     # channels entirely) + zone masking + strike channels.
