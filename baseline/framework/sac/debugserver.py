@@ -11,8 +11,8 @@ compute tasks).
 API surface (PPO-shaped, SAC semantics):
 
     GET /api/mode | /api/catalog | /api/job-status
-    GET /api/runs?q=&page=&size=&sort=&order=
-    GET /api/experiments | /api/experiment/<name>
+    GET /api/runs?q=&page=&size=&sort=&order=&algo=(default sac; all=any)
+    GET /api/experiments | /api/experiment/<name>   (algo filter as above)
     GET /run/<n>/api/run/{info,metrics,dumps,videos,log,replay,
                          slice-ctx,metrics-series,tickline}
     GET /run/<n>/train.log            (streamed file)
@@ -251,15 +251,20 @@ def _dispatch(
             order=_opt("order", "desc"),
             page=int(_opt("page", 1)),
             size=int(_opt("size", 20)),
+            # SAC debug surface defaults to SAC runs; ?algo=all opts out.
+            algo=_opt("algo", "sac"),
         )
     if path == "/api/experiments":
         return runview.experiments_index(
-            _EXPERIMENTS_DIR, runview.list_runs(root))
+            _EXPERIMENTS_DIR,
+            runview.filter_runs_algo(
+                runview.list_runs(root), _opt("algo", "sac")))
     if path.startswith("/api/experiment/"):
         name = path.rsplit("/", 1)[-1]
         exp = _experiment_by_name(name)
         runs = [
-            r for r in runview.list_runs(root)
+            r for r in runview.filter_runs_algo(
+                runview.list_runs(root), _opt("algo", "sac"))
             if r.get("experiment") == name
         ]
         checkpoints = []

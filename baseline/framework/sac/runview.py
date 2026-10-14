@@ -566,6 +566,18 @@ def list_runs(root: Path) -> List[Dict[str, Any]]:
     return out
 
 
+def filter_runs_algo(
+    runs: List[Dict[str, Any]], algo: str,
+) -> List[Dict[str, Any]]:
+    """Keep only runs whose config ``algorithm`` matches ``algo``.
+
+    ``""``/``"all"`` disables the filter.
+    """
+    if not algo or algo == "all":
+        return list(runs)
+    return [r for r in runs if str(r.get("algo") or "") == algo]
+
+
 def query_runs_index(
     runs: List[Dict[str, Any]],
     *,
@@ -574,10 +586,12 @@ def query_runs_index(
     order: str = "desc",
     page: int = 1,
     size: int = 20,
+    algo: str = "",
 ) -> Dict[str, Any]:
     """Filter / sort / paginate run summaries (pure function)."""
     page = max(1, page)
     size = min(200, max(1, size))
+    runs = filter_runs_algo(runs, algo)
     q = q.strip().lower()
     if q:
         runs = [

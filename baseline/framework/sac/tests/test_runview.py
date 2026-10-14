@@ -158,6 +158,22 @@ def test_list_runs_and_query_index(tmp_path):
     assert empty["total"] == 0
 
 
+def test_runs_index_algo_filter(tmp_path):
+    _train(tmp_path, name="sac_run")
+    runs = runview.list_runs(tmp_path)
+    runs.append({"name": "ppo_run", "algo": "ppo", "status": "finished",
+                 "experiment": "x", "created": 0, "activity": 0})
+    runs.append({"name": "no_cfg", "algo": None, "status": "unknown",
+                 "experiment": "x", "created": 0, "activity": 0})
+    sac_only = runview.query_runs_index(runs, algo="sac")
+    assert [r["name"] for r in sac_only["runs"]] == ["sac_run"]
+    ppo_only = runview.query_runs_index(runs, algo="ppo")
+    assert [r["name"] for r in ppo_only["runs"]] == ["ppo_run"]
+    everything = runview.query_runs_index(runs, algo="all")
+    assert everything["total"] == 3
+    assert runview.query_runs_index(runs)["total"] == 3
+
+
 def test_run_info_terminal_and_config(tmp_path):
     run_dir = _train(tmp_path)
     info = runview.run_info(run_dir)
