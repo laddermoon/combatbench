@@ -182,6 +182,43 @@
   .stage-stats .v { font-family: ui-monospace, monospace; }
   .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
   .gs-scope { color: var(--muted); font-size: 11px; font-weight: 400; }
+
+  .smp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .smp-table th { text-align: left; padding: 5px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; white-space: nowrap; }
+  .smp-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  .smp-table tr.smp-row { cursor: pointer; }
+  .smp-table tr.smp-row:hover { background: var(--panel-alt); }
+  .smp-table tr.smp-row.smp-sel { background: var(--accent-dim); }
+  .smp-scroll { max-height: 560px; overflow-y: auto; }
+
+  .hist { display: flex; align-items: flex-end; gap: 1px; height: 56px; margin: 8px 0 4px; }
+  .hist .hbin { flex: 1; background: var(--accent-dim); border-radius: 2px 2px 0 0; min-height: 1px; cursor: pointer; }
+  .hist .hbin:hover { background: var(--accent); }
+  .hist-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: ui-monospace, monospace; margin-bottom: 10px; }
+
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 11px; }
+  .bar-row .bar-label { min-width: 90px; color: var(--muted); font-family: ui-monospace, monospace; text-align: right; }
+  .bar-row .bar-track { flex: 1; display: flex; height: 14px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+  .bar-row .bar-track i { display: block; height: 100%; }
+  .bar-row .bar-val { min-width: 70px; font-family: ui-monospace, monospace; font-size: 11px; }
+
+  .stackbar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+  .stackbar i { display: block; height: 100%; }
+  .stack-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; margin-top: 4px; }
+  .stack-legend .leg-item { display: flex; align-items: center; gap: 4px; }
+  .stack-legend .leg-color { width: 10px; height: 10px; border-radius: 2px; }
+
+  .trc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .trc-grid .card.full { grid-column: 1 / -1; }
+  .part-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .part-table th { text-align: left; padding: 4px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  .part-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .part-table td.num { text-align: right; }
+  .gamma-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 12px; }
+  .gamma-row input[type=range] { flex: 1; }
+  .gamma-row .g-val { font-family: ui-monospace, monospace; min-width: 50px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; word-break: break-all; }
+  .card.focused { border-color: var(--accent); }
   .upd-bar { margin: 4px 0 8px; }
   .upd-bar-track { position: relative; height: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
   .upd-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(61, 220, 132, .30); }
@@ -369,7 +406,43 @@
       <div id="dump-stages"></div>
     </div>
 
-    <!-- Generic dump tool page (W1 stub — per-module pages land in W3/W4) -->
+    <!-- Tool ①/③ Samples — batch browser: td_abs histogram + sortable
+         table; a row click sets the shared sample cursor and jumps to
+         the trace page. -->
+    <div class="page" id="page-samples">
+      <div class="tool-head" id="smp-tool-head"></div>
+      <div class="card">
+        <h2>Batch samples <span class="gs-scope" id="smp-scope"></span></h2>
+        <div id="smp-hist"></div>
+        <div id="smp-body"><div class="loading">loading...</div></div>
+      </div>
+    </div>
+
+    <!-- Tool per-sample Trace — one row's full computation chain:
+         provenance, per-channel target parts (γ slider live-recompute),
+         actor objective side, raw metadata. -->
+    <div class="page" id="page-trace">
+      <div class="tool-head" id="trc-tool-head"></div>
+      <div id="trc-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Tool ②/④/⑤ Decomp — batch-level part decomposition of every
+         channel's Bellman target and of the actor objective (the parts
+         are accounting: they sum back to the recorded values). -->
+    <div class="page" id="page-decomp">
+      <div class="tool-head" id="dcp-tool-head"></div>
+      <div id="dcp-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Tool ⓪/① Attribute — provenance × update-contribution joint
+         attribution: which collection rounds / policy versions fed this
+         batch and how much each group moved the losses. -->
+    <div class="page" id="page-attribute">
+      <div class="tool-head" id="atr-tool-head"></div>
+      <div id="atr-body"><div class="loading">loading...</div></div>
+    </div>
+
+    <!-- Generic dump tool page (W4 tools still render raw JSON here) -->
     <div class="page" id="page-tool">
       <div class="tool-head" id="tool-head"></div>
       <div class="card">
@@ -402,10 +475,10 @@
   </div>
 
   <div id="context-bar">
-    <div class="ctx-item" data-pages="run home tool"><span class="ctx-label">Run:</span> <span class="ctx-value" id="ctx-run">-</span></div>
-    <div class="ctx-item" data-pages="home tool"><span class="ctx-label">Dump:</span> <span class="ctx-value" id="ctx-dump">-</span></div>
+    <div class="ctx-item" data-pages="run home tool samples trace decomp attribute"><span class="ctx-label">Run:</span> <span class="ctx-value" id="ctx-run">-</span></div>
+    <div class="ctx-item" data-pages="home tool samples trace decomp attribute"><span class="ctx-label">Dump:</span> <span class="ctx-value" id="ctx-dump">-</span></div>
     <div class="ctx-item" data-pages="run"><span class="ctx-label">Round:</span> <span class="ctx-value" id="ctx-round">-</span></div>
-    <div class="ctx-item" data-pages="tool"><span class="ctx-label">Sample:</span> <span class="ctx-value" id="ctx-sample">-</span></div>
+    <div class="ctx-item" data-pages="tool samples trace decomp attribute"><span class="ctx-label">Sample:</span> <span class="ctx-value" id="ctx-sample">-</span></div>
   </div>
 </div>
 
@@ -440,9 +513,12 @@
     // dump-level
     dumpInspect: null,
     toolEp: null,          // generic tool page endpoint (W1 stub)
+    toolFocus: null,       // decomp-section anchor from a stage card
     toolParams: {sample_id: '', group_by: 'collection_round',
                  source_key: '', slice_id: '', sort: 'td_abs', limit: 50},
     selectedSampleId: null, // shared SAC cursor (cross-tool, W3+)
+    smpParams: {sort: 'td_abs', channel: '', limit: 256},
+    smpRows: null,         // last-fetched samples rows (for prev/next)
     currentPage: 'runs',
   };
 
@@ -455,9 +531,16 @@
     run: $('page-run'),
     videos: $('page-videos'),
     home: $('page-home'),
+    samples: $('page-samples'),
+    trace: $('page-trace'),
+    decomp: $('page-decomp'),
+    attribute: $('page-attribute'),
     tool: $('page-tool'),
     compare: $('page-compare'),
   };
+
+  // Pages backed by dedicated renderers vs. generic JSON tool page.
+  const TOOL_PAGES = {samples: 1, trace: 1, decomp: 1, attribute: 1};
 
   // --- URL helpers ---
   // Runs mode: run-scoped API under /run/<name>/api/...; dump-scoped under
@@ -498,12 +581,14 @@
       if (state.dumpName) {
         const d = encodeURIComponent(state.dumpName);
         if (p === 'tool') return `${pre}/dump/${d}/${state.toolEp}`;
+        if (TOOL_PAGES[p]) return `${pre}/dump/${d}/${p}`;
         return `${pre}/dump/${d}/`;
       }
       return `${pre}/`;
     }
     // dump mode — root IS the dump
     if (p === 'tool') return `/${state.toolEp}`;
+    if (TOOL_PAGES[p]) return `/${p}`;
     return '/';
   }
 
@@ -563,6 +648,8 @@
         parts.push({label: state.dumpName, page: 'home'});
         if (state.currentPage === 'tool')
           parts.push({label: state.toolEp});
+        else if (TOOL_PAGES[state.currentPage])
+          parts.push({label: state.currentPage});
       }
     }
     bc.innerHTML = parts.map((p, i) => {
@@ -1696,28 +1783,28 @@
   const DUMP_STAGES = [
     {id: 'collection', num: '⓪', title: 'Round & Collection',
      desc: '本轮采集了什么：episodes → slices → replay 注入。',
-     tool: 'inspect'},
+     page: 'attribute', focus: 'collection_round'},
     {id: 'batch', num: '①', title: 'Replay → Batch',
      desc: '本 batch 的样本构成：provenance（collection_round / slice）、权重。',
-     tool: 'attribute'},
+     page: 'attribute'},
     {id: 'target', num: '②', title: 'Reward → Target',
      desc: 'r·scale + γ(1−d)·Q̄′ − α·logp′ − reg —— 逐通道目标分解。',
-     tool: 'decomp'},
+     page: 'decomp', focus: 'target'},
     {id: 'critic', num: '③', title: 'TD → Critic',
      desc: 'td = Q − target 的分布与尾部；per-channel 双 critic 损失与梯度。',
-     tool: 'recompute'},
+     page: 'samples'},
     {id: 'actor', num: '④', title: 'Actor Objective',
      desc: 'J = Σw·Q + entropy + reg —— 三分解与 pair 选择。',
-     tool: 'decomp'},
+     page: 'decomp', focus: 'actor'},
     {id: 'regularizer', num: '⑤', title: 'Temperature & Regularizer',
      desc: 'shannon α 自适应；U 模式 U(s) 分布 vs floor。',
-     tool: 'decomp'},
+     page: 'decomp', focus: 'reg'},
     {id: 'tickline', num: '⑥', title: 'Update Process',
      desc: '本 dump 在 round 内 tick 时间线上的位置（W4）。',
      tool: 'inspect'},
     {id: 'postupdate', num: '⑦', title: 'Post Update',
      desc: '参数增量：trainer_pre/post 的 per-layer Δ（W4）。',
-     tool: 'recompute'},
+     tool: 'inspect'},
     {id: 'drift', num: '⑧', title: 'Drift & Context',
      desc: '固定输入上前后策略漂移 + slice-ctx 回看（W4）。',
      tool: 'drift'},
@@ -1772,8 +1859,9 @@
         `<div class="desc">${escapeHtml(s.desc)}</div>`;
       host.appendChild(card);
       card.querySelector('.stage-open').addEventListener('click', () => {
-        state.toolEp = s.tool;
-        navigate('tool');
+        state.toolFocus = s.focus || null;
+        if (s.page) navigate(s.page);
+        else { state.toolEp = s.tool; navigate('tool'); }
       });
     });
     // Single /pipeline payload feeds the overview and all nine cards;
@@ -1895,6 +1983,530 @@
         : '—'),
       _kvSpan('note', '固定输入漂移 + slice-ctx → tool'),
     ].join(''));
+  }
+
+  // --- Shared sample cursor (W3) ---
+  function setSampleCursor(id) {
+    state.selectedSampleId = (id == null || isNaN(id)) ? null : id;
+    updateContextBar();
+  }
+
+  function dumpChannels() {
+    const p = state.dumpPipeline || {};
+    const chs = ((p.stages || {}).target || {}).channels || [];
+    return chs.map(c => c.name).filter(Boolean);
+  }
+
+  // --- Tool ①/③ Samples ---
+  async function renderSamples() {
+    if (!state.dumpName && state.rootMode !== 'dump') return;
+    const sp = state.smpParams;
+    const head = $('smp-tool-head');
+    const chans = dumpChannels();
+    head.innerHTML =
+      `<span class="t-title">${escapeHtml(state.dumpName || 'dump')}</span>` +
+      `<span class="t-sel"><span class="t-info">sort</span>` +
+      `<select id="smp-sort">` +
+      ['td_abs', 'q_mean', 'logp', 'sample_id'].map(s =>
+        `<option value="${s}"${sp.sort === s ? ' selected' : ''}>${s}</option>`)
+        .join('') +
+      `</select></span>` +
+      `<span class="t-sel"><span class="t-info">channel</span>` +
+      `<select id="smp-channel">` +
+      `<option value="">all</option>` +
+      chans.map(c => `<option value="${escapeHtml(c)}"` +
+        `${sp.channel === c ? ' selected' : ''}>${escapeHtml(c)}</option>`)
+        .join('') +
+      `</select></span>` +
+      `<span class="t-sel"><span class="t-info">limit</span>` +
+      `<input type="number" id="smp-limit" value="${sp.limit}" min="1" max="4096"></span>` +
+      `<button class="t-nav" id="smp-run">run</button>`;
+    $('smp-sort').addEventListener('change', e => {
+      sp.sort = e.target.value; _loadSamples();
+    });
+    $('smp-channel').addEventListener('change', e => {
+      sp.channel = e.target.value; _loadSamples();
+    });
+    $('smp-run').addEventListener('click', () => {
+      sp.limit = Math.max(1, parseInt($('smp-limit').value) || 256);
+      _loadSamples();
+    });
+    await _loadSamples();
+  }
+
+  async function _loadSamples() {
+    const sp = state.smpParams;
+    const qs = [`sort=${sp.sort}`, `limit=${sp.limit}`];
+    if (sp.channel) qs.push(`channel=${encodeURIComponent(sp.channel)}`);
+    $('smp-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(api('dump/samples') + `?${qs.join('&')}`);
+      state.smpRows = d.rows || [];
+      _renderSamplesBody(d);
+    } catch (e) {
+      $('smp-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _histogram(values, nBins) {
+    if (!values.length) return '<div class="muted">no data</div>';
+    const lo = Math.min(...values), hi = Math.max(...values);
+    const bins = new Array(nBins).fill(0);
+    const span = (hi - lo) || 1;
+    values.forEach(v => {
+      let b = Math.floor((v - lo) / span * nBins);
+      if (b >= nBins) b = nBins - 1;
+      bins[b]++;
+    });
+    const mx = Math.max(...bins, 1);
+    let html = '<div class="hist">';
+    bins.forEach((c, i) => {
+      const h = Math.max(1, Math.round(c / mx * 54));
+      html += `<div class="hbin" style="height:${h}px" ` +
+        `title="[${fmt(lo + i * span / nBins, 3)}, ` +
+        `${fmt(lo + (i + 1) * span / nBins, 3)}): ${c}" data-bin="${i}"></div>`;
+    });
+    html += '</div><div class="hist-axis">' +
+      `<span>${fmt(lo, 4)}</span><span>${fmt((lo + hi) / 2, 4)}</span>` +
+      `<span>${fmt(hi, 4)}</span></div>`;
+    return html;
+  }
+
+  function _renderSamplesBody(d) {
+    const rows = d.rows || [];
+    $('smp-scope').textContent =
+      `${d.total ?? rows.length} rows · sort=${d.sort}` +
+      (d.channel ? ` · ch=${d.channel}` : '');
+    $('smp-hist').innerHTML = _histogram(rows.map(r => r.td_abs), 24);
+    let html = '<div class="smp-scroll"><table class="smp-table"><thead><tr>' +
+      '<th>#</th><th>sample_id</th><th>round</th><th>td_abs</th>' +
+      '<th>q_mean</th><th>logp̄</th><th>r_sum</th><th>draws</th>' +
+      '<th>term</th><th>trace</th></tr></thead><tbody>';
+    rows.forEach(r => {
+      const sel = state.selectedSampleId === r.sample_id ? ' smp-sel' : '';
+      html += `<tr class="smp-row${sel}" data-sid="${r.sample_id}">` +
+        `<td>${r.row}</td><td>${r.sample_id}</td>` +
+        `<td>${r.collection_round ?? '-'}</td>` +
+        `<td>${fmt(r.td_abs, 4)}</td><td>${fmt(r.q_mean, 3)}</td>` +
+        `<td>${fmt(r.logp_expectation, 3)}</td>` +
+        `<td>${fmt(r.reward_sum, 5)}</td>` +
+        `<td>${r.draw_count ?? '-'}</td>` +
+        `<td>${r.terminated ? 'T' : ''}${r.truncated ? '✂' : ''}</td>` +
+        `<td><a class="vid-link">trace →</a></td></tr>`;
+    });
+    html += '</tbody></table></div>';
+    $('smp-body').innerHTML = html;
+    $('smp-body').querySelectorAll('tr.smp-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        setSampleCursor(parseInt(tr.dataset.sid));
+        navigate('trace');
+      });
+    });
+  }
+
+  // --- Tool per-sample Trace ---
+  async function renderTrace() {
+    const head = $('trc-tool-head');
+    const sid = state.selectedSampleId;
+    head.innerHTML =
+      `<span class="t-title">trace · ${escapeHtml(state.dumpName || 'dump')}</span>` +
+      `<span class="t-sel"><span class="t-info">sample_id</span>` +
+      `<input type="number" id="trc-sid" value="${sid ?? ''}" ` +
+      `style="width:110px"></span>` +
+      `<button class="t-nav" id="trc-prev">◀</button>` +
+      `<button class="t-nav" id="trc-next">▶</button>` +
+      `<button class="t-nav" id="trc-run">trace</button>` +
+      `<a class="vid-link" id="trc-to-samples">samples ↩</a>`;
+    const doTrace = () => {
+      const v = parseInt($('trc-sid').value);
+      if (isNaN(v)) {
+        $('trc-body').innerHTML =
+          '<div class="error-msg">enter a sample_id (pick one in samples)</div>';
+        return;
+      }
+      setSampleCursor(v);
+      _loadTrace(v);
+    };
+    $('trc-run').addEventListener('click', doTrace);
+    $('trc-sid').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doTrace();
+    });
+    const step = dir => {
+      const rows = state.smpRows || [];
+      if (!rows.length || state.selectedSampleId == null) return;
+      const idx = rows.findIndex(r => r.sample_id === state.selectedSampleId);
+      const j = idx + dir;
+      if (j < 0 || j >= rows.length) return;
+      const nid = rows[j].sample_id;
+      $('trc-sid').value = nid;
+      setSampleCursor(nid);
+      _loadTrace(nid);
+    };
+    $('trc-prev').addEventListener('click', () => step(-1));
+    $('trc-next').addEventListener('click', () => step(1));
+    $('trc-to-samples').addEventListener('click', () => navigate('samples'));
+    if (sid != null) await _loadTrace(sid);
+    else $('trc-body').innerHTML =
+      '<div class="loading">no sample selected — open samples and click a row</div>';
+  }
+
+  async function _loadTrace(sampleId) {
+    $('trc-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(
+        api('dump/trace') + `?sample_id=${sampleId}`);
+      _renderTrace(d);
+    } catch (e) {
+      $('trc-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  const PART_COLORS = ['#4a9eff', '#3aa876', '#e0a04a', '#c95f5f'];
+
+  function _stackBar(parts) {
+    const total = parts.reduce((a, p) => a + Math.abs(p.v), 0) || 1;
+    let html = '<div class="stackbar">';
+    parts.forEach((p, i) => {
+      const w = Math.abs(p.v) / total * 100;
+      if (w < 0.4) return;
+      html += `<i style="width:${w}%;background:${PART_COLORS[i % PART_COLORS.length]}" ` +
+        `title="${escapeHtml(p.k)}=${fmt(p.v, 5)}"></i>`;
+    });
+    html += '</div><div class="stack-legend">';
+    parts.forEach((p, i) => {
+      html += `<span class="leg-item"><span class="leg-color" ` +
+        `style="background:${PART_COLORS[i % PART_COLORS.length]}"></span>` +
+        `${escapeHtml(p.k)} ${fmt(p.v, 4)}</span>`;
+    });
+    return html + '</div>';
+  }
+
+  function _renderTrace(d) {
+    const pc = d.per_channel || {};
+    const prov = d.provenance || {};
+    const meta = d.metadata || {};
+    const col = meta.collection || {};
+    const ver = meta.versions || {};
+    const as = d.actor_side || {};
+    const ts = d.target_side || {};
+    const kv = (k, v) =>
+      `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '-'))}</span></div>`;
+
+    // --- Card 1: provenance ---
+    let html = '<div class="trc-grid">';
+    html += `<div class="card"><h2>Provenance <span class="gs-scope">sample ${d.sample_id} · row ${d.row}</span></h2>` +
+      '<div class="stage-stats">' +
+      kv('round', prov.collection_round) +
+      kv('job', prov.job_index) +
+      kv('agent', prov.agent_id) +
+      kv('ep_seed', prov.episode_seed) +
+      kv('frame', prov.frame_index) +
+      kv('draw_count', d.draw_count) +
+      kv('weight', fmt(d.sample_weight, 3)) +
+      kv('bootstrap', d.bootstrap) +
+      kv('terminated', d.terminated) +
+      kv('truncated', d.truncated) +
+      '</div><div class="mono" style="margin-top:6px">' +
+      escapeHtml(d.source_key || '') + '</div>' +
+      '<div class="stage-stats" style="margin-top:6px">' +
+      kv('policy_fp', (col.policy_fingerprint || '').slice(0, 12)) +
+      kv('schema', ver.schema) +
+      kv('obj_mode', ver.objective_mode) +
+      kv('reg_mode', ver.regularizer_mode) +
+      kv('policy_arch', ver.policy_arch) +
+      kv('task', ver.reward_semantics) +
+      '</div></div>';
+
+    // --- Card 2: actor side ---
+    const pairA = (as.pair_index || [[]])[0] || [];
+    const candF = (as.cand_f || [[]])[0] || [];
+    const logPA = (as.log_probs || [[]])[0] || [];
+    const wA = (as.integration_weights || [[]])[0] || [];
+    html += `<div class="card"><h2>Actor objective <span class="gs-scope">Σ w·(α·logp − w_c·Q) + reg</span></h2>` +
+      '<div class="stage-stats">' +
+      kv('weighted_q', fmt(as.weighted_q, 4)) +
+      kv('entropy_term', fmt(as.entropy_term, 5)) +
+      kv('reg_term', fmt(as.reg_term, 5)) +
+      kv('α_pre', fmt(as.alpha_pre, 6)) +
+      kv('pair_idx', pairA.join(',')) +
+      '</div><table class="part-table"><thead><tr>' +
+      '<th>k</th><th>w</th><th>cand_f</th><th>logp</th></tr></thead><tbody>' +
+      candF.map((f, k) =>
+        `<tr><td>${k}</td><td>${fmt(wA[k], 3)}</td>` +
+        `<td>${fmt(f, 4)}</td><td>${fmt(logPA[k], 4)}</td></tr>`).join('') +
+      '</tbody></table></div>';
+
+    // --- Card 3 (full width): per-channel critic + target parts + γ ---
+    html += `<div class="card full" id="trc-pc-card"><h2>Critic &amp; target per channel ` +
+      `<span class="gs-scope">target = r·scale + γ·boot·(softq + reg) — γ slider recomputes</span></h2>` +
+      `<div class="gamma-row"><span class="t-info">γ'</span>` +
+      `<input type="range" id="trc-gamma" min="0.80" max="1.00" step="0.005" value="0.99">` +
+      `<span class="g-val" id="trc-gamma-val">-</span></div>` +
+      `<div id="trc-pc-body"></div></div>`;
+
+    // --- Card 4 (full width): metadata ---
+    html += `<div class="card full"><h2>Metadata</h2>` +
+      `<pre class="json-pre">${escapeHtml(JSON.stringify(meta, null, 2))}</pre></div>`;
+    html += '</div>';
+    $('trc-body').innerHTML = html;
+
+    _renderTraceChannels(d, null);
+    const spec = ((state.dumpPipeline || {}).stages || {}).target || {};
+    const gamma0 = ((spec.channels || [])[0] || {}).gamma ?? 0.99;
+    const slider = $('trc-gamma');
+    slider.value = gamma0;
+    $('trc-gamma-val').textContent = fmt(gamma0, 3);
+    slider.addEventListener('input', () => {
+      $('trc-gamma-val').textContent = fmt(parseFloat(slider.value), 3);
+      _renderTraceChannels(d, parseFloat(slider.value));
+    });
+  }
+
+  function _renderTraceChannels(d, gammaOverride) {
+    const pc = d.per_channel || {};
+    const spec = ((state.dumpPipeline || {}).stages || {}).target || {};
+    const specChans = spec.channels || [];
+    let html = '<table class="part-table"><thead><tr>' +
+      '<th>channel</th><th>q1</th><th>q2</th><th>target</th><th>td1</th><th>td2</th>' +
+      '<th>w</th><th>w_next</th><th>gates</th></tr></thead><tbody>';
+    Object.entries(pc).forEach(([ch, p]) => {
+      const g = gammaOverride ??
+        ((specChans.find(c => c.name === ch) || {}).gamma);
+      const tp = p.target_parts || {};
+      let target = p.target;
+      let td1 = p.td_q1, td2 = p.td_q2;
+      if (g != null && d.bootstrap > 0) {
+        const g0 = (specChans.find(c => c.name === ch) || {}).gamma;
+        if (g0 && g !== g0) {
+          const k = g / g0;
+          target = (tp.reward_term || 0) +
+            k * ((tp.softq_term || 0) + (tp.reg_term || 0));
+          td1 = target - p.q1_pred;
+          td2 = target - p.q2_pred;
+        }
+      }
+      html += `<tr><td>${escapeHtml(ch)}</td>` +
+        `<td class="num">${fmt(p.q1_pred, 4)}</td>` +
+        `<td class="num">${fmt(p.q2_pred, 4)}</td>` +
+        `<td class="num">${fmt(target, 4)}</td>` +
+        `<td class="num">${fmt(td1, 4)}</td>` +
+        `<td class="num">${fmt(td2, 4)}</td>` +
+        `<td class="num">${fmt(p.actor_weight, 2)}</td>` +
+        `<td class="num">${fmt(p.actor_weight_next, 2)}</td>` +
+        `<td class="num">${p.actor_gate}/${p.actor_gate_next}</td></tr>` +
+        `<tr><td colspan="9" style="padding-top:0;border-bottom:1px solid var(--border)">` +
+        _stackBar([
+          {k: 'reward', v: tp.reward_term || 0},
+          {k: 'softq', v: (gammaOverride != null && d.bootstrap > 0
+            ? (tp.softq_term || 0) * (gammaOverride / (((specChans.find(c => c.name === ch) || {}).gamma) || 1))
+            : (tp.softq_term || 0))},
+          {k: 'reg', v: (gammaOverride != null && d.bootstrap > 0
+            ? (tp.reg_term || 0) * (gammaOverride / (((specChans.find(c => c.name === ch) || {}).gamma) || 1))
+            : (tp.reg_term || 0))},
+        ]) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    $('trc-pc-body').innerHTML = html;
+  }
+
+  // --- Tool ②/④/⑤ Decomp ---
+  async function renderDecomp() {
+    const head = $('dcp-tool-head');
+    const sid = state.selectedSampleId;
+    head.innerHTML =
+      `<span class="t-title">decomp · ${escapeHtml(state.dumpName || 'dump')}</span>` +
+      `<span class="t-sel"><span class="t-info">sample_id</span>` +
+      `<input type="number" id="dcp-sid" value="${sid ?? ''}" ` +
+      `style="width:110px" placeholder="(batch summary)"></span>` +
+      `<button class="t-nav" id="dcp-run">run</button>` +
+      `<a class="vid-link" id="dcp-to-samples">samples ↩</a>`;
+    const run = () => {
+      const raw = $('dcp-sid').value.trim();
+      if (raw !== '' && !isNaN(parseInt(raw))) setSampleCursor(parseInt(raw));
+      _loadDecomp(raw === '' ? null : parseInt(raw));
+    };
+    $('dcp-run').addEventListener('click', run);
+    $('dcp-sid').addEventListener('keydown', e => {
+      if (e.key === 'Enter') run();
+    });
+    $('dcp-to-samples').addEventListener('click', () => navigate('samples'));
+    await _loadDecomp(sid);
+  }
+
+  async function _loadDecomp(sampleId) {
+    $('dcp-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(api('dump/decomp') +
+        (sampleId != null ? `?sample_id=${sampleId}` : ''));
+      _renderDecomp(d);
+    } catch (e) {
+      $('dcp-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderDecomp(d) {
+    const sm = d.summary || {};
+    const focus = state.toolFocus;
+    const fcls = id => id === focus ? ' focused' : '';
+    let html = '<div class="trc-grid">';
+
+    // Target parts (②)
+    html += `<div class="card${fcls('target')}"><h2>Target decomposition ` +
+      `<span class="gs-scope">batch mean ± std · mode=${d.regularizer_mode}</span></h2>` +
+      '<table class="part-table"><thead><tr><th>channel</th>' +
+      '<th>reward</th><th>softq</th><th>reg</th><th>total</th></tr></thead><tbody>';
+    Object.entries(sm.target || {}).forEach(([ch, p]) => {
+      html += `<tr><td>${escapeHtml(ch)}</td>` +
+        `<td class="num">${fmt(p.reward_term?.mean, 4)}±${fmt(p.reward_term?.std, 4)}</td>` +
+        `<td class="num">${fmt(p.softq_term?.mean, 4)}±${fmt(p.softq_term?.std, 4)}</td>` +
+        `<td class="num">${fmt(p.reg_term?.mean, 4)}±${fmt(p.reg_term?.std, 4)}</td>` +
+        `<td class="num">${fmt(p.total?.mean, 4)}±${fmt(p.total?.std, 4)}</td></tr>` +
+        `<tr><td colspan="5" style="padding-top:0">` +
+        _stackBar([
+          {k: 'reward', v: p.reward_term?.mean || 0},
+          {k: 'softq', v: p.softq_term?.mean || 0},
+          {k: 'reg', v: p.reg_term?.mean || 0},
+        ]) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // Actor parts (④⑤)
+    const a = sm.actor || {};
+    html += `<div class="card${fcls('actor')}${fcls('reg')}"><h2>Actor objective ` +
+      `<span class="gs-scope">batch mean · Q per channel + entropy + reg</span></h2>` +
+      '<table class="part-table"><thead><tr><th>part</th><th>mean</th><th>std</th></tr></thead><tbody>' +
+      Object.entries(a.per_channel_q || {}).map(([ch, p]) =>
+        `<tr><td>q ${escapeHtml(ch)}</td>` +
+        `<td class="num">${fmt(p.mean, 4)}</td>` +
+        `<td class="num">${fmt(p.std, 4)}</td></tr>`).join('') +
+      `<tr><td>entropy</td><td class="num">${fmt(a.entropy_term?.mean, 5)}</td><td></td></tr>` +
+      `<tr><td>reg</td><td class="num">${fmt(a.reg_term?.mean, 5)}</td><td></td></tr>` +
+      `<tr><td><b>total</b></td><td class="num"><b>${fmt(a.total?.mean, 4)}</b></td><td></td></tr>` +
+      '</tbody></table></div>';
+
+    // Check + per-row decomposition (cursor sample)
+    html += `<div class="card full"><h2>Row decomposition ` +
+      `<span class="gs-scope">check |Σparts−recorded| ≤ ` +
+      `target ${fmt(d.check?.target_max_abs_err, 7)} · ` +
+      `objective ${fmt(d.check?.objective_max_abs_err, 7)}</span></h2>`;
+    if (d.row) {
+      const r = d.row;
+      html += `<div class="desc">sample ${r.sample_id} — ` +
+        `<a class="vid-link" id="dcp-to-trace">open in trace →</a></div>` +
+        '<div class="trc-grid">';
+      html += '<div><table class="part-table"><thead><tr>' +
+        '<th>channel</th><th>reward</th><th>softq</th><th>reg</th><th>total</th></tr></thead><tbody>';
+      Object.entries(r.target || {}).forEach(([ch, p]) => {
+        html += `<tr><td>${escapeHtml(ch)}</td>` +
+          `<td class="num">${fmt(p.reward_term, 4)}</td>` +
+          `<td class="num">${fmt(p.softq_term, 4)}</td>` +
+          `<td class="num">${fmt(p.reg_term, 4)}</td>` +
+          `<td class="num">${fmt(p.total, 4)}</td></tr>`;
+      });
+      html += '</tbody></table></div><div><table class="part-table">' +
+        '<thead><tr><th>part</th><th>value</th></tr></thead><tbody>' +
+        Object.entries(r.actor?.per_channel_q || {}).map(([ch, v]) =>
+          `<tr><td>q ${escapeHtml(ch)}</td><td class="num">${fmt(v, 4)}</td></tr>`).join('') +
+        `<tr><td>entropy</td><td class="num">${fmt(r.actor?.entropy_term, 5)}</td></tr>` +
+        `<tr><td>reg</td><td class="num">${fmt(r.actor?.reg_term, 5)}</td></tr>` +
+        `<tr><td><b>total</b></td><td class="num"><b>${fmt(r.actor?.total, 4)}</b></td></tr>` +
+        '</tbody></table></div></div>';
+    } else {
+      html += '<div class="desc">no sample selected — pick a row in ' +
+        'samples or enter a sample_id above.</div>';
+    }
+    html += '</div></div>';
+    $('dcp-body').innerHTML = html;
+    const link = $('dcp-to-trace');
+    if (link) link.addEventListener('click', () => navigate('trace'));
+    if (focus) {
+      const el = document.querySelector(`#dcp-body .card.focused`);
+      if (el) el.scrollIntoView({block: 'start'});
+      state.toolFocus = null;
+    }
+  }
+
+  // --- Tool ⓪/① Attribute ---
+  async function renderAttribute() {
+    const head = $('atr-tool-head');
+    const gb = state.toolFocus && state.toolFocus !== 'reg' &&
+      ['collection_round', 'policy_fingerprint', 'explore_factor',
+       'random_start'].includes(state.toolFocus)
+      ? state.toolFocus : (state.atrGroupBy || 'collection_round');
+    state.toolFocus = null;
+    head.innerHTML =
+      `<span class="t-title">attribute · ${escapeHtml(state.dumpName || 'dump')}</span>` +
+      `<span class="t-sel"><span class="t-info">group_by</span>` +
+      `<select id="atr-gb">` +
+      ['collection_round', 'policy_fingerprint', 'explore_factor',
+       'random_start'].map(g =>
+        `<option value="${g}"${gb === g ? ' selected' : ''}>${g}</option>`)
+        .join('') +
+      `</select></span>` +
+      `<button class="t-nav" id="atr-run">run</button>`;
+    state.atrGroupBy = gb;
+    $('atr-gb').addEventListener('change', e => {
+      state.atrGroupBy = e.target.value;
+      _loadAttribute();
+    });
+    $('atr-run').addEventListener('click', _loadAttribute);
+    await _loadAttribute();
+  }
+
+  async function _loadAttribute() {
+    $('atr-body').innerHTML = '<div class="loading">loading...</div>';
+    try {
+      const d = await fetchJson(api('dump/attribute') +
+        `?group_by=${encodeURIComponent(state.atrGroupBy)}`);
+      _renderAttribute(d);
+    } catch (e) {
+      $('atr-body').innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderAttribute(d) {
+    const groups = d.groups || [];
+    const chans = Object.keys(
+      (groups.find(g => g.critic_loss_share) || {}).critic_loss_share || {});
+    const maxShare = Math.max(
+      ...groups.map(g => Math.max(g.batch_share || 0,
+        g.actor_objective_share || 0)), 1e-9);
+    let html = '<div class="card"><h2>Provenance attribution ' +
+      `<span class="gs-scope">group_by=${d.group_by} · ${groups.length} groups</span></h2>` +
+      '<table class="part-table"><thead><tr>' +
+      `<th>${escapeHtml(d.group_by)}</th><th>rows</th>` +
+      '<th colspan="2">batch_share vs actor_obj_share</th>' +
+      chans.map(c => `<th>td|${escapeHtml(c)}</th><th>loss|${escapeHtml(c)}</th>`)
+        .join('') +
+      '</tr></thead><tbody>';
+    groups.forEach(g => {
+      const bw = (g.batch_share || 0) / maxShare * 50;
+      const aw = (g.actor_objective_share || 0) / maxShare * 50;
+      html += `<tr><td class="mono">${escapeHtml(String(g.key))}</td>` +
+        `<td class="num">${g.rows}</td>` +
+        `<td colspan="2"><div class="bar-row">` +
+        `<div class="bar-track" style="max-width:260px">` +
+        `<i style="width:${bw}%;background:var(--accent)" title="batch ${fmt(g.batch_share, 3)}"></i>` +
+        `<i style="width:${aw}%;background:var(--orange)" title="obj ${fmt(g.actor_objective_share, 3)}"></i>` +
+        `</div><span class="bar-val">${fmt(g.batch_share, 3)} / ${fmt(g.actor_objective_share, 3)}</span>` +
+        `</div></td>` +
+        chans.map(c =>
+          `<td class="num">${fmt((g.td_abs_mean || {})[c], 4)}</td>` +
+          `<td class="num">${fmt((g.critic_loss_share || {})[c], 3)}</td>`)
+          .join('') +
+        '</tr>';
+    });
+    html += '</tbody></table>' +
+      '<div class="desc">blue = batch_share (fraction of batch rows); ' +
+      'orange = actor_objective_share (fraction of the actor loss ' +
+      'this group accounts for) — a group whose orange exceeds its ' +
+      'blue is over-weighted in the update.</div></div>';
+    $('atr-body').innerHTML = html;
   }
 
   // --- Generic dump tool page (W1 stub) ---
@@ -2261,8 +2873,16 @@
   }
 
   function applySubRoute(sub) {
-    // dump-scoped tool routes: /<ep> where ep is a known endpoint
+    // dump-scoped tool routes: /<ep> — dedicated pages first, then the
+    // generic JSON tool page for the remaining endpoints.
     const mm = sub.match(/^\/([a-z-]+)\/?$/);
+    if (mm && TOOL_PAGES[mm[1]]) {
+      state.toolEp = mm[1];
+      showPage(mm[1]);
+      ({samples: renderSamples, trace: renderTrace,
+        decomp: renderDecomp, attribute: renderAttribute})[mm[1]]();
+      return;
+    }
     if (mm && TOOL_PARAMS.hasOwnProperty(mm[1])) {
       state.toolEp = mm[1];
       showPage('tool');

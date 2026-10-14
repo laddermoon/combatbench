@@ -3979,3 +3979,72 @@ headline 统计（一次 `pipeline` 拉取），卡片链到模块工具页；
 - **验证**：合成 dump 单测（九段齐全）；真实 sac_dump_v3 dump
   `critic_tick_00168970` CLI+HTTP 输出核对；SPA dump 首页 200；
   JS `node --check` 通过；全套回归 **246 passed**。
+
+## R3.3a R3-W3 细计划：工具页批 1（⓪–⑤）
+
+**调研结论**（真实 sac_dump_v3 payload 已核对）：
+
+- `samples`：256 行全量可拉（B=256），行含
+  row/sample_id/source_key/td_abs/q_mean/logp_expectation/weighted_q/
+  reward_sum/draw_count/collection_round/terminated/truncated。
+- `trace?sample_id`：provenance（source_key 已解析）、per_channel
+  （q1/q2/target/td + target_parts reward/softq/reg/total + cand_q +
+  gates/weights）、actor_side（cand_f/log_probs/pair_index/
+  integration_weights/weighted_q/entropy_term/reg_term/alpha_pre）、
+  target_side、metadata（collection+versions+behavior）。
+- `decomp`：batch 级 summary（target 三段 mean/std + actor 四段），
+  `sample_id` 时附 row 级同款分解；check 给出 |part_sum − recorded|
+  的 max err（accounting，非估计）。
+- `attribute`：group_by ∈ collection_round/policy_fingerprint/
+  explore_factor/random_start，组含 rows/batch_share/
+  actor_objective_share/critic_loss_share/td_abs_mean。
+- **γ 重算可行性**：`softq_term`/`reg_term` 均 ∝ γ（共享
+  `boot = γ·bootstrap` 因子）→ 单行 `target(γ') =
+  reward_term + (γ'/γ)·(softq+reg)` 可纯前端重算，无需后端改动
+  （PPO gae 页 γ/λ 滑杆的 SAC 对应）。
+
+### 页面设计（同 PPO 模式：tool-head + 卡片）
+
+| 页 | 工具 | 内容 |
+|---|---|---|
+| `page-samples` | ①③ | sort/channel/limit 选择器；td_abs 直方图；全量表，行点击 → 设共享游标 + 跳 trace |
+| `page-trace` | 样本深视图 | sample_id 输入 + prev/next（按 batch 序）；provenance/per-channel/actor/metadata 四卡；γ 滑杆行内重算 |
+| `page-decomp` | ②④⑤ | summary 双表（target 三段/actor 四段 + check err）；游标样本行分解；focus 锚点（卡 ②→target ④→actor ⑤→reg）|
+| `page-attribute` | ⓪① | group_by 选择器；组表 + batch_share vs actor_objective_share 对比条图 |
+
+**共享游标**：`state.selectedSampleId`——samples 行点击、trace
+输入、decomp 行链接三处写入；ctx 栏 Sample: 在四页均显示；trace/
+decomp 打开时自动取游标值。
+
+**卡→页映射**：⓪→attribute ①→samples ②→decomp(target)
+③→samples(td_abs) ④→decomp(actor) ⑤→decomp(reg)；⑥⑦⑧ 仍走通用
+JSON 页（W4 接专属页）。
+
+**路由**：`/dump/<d>/{samples,trace,decomp,attribute}` 专属页；
+其余端点名 → 通用 tool 页。
+
+### 出口标准
+
+- 四页对真实 dump 渲染正确；游标跨页保持；γ 滑杆数值与公式一致；
+  JS `node --check` 通过；全套回归绿。
+
+## R3.3b R3-W3 完成：工具页批 1
+
+- **四页落地**（同 PPO 模式 tool-head + 卡片）：
+  - `samples`（①③）：sort/channel/limit 选择器 + td_abs 直方图 +
+    全量表；行点击设共享游标并跳 trace。
+  - `trace`：sample_id 输入 + prev/next（沿最近 samples 排序序）；
+    provenance/actor/per-channel/metadata 四卡；γ 滑杆行内重算
+    `target = reward + (γ'/γ)·(softq+reg)`（bootstrap=0 行不变）。
+  - `decomp`（②④⑤）：batch summary 双表（target 三段堆叠条 +
+    actor 四段）+ check err + 游标样本行分解 + 跨页链接。
+  - `attribute`（⓪①）：group_by 选择器 + 组表 + batch_share vs
+    actor_objective_share 双色条图。
+- **共享游标**：`state.selectedSampleId` 三处写入（samples 行/
+  trace 输入/decomp 输入），ctx 栏在四专属页 + 通用页均显示。
+- **卡→页映射**：⓪→attribute(按 round) ①→attribute ②→decomp(target)
+  ③→samples ④→decomp(actor) ⑤→decomp(reg)；focus 锚点高亮并滚动。
+- **路由**：`/dump/<d>/{samples,trace,decomp,attribute}` → 专属页；
+  其余端点名仍走通用 JSON 页。
+- **验证**：真实 dump 四 API 端点 + 四 SPA 路由 200；`node --check` 通过
+  （修复一处未闭合模板串）；回归 **246 passed**。
