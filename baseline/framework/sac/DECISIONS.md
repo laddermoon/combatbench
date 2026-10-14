@@ -4187,3 +4187,36 @@ JSON 页（W4 接专属页）。
 - **手感记录 #1**：此类"小模型 + 高 UTD"工作负载的瓶颈几乎总在
   host 侧 launch/sync，不在 FLOPs；profiler 里 Optimizer.step 占大头
   时先查 fused/foreach 和 .item() 风暴，再谈算子级优化。
+
+## Opt-2 算法面探针：update 次数是墙钟第一旋钮，batch 近乎免费
+
+**控制组**：R1 `reg_standup_shannon_s42_d`（standup/shannon/s42，
+utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
+
+| 探针 | utd | batch | updates/round | 结局 | env/s* | 同 env_step 学习 vs R1 |
+|---|---|---|---|---|---|---|
+| opt_utd025_b256 | 0.25 | 256 | 6400 | 268K 提前停（dominated） | 53.9 | 持平（0.407@205K vs R1 0.36@268K） |
+| opt_utd0125_b256 | 0.125 | 256 | 3200 | 800K 跑满 @135min | **99.8** | 持平/略优（峰值 0.435） |
+| opt_b1024_utd0125 | 0.125 | 1024 | 3200 | 800K 跑满 @142min | 94.3 | 持平（峰值 0.432） |
+| opt_b1024_utd05 | 0.5 | 1024 | ~10K | 179K 提前停（dominated） | 35.7 | 持平但早期 q_mean 偏高（2.9 vs 其他 ~0.4 @160K） |
+
+\* 前 ~50min 5 训练作业争抢 CPU（load~210/192 核）环境下的含噪吞吐；
+两条 utd0125 臂后期单独跑时 round train 降至 107-137s。
+
+**结论**：
+1. **update 次数主导墙钟**：utd 0.125（3200 upd/round）→ ~100 env/s，
+   比 utd 0.5 快 ~2.8×；每 env_step 学习曲线全程贴住 R1（甚至略优），
+   即 **standup 上 utd 0.5→0.125 是纯赚**。
+2. **batch 256→1024 在 launch-bound 下近乎免费**：同 update 数只贵
+   ~5% env 吞吐；对学习无可见损益。大 batch 不是瓶颈，是冗余容量。
+3. **高 UTD × 大 batch 最差且不更稳**：utd05+b1024 组合早期 q_mean
+   冲高（相对同 env_step 其他臂），徒增 4× 墙钟。
+4. **手感 #2：CPU 竞争对 launch-bound 训练极敏感**——同一配置在
+   5 作业争抢时 ~35ms/update，空出后 ~23ms/update（86s/3200upd）；
+   并发实验数要受控，否则所有 timing 结论不可比。
+5. R1 实测 critic_tick/env=0.77（utd_credit 尾差滚动造成），名义 utd
+   与实际更新数未必相等，比吞吐要用 tick 数不用配置值。
+
+**验收动作**：两个 utd0125 臂已无损 resume 延训至 2M
+（`_e` 后缀 run）验证 breakthrough 段（R1 在 ~1.5M 才出 success），
+结果补记于本条目下方。
