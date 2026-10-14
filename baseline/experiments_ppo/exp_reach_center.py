@@ -40,8 +40,10 @@ class ReachCenter(CombatExperimentPPOBase):
     env_blueprint = "reach_center_env.yaml"
     agent_used = "robot_a"
     max_steps: int = 200
-    dist_min: float = 4.0                # initial_distance ∈ [4,10] → 走 2-5m
-    dist_max: float = 10.0
+    # A 出生半径 = dist/2 ∈ [1.5, 2.5]m（围墙 r≈3.38，留安全边距）；
+    # RotateSpawnPlugin 把方向随机化到整圆 → 走 1.5-2.5m 到中心。
+    dist_min: float = 3.0
+    dist_max: float = 5.0
 
     # --- Reward channels ---
     _channel_names = ("r_task", "r_style")

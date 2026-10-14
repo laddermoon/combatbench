@@ -35,6 +35,9 @@ simulator:
     initial_pose_b: "standing"
 
 plugins:
+  - cls: "mocap.humanoid21.reach_task:RotateSpawnPlugin"
+    config:
+      target_robot: "robot_a"
   - cls: "mocap.humanoid21.reach_task:ReachGuardPlugin"
     config:
       track_robot: "robot_a"

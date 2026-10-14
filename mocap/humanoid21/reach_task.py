@@ -13,9 +13,73 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 from envs.framework import (
     BaseObserverPlugin, BasePlugin, ReadOnlySimContext, SimContext)
+
+
+class RotateSpawnPlugin(BasePlugin):
+    """绕场地中心把 robot_a 的出生点旋转到随机角度（面朝中心不变）。
+
+    原生出生构型 A 固定在 -x 侧面向 +x；对 pos 与 yaw 同时施加
+    R_z(θ) 后仍在同一半径上且恰好面朝中心——任务 = "走到中心"，
+    方向随机化防止策略把 "x 轴正方向" 背下来。held-out 角度即天然
+    泛化测试条件。
+    """
+
+    def __init__(self, target_robot: str = 'robot_a',
+                 random_seed: Optional[int] = None) -> None:
+        self.target_robot = target_robot
+        self._rng = np.random.RandomState(random_seed)
+        self.angle_deg = 0.0
+
+    @property
+    def name(self) -> str:
+        return 'rotate_spawn'
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def set_episode_seed(self, seed: int) -> None:
+        self._rng = np.random.RandomState(int(seed))
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {'target_robot': self.target_robot}
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> 'RotateSpawnPlugin':
+        return cls(**config)
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        theta = float(self._rng.uniform(0.0, 2.0 * np.pi))
+        self.angle_deg = float(np.degrees(theta))
+        core = ctx.accessor.get_core_state()[self.target_robot]
+        pos = np.asarray(core['root_pos'], dtype=np.float32).copy()
+        rot = np.asarray(core['root_rot'], dtype=np.float32).copy()
+
+        c, s = np.cos(theta), np.sin(theta)
+        new_x = c * pos[0] - s * pos[1]
+        new_y = s * pos[0] + c * pos[1]
+        pos[0], pos[1] = np.float32(new_x), np.float32(new_y)
+
+        Rz = R.from_euler('z', theta)
+        q_old = R.from_quat([rot[1], rot[2], rot[3], rot[0]])
+        q_new = (Rz * q_old).as_quat()
+        rot[:] = np.float32([q_new[3], q_new[0], q_new[1], q_new[2]])
+
+        ctx.mutator.set_core_state({self.target_robot: {
+            'root_pos': pos, 'root_rot': rot,
+            'root_vel_local': np.asarray(
+                core['root_vel_local'], dtype=np.float32),
+            'root_angular_vel_local': np.asarray(
+                core['root_angular_vel_local'], dtype=np.float32),
+            'joint_pos_norm': np.asarray(
+                core['joint_pos_norm'], dtype=np.float32),
+            'joint_vel_norm': np.asarray(
+                core['joint_vel_norm'], dtype=np.float32),
+        }})
 
 
 class ReachGuardPlugin(BasePlugin):
