@@ -47,11 +47,13 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
     env_bp = env_pb.materialize(
         clip_id=clip_id, rsi='first', max_steps=max_steps)
     rt = env_bp.build()
+    tag = f'{policy_dir.parent.parent.name}_{policy_dir.name}'
     if video:
         out_dir = Path('/data1/dev/combatbench_mocap/track_eval')
         out_dir.mkdir(parents=True, exist_ok=True)
         rt.attach_plugin(VideoRecorderPlugin(
-            fps=20, output_path=str(out_dir / f'{clip_id}_track_eval.mp4')))
+            fps=20,
+            output_path=str(out_dir / f'{clip_id}_{tag}_track_eval.mp4')))
 
     rt.reset(seed=seed, options={'initial_distance': 6.0})
     rec = {'reward': [], 'kp_err_m': [], 'q_rmse_deg': [], 'phase': []}
@@ -82,9 +84,9 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
     }
     out_dir = Path('/data1/dev/combatbench_mocap/track_eval')
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f'{clip_id}_track_eval.json').write_text(
+    (out_dir / f'{clip_id}_{tag}_track_eval.json').write_text(
         json.dumps(metrics, indent=1))
-    np.savez(out_dir / f'{clip_id}_track_eval_trace.npz',
+    np.savez(out_dir / f'{clip_id}_{tag}_track_eval_trace.npz',
              **{k: np.asarray(v) for k, v in rec.items()})
     rt.close()
     return metrics
