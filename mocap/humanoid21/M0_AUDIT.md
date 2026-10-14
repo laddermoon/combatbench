@@ -134,7 +134,7 @@ viewer 不符，早期预览视频 `preview/*.mp4` 全部作废。曾列出的�
 （拳击 p99 手速 5–11 m/s 合理；绝对米标度为髋高校准 0.11 m/unit 的暂定值，
 M1 再定标）。
 
-历史预览：`/data1/dev/combatbench_mocap/preview_v2/*.mp4`（不入库）。**2026-10-14 修订**：M1-W5c 查出 `ref_fk.py` 自身将 SciPy 大小写 Euler 约定误用（见 M1_AUDIT.md）；v2、v3、v4、`content_scan.json` v2 及以上旧数值均不再作为有效资产，重新导出、复核中的 v5 取代之。
+历史预览：`/data1/dev/combatbench_mocap/preview_v2/*.mp4`（不入库）。**2026-10-14 修订**：M1-W5c 查出 `ref_fk.py` 自身将 SciPy 大小写 Euler 约定误用（见 M1_AUDIT.md）；v2、v3、v4、`content_scan.json` v2 及以上旧数值均不再作为有效资产，重新导出后 v5 又发现根姿态翻转（M1-W5d），v2–v5 均不能用于全片验收；以最新 v6 为准。
 
 ## W4 许可核验
 
