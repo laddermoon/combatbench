@@ -7,16 +7,18 @@ axes, reduced arm/ankle DOFs, different proportions).
 Per-frame solve order:
   1. torso quat   := C @ F[thorax] @ C.T   (human thorax frame -> robot chest)
   2. abdomen z,y,x := euler solve of R_torso.T @ R_pelvis*,  pelvis* = C·F[root]·Cᵀ
-  3. legs: hip x,z,y + knee — joint LSQ matching
-       (a) ankle position rel. hip joint (scaled source, 3 dims)
-       (b) shin direction (3 dims, weight 0.5 — fixes hip twist / knee hinge)
-     then ankle y,x — LSQ matching foot direction (heel->toe)
-  4. arms: shoulder 1,2 + elbow — joint LSQ matching
-       (a) hand position rel. shoulder (scaled, 3 dims)
-       (b) upper-arm direction (3 dims, weight 0.5 — fixes elbow hinge plane)
+  3. legs: hip x,z,y + knee — bounded LM matching
+       (a) ankle position rel. hip joint (scaled source, 3 dims, w=1.0)
+       (b) shin direction (3 dims, w=0.4 — fixes hip twist / knee hinge)
+       (c) soft hamstring-tendon hinge penalty (keeps 0.5*hip_y-0.5*knee >= -0.3)
+     then ankle y,x — LM matching foot direction (heel->toe)
+  4. arms: shoulder1,2 + elbow — bounded LM matching hand position rel.
+     shoulder (scaled, 3 dims, w=1.0). The 3-dof arm vs 3-dim target is a
+     square system; a direction prior was tried and pinned the elbow at its
+     limit — warm start + temporal prior resolves the hinge plane instead.
 
 Root position: scaled CMU root (pelvis) position; robot torso position is
-back-computed via mj_forward so the robot pelvis lands exactly on target.
+back-computed via analytic FK so the robot pelvis lands exactly on target.
 A single per-clip vertical shift grounds feet (min sole ~ 0).
 
 All solves warm-start from previous frame, bounded by joint limits;
@@ -38,7 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from baseline.humanoid21.mocap.asf_parser import parse_asf
 from baseline.humanoid21.mocap.amc_parser import parse_amc
-from mocap.humanoid21.calibrate import C_CMU2MJ, cmu_pos_to_mj, cmu_rot_to_mj
+from mocap.humanoid21.calibrate import cmu_pos_to_mj, cmu_rot_to_mj
 from mocap.humanoid21.ref_fk import RefSkeleton, fk_frame
 from mocap.humanoid21.robot_kin import (
     BONE_DIR_LOCAL, CONTROLLED_JOINTS, RobotFK, body_world_rot, fk_positions,
@@ -179,8 +181,6 @@ class Retargeter:
 
         # 3) legs
         for side in ("right", "left"):
-            d_femur = _unit(cmu_pos_to_mj(
-                distal_cmu[SRC_THIGH[side]] - joint_cmu[SRC_THIGH[side]]))
             d_shin = _unit(cmu_pos_to_mj(
                 distal_cmu[SRC_SHIN[side]] - joint_cmu[SRC_SHIN[side]]))
             # ankle rel hip (scaled human) as position target

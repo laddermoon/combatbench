@@ -72,10 +72,26 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
 
     # fixed axis limits from global extents; normalize around body height
     allp = np.concatenate([J[idxs].reshape(-1, 3), D[idxs].reshape(-1, 3)], axis=0)
-    cx, cz = allp[:, 0].mean(), allp[:, 2].mean()
     body_h = float(allp[:, 1].max() - allp[:, 1].min())
     span = max(0.35 * body_h, float(allp[:, 0].std()) * 2.5, 0.3 * body_h)
     ymax = allp[:, 1].max() * 1.08
+
+    # Smoothed facing per frame (CMU coords, y-up): facing = up x shoulder-line.
+    # Panels are facing-aligned so punches always extend screen-right in the
+    # sagittal view — fixed world-axis projections read as "backward" whenever
+    # the subject faces a diagonal direction.
+    lsh = idx["lhumerus"]; rsh = idx["rhumerus"]
+    up = np.array([0.0, 1.0, 0.0])
+    sl = J[:, rsh] - J[:, lsh]
+    fwd3 = np.cross(np.broadcast_to(up, sl.shape), sl)
+    fwd3[:, 1] = 0.0
+    fwd3 = fwd3 / np.maximum(np.linalg.norm(fwd3, axis=1, keepdims=True), 1e-9)
+    zc = np.exp(1j * np.arctan2(fwd3[:, 2], fwd3[:, 0]))
+    zc = np.convolve(zc, np.ones(91) / 91, mode="same")
+    ang = np.unwrap(np.angle(zc))
+    fwd_xz = np.stack([np.cos(ang), np.sin(ang)], axis=1)          # (T,2) x,z
+    left_xz = np.stack([np.sin(ang), -np.cos(ang)], axis=1)        # up x fwd
+    root_xz = J[:, idx["root"], [0, 2]].copy()
 
     desc = ""
     try:
@@ -90,10 +106,10 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
     out = outdir / f"{clip}.mp4"
     fig, axes = plt.subplots(1, 3, figsize=(9.6, 4.2), dpi=90)
     writer = imageio.get_writer(out, fps=fps)
-    views = [(0, "front (x)"), (2, "side (z)")]
+    views = [(fwd_xz, "sagittal (facing ->)"), (left_xz, "coronal (left+)")]
     try:
         for t in idxs:
-            for vi, (hax, label) in enumerate(views):
+            for vi, (axs, label) in enumerate(views):
                 ax = axes[vi]
                 ax.clear()
                 ax.set_xlim(-span, span)
@@ -101,14 +117,18 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
                 ax.set_aspect("equal")
                 ax.set_xticks([]); ax.set_yticks([])
                 ax.axhline(0, color="gray", lw=0.6)
-                off = cx if hax == 0 else cz
+                ax.annotate("", xy=(0.8 * span, 0.08 * ymax),
+                            xytext=(0.4 * span, 0.08 * ymax),
+                            arrowprops=dict(arrowstyle="->", color="orange", lw=2))
+                h = axs[t]
                 for b in segs:
                     i = idx[b]
-                    ax.plot([J[t, i, hax] - off, D[t, i, hax] - off],
+                    ax.plot([np.dot(J[t, i, [0, 2]] - root_xz[t], h),
+                             np.dot(D[t, i, [0, 2]] - root_xz[t], h)],
                             [J[t, i, 1], D[t, i, 1]], color="steelblue", lw=1.6)
                 for label_b, draw_b, c in marker_bones:
                     if draw_b in idx:
-                        ax.scatter(D[t, idx[draw_b], hax] - off,
+                        ax.scatter(np.dot(D[t, idx[draw_b], [0, 2]] - root_xz[t], h),
                                    D[t, idx[draw_b], 1], color=c, s=24, zorder=5)
                 ax.set_title(label, fontsize=8)
             ax = axes[2]
@@ -119,13 +139,18 @@ def render_clip(clip: str, outdir: Path, every: int = 4, fps: int = 30):
             ax.axhline(0, color="gray", lw=0.4); ax.axvline(0, color="gray", lw=0.4)
             for b in segs:
                 i = idx[b]
-                ax.plot([J[t, i, 0] - cx, D[t, i, 0] - cx],
-                        [J[t, i, 2] - cz, D[t, i, 2] - cz], color="steelblue", lw=1.2)
+                ax.plot([J[t, i, 0] - root_xz[t, 0], D[t, i, 0] - root_xz[t, 0]],
+                        [J[t, i, 2] - root_xz[t, 1], D[t, i, 2] - root_xz[t, 1]],
+                        color="steelblue", lw=1.2)
             for label_b, draw_b, c in marker_bones:
                 if draw_b in idx:
-                    ax.scatter(D[t, idx[draw_b], 0] - cx, D[t, idx[draw_b], 2] - cz,
+                    ax.scatter(D[t, idx[draw_b], 0] - root_xz[t, 0],
+                               D[t, idx[draw_b], 2] - root_xz[t, 1],
                                color=c, s=20, zorder=5)
-            ax.set_title("top (x,z)", fontsize=8)
+            ax.annotate("", xy=(root_xz[t] + fwd_xz[t] * 0.5 * span - root_xz[t]),
+                        xytext=(0, 0),
+                        arrowprops=dict(arrowstyle="->", color="orange", lw=2))
+            ax.set_title("top (x,z) + facing arrow", fontsize=8)
             fig.suptitle(f"{clip}  frame {t}/{T}   [{desc}]", fontsize=9)
             fig.tight_layout()
             fig.canvas.draw()

@@ -36,6 +36,25 @@ SRC_MARKER_COLORS = {"lhand": "red", "rhand": "darkred",
                      "head": "black"}
 
 
+def _smooth_facing(kp: np.ndarray, bi: dict, half: int = 45) -> np.ndarray:
+    """Per-frame smoothed horizontal facing dir (T,2) in MJ xy.
+
+    Facing = up x (rshoulder - lshoulder). Box-smoothed over `2*half+1` frames
+    (~0.75 s at 120 Hz) via circular averaging so the view does not jitter.
+    """
+    up = np.array([0.0, 0.0, 1.0])
+    sl = kp[:, bi["rhumerus"], :] - kp[:, bi["lhumerus"], :]
+    fwd = np.cross(np.broadcast_to(up, sl.shape), sl)
+    fwd[:, 2] = 0.0
+    n = np.linalg.norm(fwd, axis=1, keepdims=True)
+    fwd = fwd / np.maximum(n, 1e-9)
+    z = np.exp(1j * np.arctan2(fwd[:, 1], fwd[:, 0]))
+    k = np.ones(2 * half + 1) / (2 * half + 1)
+    zs = np.convolve(z, k, mode="same")
+    ang = np.unwrap(np.angle(zs))
+    return np.stack([np.cos(ang), np.sin(ang)], axis=1)
+
+
 def render_compare(clip_id: str, outdir: Path, every: int = 4, fps: int = 30):
     import matplotlib
     matplotlib.use("Agg")
@@ -91,7 +110,13 @@ def render_compare(clip_id: str, outdir: Path, every: int = 4, fps: int = 30):
     idxs = list(range(0, T, every))
     out = outdir / f"{clip_id}.mp4"
 
-    # 1280 x 432: src front | src side | robot render   (all /16 divisible)
+    # Smoothed facing per frame; panels are facing-aligned so a punch always
+    # extends screen-right in the sagittal view (fixes misreading world-axis
+    # projections when the subject faces diagonally).
+    fwd2 = _smooth_facing(kp_s, bi)
+    left2 = np.stack([-fwd2[:, 1], fwd2[:, 0]], axis=1)  # up x fwd, z-up
+
+    # 1280 x 432: src sagittal | src coronal | robot render  (all /16 divisible)
     fig, axes = plt.subplots(1, 3, figsize=(12.8, 4.32), dpi=100)
     writer = imageio.get_writer(out, fps=fps, macro_block_size=16)
     span = 1.4
@@ -108,29 +133,50 @@ def render_compare(clip_id: str, outdir: Path, every: int = 4, fps: int = 30):
             img = rend.render()
 
             cx, cy = rpos[t, 0], rpos[t, 1]
-            for vi, (hx, label) in enumerate(((0, "src front (x,z)"),
-                                              (1, "src side (y,z)"))):
+            fv, lv = fwd2[t], left2[t]
+            # panel 0: sagittal (facing-aligned), panel 1: top-down + facing arrow
+            for vi, (axis2, label) in enumerate(((fv, "sagittal (facing ->)"),
+                                                 (None, "top (x,y)"))):
                 ax = axes[vi]
                 ax.clear()
-                ax.set_xlim(cx - span, cx + span)
-                ax.set_ylim(-0.1, 2.0)
                 ax.set_aspect("equal")
                 ax.axhline(0, color="gray", lw=0.6)
-                for ci, pi in segs:
-                    ax.plot([kp_s[t, ci, hx], kp_s[t, pi, hx]],
-                            [kp_s[t, ci, 2], kp_s[t, pi, 2]],
-                            color="steelblue", lw=1.6)
-                for mb, c in SRC_MARKER_COLORS.items():
-                    if mb in bi:
-                        ax.scatter(kp_s[t, bi[mb], hx], kp_s[t, bi[mb], 2],
-                                   color=c, s=22, zorder=5)
+                if axis2 is not None:
+                    ax.set_xlim(-span, span)
+                    ax.set_ylim(-0.1, 2.0)
+                    ax.annotate("", xy=(0.9 * span, 0.12), xytext=(0.3 * span, 0.12),
+                                arrowprops=dict(arrowstyle="->", color="orange", lw=2))
+                    for ci, pi in segs:
+                        hx_c = np.dot(kp_s[t, ci, :2] - [cx, cy], axis2)
+                        hx_p = np.dot(kp_s[t, pi, :2] - [cx, cy], axis2)
+                        ax.plot([hx_p, hx_c],
+                                [kp_s[t, pi, 2], kp_s[t, ci, 2]],
+                                color="steelblue", lw=1.6)
+                    for mb, c in SRC_MARKER_COLORS.items():
+                        if mb in bi:
+                            ax.scatter(np.dot(kp_s[t, bi[mb], :2] - [cx, cy], axis2),
+                                       kp_s[t, bi[mb], 2], color=c, s=22, zorder=5)
+                else:
+                    ax.set_xlim(-span, span)
+                    ax.set_ylim(-span, span)
+                    for ci, pi in segs:
+                        ax.plot([kp_s[t, pi, 0] - cx, kp_s[t, ci, 0] - cx],
+                                [kp_s[t, pi, 1] - cy, kp_s[t, ci, 1] - cy],
+                                color="steelblue", lw=1.6)
+                    for mb, c in SRC_MARKER_COLORS.items():
+                        if mb in bi:
+                            ax.scatter(kp_s[t, bi[mb], 0] - cx, kp_s[t, bi[mb], 1] - cy,
+                                       color=c, s=22, zorder=5)
+                    ax.annotate("", xy=(fv[0] * span, fv[1] * span),
+                                xytext=(0.0, 0.0),
+                                arrowprops=dict(arrowstyle="->", color="orange", lw=2.2))
                 ax.set_title(label, fontsize=8)
             axes[2].clear()
             axes[2].imshow(img)
             axes[2].set_title("robot replay (mj_forward)", fontsize=8)
             axes[2].set_xticks([]); axes[2].set_yticks([])
-            axes[0].set_title("src front (x,z)", fontsize=8)
-            fig.suptitle(f"{clip_id}  frame {t}/{T}", fontsize=9)
+            fig.suptitle(f"{clip_id}  frame {t}/{T}   facing=({fv[0]:+.2f},{fv[1]:+.2f})",
+                         fontsize=9)
             fig.tight_layout()
             fig.canvas.draw()
             writer.append_data(
