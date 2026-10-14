@@ -114,8 +114,9 @@ PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
 （PPO 的 @UPDATE 对应物）。可 patch 字段（其余 fail-loud）：
 `experiment.behavior_explore`、`experiment.random_start_transitions`、
 `sac_params.utd_ratio`、`sac_params.max_grad_steps_per_round`、
-`common_params.episodes_per_update`、`common_params.eval_interval`、
-`common_params.eval_episodes`。实验侧 `param_overrides()` 返回同形
+`sac_params.batch_size`、`common_params.episodes_per_update`、
+`common_params.eval_interval`、`common_params.eval_episodes`、
+`common_params.max_env_steps`。实验侧 `param_overrides()` 返回同形
 `(from_round, field, value)` 列表，与 CLI 合并时 **CLI 优先**；
 应用在 round 起点、记录进 round 事件 context（`param_patches`）。
 补丁是 round 的确定性函数，分段=连续对拍不受影响。
@@ -124,6 +125,13 @@ PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
 （collection 提交后 / critic tick 完成后）停训、写终态 checkpoint
 与 `run_terminal.json`；第二次信号才是强杀逃生口。eval 事件发布前
 对应 checkpoint 已落盘——监控读到达标 eval 即可安全停训。
+
+**达标早停**（Opt-P3 起）：实验级配置 `early_stop_metric` / `early_stop_threshold` /
+`early_stop_consecutive` / `early_stop_min_env_steps`（可用 `--set` 覆盖），
+eval 指标连续 N 次 ≥ 阈值且超过最小步数后由 `stop_training` 干净终止——
+终止发生在 eval 事件与 durable checkpoint 之后，命中计数器随 checkpoint
+持久化、resume 后累加不丢。standup 按 `eval.success`、balance 按
+`eval.survival_rate` 判定。
 
 ---
 
