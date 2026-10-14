@@ -1,0 +1,49 @@
+# M2 参考运动跟踪环境（DeepMimic 式）。
+# robot_a 由 MotionTrackingSimulator 做 RSI 初始化到 clip 随机相位，
+# 学习用归一化 PD 目标跟踪参考；robot_b 保持 standing（standing policy）。
+# 终止：摔倒(track_fall) 或 片段播完(track_clip_end)。
+
+parameters:
+  clip_id:
+    default: "cmu_07_01"
+    description: "参考片段 id（clips/cmu_*.npz）"
+  rsi:
+    default: "random"
+    description: "'random' = 随机相位初始化；'first' = 固定从第 0 帧"
+  initial_distance:
+    default: 6.0
+    description: "双机距离（B 仅作场景，不参与跟踪）"
+  max_steps:
+    default: 200
+    description: "最大控制步数（20Hz）"
+  fall_height:
+    default: 0.55
+    description: "torso_z 低于此值判摔倒"
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "mocap.humanoid21.tracking.simulator:MotionTrackingSimulator"
+  config:
+    clip_id: ${clip_id}
+    track_robot: "robot_a"
+    rsi: ${rsi}
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "mocap.humanoid21.tracking.plugins:MotionTrackGuardPlugin"
+    config:
+      track_robot: "robot_a"
+      fall_height: ${fall_height}
+
+observer_plugins:
+  track_a:
+    cls: "mocap.humanoid21.tracking.reward:MotionTrackRewarder"
+    config:
+      agent_id: "robot_a"
