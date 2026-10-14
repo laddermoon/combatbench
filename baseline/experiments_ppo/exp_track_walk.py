@@ -37,8 +37,8 @@ class TrackWalk(CombatExperimentPPOBase):
     name = "track_walk"
     actor_blueprint = "init_policy_truncated_normal.yaml"
 
-    # obs = 96 基础 + 46 参考跟踪特征
-    obs_dim: int = 142
+    # obs = 96 基础 + 54 参考跟踪特征（46 关节/速度 + 8 根级目标）
+    obs_dim: int = 150
     action_dim: int = 21
 
     env_blueprint = "track_ref_env.yaml"

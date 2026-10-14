@@ -9,8 +9,9 @@
 - ``set_action`` 每调用一次（20Hz 控制步）相位 +1；参考帧相位就是
   episode 时间轴。
 - 观测扩展（仅被跟踪机器人，对手保持 96 维）：
-    [phase(1), ref_q_norm(21), ref_qv_norm(21)*0.2, ref_root_linvel_local(3)]
-  → obs_dim = 96 + 46 = 142。**参考帧取 frame+1（下一控制步目标），
+    [phase(1), ref_q_norm(21), ref_qv_norm(21)*0.2, ref_root_linvel_local(3),
+     ref_root_pos(3), ref_yaw_sin_cos(2), ref_root_angvel_local(3)]
+  → obs_dim = 96 + 54 = 150。**参考帧取 frame+1（下一控制步目标），
   与步末奖励所对照的参考帧一致。**
 - ``get_derived_state`` 增加 ``motion_track`` 字段供奖励/终止插件使用：
   ref_q_norm / ref_qv_norm / ref_root_pos / ref_keypoints(15,3) /
@@ -33,7 +34,8 @@ import mujoco
 
 class MotionTrackingSimulator(Humanoid21Simulator):
 
-    OBS_EXT_DIM = 46  # 1 phase + 21 q + 21 qv + 3 root vel
+    OBS_EXT_DIM = 54  # 1 phase + 21 q + 21 qv + 3 root linvel
+                      # + 3 root pos + 2 yaw(sin,cos) + 3 root angvel
 
     def __init__(self, clip_id: str, track_robot: str = 'robot_a',
                  rsi: str = 'random', clips_dir: Optional[str] = None,
@@ -132,6 +134,13 @@ class MotionTrackingSimulator(Humanoid21Simulator):
         Rr = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
         return Rr.inv().as_matrix() @ rf['root_linvel']
 
+    def _ref_root_angvel_local(self, rf: Dict[str, np.ndarray]) -> np.ndarray:
+        cache = self._robots[self._track_robot]
+        quat = self.data.qpos[cache['root_qpos_adr'] + 3:
+                              cache['root_qpos_adr'] + 7]
+        Rr = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
+        return Rr.inv().as_matrix() @ rf['root_angvel']
+
     def get_derived_state(self, fields=None) -> Dict[str, Any]:
         if '_ds_track' in self._data_cache:
             cached = self._data_cache['_ds_track']
@@ -167,11 +176,20 @@ class MotionTrackingSimulator(Humanoid21Simulator):
         # 奖励在步末对照 ref[k+1] 评分；给 ref[k] 会引入一步目标滞后
         # （快速出拳段 ~10°/控制步 的系统性相位差）。
         rf = self.ref_at(self._frame + 1)
+        # 根级目标也必须可观测：否则策略只能间接从腿部目标推断
+        # 位移/转身意图 —— v3 拳击出现过 mean yaw 误差 123°、
+        # xy 漂移 1.4m 的"原地拳击"退化。
+        yaw = R.from_quat([rf['root_quat'][1], rf['root_quat'][2],
+                           rf['root_quat'][3], rf['root_quat'][0]]
+                          ).as_euler('xyz')[2]
         ext = np.concatenate([
             [rf['phase']],
             rf['q_norm'],
             rf['qv_norm'] * 0.2,
             self._ref_root_vel_local(rf),
+            rf['root_pos'],
+            [np.sin(yaw), np.cos(yaw)],
+            self._ref_root_angvel_local(rf),
         ]).astype(np.float32)
         out = {}
         for rid, o in base.items():
