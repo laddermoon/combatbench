@@ -165,7 +165,16 @@ class StrikeStep(AttackPrepStep):
         )
         if not trajs:
             return trajs
+        return self._apply_strike_channels(trajs, episode, agent_id)
 
+    def _apply_strike_channels(
+        self, trajs: List[Trajectory], episode, agent_id: str,
+    ) -> List[Trajectory]:
+        """Attach r_strike / r_retract + RETRACT masking to trajs.
+
+        Split out so StrikeSparseStep can reuse it on top of the
+        FollowStep trajectory recipe (no arm shaping).
+        """
         T_full = episode.num_frames
         oo = episode.observer_outputs
         strike_key = self._STRIKE_OBS.get(agent_id)
