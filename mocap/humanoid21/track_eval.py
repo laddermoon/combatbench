@@ -53,7 +53,7 @@ def eval_policy(policy_dir: str, clip_id: str, video: bool = False,
         rt.attach_plugin(VideoRecorderPlugin(
             fps=20, output_path=str(out_dir / f'{clip_id}_track_eval.mp4')))
 
-    rt.reset(seed=seed, options={'initial_distance': 6.0, 'start_frame': 0})
+    rt.reset(seed=seed, options={'initial_distance': 6.0})
     rec = {'reward': [], 'kp_err_m': [], 'q_rmse_deg': [], 'phase': []}
     obs_a, obs_b = rt.get_observation()
     while not rt.is_episode_over():
