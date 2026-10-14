@@ -128,12 +128,17 @@ class ReachRewarder(BaseObserverPlugin):
 
     def __init__(self, agent_id: str = 'robot_a',
                  goal_radius: float = 0.8,
-                 w_prog: float = 1.0, w_goal: float = 5.0,
-                 w_alive: float = 0.02) -> None:
+                 w_prog: float = 1.0, w_goal: float = 10.0,
+                 w_alive: float = 0.02, w_fall: float = 10.0,
+                 fall_height: float = 0.55) -> None:
         self.agent_id = str(agent_id)
         self.goal_radius = float(goal_radius)
         self.w_prog, self.w_goal, self.w_alive = \
             float(w_prog), float(w_goal), float(w_alive)
+        # 摔倒端点惩罚：v3 显示只有 done 门控不够——progress 项在
+        # 到达前已支付 ~95%，潜水拿全部 progress 后倒下近似无成本。
+        self.w_fall = float(w_fall)
+        self.fall_height = float(fall_height)
         self._prev_dist: Optional[float] = None
         self._output: Dict[str, float] = {'reward': 0.0}
 
@@ -152,9 +157,12 @@ class ReachRewarder(BaseObserverPlugin):
         z = float(np.asarray(
             ctx.accessor.get_core_state()[self.agent_id]['root_pos'])[2])
         done = 1.0 if (d < self.goal_radius and z > 0.9) else 0.0
-        r = self.w_prog * prog + self.w_goal * done + self.w_alive
+        fall = 1.0 if z < self.fall_height else 0.0
+        r = (self.w_prog * prog + self.w_goal * done + self.w_alive
+             - self.w_fall * fall)
         self._output = {'reward': float(r), 'dist': d,
-                        'progress': float(prog), 'reached': done}
+                        'progress': float(prog), 'reached': done,
+                        'fell': fall}
         self._prev_dist = d
 
     def get_output(self) -> Dict[str, float]:
@@ -163,7 +171,8 @@ class ReachRewarder(BaseObserverPlugin):
     def to_blueprint(self) -> Dict[str, Any]:
         return {'agent_id': self.agent_id, 'goal_radius': self.goal_radius,
                 'w_prog': self.w_prog, 'w_goal': self.w_goal,
-                'w_alive': self.w_alive}
+                'w_alive': self.w_alive, 'w_fall': self.w_fall,
+                'fall_height': self.fall_height}
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> 'ReachRewarder':

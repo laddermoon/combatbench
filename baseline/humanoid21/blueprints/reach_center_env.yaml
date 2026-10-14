@@ -54,8 +54,10 @@ observer_plugins:
       agent_id: "robot_a"
       goal_radius: ${goal_radius}
       w_prog: 1.0
-      w_goal: 5.0
+      w_goal: 10.0
       w_alive: 0.02
+      w_fall: 10.0
+      fall_height: 0.55
   amp_style_a:
     cls: "mocap.humanoid21.prior.observer:AmpStyleObserver"
     config:
