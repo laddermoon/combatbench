@@ -11,20 +11,34 @@ let the sparse terminal reward drive discovery — larger rollout batch
 alive long enough for the policy to find its own path to a valid
 250N+ hit and a successful retract.
 
-Channel set = FollowStep's 8 channels + r_strike + r_retract (10).
-Trajectory recipe = FollowStep's (arm channels never created) +
-``_apply_strike_channels``.
+Distance zonation (see STRIKE_SPARSE_PLAN.md — the agreed spec; do not
+change without user confirmation):
+
+* dist >  D_ENGAGE (0.9m): native follow rewards, all channels live.
+* dist <= D_ENGAGE       : task + fall-protection + facing ONLY —
+                           r_left_foot / r_right_foot / r_torso masked
+                           (r_radial / r_tangential are already off
+                           inside FOLLOW_DIST_MAX=0.9 by their own
+                           out-zone gate).  Live set: r_strike,
+                           r_retract, r_fall, r_potential, r_face.
+* RETRACT phase          : unchanged — everything but r_fall /
+                           r_strike / r_retract is masked.
 
 Differences vs StrikeStep:
 * ``_channel_names`` — 4 arm channels dropped
-* ``episodes_per_update`` 512 → 1024 ("绕的规模" — wider episode
-  coverage per update: more seeds/poses/speeds sampled)
+* engagement-zone masking of feet/torso channels
+* ``episodes_per_update`` 512 → 1024 (wider episode coverage per
+  update: more seeds/poses/speeds sampled)
 * ``uncertainty_floor`` 0.4 → 0.6 (stronger σ floor keeps the policy
-  stochastic longer — "探索力度")
+  stochastic longer)
 """
 from __future__ import annotations
 
 from typing import List
+
+import numpy as np
+
+from baseline.framework.rollout import extract_per_step_field
 
 from .exp_follow_step import FollowStep
 from .exp_strike_step import StrikeStep
@@ -44,6 +58,15 @@ class StrikeSparseStep(StrikeStep):
         "r_retract": 0.99,
     }
 
+    # Engagement distance: inside it, only task + fall-protection +
+    # facing channels stay live (plan doc, user-confirmed spec).
+    # Aligned with FOLLOW_DIST_MAX so the radial/tangential gates meet
+    # the boundary seamlessly.
+    D_ENGAGE: float = 0.9
+    _CLOSE_MASKED_CHANNELS = (
+        "r_left_foot", "r_right_foot", "r_torso",
+    )
+
     # Wider exploration budget: 2× episodes per update and a higher
     # σ floor so discovery doesn't collapse before the sparse event
     # reward is found.
@@ -52,7 +75,7 @@ class StrikeSparseStep(StrikeStep):
 
     # ------------------------------------------------------------------
     # Trajectories — FollowStep recipe (skip AttackPrepStep's arm
-    # channels entirely) + strike channels.
+    # channels entirely) + zone masking + strike channels.
     # ------------------------------------------------------------------
 
     def _build_agent_trajectory(
@@ -63,6 +86,29 @@ class StrikeSparseStep(StrikeStep):
         )
         if not trajs:
             return trajs
+
+        T_full = episode.num_frames
+        oo = episode.observer_outputs
+        app_key = self._APPROACH_OBS.get(agent_id)
+        self_x = extract_per_step_field(oo, app_key, "self_x", T_full)
+        self_y = extract_per_step_field(oo, app_key, "self_y", T_full)
+        opp_x = extract_per_step_field(oo, app_key, "opp_x", T_full)
+        opp_y = extract_per_step_field(oo, app_key, "opp_y", T_full)
+        if self_x is not None and opp_x is not None:
+            dist = np.hypot(
+                np.asarray(opp_x) - np.asarray(self_x),
+                np.asarray(opp_y) - np.asarray(self_y),
+            )
+            close = dist <= self.D_ENGAGE
+            for t in trajs:
+                T = t.obs.shape[0]
+                m = close[:T]
+                for cname in self._CLOSE_MASKED_CHANNELS:
+                    ch = t.channels.get(cname)
+                    if ch is not None:
+                        ch.reward[m] = 0.0
+                        ch.actor_weight[m] = 0.0
+
         return self._apply_strike_channels(trajs, episode, agent_id)
 
 

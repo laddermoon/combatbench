@@ -357,7 +357,7 @@ def test_observer_metrics_prefix_per_agent():
 # ----------------------------------------------------------------------
 
 def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
-                  phase=None, d_home=None, d_opp=None):
+                  phase=None, d_home=None, d_opp=None, approach=None):
     """Minimal Episode with the observer fields exp_strike_step reads."""
     from baseline.framework.rollout.episode import Episode
 
@@ -383,6 +383,16 @@ def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
                   else np.asarray(d_opp, dtype=np.float32)),
         "gates": np.zeros(T),
     }
+    observer_outputs = {
+        "foot_state_a": foot, "foot_state_b": dict(foot),
+        "standing_balance_a": balance,
+        "standing_balance_b": dict(balance),
+        "strike_state_a": strike, "strike_state_b": dict(strike),
+    }
+    if approach is not None:
+        observer_outputs["approach_velocity_a"] = approach
+        observer_outputs["approach_velocity_b"] = dict(approach)
+
     records = {}
     if term_reason is not None:
         records = {
@@ -399,12 +409,7 @@ def _make_episode(T, step_damage, damage_total, term_reason="strike_done",
         action_extras={"robot_a": {}, "robot_b": {}},
         explore_factors={"robot_a": np.zeros(T, np.float32),
                          "robot_b": np.zeros(T, np.float32)},
-        observer_outputs={
-            "foot_state_a": foot, "foot_state_b": dict(foot),
-            "standing_balance_a": balance,
-            "standing_balance_b": dict(balance),
-            "strike_state_a": strike, "strike_state_b": dict(strike),
-        },
+        observer_outputs=observer_outputs,
         final_observation={"robot_a": obs[-1], "robot_b": obs[-1].copy()},
         episode_metrics={},
     )
@@ -511,3 +516,41 @@ def test_r_retract_potential_difference():
     assert ch.reward[:10].max() == 0.0
     assert ch.reward[15:].max() == 0.0
     np.testing.assert_allclose(ch.actor_weight, 1.0)
+
+
+def test_sparse_zone_masking():
+    """StrikeSparseStep: inside D_ENGAGE only task+fall+face channels
+    stay live — feet/torso are masked; outside, the native follow
+    channels carry on."""
+    from baseline.experiments_ppo.exp_strike_sparse_step import (
+        StrikeSparseStep)
+
+    T = 20
+    opp_x = np.full(T, 2.0)          # far for t<10 …
+    opp_x[10:] = 0.4                 # … close (<=0.9) for t>=10
+    approach = {
+        "self_x": np.zeros(T), "self_y": np.zeros(T),
+        "opp_x": opp_x, "opp_y": np.zeros(T),
+    }
+    ep = _make_episode(T, np.zeros(T), np.zeros(T),
+                       term_reason="timeout", approach=approach)
+    t = StrikeSparseStep()._build_agent_trajectory(
+        ep, "robot_a", "foot_state_a",
+        "standing_balance_a")[0]
+
+    for cname in StrikeSparseStep._CLOSE_MASKED_CHANNELS:
+        ch = t.channels[cname]
+        np.testing.assert_allclose(ch.reward[10:], 0.0)
+        np.testing.assert_allclose(ch.actor_weight[10:], 0.0)
+    # Far frames untouched: stub yields torso aw=1 and foot aw=±1.
+    np.testing.assert_allclose(t.channels["r_torso"].actor_weight[:10], 1.0)
+    assert t.channels["r_right_foot"].actor_weight[:10].min() != 0.0
+    # Keep-alive set inside the zone: potential/fall stay full,
+    # face ramps ON inside (dist_gate = 1 at 0.4m, phi=1 stub).
+    np.testing.assert_allclose(
+        t.channels["r_potential"].actor_weight[10:], 3.0)
+    np.testing.assert_allclose(
+        t.channels["r_fall"].actor_weight[10:], 2.0)
+    np.testing.assert_allclose(
+        t.channels["r_face"].actor_weight[10:], 1.0)
+    np.testing.assert_allclose(t.channels["r_strike"].actor_weight, 1.0)
