@@ -4158,3 +4158,32 @@ JSON 页（W4 接专属页）。
 - **文档**：GUIDE / DEBUG_PLAYBOOK / REGRESSION 中 SAC 命令的
   `baseline/runs` 引用全部改为 `baseline/runs_sac`；DECISIONS 历史
   条目保留原路径（当时事实）。
+
+## Opt-1 训练提速：profiling 结论 + P1 工程修复
+
+- **方法**：独立 bench 加载真实 checkpoint（reg_balance_ufloor_s42
+  ckpt_s05893685，full bundle 含 replay 1M）单 GPU 复现更新步 +
+  torch.profiler 分解。
+- **结论：update 是 launch/sync -bound，不是 compute-bound**。
+  原实现 wall=32.9ms/update，纯 GPU 时间仅 ~3ms：
+  - ~215 次 `.item()` DtoH 同步/步（stats 每步都实化，metrics 却 64
+    tick 才发一次）；
+  - `_validate_batch` 的 .any()/.allclose()/unique 每步 ~10 次同步；
+  - 5 次非 fused Adam.step（每 channel 组 2 + actor + alpha），
+    每步数百个小 kernel，占 GPU 时间 61.6%；
+  - soft_update 逐 param mul_/add_；tick_ring 每步 sample_ids DtoH。
+- **P1 修复（aa6233e4）**——全部语义保持：
+  - stats 改尾部单次 `torch.stack().cpu()`；分支判断共享一次早期
+    批量同步；validate 收成单次 `.any()`，违规时走 strict 重检；
+  - Adam `fused=True`（CUDA）；旧 ckpt resume 时迁移 CPU step 状态
+    并重新断言 fused（load_state_dict 会还原旧 flag）；
+  - soft_update → `torch._foreach_*`；tick ring 读 CPU sample_ids；
+  - **顺手修真 bug**：DivergenceGuard 读 `stats["q1_mean"]` 但实键为
+    `q1_mean_<ch>`——Q 爆炸保护此前从未生效，改为按 `q1_mean_*/`
+    `q2_mean_*` 前缀取 max。
+- **实测**：32.9 → 15.9 ms/update（~2×）；replay.sample 1.2ms。
+- **torch.compile 试过后放弃**：reduce-overhead 撞 cudagraph 张量
+  覆写；default 模式 50.9ms 反而更慢（op 太碎 Inductor 负收益）。
+- **手感记录 #1**：此类"小模型 + 高 UTD"工作负载的瓶颈几乎总在
+  host 侧 launch/sync，不在 FLOPs；profiler 里 Optimizer.step 占大头
+  时先查 fused/foreach 和 .item() 风暴，再谈算子级优化。
