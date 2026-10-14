@@ -270,11 +270,12 @@ kernel 分解（nsys eager）：Newton 梯度/Cholesky/线搜索族
 - **API break（3.12 引入）**：`xfrc_applied` dtype 从 flat
   float32 变为 `spatial_vectorf`（vec6）——
   `warp_backend.initialize` 的 `wp.zeros((B,nbody,6),f32)`
-  assign 被拒。spike 用 monkeypatch shim（6 宽 f32 zeros→
-  vec6 zeros）绕过即全绿；正式适配 = 该处 dtype 改
-  `wp.spatial_vectorf`（`wt()`/`zero_()`/`xfrc_pending`
-  torch 视图路径不受影响，vec6 经 `wp.to_torch` 仍映射为
-  (B,nbody,6) f32）；
+  assign 被拒。**已适配（2026-10-14）**：该处改为按目标数组
+  自身 `shape`/`dtype` 建零（`wp.zeros(d.xfrc_applied.shape,
+  dtype=d.xfrc_applied.dtype)`），3.8 与 3.12+ 通吃、无版本
+  分支——3.15 venv 实测旧写法报 `RuntimeError`、新写法通过
+  （`wt()`/`zero_()`/`xfrc_pending` torch 视图路径不受影响，
+  vec6 经 `wp.to_torch` 仍映射为 (B,nbody,6) f32）；
 - `put_data(nconmax/njmax)` API 保留（新增 nccdmax/naconmax/
   nvmax 容量旋钮）；
 - `opt.impratio`→`impratio_invsqrt` 内部改名，XML

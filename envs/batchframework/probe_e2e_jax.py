@@ -1,5 +1,9 @@
 """E2E 纯 JAX rollout 性能探针（M2 性能上限验证，非语义验证）。
 
+状态：**遗留探针，非生产依赖**。requirements.txt 不含 jax/mujoco-mjx
+——本脚本需手工补装才可运行（配方见 docs/RUNTIME.md §8）。结果已
+归档于 M2_E2E_JAX_RESULTS.md，生产路径请见 warp 后端。
+
 目的：回答"MJX 物理 + 等规模策略网络全在 GPU 上跑，吞吐天花板是多少"。
 不追求与 CPU 主路径行为一致——只保证复杂度同量级：
   - 同一 XML 模型（双 humanoid + condim=3 + impratio=10 + 圆墙）

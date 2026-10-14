@@ -1,5 +1,10 @@
 """MJX (MuJoCo XLA) 批量仿真器实现。
 
+状态：**遗留后备路径，非生产依赖**。默认生产栈为纯 MuJoCo-Warp
+（`backends/warp_backend.py` + `warp_simulator.py`）；requirements.txt
+不含 jax/mujoco-mjx——本模块需手工补装才可导入（配方见
+docs/RUNTIME.md §8），仅作跨后端验证/历史复现参考。
+
 使用 jax.lax.scan 将 n_steps 个物理步编译为单个 XLA 计算，
 中间不回 Python，实现 GPU 上全向量化仿真。
 

@@ -318,9 +318,12 @@ class WarpBackend:
                         qvel.to(torch.float32).contiguous()))
                 d.ctrl.assign(wp.zeros((B, self._model.nu),
                                        dtype=wp.float32, device=dev))
+                # 版本兼容：mjw ≥3.12 起 xfrc_applied 元素类型为
+                # spatial_vectorf（(B,nbody) vec6），不再是
+                # (B,nbody,6) float32——按目标数组自身形状/类型建零。
                 d.xfrc_applied.assign(
-                    wp.zeros((B, self._model.nbody, 6),
-                             dtype=wp.float32, device=dev))
+                    wp.zeros(d.xfrc_applied.shape,
+                             dtype=d.xfrc_applied.dtype, device=dev))
                 d.qfrc_applied.assign(
                     wp.zeros((B, self._model.nv),
                              dtype=wp.float32, device=dev))
