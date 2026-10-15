@@ -63,12 +63,22 @@ class TrajectoryRecorder(PostActionRecorder):
         robots: Sequence[str] = _AGENTS,
         provenance: Optional[Mapping[str, Any]] = None,
         extra_meta: Optional[Mapping[str, Any]] = None,
+        push_window_tail_steps: Optional[int] = None,
     ) -> None:
+        """If ``push_window_tail_steps`` is set, each robot's npz is trimmed
+        to ``[first push_active step, last push_active step + tail]`` —
+        i.e. push onset through ``tail`` steps after the force stops.
+        Episodes where the robot was never pushed are written untrimmed
+        with ``push_window: null`` in meta.
+        """
         self.output_dir = Path(output_dir)
         self.phy_steps_per_action = int(phy_steps_per_action)
         self.robots = tuple(robots)
         self.provenance = dict(provenance or {})
         self.extra_meta = dict(extra_meta or {})
+        self.push_window_tail_steps = (
+            None if push_window_tail_steps is None
+            else int(push_window_tail_steps))
         self._static: Optional[Dict[str, Any]] = None
         self._ep: Optional[Dict[str, Any]] = None
 
@@ -146,12 +156,27 @@ class TrajectoryRecorder(PostActionRecorder):
             for rid in self.robots
         }
 
+        windows: Dict[str, Any] = {}
         for rid in self.robots:
             limits = np.asarray(self._static[rid]["joint_limits"], np.float32)
             ref = (limits[:, 0] + limits[:, 1]) / 2.0
             scale = (limits[:, 1] - limits[:, 0]) / 2.0
 
-            core = ep["core"][rid]
+            pa = np.asarray(ep["push_active"][rid], dtype=bool)
+            lo, hi = 0, len(pa)
+            if self.push_window_tail_steps is not None and pa.any():
+                on = np.flatnonzero(pa)
+                lo = int(on[0])
+                hi = min(len(pa), int(on[-1]) + 1 + self.push_window_tail_steps)
+            windows[rid] = (
+                {"start_step": lo, "end_step": hi,
+                 "pushed": bool(pa.any())}
+                if self.push_window_tail_steps is not None else None)
+
+            def _w(arr):
+                return arr[lo:hi]
+
+            core = ep["core"][rid][lo:hi]
             n = len(core)
             jp_norm = np.stack([c["joint_pos_norm"] for c in core])
             jv_norm = np.stack([c["joint_vel_norm"] for c in core])
@@ -178,14 +203,14 @@ class TrajectoryRecorder(PostActionRecorder):
                 root_angvel=angvel_w,
                 root_vel_local=vel_local.astype(np.float32),
                 root_angvel_local=angvel_local.astype(np.float32),
-                action=np.stack(ep["action"][rid]),
-                feet_forces=np.stack(ep["feet_forces"][rid]),
-                body_xpos=np.stack(ep["body_xpos"][rid]).astype(np.float32),
-                body_xquat=np.stack(ep["body_xquat"][rid]).astype(np.float32),
-                push_active=np.asarray(ep["push_active"][rid], dtype=bool),
-                push_force_vec=np.stack(ep["push_force_vec"][rid]),
-                episode_step=np.asarray(ep["steps"], dtype=np.int32),
-                physics_step=np.asarray(ep["physics_steps"], dtype=np.int32),
+                action=_w(np.stack(ep["action"][rid])),
+                feet_forces=_w(np.stack(ep["feet_forces"][rid])),
+                body_xpos=_w(np.stack(ep["body_xpos"][rid])).astype(np.float32),
+                body_xquat=_w(np.stack(ep["body_xquat"][rid])).astype(np.float32),
+                push_active=_w(pa),
+                push_force_vec=_w(np.stack(ep["push_force_vec"][rid])),
+                episode_step=_w(np.asarray(ep["steps"], dtype=np.int32)),
+                physics_step=_w(np.asarray(ep["physics_steps"], dtype=np.int32)),
                 timestamps=np.arange(n, dtype=np.float32) / fps,
             )
 
@@ -199,6 +224,7 @@ class TrajectoryRecorder(PostActionRecorder):
             "provenance": self.provenance,
             "body_names": {r: self._static[r]["body_names"] for r in self.robots},
             "push_events": push_events,
+            "push_window": windows,
             "push_metrics": {
                 r: {"count": int(ctx.metrics.get(f"{r}_push_count", 0))}
                 for r in self.robots

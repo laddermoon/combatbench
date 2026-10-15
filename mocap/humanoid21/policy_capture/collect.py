@@ -139,6 +139,10 @@ def main() -> None:
                     help="Target body for directed pushes")
     ap.add_argument("--max-steps", type=int, default=None,
                     help="Override episode length (action steps)")
+    ap.add_argument("--record-tail", type=float, default=0.5,
+                    help="Seconds of recording kept AFTER the push ends; "
+                         "the npz window is [push_onset, push_end + tail]. "
+                         "-1 disables windowing (record the full episode).")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -192,11 +196,14 @@ def main() -> None:
         if i < args.render:
             video_plugin = VideoRecorderPlugin(
                 fps=30, output_path=str(out_dir / f"ep_{seed}.mp4"))
+        tail_steps = (None if args.record_tail < 0
+                      else int(round(args.record_tail * fps)))
         recorder = TrajectoryRecorder(
             output_dir=str(out_dir),
             phy_steps_per_action=base_bp.phy_steps_per_action,
             provenance=provenance,
             extra_meta=job["meta"],
+            push_window_tail_steps=tail_steps,
         )
         with RoundRunner(
             blueprint=job["env_bp"],
