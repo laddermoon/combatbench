@@ -217,7 +217,7 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     for c in args.clips:
-        cid = c if c.startswith("cmu_") else f"cmu_{c}"
+        cid = c if c.startswith(("cmu_", "hdm05_")) else f"cmu_{c}"
         render_compare(cid, outdir, args.every, args.fps)
 
 
