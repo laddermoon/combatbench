@@ -8,7 +8,7 @@ survive pushes and re-settle into the standard stepping gait.
 Channels (3):
     r_potential = 0.01 × φ(t),   aw = 3.0 (fixed)
     r_fall      = fall + wall-lean + push-clean,  aw = 2.0 (fixed)
-    r_std_clip  = clip + 0.3·pose + 0.5·cad,
+    r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term,
                                  aw = φ² · w_clip · (push_phase != PUSHING)
 
 Clip gate: while a push is physically applied the gait reward is cut
@@ -146,13 +146,21 @@ class HierS2BalanceMBS(BalancePure):
         clip_key = self._CLIP_OBS.get(agent_id)
         r_clip = np.zeros(T, dtype=np.float32)
         if clip_key is not None:
-            for field, w in (("std_clip", 1.0), ("std_pose", 0.3),
+            for field, w in (("std_clip", 1.0), ("std_pose", 1.0),
                              ("std_cad", 0.5)):
                 arr = extract_per_step_field(
                     episode.observer_outputs, clip_key, field, T_full)
                 if arr is not None:
                     r_clip = r_clip + w * np.clip(
                         np.asarray(arr[:T], dtype=np.float32), -1.0, 1.0)
+
+        h_arr = extract_per_step_field(
+            episode.observer_outputs, phi_key, "h_torso", T_full,
+        )
+        h_arr = (np.asarray(h_arr[:T], dtype=np.float32)
+                 if h_arr is not None else np.zeros(T, dtype=np.float32))
+        r_clip = r_clip + 0.5 * np.exp(
+            -((h_arr - 1.28) / 0.08) ** 2)
 
         aw_clip = (self._clip_aw_scale * phi_arr * phi_arr
                    * not_pushing.astype(np.float32)).astype(np.float32)
