@@ -314,6 +314,7 @@ def main():
 
     index_path = LIBRARY / "index.json"
     index = json.loads(index_path.read_text())
+    index.setdefault("clips", {})          # 与 export_library 同契约
     jobs = [(s, args.file, args.mirror) for s in picked]
     if args.jobs > 1:
         with Pool(args.jobs) as p:
@@ -326,7 +327,7 @@ def main():
             print(" ", r)
             continue
         clip_id, entries, dt_s = r
-        index.update(entries)
+        index["clips"].update(entries)
         n_ok += 1
         print(f"  {clip_id} ({dt_s}s)")
     index_path.write_text(json.dumps(index, indent=1))
