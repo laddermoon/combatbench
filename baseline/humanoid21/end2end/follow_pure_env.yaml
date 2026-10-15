@@ -1,0 +1,115 @@
+# New-route follow: standup → chase a randomly-moving scripted target.
+#
+# Stage-2-skip variant (per user direction): warm-start directly on the
+# standup policy — NO push perturbation anywhere, NO stepping machinery
+# (bare 96-dim Humanoid21Simulator, no gait clock, no foot reward
+# channels).  Balance and stepping must emerge from follow-task
+# pressure alone.
+#
+# Target motion (RandomMovePlugin):
+#   - random waypoints inside the arena   → direction randomness
+#   - per-episode speed U[speed_min, speed_max] → speed randomness
+#     (speed_max is curriculum-controlled by the experiment)
+#   - min_avoid_distance repulsion        → never approaches learner
+#   - heading always faces the learner (combat-realistic orientation)
+#
+# No StandingTriggeredForcePlugin — the whole point of this variant is
+# that tracking skill, balance and stepping are learned without any
+# external perturbation (the balance_pure line tests the pushed route).
+#
+# Reward channels = r_potential + r_fall (base) + r_radial /
+# r_tangential / r_face (follow).  FootStateObserver stays for eval
+# stepping-emergence diagnostics only.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 600
+    description: "Max action steps (standup ~100 + follow ~500)."
+  agent_id:
+    default: "robot_a"
+    description: "The learning robot."
+  oppo_agent_id:
+    default: "robot_b"
+    description: "The moving target robot (controlled by RandomMovePlugin)."
+  random_move_speed:
+    default: 0.0
+    description: "Opponent per-episode speed upper bound (m/s) — curriculum."
+  random_move_speed_min:
+    default: 0.0
+    description: "Opponent per-episode speed lower bound (m/s)."
+  oppo_min_avoid_distance:
+    default: 1.2
+    description: "Minimum distance opponent keeps from learning robot."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.plugins.random_move:RandomMovePlugin"
+    config:
+      target_robot: ${oppo_agent_id}
+      speed: ${random_move_speed}
+      speed_min: ${random_move_speed_min}
+      min_avoid_distance: ${oppo_min_avoid_distance}
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  # Diagnostics only — stepping emergence metrics, no reward consumer.
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  approach_velocity_a:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_a"
+  approach_velocity_b:
+    cls: "baseline.humanoid21.rewards.follow_opponent:ApproachVelocityRewarder"
+    config:
+      agent_id: "robot_b"
+  face_opponent_a:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_a"
+  face_opponent_b:
+    cls: "baseline.humanoid21.end2end.face_opponent:FaceOpponentObserver"
+    config:
+      agent_id: "robot_b"

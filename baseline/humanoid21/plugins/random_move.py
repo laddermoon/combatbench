@@ -35,17 +35,23 @@ class RandomMovePlugin(BasePlugin):
     def __init__(
         self,
         target_robot: str = "robot_b",
-        speed: float = 0.6,               # m/s
+        speed: float = 0.6,               # m/s (per-episode max when speed_min set)
+        speed_min: Optional[float] = None,  # None → fixed speed; else U[min,max]/ep
         min_avoid_distance: float = 1.2,   # m (minimum distance to keep from trained robot)
         random_seed: Optional[int] = None,
     ) -> None:
         self.target_robot = str(target_robot)
         self.trained_robot = self._other_robot(target_robot)
         self.speed = float(speed)
+        self.speed_min = (
+            self.speed if speed_min is None else float(speed_min)
+        )
         self.min_avoid_distance = float(min_avoid_distance)
 
-        # Precompute per-step displacement (m/s -> m/step) so the step logic
-        # doesn't need to multiply by ACTION_DT every call.
+        # Per-episode speed sampled in on_pre_episode (randomized target
+        # speed for the new-route follow task); _step_distance is
+        # refreshed there too.
+        self._ep_speed: float = self.speed
         self._step_distance: float = self.speed * self.ACTION_DT
 
         self._rng = np.random.RandomState(random_seed)
@@ -77,6 +83,7 @@ class RandomMovePlugin(BasePlugin):
         return {
             "target_robot": self.target_robot,
             "speed": self.speed,
+            "speed_min": self.speed_min,
             "min_avoid_distance": self.min_avoid_distance,
         }
 
@@ -106,7 +113,15 @@ class RandomMovePlugin(BasePlugin):
         core_state = ctx.accessor.get_core_state()
         if self.trained_robot not in core_state or self.target_robot not in core_state:
             return
-            
+
+        # Per-episode speed sample (speed_min == speed → fixed, legacy
+        # behaviour); also refresh the per-step displacement.
+        self._ep_speed = float(
+            self._rng.uniform(self.speed_min, self.speed)
+        )
+        self._step_distance = self._ep_speed * self.ACTION_DT
+        ctx.metrics[f"{self.target_robot}_move_speed"] = self._ep_speed
+
         trained_pos = np.asarray(core_state[self.trained_robot]["root_pos"][:2], dtype=np.float32)
         self._pick_new_waypoint(trained_pos)
 
