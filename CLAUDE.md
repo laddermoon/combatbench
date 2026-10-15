@@ -558,7 +558,7 @@ if h_torso is None:
 
 ## Important Notes
 
-- **humanoid21 mocap FK**: Use `mocap/humanoid21/ref_fk.py` and the latest `/data1/dev/combatbench_mocap/index.json`, not legacy FK or v2–v5 preview/compare videos. SciPy lowercase `xyz` composes `Rz·Ry·Rx`; zero-pose checks alone cannot distinguish Euler order. Before trusting retargeted motion, run `PYTHONPATH=. python3 -m mocap.humanoid21.fk_check --asf baseline/humanoid21/mocap/data/raw/13.asf --amc baseline/humanoid21/mocap/data/raw/13_17.amc --frame 359` (and analogous 07_01 from `/data1/dev/combatbench_mocap/raw/`), check root orientation jumps/head-above-pelvis via `kinematic_check.py`, and compare same-time frames against official CMU renderings. See `mocap/humanoid21/M1_AUDIT.md` W5c–W7 for the failed sign-flip diagnosis and root-turn regression.
+- **humanoid21 mocap FK**: Use `mocap/humanoid21/ref_fk.py` and the latest `/data1/dev/combatbench_mocap/index.json`, not legacy FK or v2–v5 preview/compare videos. SciPy lowercase `xyz` composes `Rz·Ry·Rx`; zero-pose checks alone cannot distinguish Euler order. Before trusting retargeted motion, run `PYTHONPATH=. python3 -m mocap.humanoid21.fk_check --asf /data1/dev/combatbench_mocap/raw/13.asf --amc /data1/dev/combatbench_mocap/raw/13_17.amc --frame 359` (and analogous 07_01), check root orientation jumps/head-above-pelvis via `kinematic_check.py`, and compare same-time frames against official CMU renderings. See `mocap/humanoid21/M1_AUDIT.md` W5c–W7 for the failed sign-flip diagnosis and root-turn regression.
 - **Observation dimension**: 96 (not 127 - old version)
 - **Policy structure**: Directory-based with `policy.py` (not single-file policies)
 - **Data format**: Structured by `robot_id` (robot_a/robot_b), not flat arrays

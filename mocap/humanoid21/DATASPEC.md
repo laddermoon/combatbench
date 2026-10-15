@@ -60,7 +60,7 @@ z 向上、米、弧度、四元数 wxyz——转换在导入时完成，不在�
       "identity": {
         "source": "cmu", "subject": "13", "trial": 17,
         "parent_clip": null,           // 派生片段填父 clip_id
-        "source_file": "baseline/humanoid21/mocap/data/raw/13_17.amc",
+        "source_file": "/data1/dev/combatbench_mocap/raw/13_17.amc",
         "source_sha256": "...",
         "npz_sha256": "...",
         "version": 1

@@ -168,11 +168,9 @@ humanoid21 运动重定向
 
 ### 可审计的既有资产
 
-- `baseline/humanoid21/mocap/prepare_data.py`：已有 CMU 数据下载与处理入口。
-- `baseline/humanoid21/mocap/{asf_parser,amc_parser,fk,retarget,retarget_v2,visualize}.py`：解析、映射、可视化等历史实现。
-- `baseline/humanoid21/mocap/data/{raw,retargeted}/`：已有原始及重定向工件，需逐项核验内容与质量。
-
-现有准备流程主要保存 `(T, 21)` 关节角及归一化结果；这不足以证明已有完整的根部、接触和可执行全身运动。历史 `retarget_v2.py` 采用直接 DOF 映射并引用旧模型，不能未经验证就作为当前模型的标准答案。先复用可验证的部分，不默认删除或搬迁旧目录。
+- `mocap/humanoid21/parsers/`：ASF/AMC 解析器（`asf_parser.py`、`amc_parser.py`、`legacy_fk.py` 为对照参考实现）。
+- `/data1/dev/combatbench_mocap/raw/`：CMU 原始 `.asf`/`.amc` 数据（89 文件，存放于 dev 数据盘，不入 git）。
+- 旧 `baseline/humanoid21/mocap/` 已删除（2026-03，残留的 v2 调试 mp4 归档于 `/data1/dev/combatbench_mocap/legacy_debug_v2/`）。历史 `retarget_v2.py` 采用直接 DOF 映射并引用旧模型，不可作为当前模型的标准答案。
 
 ### 实际身体与训练接口
 
