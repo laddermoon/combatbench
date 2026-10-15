@@ -1,4 +1,4 @@
-"""Audit existing mocap assets under baseline/humanoid21/mocap/data/.
+"""Audit existing mocap assets under /data1/dev/combatbench_mocap/.
 
 For every raw file: sha256, size, parse success, frame count, bone signature.
 For every retargeted npy: shape, dtype, finiteness, limit violations against the

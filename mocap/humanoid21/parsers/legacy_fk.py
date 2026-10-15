@@ -18,7 +18,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from baseline.humanoid21.mocap.asf_parser import Bone, Skeleton
+from mocap.humanoid21.parsers.asf_parser import Bone, Skeleton
 
 
 def _dof_to_rotation(dof: List[str], values: np.ndarray) -> np.ndarray:
