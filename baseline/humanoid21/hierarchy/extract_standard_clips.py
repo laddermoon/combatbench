@@ -52,6 +52,25 @@ DELTA = 4                       # transition span (action steps) = 200 ms
 F_DIM = 53
 W_Q, W_QV, W_G, W_FEET, W_CONTACT = 1.0, 0.5, 1.0, 3.0, 1.0
 
+# Feature-group boundaries for the whitening std floor: a per-dim std of
+# ~0 (e.g. gravity stays upright throughout the gait) would otherwise get
+# infinite weight after whitening and dominate the distance.  Each dim's
+# effective std is floored at FLOOR_FRAC x its group's median std.
+GROUPS = ((0, 21), (21, 42), (42, 45), (45, 51), (51, 53))
+STD_FLOOR_FRAC = 0.25
+
+
+def whitening_params(feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(mu, sd_eff) for z-scoring clip/live features identically."""
+    flat = feats.reshape(-1, feats.shape[-1])
+    mu = flat.mean(axis=0)
+    sd = flat.std(axis=0)
+    sd_eff = sd.copy()
+    for a, b in GROUPS:
+        floor = STD_FLOOR_FRAC * float(np.median(sd[a:b]))
+        sd_eff[a:b] = np.maximum(sd[a:b], floor)
+    return mu.astype(np.float32), sd_eff.astype(np.float32)
+
 
 def feature_weights() -> np.ndarray:
     w = np.zeros(F_DIM, dtype=np.float32)
@@ -178,11 +197,14 @@ def main() -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    mu, sd_eff = whitening_params(feats)
     np.savez_compressed(
         out,
         clip_features=feats.astype(np.float32),          # (M, L, 53)
         delta=np.int32(DELTA),
         feature_weights=feature_weights(),
+        feat_mu=mu,                                      # whitening stats
+        feat_sd_eff=sd_eff,
         joint_angles=np.stack([p[5] for p in picked]),   # replay/debug
         root_quat=np.stack([p[6] for p in picked]),
         body_xpos=np.stack([p[7] for p in picked]),

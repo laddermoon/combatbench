@@ -1,0 +1,69 @@
+# Hierarchy Step 1 — from-scratch standup -> standard dynamic stepping.
+#
+# CommandSimulator (65-dim obs = 57 proprio + 8-dim STAND cmd).
+# Both robots spawn from random fallen states (RandomFallenStatePlugin),
+# stand up via the 4-stage dense potential, then keep a cyclic two-foot
+# stepping gait measured by StandardClipObserver (Route-B clip library
+# built from step_mbs_s42 policy-capture rollouts).
+#
+# Reward channels (in exp_hier_s1_standup_step_mbs.py):
+#   r_potential = 0.01 × φ(t),            aw = 1.0 (fixed)
+#   r_std_clip  = 0.01 × clip_score(t),   aw = φ(t)^2
+#
+# φ^2 gate: negligible while the robot is down, ~full once standing.
+# FootStateObserver kept for step-cycle diagnostics.
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 200
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
