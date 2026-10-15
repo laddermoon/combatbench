@@ -61,7 +61,26 @@ def render_compare(clip_id: str, outdir: Path, every: int = 4, fps: int = 30):
     import matplotlib.pyplot as plt
     import imageio.v2 as imageio
 
-    src = np.load(LIBRARY / "clips" / f"{clip_id}_src.npz")
+    if clip_id.endswith("_m"):
+        # 镜像片段无自有 _src：取父片段源骨架做 mj 系 y->-y 镜像显示
+        parent_src = np.load(LIBRARY / "clips" / f"{clip_id[:-2]}_src.npz")
+        M = np.array([[1., 0., 0.], [0., -1., 0.], [0., 0., 1.]])
+        from scipy.spatial.transform import Rotation as _R
+        mirrored = {}
+        for k in parent_src.files:
+            arr = parent_src[k]
+            if arr.ndim >= 2 and arr.shape[-1] == 3:
+                arr = arr @ M.T
+            elif k == "root_quat":
+                # wxyz -> xyzw, MRM 共轭, 回 wxyz
+                q = _R.from_quat(arr[:, [1, 2, 3, 0]])
+                qm = (_R.from_matrix(M[None] @ q.as_matrix() @ M[None])
+                      ).as_quat()
+                arr = qm[:, [3, 0, 1, 2]]
+            mirrored[k] = arr
+        src = mirrored
+    else:
+        src = np.load(LIBRARY / "clips" / f"{clip_id}_src.npz")
     rob = np.load(LIBRARY / "clips" / f"{clip_id}.npz")
 
     kp_s = src["keypoints"]            # (T,29,3) m, z-up
