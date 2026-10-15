@@ -1,0 +1,9 @@
+version: 1
+cls: "policy.humanoid21.gait_clock.policy:GaitClockAdapterPolicy"
+config:
+  gait_period: 40
+  counter_step: 2
+  inner:
+    version: 1
+    cls: "file:/data1/mono/things/combatbench/baseline/runs/step_mbs_s42/policy/policy.py:ExportedStateMixtureBoundedStdTruncNormPolicy"
+    config: {}

@@ -57,10 +57,13 @@
 
 ## 2. 路线 B：标准动态动作片段集合（Standard Dynamic Clips）
 
-### 2.1 片段来源与构建（`policy_capture`）
-利用已有的 `mocap/humanoid21/policy_capture/` 工具链，从已收敛的步态/抗推策略（`step_mbs_s42` 与 `balance_step_s42i`，以及已录制的 `s42i_sweep_v2`）中筛选 **$M = 4 \sim 6$ 段** 高质量、无推力窗口的**原地双脚循环交替踱步片段**（每段时长 $1.5 \sim 2.0\text{ s}$，即 $30 \sim 40$ 个控制步，覆盖完整左右交替周期）：
-- 下肢：直接采用策略原生动力学轨迹（双脚交替微幅离地、重心在两脚间自然摆动，100% 物理可行）；
-- 上肢：对片段中的肩/肘关节做轻微护架规整（或挑选双臂自然收拢的片段），存盘为 `baseline/humanoid21/hierarchy/assets/standard_stepping_clips.npz`。
+### 2.1 片段来源与构建（`policy_capture`，已执行 2026-10-16）
+利用已有的 `mocap/humanoid21/policy_capture/` 工具链，从已收敛的 `step_mbs_s42`（收敛版导出 `baseline/runs/step_mbs_s42/policy/`，经 `GaitClockAdapterPolicy` 包装）在无推力环境（`capture/stepping_capture_env.yaml`）中采集 $12$ 集 $\times 400$ 步全 episode 轨迹（无摔倒，`/data1/dev/policy_capture/step_mbs_stepping/`）。
+
+由 `extract_standard_clips.py` 筛出 **$M = 5$ 段** 高质量双脚循环交替踱步片段（$L = 40$ 步 $= 2\text{ s}$，覆盖约 2 个完整左右交替周期）：
+- 质量门：全程直立（`gravity_proj_z < -0.80`、`root_z > 1.05`）、原地（窗口内水平位移 $< 0.4\text{ m}$）、承重脚交替次数 $\ge 2$；
+- 实测：单脚离地高度峰值 $15 \sim 22\text{ cm}$，承重脚交替 $6 \sim 8$ 次/窗口，root z $\approx 1.28\text{ m}$ 平稳；
+- 上肢保持原生轨迹（`step_mbs` 自然收臂姿态），存盘为 `baseline/humanoid21/hierarchy/assets/standard_stepping_clips.npz`（含 53 维特征、原始关节/根姿态、逐 clip 溯源 meta）。
 
 ### 2.2 多片段取 `max` 的动态匹配奖励（`StandardClipObserver`）
 为了保证机器人学到的是**动态循环踱步**而不是停在某一帧的静态 Pose，匹配特征不能只看单帧，必须使用 **短时状态转移对（Short-Window Transition）** $\mathbf{z}_t = [f_{t-\Delta},\ f_t]$（其中跨度 $\Delta = 4$ 步 $= 200\text{ ms}$）：
@@ -159,8 +162,7 @@
 
 ## 4. 近期落地执行清单（从 Step 1 开始）
 
-1. **构建路线 B 标准动态踱步片段库（`extract_standard_clips.py`）**：
-   - 从 `step_mbs_s42`（无推力高步频）或 `s42i_sweep_v2` 的无推力稳态窗口中，截取 $4 \sim 6$ 段双脚循环踱步片段（每段 $40$ 步），保存为 `baseline/humanoid21/hierarchy/assets/standard_stepping_clips.npz`。
+1. ~~**构建路线 B 标准动态踱步片段库（`extract_standard_clips.py`）**~~ ✅ 已完成（`assets/standard_stepping_clips.npz`，5 clips × 40 步）。
 2. **实现 `StandardClipObserver`**：
    - 计算当前帧短窗状态对 $\mathbf{z}_t = [f_{t-4}, f_t]$ 与片段库的最大相似度 $r_{\text{std}}(t)$。
 3. **启动 Step 1（`exp_hier_s1_standup_mbs`）与 Step 2（`exp_hier_s2_balance_mbs`）训练**：

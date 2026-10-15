@@ -1,0 +1,20 @@
+# Clean stepping-capture env — NO push plugins.
+#
+# Standard Humanoid21Simulator (96-dim); step_mbs_s42 runs via
+# GaitClockAdapterPolicy which internally appends the 3 clock dims.
+# Both robots start standing; we record the FULL episode
+# (--record-tail -1) to harvest clean cyclic-stepping windows.
+version: 1
+runtime:
+  phy_steps_per_action: 25
+  max_steps: 400
+  strict: true
+simulator:
+  cls: envs.humanoid21.simulator:Humanoid21Simulator
+  config:
+    initial_distance: 2.0
+    debug_torque: false
+    initial_pose_a: standing
+    initial_pose_b: standing
+plugins: []
+observer_plugins: {}
