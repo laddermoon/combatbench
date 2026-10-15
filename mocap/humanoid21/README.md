@@ -168,8 +168,10 @@ humanoid21 运动重定向
 
 ### 可审计的既有资产
 
-- `mocap/humanoid21/parsers/`：ASF/AMC 解析器（`asf_parser.py`、`amc_parser.py`、`legacy_fk.py` 为对照参考实现）。
-- `/data1/dev/combatbench_mocap/raw/`：CMU 原始 `.asf`/`.amc` 数据（89 文件，存放于 dev 数据盘，不入 git）。
+- `mocap/humanoid21/parsers/`：ASF/AMC 解析器（`asf_parser.py`、`amc_parser.py`、`legacy_fk.py` 为对照参考实现）+ `hdm05_data.py`（HDM05 normPOS 预处理格式）。
+- `/data1/dev/combatbench_mocap/raw/`：CMU 原始 `.asf`/`.amc` 数据（145 文件，存放于 dev 数据盘，不入 git）。
+- `/data1/dev/hdm05/data/`：HDM05 预处理数据（`.data` 坐标流 + 标签表 + 划分，GitHub release `fabiocarrara/mocap`；非原始 AMC）。
+- 当前库规模（M6 末）：`index.json` 1255 条目 = 565 机器人片段 + 565 源 + 125 镜像；详见 `M6_AUDIT.md`。
 - 旧 `baseline/humanoid21/mocap/` 已删除（2026-03，残留的 v2 调试 mp4 归档于 `/data1/dev/combatbench_mocap/legacy_debug_v2/`）。历史 `retarget_v2.py` 采用直接 DOF 映射并引用旧模型，不可作为当前模型的标准答案。
 
 ### 实际身体与训练接口
