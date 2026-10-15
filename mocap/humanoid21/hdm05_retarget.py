@@ -34,9 +34,12 @@ from mocap.humanoid21.robot_kin import CONTROLLED_JOINTS  # noqa: E402
 
 FPS = 120.0
 
-# CMU 标定骨架的骨盆-站立足落差（units），用于把 HDM 坐标重标定到
-# CMU 等效单位（calibration.json human_rest.hip_height_units）
-CMU_HIP_HEIGHT_UNITS = 6.987039993675535
+# CMU 标定骨架的腿伸展长（units）：机器人腿 0.79m / 0.117 = 6.75，
+# 用髋->脚底（而非骨盆落差）标定，保证伸直腿映射到机器人全伸展
+CMU_LEG_UNITS = 6.75
+
+# lfoot/rfoot 是贴地脚跟标记；踝目标抬到标记上方 ~2 源单位（~踝高）
+ANKLE_UP_UNITS = 2.0
 
 # distal 端 = 子关节位置（标记语义）；叶子骨向前延长
 _DISTAL_OF = {
@@ -87,10 +90,7 @@ def _frame_from_positions(j: Dict[str, np.ndarray]) -> np.ndarray:
 def hdm05_frame_inputs(pts: np.ndarray) -> Tuple[dict, dict, dict]:
     """单帧 31x3 HDM 坐标 -> (joint, distal, F)，坐标已按段缩放。"""
     joint = {n: pts[i].copy() for i, n in enumerate(JOINT_NAMES)}
-    # HDM 点是标记非关节中心：lfemur/rfemur 是大腿中段标记。
-    # IK 的髋锚点必须是关节位置 -> 用 hipjoint 覆盖 femur 键。
-    joint["lfemur"] = joint["lhipjoint"].copy()
-    joint["rfemur"] = joint["rhipjoint"].copy()
+    # distal 先按原始标记构建（避免被下面的语义重映射污染方向）
     distal = {}
     for b, child in _DISTAL_OF.items():
         distal[b] = joint[child].copy()
@@ -100,22 +100,29 @@ def hdm05_frame_inputs(pts: np.ndarray) -> Tuple[dict, dict, dict]:
     for n in JOINT_NAMES:
         distal.setdefault(n, joint[n].copy())
     F = _frame_from_positions(joint)
+    # HDM 点是标记非关节中心：lfemur/rfemur 是大腿中段标记。
+    # IK 的髋锚点必须是关节位置 -> 用 hipjoint 覆盖 femur 键。
+    joint["lfemur"] = joint["lhipjoint"].copy()
+    joint["rfemur"] = joint["rhipjoint"].copy()
+    # lfoot/rfoot 是贴地脚跟标记：踝位置目标抬高 ANKLE_UP_UNITS，
+    # 否则机器人脚踝被压到地面、腿持续压缩
+    joint["lfoot"] = joint["lfoot"] + np.array([0.0, ANKLE_UP_UNITS, 0.0])
+    joint["rfoot"] = joint["rfoot"] + np.array([0.0, ANKLE_UP_UNITS, 0.0])
     return joint, distal, F
 
 
 def segment_scale(seg: HdmSegment) -> float:
     """cmu_equivalent_units = hdm_units * k。
 
-    k = CMU 骨盆-站立足落差 / 本段中位（最低足深度）。站立帧骨盆在原点、
-    最低足在 -hip_height，故 -min(feet_y) 即腿落差。"""
+    k = CMU 等效腿长 / 本段中位（髋线中心到最低足底的竖直落差）。
+    站立帧髋在 ~-2 单位、足底在 -16 附近 -> hip2sole ≈ 14-16 单位。"""
     j = seg.joints()
-    feet_y = np.minimum.reduce([
-        j["lfoot"][:, 1], j["ltoes"][:, 1],
-        j["rfoot"][:, 1], j["rtoes"][:, 1]])
-    leg_drop = float(np.median(-feet_y))
+    hip_y = 0.5 * (j["lhipjoint"][:, 1] + j["rhipjoint"][:, 1])
+    sole_y = np.minimum.reduce([j["ltoes"][:, 1], j["rtoes"][:, 1]])
+    leg_drop = float(np.median(hip_y - sole_y))
     if leg_drop < 1e-3:
         leg_drop = 1.0
-    return CMU_HIP_HEIGHT_UNITS / leg_drop
+    return CMU_LEG_UNITS / leg_drop
 
 
 def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
