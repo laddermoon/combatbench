@@ -21,6 +21,7 @@ for rendered episodes.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -31,6 +32,34 @@ from envs.framework.policy import PolicyBlueprint
 from envs.framework.round_runner import RoundRunner
 
 from mocap.humanoid21.policy_capture.recorder import TrajectoryRecorder
+
+
+def _parse_range(spec: str) -> tuple[float, float]:
+    lo, hi = spec.split(":", 1)
+    return float(lo), float(hi)
+
+
+def _patch_push_plugins(env_bp: EnvBlueprint, args) -> EnvBlueprint:
+    """Override RandomPushPlugin knobs without touching the yaml file."""
+    if args.push_force is None and args.push_duration is None \
+            and args.push_interval is None:
+        return env_bp
+    plugins = []
+    for spec in env_bp.plugins:
+        if not spec.cls.endswith("RandomPushPlugin"):
+            plugins.append(spec)
+            continue
+        cfg = dict(spec.config)
+        if args.push_force is not None:
+            lo, hi = _parse_range(args.push_force)
+            cfg["force_magnitude_min"], cfg["force_magnitude_max"] = lo, hi
+        if args.push_duration is not None:
+            cfg["push_duration_steps"] = int(args.push_duration)
+        if args.push_interval is not None:
+            lo, hi = _parse_range(args.push_interval)
+            cfg["min_interval"], cfg["max_interval"] = int(lo), int(hi)
+        plugins.append(dataclasses.replace(spec, config=cfg))
+    return dataclasses.replace(env_bp, plugins=tuple(plugins))
 
 
 def main() -> None:
@@ -44,12 +73,19 @@ def main() -> None:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--render", type=int, default=0,
                     help="Render mp4 for the first N episodes")
+    ap.add_argument("--push-force", default=None, metavar="MIN:MAX",
+                    help="Override push force range (N)")
+    ap.add_argument("--push-duration", type=int, default=None,
+                    help="Override push length in action steps (1 = 50ms)")
+    ap.add_argument("--push-interval", default=None, metavar="MIN:MAX",
+                    help="Override push interval range (action steps)")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    env_bp = EnvBlueprint.load(args.env_blueprint)
+    env_bp = _patch_push_plugins(
+        EnvBlueprint.load(args.env_blueprint), args)
     policy_a = PolicyBlueprint.load(args.policy_a).build()
     policy_b = (PolicyBlueprint.load(args.policy_b).build()
                 if args.policy_b else policy_a)
@@ -58,6 +94,11 @@ def main() -> None:
         "env_blueprint": str(Path(args.env_blueprint).resolve()),
         "policy_a": str(Path(args.policy_a).resolve()),
         "policy_b": str(Path(args.policy_b).resolve()) if args.policy_b else None,
+        "push_overrides": {
+            "force": args.push_force,
+            "duration": args.push_duration,
+            "interval": args.push_interval,
+        },
     }
 
     for ep in range(args.episodes):
