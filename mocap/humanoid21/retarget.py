@@ -116,10 +116,14 @@ class FrameResult:
 
 
 class Retargeter:
-    def __init__(self, warm_start: bool = True):
+    def __init__(self, warm_start: bool = True, leg_dir: str = "shin"):
         self.fk = RobotFK()
         self.warm = warm_start
         self.prev_q: Dict[str, float] = {}
+        # 'shin'（默认，CMU：distal[ltibia]-joint[ltibia]=真小腿方向）；
+        # 'thigh'（HDM05 标记流：ltibia 标记在踝上，无小腿方向可用——
+        # 改用大腿方向 lfemur_marker->hip，robot 侧比较 thigh->shin）
+        self.leg_dir = leg_dir
         self._qvec = self.fk.q0.copy()
 
     # ---- shared eval: analytic FK (verified vs mj_forward, ~30x faster) ----
@@ -214,8 +218,14 @@ class Retargeter:
 
         # 3) legs
         for side in ("right", "left"):
-            d_shin = _unit(cmu_pos_to_mj(
-                distal_cmu[SRC_SHIN[side]] - joint_cmu[SRC_SHIN[side]]))
+            if self.leg_dir == "thigh":
+                # HDM05: 大腿中段标记 - 髋锚点 = 大腿方向
+                d_shin = _unit(cmu_pos_to_mj(
+                    joint_cmu[f"{side[0]}thigh_marker"]
+                    - joint_cmu[SRC_THIGH[side]]))
+            else:
+                d_shin = _unit(cmu_pos_to_mj(
+                    distal_cmu[SRC_SHIN[side]] - joint_cmu[SRC_SHIN[side]]))
             # ankle rel hip (scaled human) as position target
             p_rel_t = cmu_pos_to_mj(
                 joint_cmu[SRC_ANKLE[side]] - joint_cmu[SRC_THIGH[side]]) * SCALE
@@ -228,7 +238,10 @@ class Retargeter:
                 qq = dict(q0); qq.update(dict(zip(joints, x)))
                 pos, _ = self._eval_positions(qq, rquat, needed=need)
                 ankle_rel = pos[f"foot_{sd}"] - pos[f"thigh_{sd}"]
-                shin_dir = _unit(pos[f"foot_{sd}"] - pos[f"shin_{sd}"])
+                if self.leg_dir == "thigh":
+                    shin_dir = _unit(pos[f"shin_{sd}"] - pos[f"thigh_{sd}"])
+                else:
+                    shin_dir = _unit(pos[f"foot_{sd}"] - pos[f"shin_{sd}"])
                 # hamstring fixed tendon: 0.5*hip_y - 0.5*knee >= -0.3 rad
                 # soft hinge penalty (margin 0.02) keeps solution feasible
                 tendon = 0.5 * x[2] - 0.5 * x[3]

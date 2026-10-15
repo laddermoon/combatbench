@@ -38,8 +38,9 @@ FPS = 120.0
 # 用髋->脚底（而非骨盆落差）标定，保证伸直腿映射到机器人全伸展
 CMU_LEG_UNITS = 6.75
 
-# lfoot/rfoot 是贴地脚跟标记；踝目标抬到标记上方 ~2 源单位（~踝高）
-ANKLE_UP_UNITS = 2.0
+# lfoot/rfoot 是贴地脚跟标记；踝目标抬到标记上方（踝高 ~10cm =
+# 0.85 cmu 等效单位——此处 pts 已被 k 缩放，单位与 cmu 等效）
+ANKLE_UP_UNITS = 0.85
 
 # distal 端 = 子关节位置（标记语义）；叶子骨向前延长
 _DISTAL_OF = {
@@ -102,6 +103,10 @@ def hdm05_frame_inputs(pts: np.ndarray) -> Tuple[dict, dict, dict]:
     F = _frame_from_positions(joint)
     # HDM 点是标记非关节中心：lfemur/rfemur 是大腿中段标记。
     # IK 的髋锚点必须是关节位置 -> 用 hipjoint 覆盖 femur 键。
+    # 大腿方向项用：保留中点标记为 lthigh_marker（joint['lfemur'] 被覆盖为
+    # 髋锚点，retarget leg_dir='thigh' 读这个键）
+    joint["lthigh_marker"] = pts[JOINT_NAMES.index("lfemur")].copy()
+    joint["rthigh_marker"] = pts[JOINT_NAMES.index("rfemur")].copy()
     joint["lfemur"] = joint["lhipjoint"].copy()
     joint["rfemur"] = joint["rhipjoint"].copy()
     # lfoot/rfoot 是贴地脚跟标记：踝位置目标抬高 ANKLE_UP_UNITS，
@@ -132,7 +137,7 @@ def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
     pts = seg.points * k
     T = len(pts)
 
-    rt = Retargeter()
+    rt = Retargeter(leg_dir="thigh")
     qang = np.zeros((T, len(CONTROLLED_JOINTS)))
     rpos = np.zeros((T, 3)); rquat = np.zeros((T, 4))
     res_keys = ["leg_left", "leg_right", "ankle_left", "ankle_right",
@@ -166,7 +171,7 @@ def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
             t_end = t
             break
     if t_end >= 1:
-        bwd = Retargeter()
+        bwd = Retargeter(leg_dir="thigh")
         bwd.prev_q = dict(zip(CONTROLLED_JOINTS, qang[t_end]))
         for t in range(t_end - 1, -1, -1):
             j, d, F = _inputs(t)
