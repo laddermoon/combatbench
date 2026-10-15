@@ -1,9 +1,11 @@
 """M5-W2 片段切分工具：把长 clip 切成带标签的动作段。
 
-两种模式：
+三种模式：
   --auto          自动按"低活动度静默期"切分：全部关节 |dq| < thresh
                   且根速度 < thresh 持续 >= idle_min 帧的区间视为间隔，
                   两段静默之间的活跃区为一个 segment。
+  --detect KIND   事件探测切分：kick=脚速峰值, punch=手速峰值,
+                  jump=双脚离地, block=手高过头, ground=骨盆贴地。
   --segments S-E:label,S-E:label   手工指定帧区间与标签。
 
 输出：``<clip>_seg<NN>.npz``（关节/根/关键点/接触数组切片，时间戳
@@ -82,6 +84,72 @@ def auto_segments(npz, idle_vel: float = 0.15, idle_linvel: float = 0.25,
     return out
 
 
+def _kp(npz, name: str) -> np.ndarray:
+    i = list(npz["keypoint_names"]).index(name)
+    return np.asarray(npz["keypoints"])[:, i]
+
+
+def event_signal(npz, kind: str) -> np.ndarray:
+    """逐帧事件信号标量。kind: kick|punch|jump|block|ground。"""
+    dt = 1.0 / 120.0
+    if kind == "kick":
+        fl, fr = _kp(npz, "foot_left"), _kp(npz, "foot_right")
+        v = np.maximum(np.linalg.norm(np.gradient(fl, dt, axis=0), axis=1),
+                       np.linalg.norm(np.gradient(fr, dt, axis=0), axis=1))
+        return v
+    if kind == "punch":
+        hl, hr = _kp(npz, "hand_left"), _kp(npz, "hand_right")
+        v = np.maximum(np.linalg.norm(np.gradient(hl, dt, axis=0), axis=1),
+                       np.linalg.norm(np.gradient(hr, dt, axis=0), axis=1))
+        return v
+    if kind == "jump":
+        fl, fr = _kp(npz, "foot_left"), _kp(npz, "foot_right")
+        z = np.minimum(fl[:, 2], fr[:, 2])
+        return z - np.percentile(z, 5)          # 双脚离地高度
+    if kind == "block":
+        hl, hr = _kp(npz, "hand_left"), _kp(npz, "hand_right")
+        head = _kp(npz, "head")
+        return np.maximum(hl[:, 2], hr[:, 2]) - head[:, 2] + 0.15
+    if kind == "ground":
+        return -_kp(npz, "pelvis")[:, 2]        # 骨盆越低信号越大
+    raise ValueError(kind)
+
+
+_EVENT_THRESH = {            # (触发阈值, 回落阈值) — 120Hz 信号单位
+    "kick": (3.0, 1.0), "punch": (2.5, 1.0), "jump": (0.10, 0.05),
+    "block": (0.10, 0.0), "ground": (-0.55, -0.75),
+}
+
+
+def detect_events(npz, kind: str, pad: int = 12, merge_gap: int = 36,
+                  min_len: int = 24) -> List[Tuple[int, int]]:
+    """信号超阈即事件核心，向两侧扩展到回落阈值以下，合并近邻。"""
+    hi, lo = _EVENT_THRESH[kind]
+    sig = event_signal(npz, kind)
+    T = len(sig)
+    out, t = [], 0
+    while t < T:
+        if sig[t] >= hi:
+            s = t
+            while s > 0 and sig[s - 1] > lo:      # 左扩到回落点
+                s -= 1
+            e = t
+            while e < T and sig[e] > lo:           # 右扩到回落点
+                e += 1
+            while e < T and np.any(sig[e:e + merge_gap] >= hi):  # 合并邻近事件
+                e2 = e + int(np.argmax(sig[e:e + merge_gap] >= hi))
+                e = e2
+                while e < T and sig[e] > lo:
+                    e += 1
+            s, e = max(0, s - pad), min(T, e + pad)
+            if e - s >= min_len:
+                out.append((s, e))
+            t = e
+        else:
+            t += 1
+    return out
+
+
 def slice_npz(npz, s: int, e: int) -> dict:
     out = {}
     for k in npz.files:
@@ -108,6 +176,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clip", required=True)
     ap.add_argument("--auto", action="store_true")
+    ap.add_argument("--detect", choices=list(_EVENT_THRESH), default=None,
+                    help="事件探测切段：kick=脚速/punch=手速/jump=双脚离地/"
+                         "block=举手/ground=骨盆贴地")
     ap.add_argument("--segments", type=str, default=None,
                     help="S-E:label,S-E:label (120Hz 帧号)")
     ap.add_argument("--dry-run", action="store_true")
@@ -120,6 +191,10 @@ def main():
         ranges = auto_segments(npz)
         labels = [None] * len(ranges)
         print(f"auto: {len(ranges)} segments")
+    elif args.detect:
+        ranges = detect_events(npz, args.detect)
+        labels = [args.detect] * len(ranges)
+        print(f"detect({args.detect}): {len(ranges)} events")
         for i, (s, e) in enumerate(ranges):
             print(f"  seg{i:02d}: [{s},{e}) = {e-s}f = {(e-s)/120:.2f}s")
     else:
@@ -158,7 +233,9 @@ def main():
             "joint_space": "humanoid21_v2",
             "classification": {"labels": seg_labels,
                                "label_source": "segment_auto"
-                               if args.auto else "manual",
+                               if args.auto else
+                               ("event_detect:" + args.detect)
+                               if args.detect else "manual",
                                "confidence": "medium"},
             "quality": {"level": "L0", "physics": None,
                         "issues": [], "rejected": False,
