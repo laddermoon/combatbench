@@ -381,6 +381,8 @@ _JOB_KINDS = {
                           str(p.get("group_by", "collection_round"))],
     "recompute": lambda p: [],
     "drift": lambda p: [],
+    "gradsig": lambda p: ["--sides",
+                          str(p.get("sides", "actor,critic"))],
 }
 
 

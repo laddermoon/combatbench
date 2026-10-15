@@ -833,6 +833,16 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             p.add_argument("--alpha", type=float, default=None)
             p.add_argument("--u-floor", type=float, default=None)
             p.add_argument("--reg-lambda", type=float, default=None)
+    gs = sub.add_parser(
+        "gradsig",
+        help="cut 7 (HEAVY): exact per-sample gradient projection "
+             "g_i·G_hat over the full batch + channel conflict matrix",
+    )
+    gs.add_argument("dump", type=Path)
+    gs.add_argument(
+        "--sides", default="actor,critic",
+        help="comma list: actor,critic",
+    )
     dq = sub.add_parser(
         "dump",
         help="write dump_request.json so a running SAC loop captures "
@@ -957,6 +967,12 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = analysis.update_checks(args.dump)
     elif args.command == "post":
         out = analysis.post_detail(args.dump)
+    elif args.command == "gradsig":
+        from . import gradsig as _gradsig
+        out = _gradsig.per_sample_gradsig(
+            args.dump,
+            sides=tuple(s for s in args.sides.split(",") if s),
+        )
     elif args.command == "dump":
         request = {"hypothesis": args.hypothesis}
         if args.at_tick is not None:

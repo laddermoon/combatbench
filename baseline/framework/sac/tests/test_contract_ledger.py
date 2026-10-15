@@ -224,3 +224,20 @@ def test_cut_functions_return_payloads(tmp_path) -> None:
     assert "det_action_drift" in post
     upd = update_checks(dump)
     assert upd["polyak_residuals"]
+
+
+def test_gradsig_closure_and_conflict(tmp_path) -> None:
+    from baseline.framework.sac.gradsig import per_sample_gradsig
+    dump = _make_dump(tmp_path)
+    res = per_sample_gradsig(dump, store_all=False)
+    a = res["sides"]["actor"]
+    # Σ_i p_i == ||G|| — the projection bookkeeping must close.
+    assert a["closure_err"] < 1e-4
+    assert a["norm_G"] > 0
+    cc = res["channel_conflict"]
+    assert len(cc["channels"]) == 2
+    for row in cc["cos_matrix"]:
+        for v in row:
+            assert -1.001 <= v <= 1.001
+    for ch, e in res["sides"]["critic"].items():
+        assert e["closure_err"] < 1e-4

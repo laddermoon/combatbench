@@ -35,6 +35,7 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | 切口⑥ actor 契约 | `DK actor <dump>`——U(s) 分布与 floor 激活率、门控链、actor_cand_q ≡ φ_post |
 | 切口⑧ 更新检查 | `DK update-checks <dump>`——Polyak 逐参数恒等式 / alpha 不变量 / 分层相对步长 |
 | 切口⑨ 后更新 | `DK post <dump>`——同批 det-action/logπ/U 漂移 + 单步 TD-MSE 是否下降 |
+| 切口⑦ 逐样本梯度（重） | `DK gradsig <dump> [--sides actor,critic]`——100% 精确 p_i=g_i·Ĝ（Σp_i=‖G‖ 闭合自检），top push/pull 样本 + 多通道 actor 梯度冲突矩阵 cos(G_c1,G_c2)；HTTP 走 job 槽 `POST .../job {kind:"gradsig"}` |
 | JSON API | `DK serve baseline/runs_sac --port 8766`（dump 端点同名：`contracts/explore/slice-verify/demography/twins/targets/fit/actor/update-checks/post`） |
 
 ## 1. 不收敛 / 回报平台期
