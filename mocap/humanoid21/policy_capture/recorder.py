@@ -62,11 +62,13 @@ class TrajectoryRecorder(PostActionRecorder):
         phy_steps_per_action: int = 25,
         robots: Sequence[str] = _AGENTS,
         provenance: Optional[Mapping[str, Any]] = None,
+        extra_meta: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.phy_steps_per_action = int(phy_steps_per_action)
         self.robots = tuple(robots)
         self.provenance = dict(provenance or {})
+        self.extra_meta = dict(extra_meta or {})
         self._static: Optional[Dict[str, Any]] = None
         self._ep: Optional[Dict[str, Any]] = None
 
@@ -202,6 +204,7 @@ class TrajectoryRecorder(PostActionRecorder):
                 for r in self.robots
             },
         }
+        meta.update(self.extra_meta)
         meta_path = self.output_dir / f"ep_{seed}_meta.json"
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=1)

@@ -184,6 +184,114 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
 
 
+class DirectedPushPlugin(BasePlugin):
+    """确定性定向推力插件 —— 用于扰动扫描/动作采集。
+
+    在固定动作步窗口 [start_step, start_step + duration_steps) 内对目标
+    机器人施加一个**恒定**的世界系力向量。力由 ``force_magnitude`` +
+    ``azimuth_deg``（水平方位角，世界系，度）+ ``z_fraction``（垂直分量
+    占比，相对 magnitude）合成，也可直接给 ``force_vec``。
+
+    一个 episode 只推一次。指标键与 RandomPushPlugin 一致
+    （``{robot}_push_active`` / ``{robot}_push_events`` / …），
+    下游 TrajectoryRecorder 直接复用。
+    """
+
+    def __init__(
+        self,
+        target_robot: str = "robot_a",
+        target_body: str = "torso",
+        start_step: int = 60,
+        duration_steps: int = 20,
+        force_magnitude: float = 100.0,
+        azimuth_deg: float = 0.0,
+        z_fraction: float = 0.0,
+        force_vec: Optional[Sequence[float]] = None,
+    ):
+        if force_vec is not None:
+            vec = np.asarray(force_vec, dtype=np.float64)
+            if vec.shape != (3,):
+                raise ValueError(f"force_vec must have shape (3,), got {vec.shape}")
+            self._force = vec
+        else:
+            a = np.deg2rad(azimuth_deg)
+            self._force = np.array([
+                np.cos(a) * force_magnitude,
+                np.sin(a) * force_magnitude,
+                z_fraction * force_magnitude,
+            ], dtype=np.float64)
+        self.target_robot = target_robot
+        self.target_body = target_body
+        self.start_step = int(start_step)
+        self.duration_steps = int(duration_steps)
+        if self.duration_steps <= 0:
+            raise ValueError("duration_steps must be > 0")
+
+        self._action_step_count = 0
+        self._active = False
+        self._done = False
+
+    @property
+    def name(self) -> str:
+        return "directed_push"
+
+    @property
+    def require_mutator(self) -> bool:
+        return True
+
+    def to_blueprint(self) -> Dict[str, Any]:
+        return {
+            "target_robot": self.target_robot,
+            "target_body": self.target_body,
+            "start_step": self.start_step,
+            "duration_steps": self.duration_steps,
+            "force_vec": self._force.tolist(),
+        }
+
+    @classmethod
+    def from_blueprint(cls, config: Dict[str, Any]) -> "DirectedPushPlugin":
+        return cls(**config)
+
+    def on_pre_episode(self, ctx: SimContext) -> None:
+        self._action_step_count = 0
+        self._active = False
+        self._done = False
+        ctx.metrics[f'{self.target_robot}_push_count'] = 0
+        ctx.metrics[f'{self.target_robot}_push_active'] = False
+        ctx.metrics[f'{self.target_robot}_push_events'] = []
+
+    def on_pre_action_step(self, ctx: SimContext) -> None:
+        self._action_step_count += 1
+        end = self.start_step + self.duration_steps
+        self._active = (not self._done) and \
+            self.start_step <= self._action_step_count < end
+        if self._active and not ctx.metrics.get(f'{self.target_robot}_push_active'):
+            ctx.metrics[f'{self.target_robot}_push_count'] += 1
+            ctx.metrics[f'{self.target_robot}_last_push_force_vec'] = self._force.copy()
+            ctx.metrics[f'{self.target_robot}_push_events'].append({
+                'start_step': self._action_step_count,
+                'duration_action_steps': self.duration_steps,
+                'force_vec': self._force.copy(),
+                'force_mag': float(np.linalg.norm(self._force)),
+                'body': self.target_body,
+            })
+        ctx.metrics[f'{self.target_robot}_push_active'] = self._active
+
+    def on_pre_phy_step(self, ctx: SimContext) -> None:
+        if not self._active:
+            return
+        ctx.mutator.apply_external_force(
+            body_name=self.target_body,
+            force=self._force,
+            robot_id=self.target_robot,
+        )
+
+    def on_post_action_step(self, ctx: SimContext) -> None:
+        if self._action_step_count >= self.start_step + self.duration_steps:
+            self._done = True
+        ctx.metrics[f'{self.target_robot}_push_active'] = self._active
+
+
 class InitialStatePerturbationPlugin(BasePlugin):
     def __init__(
         self,
