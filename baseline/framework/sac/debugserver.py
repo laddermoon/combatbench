@@ -199,6 +199,39 @@ def _dump_endpoint(path: str, root: Path, q: Dict[str, list]) -> Any:
         return analysis.update_checks(_resolve_dump(root, q))
     if path == "post":
         return analysis.post_detail(_resolve_dump(root, q))
+    # ---- WP3/4: reconstructed episode artifacts (episode_recon) ----
+    if path == "episodes":
+        dump = _resolve_dump(root, q)
+        ep_root = dump / "episodes"
+        out = []
+        if ep_root.is_dir():
+            for d in sorted(ep_root.iterdir()):
+                if not d.is_dir():
+                    continue
+                item = {
+                    "name": d.name,
+                    "video": (
+                        f"episodes/{d.name}/episode.mp4"
+                        if (d / "episode.mp4").exists() else None
+                    ),
+                    "files": sorted(p.name for p in d.iterdir()),
+                }
+                out.append(item)
+        return {"dump": dump.name, "episodes": out}
+    if path.startswith("episodes/"):
+        # Stream a file from <dump>/episodes/<dir>/ (mp4 / json); the
+        # traversal guard confines paths to the resolved dump dir.
+        dump = _resolve_dump(root, q)
+        rel = path[len("episodes/"):]
+        target = (dump / "episodes" / rel).resolve()
+        if not str(target).startswith(str(dump.resolve())):
+            raise KeyError("path escapes dump dir")
+        if not target.is_file():
+            raise KeyError(f"no such episode artifact {rel!r}")
+        ctype = ("video/mp4" if target.suffix == ".mp4"
+                 else "application/json" if target.suffix == ".json"
+                 else "application/octet-stream")
+        raise _StreamFile(target, ctype)
     raise KeyError(f"unknown dump endpoint {path!r}")
 
 

@@ -197,6 +197,15 @@
   .chk-status.fail { color: var(--red); }
   .chk-status.skip { color: var(--muted); }
   .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
+  /* --- Diagnostic cut strip --- */
+  .cut-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cut-chip { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; cursor: pointer; min-width: 120px; }
+  .cut-chip:hover { border-color: var(--accent); background: var(--accent-dim); }
+  .cut-chip .cn { color: var(--accent); font-weight: 600; margin-right: 6px; }
+  .cut-chip .ct { font-size: 12px; color: var(--text); }
+  .ledger-row { cursor: pointer; }
+  .ledger-row:hover td { background: var(--accent-dim); }
+  .ep-video { width: 100%; max-width: 640px; border-radius: 6px; border: 1px solid var(--border); }
   .gs-scope { color: var(--muted); font-size: 11px; font-weight: 400; }
 
   .smp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
@@ -425,6 +434,10 @@
           <span class="stage-open" id="ledger-rerun" style="cursor:pointer">rerun ↻</span></h2>
         <div id="ledger-summary"><div class="loading">loading…</div></div>
         <div id="ledger-body"></div>
+      </div>
+      <div class="card" id="diag-cuts-card">
+        <h2>Diagnostic Cuts <span class="gs-scope">⓪–⑨ atomic seams</span></h2>
+        <div class="cut-strip" id="cut-strip"></div>
       </div>
       <div id="dump-stages"></div>
     </div>
@@ -1906,7 +1919,7 @@
       card.innerHTML =
         `<div class="stage-head"><span class="stage-num">${s.num}</span>` +
         `<h2>${escapeHtml(s.title)}</h2>` +
-        `<a class="stage-open" data-tool="${s.tool}">open tool →</a></div>` +
+        `<a class="stage-open">open tool →</a></div>` +
         `<div class="stage-stats" id="sum-${s.id}"><div class="loading">…</div></div>` +
         `<div class="desc">${escapeHtml(s.desc)}</div>`;
       host.appendChild(card);
@@ -1927,7 +1940,44 @@
       $('sum-collection').innerHTML =
         `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
+    _renderCutStrip();
     _renderContractLedger();
+  }
+
+  // Ten canonical diagnostic cuts — each chip opens the generic tool
+  // page on the cut's endpoint (⑦/⑨ kinds run via the job slot).
+  function _renderCutStrip() {
+    const host = $('cut-strip');
+    if (!host) return;
+    host.innerHTML = '';
+    DIAG_CUTS.forEach(c => {
+      const chip = document.createElement('div');
+      chip.className = 'cut-chip';
+      chip.innerHTML =
+        `<span class="cn">${c.num}</span>` +
+        `<span class="ct">${escapeHtml(c.title)}</span>`;
+      chip.addEventListener('click', () => {
+        state.toolParams = {};
+        state.toolEp = c.ep;
+        navigate('tool');
+      });
+      host.appendChild(chip);
+    });
+    // cut-⑨ siblings: episode reconstruction + cross-gen delta jobs.
+    CUT9_JOBS.forEach(ep => {
+      const chip = document.createElement('div');
+      chip.className = 'cut-chip';
+      chip.innerHTML =
+        `<span class="cn">⑨·</span>` +
+        `<span class="ct">${ep === 'recon'
+          ? 'episode 重建 (job)' : '跨代 delta (job)'}</span>`;
+      chip.addEventListener('click', () => {
+        state.toolParams = {};
+        state.toolEp = ep;
+        navigate('tool');
+      });
+      host.appendChild(chip);
+    });
   }
 
   // --- Contract Ledger card (WP1): falsifiable per-cut assertions.
@@ -1961,9 +2011,11 @@
       (a, b) => (rank[a.status] ?? 4) - (rank[b.status] ?? 4)
         || String(a.id).localeCompare(String(b.id)));
     if (!checks.length) { bodyEl.innerHTML = ''; return; }
-    const rows = checks.map(c => {
+    const rows = checks.map((c, i) => {
       const viol = (c.violating_samples || []).length;
-      return `<tr>` +
+      const prefix = String(c.id || '').split('.')[0];
+      const ep = CUT_BY_PREFIX[prefix];
+      return `<tr class="ledger-row" data-cut-ep="${ep || ''}">` +
         `<td><span class="chk-status ${c.status}">${c.status}</span></td>` +
         `<td>${escapeHtml(c.id || '')}</td>` +
         `<td>${escapeHtml(c.cut || '')}</td>` +
@@ -1976,7 +2028,18 @@
       '<table class="check-table"><thead><tr>' +
       '<th>status</th><th>id</th><th>cut</th><th>check</th>' +
       '<th>violations</th><th>detail</th></tr></thead>' +
-      `<tbody>${rows}</tbody></table>`;
+      `<tbody>${rows}</tbody></table>` +
+      '<div class="desc" style="margin-top:6px">点击行跳转到该切口对应' +
+      '的分析页（⓪–⑨ 与下方 Diagnostic Cuts 一致）。</div>';
+    bodyEl.querySelectorAll('.ledger-row').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const ep = tr.getAttribute('data-cut-ep');
+        if (!ep) return;
+        state.toolParams = {};
+        state.toolEp = ep;
+        navigate('tool');
+      });
+    });
   }
 
   function _kvSpan(k, v) {
@@ -2869,12 +2932,49 @@
     recompute: [],
     drift: [],
     inspect: [],
+    // WP1 diagnostic cuts (synchronous JSON endpoints)
+    contracts: [],
+    explore: [],
+    'slice-verify': [],
+    demography: [],
+    twins: [],
+    targets: ['gamma', 'reward_scale', 'alpha', 'u_floor', 'reg_lambda'],
+    fit: [],
+    actor: [],
+    'update-checks': [],
+    post: [],
+    // WP2/3 heavy jobs (single background slot)
+    gradsig: ['sides'],
+    recon: ['sample_id', 'source_key'],
+    delta: ['stride', 'max_checkpoints'],
   };
 
   // Kinds that run through the single background job slot instead of a
   // synchronous GET (grad-attr is the HEAVY recompute; recompute/drift
   // can also go through it).
-  const JOB_KINDS = {'grad-attr': 1, 'recompute': 1, 'drift': 1};
+  const JOB_KINDS = {
+    'grad-attr': 1, 'recompute': 1, 'drift': 1,
+    'gradsig': 1, 'recon': 1, 'delta': 1,
+  };
+
+  // Canonical diagnostic cuts (DESIGN_dump_cuts.md ⓪–⑨) → endpoint +
+  // the contract-check id prefix that cut owns, for ledger jump-through.
+  const DIAG_CUTS = [
+    {num: '⓪', title: 'Rollout / realized ε', ep: 'explore', prefix: 'C0'},
+    {num: '①', title: 'Episode → Slice 契约', ep: 'slice-verify', prefix: 'C1'},
+    {num: '②', title: 'Replay → Batch 人口学', ep: 'demography', prefix: 'C2'},
+    {num: '③', title: 'Twin / 候选枚举', ep: 'twins', prefix: 'C3'},
+    {num: '④', title: 'Bellman 目标重算', ep: 'targets', prefix: 'C4'},
+    {num: '⑤', title: 'Critic 拟合', ep: 'fit', prefix: 'C5'},
+    {num: '⑥', title: 'Actor 契约', ep: 'actor', prefix: 'C6'},
+    {num: '⑦', title: '逐样本梯度 (job)', ep: 'gradsig', prefix: 'C7'},
+    {num: '⑧', title: '更新检查', ep: 'update-checks', prefix: 'C8'},
+    {num: '⑨', title: 'Post / 回放锚定', ep: 'post', prefix: 'C9'},
+  ];
+  // Heavy cut-⑨ siblings reachable from the post tool page.
+  const CUT9_JOBS = ['recon', 'delta'];
+  const CUT_BY_PREFIX = {};
+  DIAG_CUTS.forEach(c => { CUT_BY_PREFIX[c.prefix] = c.ep; });
 
   async function renderTool() {
     const ep = state.toolEp;
@@ -2944,8 +3044,14 @@
     const st = $('tool-job-status');
     try {
       const params = {};
-      if (state.toolParams.group_by)
-        params.group_by = state.toolParams.group_by;
+      (TOOL_PARAMS[state.toolEp] || []).forEach(k => {
+        const v = state.toolParams[k];
+        if (v !== undefined && v !== null && v !== '') params[k] = v;
+      });
+      if (state.toolEp === 'recon' && !params.sample_id &&
+          state.selectedSampleId != null) {
+        params.sample_id = state.selectedSampleId;
+      }
       const r = await fetch(_toolJobUrl(), {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -2996,12 +3102,81 @@
     try {
       const d = await fetchJson(
         api('dump/job-result') + `?kind=${encodeURIComponent(state.toolEp)}`);
-      body.innerHTML =
+      if (state.toolEp === 'recon') _renderReconResult(body, d);
+      else if (state.toolEp === 'delta') _renderDeltaResult(body, d);
+      else body.innerHTML =
         `<pre class="json-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>`;
     } catch (e) {
       body.innerHTML =
         `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
+  }
+
+  // --- recon (WP3): video player + per-frame verification report.
+  function _renderReconResult(body, d) {
+    if (d.status === 'unavailable') {
+      body.innerHTML =
+        `<div class="error-msg">unavailable — ${escapeHtml(d.reason || '')}</div>`;
+      return;
+    }
+    const rec = d.reconstruction || {};
+    const ver = d.verification || {};
+    const kv = (k, v) =>
+      `<div class="kv"><span class="k">${escapeHtml(k)}</span>` +
+      `<span class="v">${escapeHtml(String(v ?? '—'))}</span></div>`;
+    const vidUrl = d.video
+      ? api('dump/episodes') + '/' +
+        encodeURIComponent(String(d.episode_dir).split('/').pop()) +
+        '/episode.mp4'
+      : null;
+    body.innerHTML =
+      '<div class="stage-stats">' +
+      kv('sample_id', d.sample_id) +
+      kv('run', rec.run_id) +
+      kv('round', rec.collection_round) +
+      kv('job', rec.job_index) +
+      kv('seed', rec.episode_seed) +
+      kv('agent', rec.agent_id) +
+      kv('policy_src', rec.policy_source) +
+      kv('fingerprint', rec.fingerprint_match == null ? '—'
+         : (rec.fingerprint_match ? '✓ match' : '✗ MISMATCH')) +
+      kv('obs_err', ver.obs_max_abs_err) +
+      kv('act_err', ver.action_max_abs_err) +
+      kv('frame', `${ver.frame_index ?? '?'} / T=${ver.slice_T ?? '?'}`) +
+      kv('obs_match', ver.obs_match == null ? '—'
+         : (ver.obs_match ? '✓' : '✗')) +
+      '</div>' +
+      (ver.note ? `<div class="desc">${escapeHtml(ver.note)}</div>` : '') +
+      (vidUrl
+        ? `<video class="ep-video" controls preload="metadata" ` +
+          `src="${vidUrl}"></video>`
+        : '<div class="desc">no video artifact</div>') +
+      `<details><summary>raw report</summary>` +
+      `<pre class="json-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>` +
+      `</details>`;
+  }
+
+  // --- delta (WP3): per-checkpoint deterministic-drift series table.
+  function _renderDeltaResult(body, d) {
+    const rows = (d.series || []).map(r =>
+      `<tr><td>${escapeHtml(r.checkpoint)}</td>` +
+      `<td>${fmt(r.drift_vs_prev_det_l2, 4)}</td>` +
+      `<td>${fmt(r.drift_vs_first_det_l2, 4)}</td>` +
+      `<td>${fmt(r.logp_of_batch_actions_mean, 4)}</td>` +
+      `<td>${r.u_s_mean != null ? fmt(r.u_s_mean, 4) : '—'}</td>` +
+      `<td>${escapeHtml(JSON.stringify(r.q_det_mean || {}))}</td></tr>`
+    ).join('');
+    body.innerHTML =
+      `<div class="desc">${d.n_checkpoints || 0} checkpoints replayed ` +
+      `on this batch's stored observations` +
+      (d.reason ? ` — ${escapeHtml(d.reason)}` : '') + `</div>` +
+      '<table class="check-table"><thead><tr>' +
+      '<th>checkpoint</th><th>Δ prev (L2)</th><th>Δ first (L2)</th>' +
+      '<th>logπ(batch acts)</th><th>U(s) μ</th><th>Q(det) per channel</th>' +
+      '</tr></thead>' + `<tbody>${rows}</tbody></table>` +
+      `<details><summary>raw</summary>` +
+      `<pre class="json-pre">${escapeHtml(JSON.stringify(d, null, 2))}</pre>` +
+      `</details>`;
   }
 
   async function _runTool() {
@@ -3010,15 +3185,10 @@
     body.innerHTML = '<div class="loading">loading...</div>';
     const qs = [];
     const p = state.toolParams;
-    if (p.sample_id !== '') qs.push(`sample_id=${encodeURIComponent(p.sample_id)}`);
-    if (p.source_key) qs.push(`source_key=${encodeURIComponent(p.source_key)}`);
-    if (p.slice_id) qs.push(`slice_id=${encodeURIComponent(p.slice_id)}`);
-    if ((TOOL_PARAMS[ep] || []).includes('group_by'))
-      qs.push(`group_by=${encodeURIComponent(p.group_by)}`);
-    if ((TOOL_PARAMS[ep] || []).includes('sort'))
-      qs.push(`sort=${encodeURIComponent(p.sort)}`);
-    if ((TOOL_PARAMS[ep] || []).includes('limit'))
-      qs.push(`limit=${encodeURIComponent(p.limit || 50)}`);
+    (TOOL_PARAMS[ep] || []).forEach(k => {
+      const v = (p[k] === undefined || p[k] === null) ? '' : p[k];
+      if (v !== '') qs.push(`${k}=${encodeURIComponent(v)}`);
+    });
     try {
       // slice-ctx is a run-level endpoint (replay view); the rest are
       // dump-scoped analysis endpoints.
