@@ -852,6 +852,9 @@ def train_sac(
                                     critic_lr=cp.critic_learning_rate,
                                     keep_last=dump_keep_last,
                                     replay_stats=replay.buffer_stats(),
+                                    slice_contract=(
+                                        experiment.slice_contract_spec()
+                                    ),
                                 )
                                 metrics.emit_debug(
                                     clocks,

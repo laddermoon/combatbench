@@ -408,6 +408,18 @@ class CombatExperimentSACBase(ExperimentSAC):
 
     _early_stop_hits: int = 0
 
+    def _slice_versions(self) -> Dict[str, str]:
+        """Provenance for ``versions`` on every slice — reflects the
+        run's ACTUAL regularizer configuration, not a fixed literal."""
+        mode = str(self.regularizer_mode)
+        return {
+            "objective_mode": (
+                "sac_entropy" if mode == "shannon" else f"sac_{mode}"
+            ),
+            "regularizer_mode": mode,
+            "policy_arch": "s01_shared_sigma",
+        }
+
     def _early_stop_check(
         self, info: Dict[str, Any], env_step: int,
     ) -> bool:

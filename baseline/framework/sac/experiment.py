@@ -712,6 +712,18 @@ class ExperimentSAC(ABC):
         """
         ...
 
+    def slice_contract_spec(self) -> Optional[Dict[str, Any]]:
+        """Formula constants needed to recompute this experiment's slices.
+
+        The returned payload is persisted into ``spec.json["slice_contract"]``
+        on dump capture so that offline contract verification can recompute
+        ``rewards``/``actor_weight`` from ``task_facts``/``reward_features``
+        without assuming experiment class defaults (which ``--set`` may have
+        overridden). ``None`` means "no declarable contract" — verifiers
+        then fall back to class defaults and mark checks unverifiable.
+        """
+        return None
+
     # ==================================================================
     # Phase 4: Replay Plan (optional override)
     # ==================================================================

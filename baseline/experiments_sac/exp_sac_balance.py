@@ -116,6 +116,44 @@ class SacBalance(CombatExperimentSACBase):
             ),
         )
 
+    def slice_contract_spec(self) -> Dict[str, Any]:
+        """Constants needed to recompute this experiment's slices.
+
+        ``r_fall[t] = per_step_phi_coef * clip(phi_post[t], 0, 1)``;
+        ``r_cross[t] = cross_support[t]`` verbatim; actor gates are
+        ``(w_fall, w_cross * clip(phi, 0, 1)^2)`` with ``phi_pre`` for the
+        current-step gate and ``phi_post`` for the next-step gate, then
+        normalized to a row-sum of one.
+        """
+        return {
+            "reward_semantics": "basic_balance_phi_cross_v1",
+            "per_step_phi_coef": float(self.per_step_phi_coef),
+            "base_actor_weights": [
+                float(w) for w in self._base_actor_weights
+            ],
+            "rewards": {
+                "r_fall": {
+                    "kind": "scaled_clip",
+                    "source": "task_facts.phi_post_reference",
+                    "scale": float(self.per_step_phi_coef),
+                    "clip": [0.0, 1.0],
+                },
+                "r_cross": {
+                    "kind": "identity",
+                    "source": "reward_features.cross_support",
+                },
+            },
+            "gate": {
+                "kind": "phi_squared",
+                "weights": [
+                    float(w) for w in self._base_actor_weights
+                ],
+                "pre_source": "task_facts.phi_pre",
+                "post_source": "task_facts.phi_post_reference",
+                "clip": [0.0, 1.0],
+            },
+        }
+
     def pre_action_fact_specs(self) -> Tuple[SACFactSpec, ...]:
         provider = "baseline.experiments_sac.fact_providers:HeightPhiPreActionProvider"
         return tuple(
@@ -210,9 +248,7 @@ class SacBalance(CombatExperimentSACBase):
             reward_features=reward_features,
             versions={
                 "reward_semantics": "basic_balance_phi_cross_v1",
-                "objective_mode": "shannon",
-                "regularizer_mode": "entropy",
-                "policy_arch": "s01_shared_sigma",
+                **self._slice_versions(),
             },
         )
         return [] if sl is None else [sl]

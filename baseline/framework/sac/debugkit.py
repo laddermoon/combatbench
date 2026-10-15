@@ -109,6 +109,7 @@ def _trainer_spec(
     sp: SACParams,
     grad_clip_norm: float,
     critic_lr: float,
+    slice_contract: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if hasattr(actor, "state_payload"):
         payload = actor.state_payload()
@@ -161,6 +162,13 @@ def _trainer_spec(
         "sac_params": asdict(sp),
         "grad_clip_norm": float(grad_clip_norm),
         "critic_learning_rate": float(critic_lr),
+        # Self-describing slice contract: the formula constants needed to
+        # recompute rewards/actor_weight from task_facts/reward_features.
+        # None on legacy dumps — verifiers fall back to class defaults
+        # and mark the check's contract_source accordingly.
+        "slice_contract": (
+            dict(slice_contract) if slice_contract is not None else None
+        ),
     }
 
 
@@ -211,6 +219,7 @@ def finish_critic_tick_dump(
     critic_lr: float,
     keep_last: int = 8,
     replay_stats: Optional[Mapping[str, Any]] = None,
+    slice_contract: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     """Complete a dump begun by :func:`begin_critic_tick_dump`."""
     tmp = Path(tmp_dir)
@@ -220,6 +229,7 @@ def finish_critic_tick_dump(
         torch.save(dict(trainer_post_state), tmp / "trainer_post.pt")
         _write_json(tmp / "spec.json", _trainer_spec(
             actor, critic, channels, sp, grad_clip_norm, critic_lr,
+            slice_contract=slice_contract,
         ))
         analysis_payload: Dict[str, Any] = {
             "evidence_level": "recompute",

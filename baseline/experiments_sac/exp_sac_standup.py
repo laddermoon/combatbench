@@ -61,6 +61,26 @@ class SacStandup(CombatExperimentSACBase):
             ),
         )
 
+    def slice_contract_spec(self) -> Dict[str, Any]:
+        """Constants needed to recompute this experiment's slices.
+
+        ``r_potential[t] = (1 - gamma) * clip(potential[t], 0, 1)`` with a
+        constant all-ones actor gate.
+        """
+        return {
+            "reward_semantics": "standup_4stage_dense_v2",
+            "gamma": float(self._gamma),
+            "rewards": {
+                "r_potential": {
+                    "kind": "scaled_clip",
+                    "source": "task_facts.potential",
+                    "scale": 1.0 - float(self._gamma),
+                    "clip": [0.0, 1.0],
+                },
+            },
+            "gate": {"kind": "constant_ones"},
+        }
+
     def build_slices(self, episodes: List[Any]) -> List[SACTransitionSlice]:
         self._ep_final_pots = []
         all_slices: List[SACTransitionSlice] = []
@@ -101,9 +121,7 @@ class SacStandup(CombatExperimentSACBase):
                     },
                     versions={
                         "reward_semantics": "standup_4stage_dense_v2",
-                        "objective_mode": "shannon",
-                        "regularizer_mode": "entropy",
-                        "policy_arch": "s01_shared_sigma",
+                        **self._slice_versions(),
                     },
                 )
                 if sl is not None:
