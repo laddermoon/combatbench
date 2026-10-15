@@ -49,6 +49,11 @@ class SACTransitionSlice:
     task_facts: Mapping[str, np.ndarray] = field(default_factory=dict)
     reward_features: Mapping[str, np.ndarray] = field(default_factory=dict)
     policy_action: Optional[np.ndarray] = None
+    # Deterministic action the same policy would take at each obs —
+    # realized exploration noise is actions - policy_det_action.  Absent
+    # for behavior policies without a deterministic mode (e.g. uniform
+    # random-start); consumers must treat missing as unverifiable.
+    policy_det_action: Optional[np.ndarray] = None
     source_keys: Tuple[str, ...] = ()
     behavior: Mapping[str, Any] = field(default_factory=dict)
     collection: Mapping[str, Any] = field(default_factory=dict)
@@ -228,6 +233,14 @@ def validate_transition_slice(
         if policy_action.shape != actions.shape:
             raise ValueError(
                 f"policy_action shape {policy_action.shape} != actions {actions.shape}"
+            )
+    if sl.policy_det_action is not None:
+        policy_det = _as_float_array(
+            "policy_det_action", sl.policy_det_action, ndim=2)
+        if policy_det.shape != actions.shape:
+            raise ValueError(
+                f"policy_det_action shape {policy_det.shape} != actions "
+                f"{actions.shape}"
             )
 
     for mapping_name, mapping in (
@@ -437,6 +450,17 @@ def build_agent_transition_slice(
             f"policy_action shape {policy_action.shape} != action "
             f"{act_all[:T].shape}"
         )
+    policy_det_action = _stack_agent_extras(
+        episode, agent_id, "policy_det_action", T,
+    )
+    if (
+        policy_det_action is not None
+        and policy_det_action.shape[1:] != act_all[:T].shape[1:]
+    ):
+        raise ValueError(
+            f"policy_det_action shape {policy_det_action.shape} != action "
+            f"{act_all[:T].shape}"
+        )
 
     env_hash = str(episode.blueprint_hash)
     behavior = dict(episode.behavior.get(agent_id) or {})
@@ -499,6 +523,10 @@ def build_agent_transition_slice(
         policy_action=(
             np.asarray(policy_action[:T], dtype=np.float32)
             if policy_action is not None else None
+        ),
+        policy_det_action=(
+            np.asarray(policy_det_action[:T], dtype=np.float32)
+            if policy_det_action is not None else None
         ),
         source_keys=source_keys,
         behavior=behavior,

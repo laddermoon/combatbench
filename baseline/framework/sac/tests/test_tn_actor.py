@@ -208,6 +208,14 @@ def test_export_stochastic_with_e(tmp_path):
     action, extra = runtime.act(obs_np, want_extra=True)
     assert np.all(np.abs(action) < 1.0)
     assert extra["explore_factor"] == 0.4
+    # policy_det_action must be the π deterministic twin (e=0), enabling
+    # realized eps = action - policy_det_action downstream.
+    det = actor.deterministic_action(
+        torch.as_tensor(obs_np).unsqueeze(0)
+    ).squeeze(0).detach().numpy()
+    np.testing.assert_allclose(
+        extra["policy_det_action"], det, atol=1e-6
+    )
 
 
 def test_deterministic_export_rejects_e(tmp_path):

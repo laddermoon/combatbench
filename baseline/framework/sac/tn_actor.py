@@ -645,6 +645,10 @@ class TNRuntimePolicy:
             np.asarray(observation, dtype=np.float32), dtype=torch.float32,
         ).unsqueeze(0)
         with torch.no_grad():
+            det_action = (
+                self._actor.deterministic_action(obs)
+                if want_extra else None
+            )
             if self.stochastic:
                 spec = SACBehaviorSpec(
                     mode="stochastic", explore_factor=self.explore_factor,
@@ -662,8 +666,13 @@ class TNRuntimePolicy:
                     ),
                 } if want_extra else None
             else:
-                action = self._actor.deterministic_action(obs)
+                action = self._actor.deterministic_action(obs) \
+                    if det_action is None else det_action
                 extra = {"log_prob": None, "explore_factor": 0.0} if want_extra else None
+        if extra is not None and det_action is not None:
+            extra["policy_det_action"] = (
+                det_action.squeeze(0).cpu().numpy().astype(np.float32)
+            )
         return action.squeeze(0).cpu().numpy().astype(np.float32), extra
 
     def reset(self, seed: Optional[int] = None) -> None:

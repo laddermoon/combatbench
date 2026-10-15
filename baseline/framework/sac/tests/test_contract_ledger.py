@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 
 from baseline.framework.sac.analysis import (
@@ -81,6 +82,30 @@ def test_ledger_no_fails_on_consistent_dump(tmp_path) -> None:
     assert st["C8.1"] == "pass"
     assert st["C1.1"] == "pass"
     assert st["C3.1"] == "pass"
+
+
+def test_realized_eps_requires_det_action(tmp_path) -> None:
+    """No silent fallback: missing/NaN policy_det_action → unavailable."""
+    batch = _batch(B=16)
+    batch.pop("policy_det_action")
+    dump = _make_dump(tmp_path, batch=batch)
+    ex = rollout_exploration(dump)
+    assert ex["available"] is False
+    assert ex["det_source"] == "unavailable"
+    # The ledger must flag the cut unverifiable — never a vacuous pass.
+    res = verify_dump_contracts(dump)
+    st = _status(res)
+    assert st["C0.2"] == "warn"
+
+
+def test_realized_eps_all_nan_is_unavailable(tmp_path) -> None:
+    batch = _batch(B=16)
+    batch["policy_det_action"] = torch.full_like(
+        batch["policy_det_action"], float("nan"))
+    dump = _make_dump(tmp_path, batch=batch)
+    ex = rollout_exploration(dump)
+    assert ex["available"] is False
+    assert ex["unverifiable_rows"] == 16
 
 
 def test_ledger_flags_injected_provenance_mismatch(tmp_path) -> None:
@@ -214,7 +239,14 @@ def test_semantics_registry_covers_both_experiments() -> None:
 
 def test_cut_functions_return_payloads(tmp_path) -> None:
     dump = _make_dump(tmp_path)
-    assert rollout_exploration(dump)["available"] is True
+    ex = rollout_exploration(dump)
+    assert ex["available"] is True
+    assert ex["det_source"] == "policy_det_action"
+    # Synthetic batch: det=0 → eps equals the sampled action itself.
+    expected = np.linalg.norm(
+        _batch(B=16)["actions"].numpy(), axis=1
+    ).mean()
+    assert ex["eps_l2"]["mean"] == pytest.approx(expected, abs=1e-6)
     assert "checks" in slice_verification(dump)
     tw = candidate_twin_analysis(dump)
     assert "target" in tw or "actor" in tw or "integ_weight_sum" in tw

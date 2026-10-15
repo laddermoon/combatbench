@@ -39,6 +39,7 @@ def _batch(B: int = 8, obs_dim: int = 6, action_dim: int = 3, C: int = 2):
         "actor_weight_next": torch.full((B, C), 1.0 / C),
         "sample_weight": torch.ones(B),
         "policy_action": torch.zeros(B, action_dim),
+        "policy_det_action": torch.zeros(B, action_dim),
         "sample_ids": torch.arange(B, dtype=torch.int64),
         "source_keys": [f"src:{i}" for i in range(B)],
     }
@@ -99,11 +100,34 @@ def test_s01_export_blueprint_builds_runtime_policy(tmp_path) -> None:
     action, extra = runtime.act(obs, want_extra=True)
     assert action.shape == (3,)
     assert action.dtype == np.float32
-    assert extra == {"log_prob": None}
+    assert extra["log_prob"] is None
     expected = actor.deterministic_action(
         torch.as_tensor(obs).unsqueeze(0)
     ).detach().squeeze(0).numpy()
     np.testing.assert_allclose(action, expected, atol=1e-6)
+    # The deterministic twin is exposed for realized-eps diagnostics —
+    # in deterministic mode it coincides with the executed action.
+    np.testing.assert_allclose(
+        extra["policy_det_action"], expected, atol=1e-6
+    )
+
+
+def test_s01_stochastic_act_exposes_det_twin(tmp_path) -> None:
+    """policy_det_action is the deterministic twin, not the sample."""
+    actor = S01Actor(6, 3, hidden_dim=16, seed=3, init_log_std=0.0)
+    bp = actor.to_blueprint(str(tmp_path / "policy"), stochastic=True)
+    runtime = bp.build()
+    obs = np.linspace(-0.2, 0.2, 6, dtype=np.float32)
+    action, extra = runtime.act(obs, want_extra=True)
+    expected = actor.deterministic_action(
+        torch.as_tensor(obs).unsqueeze(0)
+    ).detach().squeeze(0).numpy()
+    np.testing.assert_allclose(
+        extra["policy_det_action"], expected, atol=1e-6
+    )
+    # With std=exp(0)=1 the sampled action differs from its det twin —
+    # eps = action - policy_det_action is genuinely measurable.
+    assert not np.allclose(action, expected, atol=1e-3)
 
 
 def test_multihead_q_critic_uses_independent_groups_and_target_sync() -> None:

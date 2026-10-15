@@ -198,12 +198,23 @@ class S01RuntimePolicy:
             np.asarray(observation, dtype=np.float32), dtype=torch.float32,
         ).unsqueeze(0)
         with torch.no_grad():
+            det_action = (
+                self._actor.deterministic_action(obs)
+                if want_extra else None
+            )
             if self.stochastic:
                 action, log_prob = self._actor.sample_action(obs)
                 extra = {"log_prob": float(log_prob.item())} if want_extra else None
             else:
-                action = self._actor.deterministic_action(obs)
+                action = self._actor.deterministic_action(obs) \
+                    if det_action is None else det_action
                 extra = {"log_prob": None} if want_extra else None
+        if extra is not None and det_action is not None:
+            # Deterministic twin of the executed action — realized
+            # exploration noise eps = action - policy_det_action.
+            extra["policy_det_action"] = (
+                det_action.squeeze(0).cpu().numpy().astype(np.float32)
+            )
         return action.squeeze(0).cpu().numpy().astype(np.float32), extra
 
     def reset(self, seed: Optional[int] = None) -> None:

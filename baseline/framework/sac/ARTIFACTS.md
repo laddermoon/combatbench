@@ -35,6 +35,7 @@ Update this table whenever a schema is added or bumped.
 > dir, so `episode_recon.reconstruct_episode` can rebuild the exact
 > sampling policy long after `policy_exports/` is pruned.
 | Transition slice | in-memory (collection → replay) | `sac_transition_v2` (`slice.schema_version`) | `experiment.build_slices` | `transition.validate_transition_slice` (called by `replay.add_slices`) | `ValueError` naming the unsupported schema |
+| `policy_det_action` field | slice → replay array → batch key | optional; `NaN` = not captured (legacy slices / behavior policies without a deterministic mode). **Never** falls back to the sampled action — realized ε (`actions − policy_det_action`) is reported unavailable rather than as a fake ε≡0. `policy_action` retains its legacy meaning (the sampled action) and is not the det twin |
 | Policy export blueprint | `runs/<run>/policy/`, `policy_exports/` | `PolicyBlueprint` YAML + TN payload `tn_kernel_v1` (`kernel_version`) | `actor.to_blueprint` | `PolicyBlueprint.load` → `TNActor.from_blueprint` | kernel_version mismatch → error naming the kernel |
 | Run config snapshot | `runs/<run>/config.json` | `sac_run_config_v1` (`config_schema`); pre-marker configs are implicitly unversioned | `loop.save_run_config_sac` | fingerprint compare on resume | fingerprint mismatch → `SACCheckpointError`; `config_schema` itself is excluded from the fingerprint via `RESUME_ALLOWED_OVERRIDES` so pre-marker checkpoints stay resumable |
 

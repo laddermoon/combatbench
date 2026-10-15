@@ -87,6 +87,12 @@ class SACReplayBuffer:
         self.policy_action = np.zeros(
             (self.capacity, self.action_dim), dtype=np.float32
         )
+        # NaN marks "not captured" (legacy slices or behavior policies
+        # without a deterministic mode) — consumers must mask on
+        # isfinite rather than silently treating rows as eps=0.
+        self.policy_det_action = np.full(
+            (self.capacity, self.action_dim), np.nan, dtype=np.float32
+        )
 
         self.sample_ids = np.full(self.capacity, -1, dtype=np.int64)
         self.draw_counts = np.zeros(self.capacity, dtype=np.int64)
@@ -216,6 +222,10 @@ class SACReplayBuffer:
         self.policy_action[p] = (
             sl.actions[t] if sl.policy_action is None else sl.policy_action[t]
         )
+        det = sl.policy_det_action
+        self.policy_det_action[p] = (
+            np.nan if det is None else det[t]
+        )
 
         for name, arr in self.task_facts.items():
             arr[p] = float(sl.task_facts[name][t])
@@ -292,6 +302,9 @@ class SACReplayBuffer:
                 ),
                 "sample_weight": torch.as_tensor(self.sample_weight[slots], device=device),
                 "policy_action": torch.as_tensor(self.policy_action[slots], device=device),
+                "policy_det_action": torch.as_tensor(
+                    self.policy_det_action[slots], device=device,
+                ),
                 "sample_ids": torch.as_tensor(sample_ids, device=device),
                 # CPU copy so per-tick bookkeeping (tick ring) does not pay
                 # a DtoH sync every update.
@@ -463,6 +476,7 @@ class SACReplayBuffer:
             "actor_weight_next": self.actor_weight_next,
             "sample_weight": self.sample_weight,
             "policy_action": self.policy_action,
+            "policy_det_action": self.policy_det_action,
             "sample_ids": self.sample_ids,
             "draw_counts": self.draw_counts,
             "source_keys": self.source_keys,
@@ -502,6 +516,11 @@ class SACReplayBuffer:
                 "sample_ids", "frame_indices",
             ):
                 getattr(self, name)[:] = np.asarray(state[name])
+            if "policy_det_action" in state:
+                self.policy_det_action[:] = np.asarray(
+                    state["policy_det_action"])
+            else:
+                self.policy_det_action[:] = np.nan
             if "draw_counts" in state:
                 self.draw_counts[:] = np.asarray(state["draw_counts"])
             else:

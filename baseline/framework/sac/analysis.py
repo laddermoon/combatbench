@@ -1711,31 +1711,53 @@ def _t(batch: Mapping[str, Any], name: str) -> Optional[torch.Tensor]:
 
 
 def rollout_exploration(dump_dir: Path) -> Dict[str, Any]:
-    """Realized exploration per batch row: eps = a_env - a_det(policy_action).
+    """Realized exploration per batch row: eps = a_env - a_det.
 
-    SAC dumps carry ``policy_action`` per row (the deterministic action the
-    collected policy would have taken), so realized ε is a pure tensor
-    subtraction — no replay needed.  ``policy_action`` absent → degraded.
+    The honest source is ``policy_det_action`` (the deterministic action
+    the *same* behavior policy would take at the stored obs).  Legacy
+    dumps only have ``policy_action`` — which, due to a capture-side
+    bug fixed post-WP1, recorded the SAMPLED action, making eps ≡ 0.
+    Rows lacking a finite ``policy_det_action`` are reported as
+    unverifiable rather than silently producing eps=0.
     """
     ctx = _DumpCtx(dump_dir)
     b = ctx.batch
     ids = ctx.sample_ids()
     a_env = _t(b, "actions")
-    a_det = _t(b, "policy_action")
+    a_det = _t(b, "policy_det_action")
     out: Dict[str, Any] = {
         "dump_dir": str(ctx.dir),
         "critic_tick": ctx.manifest.get("critic_tick"),
         "available": False,
     }
-    if a_env is None or a_det is None:
-        out["reason"] = "actions or policy_action absent from batch"
+    if a_env is None:
+        out["reason"] = "actions absent from batch"
         return out
     a_env = a_env.float().numpy()
+    B = a_env.shape[0]
+    if a_det is None:
+        out["det_source"] = "unavailable"
+        out["reason"] = (
+            "policy_det_action absent from batch — realized eps is "
+            "unverifiable (legacy capture stored the sampled action in "
+            "policy_action, which would report eps≡0 dishonestly)"
+        )
+        return out
     a_det_np = a_det.float().numpy()
-    eps = a_env - a_det_np
+    valid = np.isfinite(a_det_np).all(axis=1)
+    out["det_source"] = "policy_det_action"
+    out["unverifiable_rows"] = int((~valid).sum())
+    out["unverifiable_sample_ids"] = [
+        int(ids[i]) for i in np.nonzero(~valid)[0][:20]
+    ]
+    if not valid.any():
+        out["reason"] = "no row carries a finite policy_det_action"
+        return out
+    eps = a_env[valid] - a_det_np[valid]
     eps_l2 = np.linalg.norm(eps, axis=1)
     out["available"] = True
-    out["batch_size"] = int(a_env.shape[0])
+    out["batch_size"] = int(B)
+    out["n_verified"] = int(valid.sum())
     out["eps_l2"] = {
         "mean": float(eps_l2.mean()),
         "q50": float(np.quantile(eps_l2, 0.5)),
@@ -1744,16 +1766,21 @@ def rollout_exploration(dump_dir: Path) -> Dict[str, Any]:
     }
     out["eps_dim_std"] = [float(x) for x in eps.std(axis=0)]
     out["sat_frac"] = float(
-        (np.abs(a_env) > CONTRACT_THRESHOLDS["action_bound"] - 1e-6)
+        (np.abs(a_env[valid]) > CONTRACT_THRESHOLDS["action_bound"] - 1e-6)
         .astype(float).mean()
     )
-    # Group by recorded behavior knobs (mode + explore_factor).
+    # Group by recorded behavior knobs (mode + explore_factor); eps_l2 is
+    # indexed over the *valid* subset, so map batch rows → valid index.
+    vpos = np.full(B, -1, dtype=np.int64)
+    vpos[np.nonzero(valid)[0]] = np.arange(int(valid.sum()))
     groups: Dict[str, List[int]] = {}
     metas = ctx.metadata()
     for i, meta in enumerate(metas):
+        if vpos[i] < 0:
+            continue
         beh = meta.get("behavior") or {}
         key = f"{beh.get('mode', '?')}/ef={beh.get('explore_factor', '?')}"
-        groups.setdefault(key, []).append(i)
+        groups.setdefault(key, []).append(int(vpos[i]))
     out["by_behavior"] = {
         k: {
             "rows": len(v),
@@ -1763,18 +1790,20 @@ def rollout_exploration(dump_dir: Path) -> Dict[str, Any]:
         for k, v in sorted(groups.items())
     }
     random_rows = [
-        i for i, m in enumerate(metas)
-        if (m.get("behavior") or {}).get("parameters", {}).get(
-            "random_start"
-        ) or (m.get("behavior") or {}).get("mode") == "random"
+        int(vpos[i]) for i, m in enumerate(metas)
+        if vpos[i] >= 0 and (
+            (m.get("behavior") or {}).get("parameters", {}).get(
+                "random_start"
+            ) or (m.get("behavior") or {}).get("mode") == "random")
     ]
     out["random_start_rows"] = len(random_rows)
     if random_rows:
         out["random_start_eps_l2_mean"] = float(eps_l2[random_rows].mean())
-    # strongest-exploration samples
+    # strongest-exploration samples (batch-row ids, not valid indices)
+    vrows = np.nonzero(valid)[0]
     order = np.argsort(-eps_l2)[:20]
     out["top_eps_samples"] = [
-        {"sample_id": int(ids[i]), "eps_l2": float(eps_l2[i])}
+        {"sample_id": int(ids[vrows[i]]), "eps_l2": float(eps_l2[i])}
         for i in order
     ]
     return out
@@ -1801,22 +1830,43 @@ def _checks_rollout(ctx: _DumpCtx) -> List[Dict[str, Any]]:
         violating=[int(ids[i]) for i in np.nonzero(over.numpy())[0][:20]],
         detail=f"max |a_env| = {a_env.abs().max().item():.6f} vs bound {bound}",
     ))
+    a_det = _t(ctx.batch, "policy_det_action")
     if a_det is None:
+        # Legacy capture: policy_action holds the SAMPLED action, so
+        # eps ≡ 0 — the realized-exploration question is unverifiable.
         checks.append(_check(
-            "C0.2", "rollout", "realized_eps_present", "skip",
-            detail="policy_action absent from batch",
-        ))
-    else:
-        eps = (a_env.float() - a_det.float()).norm(dim=-1).numpy()
-        checks.append(_check(
-            "C0.2", "rollout", "realized_eps_present", "pass",
+            "C0.2", "rollout", "realized_eps_present", "warn",
             severity="statistical",
-            metric={
-                "eps_l2_mean": float(eps.mean()),
-                "eps_l2_max": float(eps.max()),
-            },
-            detail="per-row eps = actions − policy_action available",
+            detail=(
+                "policy_det_action absent; legacy policy_action stores "
+                "the sampled action → eps would be identically 0 "
+                "(unverifiable, not evidence of zero exploration)"
+            ),
         ))
+        return checks
+    det = a_det.float().numpy()
+    valid = np.isfinite(det).all(axis=1)
+    n_valid = int(valid.sum())
+    if n_valid == 0:
+        checks.append(_check(
+            "C0.2", "rollout", "realized_eps_present", "warn",
+            severity="statistical",
+            detail="policy_det_action present but all-NaN (unverifiable)",
+        ))
+        return checks
+    eps = (a_env.float().numpy()[valid] - det[valid])
+    eps_l2 = np.linalg.norm(eps, axis=1)
+    checks.append(_check(
+        "C0.2", "rollout", "realized_eps_present", "pass",
+        severity="statistical",
+        metric={
+            "verified_rows": n_valid,
+            "unverifiable_rows": int((~valid).sum()),
+            "eps_l2_mean": float(eps_l2.mean()),
+            "eps_l2_max": float(eps_l2.max()),
+        },
+        detail="per-row eps = actions − policy_det_action",
+    ))
     return checks
 
 

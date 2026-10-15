@@ -26,7 +26,7 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | replay 人口学 | `DK replay <run_dir>` |
 | 精确复算 | `DK recompute <dump>`（全正则模式，应 `max_abs_diff≈0`） |
 | **契约账本** | `DK contracts <dump> [--check C4.1|target]`——每条断言 PASS/WARN/FAIL/SKIP；FAIL=实现错误证据，WARN=统计异常（unverifiable semantics 也是 WARN，绝不静默 PASS） |
-| 切口⓪ 实现探索 | `DK explore <dump>`——逐样本 ε = a_env − policy_action，按 behavior 分组 |
+| 切口⓪ 实现探索 | `DK explore <dump>`——逐样本 ε = a_env − `policy_det_action`（同一行为策略在存储 obs 上的确定性动作），按 behavior 分组；旧 dump 无此字段 → 显式 `available:false`（绝不回退用采样动作冒充，那会恒报 ε≡0） |
 | 切口① slice 契约 | `DK slice-verify <dump>`——从 task_facts 复算 reward/门控权重 + provenance 一致性 |
 | 切口② batch 人口学 | `DK demography <dump>`——batch vs replay 的 round/指纹/抽样覆盖分布 |
 | 切口③ twin/候选 | `DK twins <dump>`——integ_w 归一、Q1/Q2 pair 份额、joint-vs-indep min 差 |
