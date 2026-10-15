@@ -85,6 +85,60 @@ MINIMAL_SET = {
     "141_06": ["jump", "jump_twist"],
     "111_06": ["stand_up", "recovery"],
     "113_08": ["stand_up", "recovery"],
+    # ---- M6 定向扩充：feint/防守步法/闪避/起身变体/滚翻/跳踢/摔 ----
+    # 防守步法 feint/defensive (subject 78 basketball-defense 式步法 + 102 篮球防守)
+    "78_20": ["feint", "footwork"], "78_21": ["feint", "footwork"],
+    "78_24": ["defense", "footwork", "retreat"],
+    "78_25": ["defense", "footwork", "retreat"],
+    "78_26": ["defense", "footwork"], "78_27": ["defense", "footwork"],
+    "78_28": ["defense", "footwork", "evade"],
+    "78_29": ["defense", "footwork", "evade"],
+    "78_30": ["defense", "footwork", "evade"],
+    "102_18": ["feint", "footwork"], "102_19": ["feint", "footwork"],
+    "102_22": ["defense", "footwork"], "102_23": ["defense", "footwork"],
+    "102_24": ["defense", "footwork"], "102_25": ["defense", "footwork"],
+    "102_26": ["defense", "footwork", "evade"],
+    "102_27": ["defense", "footwork", "evade"],
+    "102_28": ["defense", "footwork", "evade"],
+    # 闪避/下潜/小心步法 (76 补齐 + 77 duck)
+    "76_05": ["swat", "defense", "strike"], "76_06": ["dodge", "footwork"],
+    "76_07": ["defense"], "76_08": ["footwork", "step_over"],
+    "76_10": ["footwork", "turn"], "77_09": ["dodge", "duck"],
+    # 144 剩余 block/lunge/spin/踢
+    "144_08": ["block"], "144_10": ["kick", "front_kick"],
+    "144_11": ["lunge"], "144_12": ["lunge"], "144_18": ["lunge"],
+    "144_15": ["punch", "spin", "combo"], "144_16": ["punch", "spin", "combo"],
+    "144_27": ["block"], "144_28": ["punch", "spin", "combo"],
+    "144_29": ["punch", "spin", "combo"],
+    # 通用打击/踢 (143/74) + kata (135 Empi)
+    "143_23": ["punch", "combo"], "143_24": ["kick", "combo"],
+    "74_03": ["kick"], "74_04": ["kick"], "74_05": ["kick"], "74_06": ["kick"],
+    "135_02": ["kata", "combo"], "135_03": ["kata", "combo"],
+    # 起身变体 (140 趴/侧/仰 + 139/111/113)
+    "140_01": ["stand_up", "recovery", "face_down"],
+    "140_02": ["stand_up", "recovery", "face_down"],
+    "140_03": ["stand_up", "recovery"],
+    "140_04": ["stand_up", "recovery"],
+    "140_08": ["stand_up", "recovery"],
+    "140_09": ["stand_up", "recovery"],
+    "139_16": ["stand_up", "recovery"], "139_17": ["stand_up", "recovery"],
+    "139_18": ["stand_up", "recovery"],
+    "111_07": ["stand_up", "recovery"], "111_08": ["stand_up", "recovery"],
+    "113_15": ["stand_up", "recovery"],
+    # 滚翻/跑 (127/128/141)
+    "127_23": ["roll", "dive", "run", "combo"],
+    "127_24": ["roll", "dive", "run", "combo"],
+    "128_09": ["roll", "run", "combo"], "128_10": ["roll", "dive", "run", "combo"],
+    "128_11": ["roll", "dive", "run", "combo"],
+    "141_01": ["run"], "141_34": ["run"],
+    # 跳踢/摔 (88/90, acrobatic 高动态——残差预期偏高)
+    "88_06": ["jump_kick", "spin", "acrobatic"],
+    "90_05": ["jump_kick", "acrobatic"], "90_06": ["jump_kick", "acrobatic"],
+    "90_07": ["jump_kick", "acrobatic"],
+    "90_16": ["fall", "acrobatic"], "90_18": ["fall"],
+    # 剑/太极
+    "02_08": ["strike", "swordplay"], "02_09": ["strike", "swordplay"],
+    "12_04": ["tai_chi", "stylized"],
 }
 
 ROBOT_KEYPOINTS = ["pelvis", "torso", "head",
