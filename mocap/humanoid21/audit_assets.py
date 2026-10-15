@@ -21,10 +21,10 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.amc_parser import parse_amc
-from baseline.humanoid21.mocap.asf_parser import parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
+from mocap.humanoid21.parsers.asf_parser import parse_asf
 
-DATA_DIR = PROJECT_ROOT / "baseline/humanoid21/mocap/data"
+DATA_DIR = Path("/data1/dev/combatbench_mocap")
 RAW = DATA_DIR / "raw"
 RET = DATA_DIR / "retargeted"
 # supplementary downloads (walk/punch clips to fill the minimal action set);

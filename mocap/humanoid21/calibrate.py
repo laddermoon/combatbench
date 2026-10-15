@@ -33,7 +33,7 @@ from scipy.spatial.transform import Rotation
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import parse_asf
+from mocap.humanoid21.parsers.asf_parser import parse_asf
 from mocap.humanoid21.ref_fk import RefSkeleton, fk_frame
 
 # (x,y,z)_cmu -> (z,x,y)_mj : up->up, forward(+z_cmu)->forward(+x_mj)
@@ -42,7 +42,7 @@ C_CMU2MJ = np.array([[0.0, 0.0, 1.0],
                      [0.0, 1.0, 0.0]])
 
 ROBOT_XML = PROJECT_ROOT / "envs/humanoid21/battle_circular_v2.xml"
-DEFAULT_ASF = PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw/13.asf"
+DEFAULT_ASF = Path("/data1/dev/combatbench_mocap/raw/13.asf")
 OUT = Path(__file__).parent / "calibration.json"
 
 

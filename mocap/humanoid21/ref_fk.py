@@ -52,8 +52,8 @@ from scipy.spatial.transform import Rotation
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import Skeleton, parse_asf
-from baseline.humanoid21.mocap.amc_parser import parse_amc
+from mocap.humanoid21.parsers.asf_parser import Skeleton, parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
 
 
 def _Rz_Ry_Rx(rx: float, ry: float, rz: float) -> np.ndarray:

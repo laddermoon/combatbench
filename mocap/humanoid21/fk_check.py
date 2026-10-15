@@ -9,8 +9,8 @@ Checks:
 
 Usage:
     PYTHONPATH=. python3 -m mocap.humanoid21.fk_check \
-        --asf baseline/humanoid21/mocap/data/raw/13.asf \
-        --amc baseline/humanoid21/mocap/data/raw/13_17.amc [--frame 0]
+        --asf /data1/dev/combatbench_mocap/raw/13.asf \
+        --amc /data1/dev/combatbench_mocap/raw/13_17.amc [--frame 0]
 """
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ from scipy.spatial.transform import Rotation
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import parse_asf
-from baseline.humanoid21.mocap.amc_parser import parse_amc
-from baseline.humanoid21.mocap.fk import compute_fk
+from mocap.humanoid21.parsers.asf_parser import parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
+from mocap.humanoid21.parsers.legacy_fk import compute_fk
 
 from mocap.humanoid21.ref_fk import RefSkeleton, _Rz_Ry_Rx, fk_frame
 from mocap.humanoid21.retarget import _abdomen_angles

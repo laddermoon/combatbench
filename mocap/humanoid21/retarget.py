@@ -38,8 +38,8 @@ from scipy.spatial.transform import Rotation
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import parse_asf
-from baseline.humanoid21.mocap.amc_parser import parse_amc
+from mocap.humanoid21.parsers.asf_parser import parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
 from mocap.humanoid21.calibrate import cmu_pos_to_mj, cmu_rot_to_mj
 from mocap.humanoid21.ref_fk import RefSkeleton, fk_frame
 from mocap.humanoid21.robot_kin import (
@@ -72,6 +72,35 @@ DQ_MAX = 0.35        # rad/frame slew limit at 120 Hz (~2400 deg/s): above any
 def _unit(v):
     n = np.linalg.norm(v)
     return v / n if n > 1e-12 else v
+
+
+# 矢状面镜像（CMU 系：x 为横向轴，M=diag(-1,1,1)）。
+# 姿态镜像 = 位置横向取反 + l/r 骨骼语义对调；旋转帧做共轭 MRM
+# （M 为 improper(det=-1)，MRM 仍是 proper 旋转）。配对骨骼名通过
+# 'l'+rest / 'r'+rest 同时在字典中出现来判定——lowerback 等中线
+# 骨不会被误换。
+_M_CMU = np.diag([-1.0, 1.0, 1.0])
+
+
+def _mirror_pairs(names):
+    pairs = {}
+    for n in names:
+        if n[0] == 'l' and ('r' + n[1:]) in names:
+            pairs[n] = 'r' + n[1:]
+        elif n[0] == 'r' and ('l' + n[1:]) in names:
+            pairs[n] = 'l' + n[1:]
+    return pairs
+
+
+def mirror_frame(joint_cmu, distal_cmu, F_cmu):
+    """把 fk_frame 输出变换成矢状面镜像版本（供 retarget_frame 复用）。"""
+    all_names = set(joint_cmu) | set(distal_cmu) | set(F_cmu)
+    pairs = _mirror_pairs(all_names)
+    j = {pairs.get(k, k): _M_CMU @ np.asarray(v) for k, v in joint_cmu.items()}
+    d = {pairs.get(k, k): _M_CMU @ np.asarray(v) for k, v in distal_cmu.items()}
+    F = {pairs.get(k, k): _M_CMU @ np.asarray(v) @ _M_CMU
+         for k, v in F_cmu.items()}
+    return j, d, F
 
 
 def _abdomen_angles(R_torso: np.ndarray, R_pelvis: np.ndarray) -> np.ndarray:
@@ -270,7 +299,8 @@ class Retargeter:
                            residuals=res)
 
 
-def retarget_clip(asf_path: str, amc_path: str) -> dict:
+def retarget_clip(asf_path: str, amc_path: str,
+                  mirror: bool = False) -> dict:
     skel = RefSkeleton.from_asf(parse_asf(asf_path))
     frames = parse_amc(amc_path)
     rt = Retargeter()
@@ -284,6 +314,8 @@ def retarget_clip(asf_path: str, amc_path: str) -> dict:
     resid = {k: np.zeros(T) for k in res_keys}
     for t, fr in enumerate(frames):
         j, d, F = fk_frame(skel, fr)
+        if mirror:
+            j, d, F = mirror_frame(j, d, F)
         r = rt.retarget_frame(j, d, F)
         rpos[t] = r.root_pos
         rquat[t] = r.root_quat_wxyz
@@ -309,6 +341,8 @@ def retarget_clip(asf_path: str, amc_path: str) -> dict:
         bwd.prev_q = dict(zip(CONTROLLED_JOINTS, qang[t_end]))
         for t in range(t_end - 1, -1, -1):
             j, d, F = fk_frame(skel, frames[t])
+            if mirror:
+                j, d, F = mirror_frame(j, d, F)
             r = bwd.retarget_frame(j, d, F)
             rpos[t] = r.root_pos          # root_pos depends on q
             for i, n in enumerate(CONTROLLED_JOINTS):

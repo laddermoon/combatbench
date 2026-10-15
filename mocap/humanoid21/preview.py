@@ -28,12 +28,11 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import parse_asf
-from baseline.humanoid21.mocap.amc_parser import parse_amc
+from mocap.humanoid21.parsers.asf_parser import parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
 from mocap.humanoid21.ref_fk import RefSkeleton, fk_batch
 
 RAW_DIRS = [
-    PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw",
     Path("/data1/dev/combatbench_mocap/raw"),
 ]
 FPS_SRC = 120.0

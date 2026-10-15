@@ -30,8 +30,8 @@ from scipy.spatial.transform import Rotation
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from baseline.humanoid21.mocap.asf_parser import parse_asf
-from baseline.humanoid21.mocap.amc_parser import parse_amc
+from mocap.humanoid21.parsers.asf_parser import parse_asf
+from mocap.humanoid21.parsers.amc_parser import parse_amc
 from mocap.humanoid21.calibrate import cmu_pos_to_mj, cmu_rot_to_mj
 from mocap.humanoid21.ref_fk import RefSkeleton, fk_frame
 from mocap.humanoid21.retarget import retarget_clip
@@ -40,7 +40,7 @@ from mocap.humanoid21.robot_kin import (
 )
 
 LIBRARY = Path("/data1/dev/combatbench_mocap")
-RAW_REPO = PROJECT_ROOT / "baseline/humanoid21/mocap/data/raw"
+RAW_REPO = Path("/data1/dev/combatbench_mocap/raw")  # repo 侧原目录已被清理
 RAW_DEV = LIBRARY / "raw"
 SRC_FPS = 120.0
 SCALE = json.loads(
@@ -56,6 +56,35 @@ MINIMAL_SET = {
     "13_01": ["stand_up", "recovery"], "13_02": ["stand_up", "recovery"],
     "13_03": ["stand_up", "recovery"],
     "17_01": ["walk", "stylized"], "17_03": ["walk", "stylized"],
+    # ---- M5 扩充：战斗相关动作类别 ----
+    # 防守/闪避/后撤 (subject 76, defense vignettes)
+    "76_01": ["retreat", "punch"], "76_02": ["retreat", "feint", "punch"],
+    "76_03": ["evade", "dodge"], "76_04": ["guard", "defense"],
+    "76_09": ["walk", "retreat"], "76_11": ["retreat", "quick_steps"],
+    # 空手 kata/招式 (subject 135)
+    "135_01": ["kata", "combo"], "135_04": ["kick", "front_kick"],
+    "135_05": ["block", "low_block"], "135_06": ["kata", "combo"],
+    "135_07": ["kick", "roundhouse"], "135_09": ["punch", "lunge_punch"],
+    "135_10": ["block", "knife_hand"], "135_11": ["kick", "side_kick"],
+    # 踢拳组合 (subject 86/144/111/113/141/135/10)
+    "86_01": ["kick", "punch", "combo"], "86_06": ["kick", "punch", "combo"],
+    "144_05": ["kick", "front_kick"], "144_06": ["kick", "front_kick"],
+    "144_09": ["kick", "front_kick"],
+    "144_07": ["block"], "144_26": ["block"],
+    "144_13": ["punch", "combo"], "144_14": ["punch", "combo"],
+    "144_20": ["punch", "combo"], "144_21": ["punch", "combo"],
+    "144_17": ["lunge"],
+    "111_19": ["kick", "punch"], "113_13": ["kick", "punch"],
+    "141_14": ["kick", "punch"],
+    "10_01": ["kick", "soccer"], "10_02": ["kick", "soccer"],
+    "10_03": ["kick", "soccer"],
+    # 打击/跳跃/地面起身
+    "02_05": ["punch", "strike"], "02_07": ["strike", "swordplay"],
+    "13_11": ["jump", "jump_forward"], "13_19": ["jump", "jump_forward"],
+    "141_04": ["jump"], "141_05": ["jump", "jump_sideways"],
+    "141_06": ["jump", "jump_twist"],
+    "111_06": ["stand_up", "recovery"],
+    "113_08": ["stand_up", "recovery"],
 }
 
 ROBOT_KEYPOINTS = ["pelvis", "torso", "head",
@@ -166,9 +195,10 @@ def source_export(skel, frames):
     )
 
 
-def robot_export(skel, frames, asf_path: Path, amc_path: Path):
+def robot_export(skel, frames, asf_path: Path, amc_path: Path,
+                 mirror: bool = False):
     """joint_space=humanoid21_v2 npz dict + retarget diagnostics."""
-    out = retarget_clip(str(asf_path), str(amc_path))
+    out = retarget_clip(str(asf_path), str(amc_path), mirror=mirror)
     qang = out["joint_angles"]
     rpos = out["root_pos"]
     rquat = out["root_quat"]
@@ -290,8 +320,12 @@ def _phase_candidates(npz, labels):
     return out
 
 
-def process_clip(tag: str):
-    """Worker: source npz + retargeted npz + index entry."""
+def process_clip(tag: str, mirror: bool = False):
+    """Worker: source npz + retargeted npz + index entry.
+
+    mirror=True 只导出矢状面镜像的机器人片段（cmu_XX_YY_m），
+    不重复写 _src npz（源数据不变，镜像发生在重定向目标层）。
+    """
     subj, trial = tag.split("_")
     labels = MINIMAL_SET[tag]
     asf_path, amc_path = _find(subj, trial)
@@ -299,16 +333,18 @@ def process_clip(tag: str):
     frames = parse_amc(str(amc_path))
     t0 = time.time()
 
-    src_npz = source_export(skel, frames)
-    rob_npz, resid_stats = robot_export(skel, frames, asf_path, amc_path)
+    rob_npz, resid_stats = robot_export(skel, frames, asf_path, amc_path,
+                                        mirror=mirror)
     checks, issues = kinematic_issues(rob_npz, resid_stats)
     phases = _phase_candidates(rob_npz, labels)
 
     clips_dir = LIBRARY / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
-    clip_id = f"cmu_{subj}_{trial}"
-    src_id = clip_id + "_src"
-    np.savez_compressed(clips_dir / f"{src_id}.npz", **src_npz)
+    clip_id = f"cmu_{subj}_{trial}" + ("_m" if mirror else "")
+    src_id = f"cmu_{subj}_{trial}_src"
+    if not mirror:
+        src_npz = source_export(skel, frames)
+        np.savez_compressed(clips_dir / f"{src_id}.npz", **src_npz)
     np.savez_compressed(clips_dir / f"{clip_id}.npz", **rob_npz)
 
     official = DESCRIPTIONS["subjects"].get(subj, {}).get("trials", {}) \
@@ -317,6 +353,46 @@ def process_clip(tag: str):
     common_time = {"src_fps": SRC_FPS, "fps": SRC_FPS,
                    "frames": T, "duration_s": round(T / SRC_FPS, 2)}
     entries = {}
+    if mirror:
+        # 镜像片段：单一条目，溯源记 derivation
+        entries[clip_id] = {
+            "identity": {"source": "derived", "subject": subj,
+                         "trial": int(trial),
+                         "parent_clip": f"cmu_{subj}_{trial}",
+                         "derivation": "mirror_sagittal_x",
+                         "source_file": str(amc_path),
+                         "source_sha256": _sha256(amc_path),
+                         "npz_sha256": _sha256(clips_dir / f"{clip_id}.npz"),
+                         "version": 1},
+            "time": common_time,
+            "frames_convention": "mujoco_world_z_up",
+            "joint_space": "humanoid21_v2",
+            "classification": {"labels": labels + ["mirrored"],
+                               "phase_segments": phases,
+                               "label_source": "cmu_official+derived",
+                               "official_description": official,
+                               "confidence": "high"},
+            "quality": {"level": "L0",
+                        "kinematic_checks": checks,
+                        "residual_stats": resid_stats,
+                        "physics": None,
+                        "contact_method": "foot body z<0.06m & speed<0.35m/s",
+                        "velocity_method": "np.gradient central diff @120Hz",
+                        "issues": issues,
+                        "rejected": False, "reject_reason": None},
+            "adaptation": {"model": "envs/humanoid21/battle_circular_v2.xml",
+                           "model_sha256": _sha256(
+                               PROJECT_ROOT / "envs/humanoid21/battle_circular_v2.xml"),
+                           "retarget_method": "per-frame LM IK on "
+                               "sagittal-mirrored source pose (x_cmu->-x, "
+                               "l/r swapped)",
+                           "retarget_params": {"scale_m_per_unit": SCALE,
+                                               "warm_start": True,
+                                               "mirror": True,
+                                               "dq_max_rad_frame": 0.35}},
+        }
+        return clip_id, entries, round(time.time() - t0, 1)
+
     entries[src_id] = {
         "identity": {"source": "cmu", "subject": subj, "trial": int(trial),
                      "parent_clip": None,
@@ -382,14 +458,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--only", nargs="*", default=None)
+    ap.add_argument("--mirror", action="store_true",
+                    help="导出矢状面镜像变体 (cmu_XX_YY_m)")
     args = ap.parse_args()
     tags = args.only or list(MINIMAL_SET)
     t0 = time.time()
     if args.jobs > 1:
         with Pool(args.jobs) as pool:
-            results = pool.map(process_clip, tags)
+            results = pool.starmap(
+                process_clip, [(t, args.mirror) for t in tags])
     else:
-        results = [process_clip(t) for t in tags]
+        results = [process_clip(t, args.mirror) for t in tags]
 
     index_path = LIBRARY / "index.json"
     index = json.loads(index_path.read_text()) if index_path.exists() else \
