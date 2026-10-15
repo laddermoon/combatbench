@@ -10,7 +10,8 @@ def test_follow_pure_registered_and_channels():
     exp = get_ppo_experiment("follow_pure")
     assert exp.obs_dim == 96
     assert [c.name for c in exp.reward_channels()] == [
-        "r_potential", "r_fall", "r_radial", "r_tangential", "r_face",
+        "r_potential", "r_fall", "r_cross",
+        "r_radial", "r_tangential", "r_face",
     ]
 
 

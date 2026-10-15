@@ -17,12 +17,16 @@ If stepping emerges, it arrives as a *means* of balance recovery,
 driven purely by the task; the step/balance_step machinery stays as
 the alternate historical route.
 
-Channels (2):
+Channels (3):
     r_potential = 0.01 × φ(t),        aw = 3.0 (fixed)
     r_fall      = −0.2 × fall_onset
                   − wall_penalty × sustained-lean(standing)
                   + push_clean_bonus × clean PUSHING/OBSERVE frame,
                                       aw = 2.0 (fixed)
+    r_cross     = CrossSupportBalanceRewarder alternation timing
+                  (guidance per user direction — penalty-only
+                  alternation constraint, not gait shaping),
+                                      aw = 1.0 × φ² (standing-only)
 
 Foot-state observations are still collected (eval only) so cycles /
 swings / alt report whether stepping emerged — they feed nothing.
@@ -42,7 +46,10 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, RewardChannel, Trajectory
-from baseline.framework.rollout import extract_per_step_field
+from baseline.framework.rollout import (
+    extract_per_step_field,
+    extract_per_step_scalar,
+)
 from baseline.humanoid21.end2end.stepping_state_machine import (
     count_falls,
     detect_step_cycles,
@@ -63,8 +70,10 @@ class BalancePure(CombatExperimentPPOBase):
     action_dim: int = 21
 
     # --- Reward channels ---
-    _channel_names = ("r_potential", "r_fall")
-    _channel_gammas = {"r_potential": 0.99, "r_fall": 0.99}
+    _channel_names = ("r_potential", "r_fall", "r_cross")
+    _channel_gammas = {
+        "r_potential": 0.99, "r_fall": 0.99, "r_cross": 0.99,
+    }
     _gae_lambda: float = 0.95
 
     # --- Reward constants ---
@@ -72,6 +81,12 @@ class BalancePure(CombatExperimentPPOBase):
     fall_penalty: float = 0.2
     r_potential_actor_weight: float = 3.0
     r_fall_actor_weight: float = 2.0
+    # Cross-support alternation guidance (CrossSupportBalanceRewarder):
+    # aw = coef × φ² — inactive while low, full pressure once standing.
+    r_cross_actor_weight: float = 1.0
+    _CROSS_OBS = {
+        "robot_a": "cross_support_a", "robot_b": "cross_support_b",
+    }
 
     # --- Wall-lean penalty (folded into r_fall, upright frames only) ---
     wall_penalty: float = 0.03
@@ -253,6 +268,16 @@ class BalancePure(CombatExperimentPPOBase):
                     * np.asarray(clean[:T], dtype=bool).astype(np.float32)
                 )
 
+        # --- r_cross: alternation-timing guidance, φ²-gated aw ---
+        cross_key = self._CROSS_OBS.get(agent_id)
+        r_cross = extract_per_step_scalar(
+            episode.observer_outputs, cross_key, T_full,
+        ) if cross_key is not None else None
+        if r_cross is None:
+            r_cross = np.zeros(T, dtype=np.float32)
+        else:
+            r_cross = np.asarray(r_cross[:T], dtype=np.float32)
+
         channels = {
             "r_potential": ChannelData(
                 reward=r_potential,
@@ -265,6 +290,13 @@ class BalancePure(CombatExperimentPPOBase):
                 is_terminated=False,
                 actor_weight=np.full(
                     T, self.r_fall_actor_weight, dtype=np.float32),
+            ),
+            "r_cross": ChannelData(
+                reward=r_cross,
+                is_terminated=False,
+                actor_weight=(
+                    self.r_cross_actor_weight * phi_arr ** 2
+                ).astype(np.float32),
             ),
         }
         return [Trajectory(

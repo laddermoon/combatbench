@@ -13,9 +13,10 @@ Target motion satisfies the new-route stage-3 requirements:
     13-level speed curriculum (promote at eval hold_ratio ≥ 0.5 ×2)
   * min_avoid_distance        → never moves toward the learner
 
-Channels (5):
+Channels (6):
     r_potential = 0.01 × φ(t),              aw = 3.0
     r_fall      = fall-onset + wall-lean,   aw = 2.0
+    r_cross     — alternation guidance,     aw = 1.0 × φ²
     r_radial    — velocity toward opponent, aw = 3.0 × out_zone × φ²
     r_tangential— lateral drift penalty,    aw = 1.0 × out_zone × φ²
     r_face      — cos(forward, to_opp)⁺,    aw = 1.0 × dist_gate × φ²

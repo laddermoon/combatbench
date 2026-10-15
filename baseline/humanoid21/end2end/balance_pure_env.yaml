@@ -66,6 +66,16 @@ observer_plugins:
     cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
     config:
       agent_id: "robot_b"
+  # Cross-support alternation rewarder (guidance — aw gated by φ² in
+  # the experiment, so it only pressures the policy once standing).
+  cross_support_a:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_a"
+  cross_support_b:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_b"
   # Diagnostics only — stepping emergence metrics, no reward consumer.
   foot_state_a:
     cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"

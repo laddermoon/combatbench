@@ -10,7 +10,7 @@ def test_balance_pure_registered_and_channels():
     exp = get_ppo_experiment("balance_pure")
     assert exp.obs_dim == 96
     assert [c.name for c in exp.reward_channels()] == [
-        "r_potential", "r_fall",
+        "r_potential", "r_fall", "r_cross",
     ]
 
 
@@ -71,7 +71,9 @@ def test_balance_pure_trajectory_two_channels():
     trajs = exp.build_trajectories([episode])
     assert len(trajs) == 2
     for t in trajs:
-        assert set(t.channels.keys()) == {"r_potential", "r_fall"}
+        assert set(t.channels.keys()) == {
+            "r_potential", "r_fall", "r_cross",
+        }
         ch = t.channels["r_potential"]
         np.testing.assert_allclose(ch.reward, 0.9 * 0.01)
         np.testing.assert_allclose(ch.actor_weight, 3.0)
