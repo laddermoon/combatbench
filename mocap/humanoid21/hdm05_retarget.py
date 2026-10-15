@@ -42,6 +42,10 @@ CMU_LEG_UNITS = 6.75
 # 0.85 cmu 等效单位——此处 pts 已被 k 缩放，单位与 cmu 等效）
 ANKLE_UP_UNITS = 0.85
 
+# lhumerus/rhumerus 是三角肌中点标记（肩关节的下外侧）：手-肩目标向量
+# 系统性偏高。真肩 ≈ 标记沿 clavicle 方向回移 30%
+SHOULDER_PULLBACK = 0.30
+
 # distal 端 = 子关节位置（标记语义）；叶子骨向前延长
 _DISTAL_OF = {
     "lfemur": "ltibia", "ltibia": "lfoot", "lfoot": "ltoes",
@@ -109,10 +113,20 @@ def hdm05_frame_inputs(pts: np.ndarray) -> Tuple[dict, dict, dict]:
     joint["rthigh_marker"] = pts[JOINT_NAMES.index("rfemur")].copy()
     joint["lfemur"] = joint["lhipjoint"].copy()
     joint["rfemur"] = joint["rhipjoint"].copy()
+    # 肩锚点：三角肌标记 -> 沿锁骨方向回移
+    joint["lhumerus"] = joint["lhumerus"] + SHOULDER_PULLBACK * (
+        joint["lclavicle"] - joint["lhumerus"])
+    joint["rhumerus"] = joint["rhumerus"] + SHOULDER_PULLBACK * (
+        joint["rclavicle"] - joint["rhumerus"])
     # lfoot/rfoot 是贴地脚跟标记：踝位置目标抬高 ANKLE_UP_UNITS，
-    # 否则机器人脚踝被压到地面、腿持续压缩
-    joint["lfoot"] = joint["lfoot"] + np.array([0.0, ANKLE_UP_UNITS, 0.0])
-    joint["rfoot"] = joint["rfoot"] + np.array([0.0, ANKLE_UP_UNITS, 0.0])
+    # 否则机器人脚踝被压到地面、腿持续压缩。
+    # 脚尖 distal 必须同步抬——foot_dir = distal(toes) - joint(ankle)，
+    # 只抬踝不抬趾会把方向向量压成"脚尖向下"（踮脚）。
+    lift = np.array([0.0, ANKLE_UP_UNITS, 0.0])
+    joint["lfoot"] = joint["lfoot"] + lift
+    joint["rfoot"] = joint["rfoot"] + lift
+    distal["ltoes"] = distal["ltoes"] + lift
+    distal["rtoes"] = distal["rtoes"] + lift
     return joint, distal, F
 
 
@@ -146,9 +160,12 @@ def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
 
     def _inputs(t):
         j, d, F = hdm05_frame_inputs(pts[t])
-        # 合成骨盆世界位置：原地 x/z=0，高度=最低足落差
-        feet_y = min(j["ltoes"][1], j["rtoes"][1],
-                     j["lfoot"][1], j["rfoot"][1])
+        # 合成骨盆世界位置：原地 x/z=0，高度=最低足落差。
+        # 注意用原始标记 pts（remap 后的 lfoot/ltoes 有踝抬升偏移）
+        li, ri = JOINT_NAMES.index("ltoes"), JOINT_NAMES.index("rtoes")
+        lf, rf = JOINT_NAMES.index("lfoot"), JOINT_NAMES.index("rfoot")
+        feet_y = min(pts[t, li, 1], pts[t, ri, 1],
+                     pts[t, lf, 1], pts[t, rf, 1])
         j["root"] = np.array([0.0, -feet_y, 0.0])
         if mirror:
             j, d, F = mirror_frame(j, d, F)
