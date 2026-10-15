@@ -51,15 +51,39 @@ LABEL_MAP = {
     "punchLSide": ["punch", "hook"], "punchRSide": ["punch", "hook"],
     "kickLFront": ["kick", "front_kick"], "kickRFront": ["kick", "front_kick"],
     "kickLSide": ["kick", "side_kick"], "kickRSide": ["kick", "side_kick"],
+    "elbowToKnee": ["strike", "elbow"],
+    "throwStanding": ["throw", "strike"], "throwFar": ["throw", "strike"],
+    "throwBasketball": ["throw"], "throwSitting": ["throw"],
+    "hitRHandHead": ["block", "self_hit"],
     "standUpKneelToStand": ["stand_up", "recovery"],
+    "standUpLieFloor": ["stand_up", "recovery", "face_up"],
+    "standUpSitFloor": ["stand_up", "recovery"],
+    "standUpSitChair": ["stand_up", "recovery", "chair"],
+    "standUpSitTable": ["stand_up", "recovery", "chair"],
     "standUpSitToStand": ["stand_up", "recovery"],
-    "squat": ["squat"], "jump": ["jump"], "jumpingJack": ["jump"],
-    "hopLLeg": ["jump"], "hopRLeg": ["jump"], "hopBothLegs": ["jump"],
-    "turnLeft": ["turn"], "turnRight": ["turn"],
-    "walkLeft": ["walk"], "walkRight": ["walk"],
-    "elbowL": ["strike", "elbow"], "elbowR": ["strike", "elbow"],
-    "hitRHandHead": ["block"], "cartwheel": ["acrobatic"],
+    "lieDownFloor": ["lie_down", "ground"], "sitDownFloor": ["sit_down", "ground"],
     "sitDownKneelTieShoes": ["sit_down", "recovery"],
+    "squat": ["squat"], "jumpingJack": ["jump", "jumping_jack"],
+    "jumpDown": ["jump", "jump_down"], "jump": ["jump"],
+    "hopLLeg": ["jump", "hop"], "hopRLeg": ["jump", "hop"],
+    "hopBothLegs": ["jump", "hop"],
+    "turnLeft": ["turn"], "turnRight": ["turn"],
+    "walkBackwards": ["walk", "backwards", "footwork"],
+    "walkLeft": ["walk", "footwork"], "walkRight": ["walk", "footwork"],
+    "walk2Steps": ["walk", "footwork"], "walk3Steps": ["walk", "footwork"],
+    "walk4Steps": ["walk", "footwork"],
+    "walkOnPlace": ["walk", "in_place"],
+    "jogOnPlace": ["jog", "in_place"], "runOnPlace": ["run", "in_place"],
+    "walkLeftCircle": ["walk", "circle"], "walkRightCircle": ["walk", "circle"],
+    "jogLeftCircle": ["jog", "circle"], "jogRightCircle": ["jog", "circle"],
+    "cartwheel": ["acrobatic", "cartwheel"],
+    "climbLadder": ["climb"],
+    "grabDep": ["grab"], "grabFloor": ["grab"], "grabHigh": ["grab"],
+    "grabLow": ["grab"], "grabMiddle": ["grab"],
+    "depositFloor": ["deposit"], "depositHigh": ["deposit"],
+    "depositLow": ["deposit"], "depositMiddle": ["deposit"],
+    "staircaseUp": ["stairs"], "staircaseDown": ["stairs"],
+    "balanceBeam": ["balance"], "skier": ["stylized", "skier"],
 }
 
 
@@ -263,6 +287,8 @@ def main():
     ap.add_argument("--classes", nargs="*", default=None,
                     help="子串过滤，如 punchLFront kickLFront")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--per-class", type=int, default=None,
+                    help="每个类最多导出的片段数")
     ap.add_argument("--mirror", action="store_true")
     ap.add_argument("--keys", nargs="*", default=None,
                     help="指定 record key")
@@ -271,11 +297,16 @@ def main():
 
     names = load_action_names(ACTION_NAMES)
     picked = []
+    from collections import Counter
+    per_cls = Counter()
     for seg in iter_segments(args.file, names):
         if args.keys and seg.key not in args.keys:
             continue
         if args.classes and not any(c in seg.label for c in args.classes):
             continue
+        if args.per_class and per_cls[seg.label] >= args.per_class:
+            continue
+        per_cls[seg.label] += 1
         picked.append(seg)
         if args.limit and len(picked) >= args.limit:
             break
