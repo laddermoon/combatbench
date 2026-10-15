@@ -1,0 +1,49 @@
+# Push-probe capture env — standard Humanoid21Simulator.
+#
+# Minimal env for harvesting push-recovery motion from trained policies:
+# both robots start standing; RandomPushPlugin applies random-direction /
+# random-magnitude torso pushes.  No fallen-state reset, no combat scoring —
+# falls are recorded raw and filtered downstream.
+#
+# This is the canonical 96-dim observation env.  Policies trained under
+# GaitClockSimulator (obs_dim=99) run here through
+# ``policy.humanoid21.gait_clock.policy:GaitClockAdapterPolicy`` — the
+# adapter reproduces the 3-dim clock inside the policy wrapper.
+#
+# Tunable knobs for sweep experiments (edit or generate variants):
+#   force_magnitude_min/max — push strength range (N)
+#   min/max_interval        — action steps between pushes
+#   push_duration_steps     — push length in action steps (1 step = 25 phy = 50ms)
+#   target_body             — torso / pelvis / …
+version: 1
+runtime:
+  phy_steps_per_action: 25
+  max_steps: 400
+  strict: true
+simulator:
+  cls: envs.humanoid21.simulator:Humanoid21Simulator
+  config:
+    initial_distance: 2.0
+    debug_torque: false
+    initial_pose_a: standing
+    initial_pose_b: standing
+plugins:
+- cls: envs.humanoid21.disturbance_plugins:RandomPushPlugin
+  config:
+    target_robot: robot_a
+    target_body: torso
+    force_magnitude_min: 30.0
+    force_magnitude_max: 250.0
+    min_interval: 40
+    max_interval: 100
+    push_duration_steps: 2
+- cls: envs.humanoid21.disturbance_plugins:RandomPushPlugin
+  config:
+    target_robot: robot_b
+    target_body: torso
+    force_magnitude_min: 30.0
+    force_magnitude_max: 250.0
+    min_interval: 40
+    max_interval: 100
+    push_duration_steps: 2
+observer_plugins: {}

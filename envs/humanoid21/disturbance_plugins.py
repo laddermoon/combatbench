@@ -28,6 +28,8 @@ class RandomPushPlugin(BasePlugin):
         target_robot: str = "robot_a",
         target_body: str = "torso",
         force_magnitude: float = 200.0,  # 牛顿
+        force_magnitude_min: Optional[float] = None,  # 力度区间下限（牛顿）
+        force_magnitude_max: Optional[float] = None,  # 力度区间上限（牛顿）
         min_interval: int = 50,  # 最小间隔（动作步数）
         max_interval: int = 150,  # 最大间隔（动作步数）
         push_duration_steps: int = 1,  # 每次推力持续动作步数
@@ -37,7 +39,9 @@ class RandomPushPlugin(BasePlugin):
         Args:
             target_robot: 目标机器人 ID
             target_body: 目标 body 名称
-            force_magnitude: 力的大小（牛顿）
+            force_magnitude: 力的大小（牛顿）；当未给区间时固定用此值
+            force_magnitude_min/force_magnitude_max: 若给定，每次推力在
+                [min, max] 内均匀采样力的大小；方向仍按 xy 平面均匀采样
             min_interval: 两次推力之间的最小等待动作步数
             max_interval: 两次推力之间的最大等待动作步数
             push_duration_steps: 每次推力持续的动作步数
@@ -52,7 +56,12 @@ class RandomPushPlugin(BasePlugin):
 
         self.target_robot = target_robot
         self.target_body = target_body
-        self.force_magnitude = force_magnitude
+        self.force_magnitude_min = float(force_magnitude_min) if force_magnitude_min is not None else float(force_magnitude)
+        self.force_magnitude_max = float(force_magnitude_max) if force_magnitude_max is not None else float(force_magnitude)
+        if self.force_magnitude_max < self.force_magnitude_min:
+            raise ValueError(
+                f"force_magnitude_max must be >= force_magnitude_min, "
+                f"got {self.force_magnitude_min}..{self.force_magnitude_max}")
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.push_duration_steps = push_duration_steps
@@ -76,10 +85,11 @@ class RandomPushPlugin(BasePlugin):
 
     def _sample_force(self) -> np.ndarray:
         angle = self._rng.uniform(0, 2 * np.pi)
+        mag = self._rng.uniform(self.force_magnitude_min, self.force_magnitude_max)
         return np.array([
-            np.cos(angle) * self.force_magnitude,
-            np.sin(angle) * self.force_magnitude,
-            self._rng.uniform(-0.2, 0.2) * self.force_magnitude
+            np.cos(angle) * mag,
+            np.sin(angle) * mag,
+            self._rng.uniform(-0.2, 0.2) * mag
         ])
 
     @property
@@ -94,7 +104,8 @@ class RandomPushPlugin(BasePlugin):
         return {
             "target_robot": self.target_robot,
             "target_body": self.target_body,
-            "force_magnitude": self.force_magnitude,
+            "force_magnitude_min": self.force_magnitude_min,
+            "force_magnitude_max": self.force_magnitude_max,
             "min_interval": self.min_interval,
             "max_interval": self.max_interval,
             "push_duration_steps": self.push_duration_steps,
@@ -114,6 +125,7 @@ class RandomPushPlugin(BasePlugin):
         ctx.metrics[f'{self.target_robot}_push_count'] = 0
         ctx.metrics[f'{self.target_robot}_push_active'] = False
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = self._wait_remaining_action_steps
+        ctx.metrics[f'{self.target_robot}_push_events'] = []
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         """在动作步边界上调度扰动状态机"""
@@ -138,9 +150,17 @@ class RandomPushPlugin(BasePlugin):
 
         ctx.metrics[f'{self.target_robot}_push_count'] += 1
         ctx.metrics[f'{self.target_robot}_last_push_force'] = float(np.linalg.norm(self._current_force))
+        ctx.metrics[f'{self.target_robot}_last_push_force_vec'] = self._current_force.copy()
         ctx.metrics[f'{self.target_robot}_push_duration_action_steps'] = self.push_duration_steps
         ctx.metrics[f'{self.target_robot}_push_active'] = True
         ctx.metrics[f'{self.target_robot}_next_push_wait_action_steps'] = 0
+        ctx.metrics[f'{self.target_robot}_push_events'].append({
+            'start_step': self._action_step_count,
+            'duration_action_steps': self.push_duration_steps,
+            'force_vec': self._current_force.copy(),
+            'force_mag': float(np.linalg.norm(self._current_force)),
+            'body': self.target_body,
+        })
 
     def on_pre_phy_step(self, ctx: SimContext) -> None:
         """在推力激活的动作步内，对每个物理步持续施力"""
