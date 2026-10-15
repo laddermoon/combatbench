@@ -4288,3 +4288,38 @@ utd=0.5，batch=256，2M）。四探针同任务同 seed 分离两个轴：
    仍偏低）——观察项，u_floor 的固定 α=0.2 反而更稳。
 5. balance tick/env 仅 ~0.05（2000 cap 常驻），与 standup 的 0.77
    完全不同 regime——standup 的 UTD 结论不可迁移，本轮已实测。
+
+## Opt-4 全实验最优配方收口（2026-10-15）
+
+**standup u_floor 分段配方验证**（`opt_uf_stage_s42`）：
+utd 0.125 高原期 + `--param utd_ratio=0.5@63`（~793K 切换）+
+early_stop(success≥0.9×3, min 400K)：
+- 达标 env=1.56M / **墙钟 260min / critic ticks 798K**
+- 对照 R2_c（恒定 0.5）：首个 1.0 @~286min / 1.23M ticks
+- **净省 ~14% 墙钟、~35% tick**——与 tick 守恒模型预测一致；
+- held-out（64ep/128row）：**success=1.000**。
+
+**最终生产配方汇总**：
+
+| 实验 | 配方 | 达标 | held-out |
+|---|---|---|---|
+| standup shannon | utd 0.5/b256 恒定（或分段省 ~10%） | R1 ~1.8M | —（R1 已验收） |
+| standup u_floor | **utd 0.125→0.5@~800K + 早停** | 1.56M / 4.3h | **1.000** |
+| balance shannon | **b1024 + replay 2M + 早停(0.95×3)** | 1.35M / ~1.5h | **0.984** |
+| balance u_floor | **replay 2M + 早停(0.95×3)** | **616K / ~45min** | **0.984** |
+
+**跨任务手感汇总**：
+1. **守恒货币是 critic tick**（standup 实测 ±7% 内）——低 UTD 只在
+   数据受限的高原期省墙钟，突破期预算刚性；
+2. **balance 的瓶颈不是速度是稳定**：短 replay（500K≈12 rounds）
+   造成遗忘循环 → eval 振荡；replay 2M 直接消除。诊断指标：
+   eval 序列反复从 ≥0.9 掉到 <0.6 而 q/loss 无发散 → 先怀疑
+   buffer 记忆长度而非梯度问题；
+3. **早停 + 达标检测比任何速度旋钮都值钱**：balance 三条达标 run
+   全部由 experiment_stop 干净终止，无一烧满预算；
+4. u_floor 在两个任务上都 ≥ shannon（standup 1.56M vs ~1.8M；
+   balance 616K vs 1.35M）——当前证据下 u_floor 是更快正则路线；
+5. batch↑ 平滑的是每步梯度，治不了结构性振荡（对照臂照样崩）；
+   batch 也不是墙钟瓶颈（launch-bound）；
+6. 已修框架级收益（fused Adam / 批量同步 / 死键 guard）对所有
+   SAC run 无条件生效 ~2×。
