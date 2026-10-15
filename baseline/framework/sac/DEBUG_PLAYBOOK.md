@@ -36,7 +36,9 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | 切口⑧ 更新检查 | `DK update-checks <dump>`——Polyak 逐参数恒等式 / alpha 不变量 / 分层相对步长 |
 | 切口⑨ 后更新 | `DK post <dump>`——同批 det-action/logπ/U 漂移 + 单步 TD-MSE 是否下降 |
 | 切口⑦ 逐样本梯度（重） | `DK gradsig <dump> [--sides actor,critic]`——100% 精确 p_i=g_i·Ĝ（Σp_i=‖G‖ 闭合自检），top push/pull 样本 + 多通道 actor 梯度冲突矩阵 cos(G_c1,G_c2)；HTTP 走 job 槽 `POST .../job {kind:"gradsig"}` |
-| JSON API | `DK serve baseline/runs_sac --port 8766`（dump 端点同名：`contracts/explore/slice-verify/demography/twins/targets/fit/actor/update-checks/post`） |
+| 回放锚定（重） | `DK recon <dump> --sample-id N`——按 metadata 重建该样本所属 episode：重跑环境+录 mp4 到 `<dump>/episodes/e<seed>_r<round>_<agent>/`，并逐帧核对 obs/action 与 batch 行（位级相等=采集确定性）+ 蓝图指纹比对。行为策略解析优先级：dump 快照 → `policy_exports/rNNNNN`（stale model_path 自动就地重写）→ 原路径 fallback；全缺失 → `{"status":"unavailable"}`（exit 3），绝不静默 |
+| 跨代漂移 | `DK delta <dump> [--stride k] [--max-checkpoints n]`——历代 checkpoint 的确定性策略回放本批 obs：det-action L2 漂移、batch 动作的 logπ、U(s)、逐通道 Q；HTTP 走 job 槽 `{kind:"delta"}` |
+| JSON API | `DK serve baseline/runs_sac --port 8766`（dump 端点同名：`contracts/explore/slice-verify/demography/twins/targets/fit/actor/update-checks/post`；`recon/delta/gradsig` 走单 job 槽 `POST /api/dump/<path>/job`） |
 
 ## 1. 不收敛 / 回报平台期
 

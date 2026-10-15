@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import asdict
@@ -110,6 +111,7 @@ def _trainer_spec(
     grad_clip_norm: float,
     critic_lr: float,
     slice_contract: Optional[Mapping[str, Any]] = None,
+    behavior_policy: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     if hasattr(actor, "state_payload"):
         payload = actor.state_payload()
@@ -169,6 +171,13 @@ def _trainer_spec(
         "slice_contract": (
             dict(slice_contract) if slice_contract is not None else None
         ),
+        # WP3: which policy produced this batch — enables replay-back
+        # verification and episode reconstruction long after the export
+        # dirs are pruned.  ``model_path`` inside the blueprint config is
+        # rewritten to the dump-local snapshot by the caller.
+        "behavior_policy": (
+            dict(behavior_policy) if behavior_policy is not None else None
+        ),
     }
 
 
@@ -220,16 +229,55 @@ def finish_critic_tick_dump(
     keep_last: int = 8,
     replay_stats: Optional[Mapping[str, Any]] = None,
     slice_contract: Optional[Mapping[str, Any]] = None,
+    behavior_policy_bp: Optional[Mapping[str, Any]] = None,
+    behavior_policy_dir: Optional[Path] = None,
 ) -> Path:
-    """Complete a dump begun by :func:`begin_critic_tick_dump`."""
+    """Complete a dump begun by :func:`begin_critic_tick_dump`.
+
+    ``behavior_policy_bp``/``behavior_policy_dir`` snapshot the behavior
+    policy that collected this batch's newest transitions — model files
+    are copied into ``<dump>/behavior_policy/`` so replay-back and
+    episode reconstruction keep working after ``policy_exports/`` is
+    pruned.
+    """
     tmp = Path(tmp_dir)
     request = json.loads((tmp / "request.json").read_text(encoding="utf-8"))
+    behavior_policy: Optional[Dict[str, Any]] = None
+    if behavior_policy_bp is not None:
+        bp_dict = dict(behavior_policy_bp)
+        cfg = dict(bp_dict.get("config") or {})
+        snap_dir = tmp / "behavior_policy"
+        src_dir = (
+            Path(behavior_policy_dir) if behavior_policy_dir is not None
+            else None
+        )
+        model_src = src_dir / "model.pt" if src_dir is not None else None
+        snapshot_dir: Optional[str] = None
+        if model_src is not None and model_src.exists():
+            snap_dir.mkdir(exist_ok=True)
+            shutil.copy2(model_src, snap_dir / "model.pt")
+            if (src_dir / "policy_blueprint.yaml").exists():
+                shutil.copy2(
+                    src_dir / "policy_blueprint.yaml",
+                    snap_dir / "policy_blueprint.yaml",
+                )
+            snapshot_dir = "behavior_policy"
+        # model_path in cfg keeps pointing at the ORIGINAL export dir
+        # (provenance); consumers resolve the dump-local copy via
+        # snapshot_dir first, falling back to the original path.
+        bp_dict["config"] = cfg
+        behavior_policy = {
+            "blueprint": bp_dict,
+            "snapshot_dir": snapshot_dir,
+            "source_dir": str(src_dir) if src_dir is not None else None,
+        }
     try:
         torch.save(dict(forward_capture), tmp / "forward.pt")
         torch.save(dict(trainer_post_state), tmp / "trainer_post.pt")
         _write_json(tmp / "spec.json", _trainer_spec(
             actor, critic, channels, sp, grad_clip_norm, critic_lr,
             slice_contract=slice_contract,
+            behavior_policy=behavior_policy,
         ))
         analysis_payload: Dict[str, Any] = {
             "evidence_level": "recompute",
@@ -843,6 +891,23 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         "--sides", default="actor,critic",
         help="comma list: actor,critic",
     )
+    rc2 = sub.add_parser(
+        "recon",
+        help="cut 0/1/9 anchor (HEAVY): rerun the episode that produced "
+             "one batch row, render mp4, verify replayed frames",
+    )
+    rc2.add_argument("dump", type=Path)
+    rc2.add_argument("--sample-id", type=int, default=None)
+    rc2.add_argument("--source-key", default=None)
+    rc2.add_argument("--fps", type=int, default=30)
+    dl = sub.add_parser(
+        "delta",
+        help="cross-generation delta: replay every checkpoint's det "
+             "policy on this dump's batch observations",
+    )
+    dl.add_argument("dump", type=Path)
+    dl.add_argument("--stride", type=int, default=1)
+    dl.add_argument("--max-checkpoints", type=int, default=24)
     dq = sub.add_parser(
         "dump",
         help="write dump_request.json so a running SAC loop captures "
@@ -972,6 +1037,28 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         out = _gradsig.per_sample_gradsig(
             args.dump,
             sides=tuple(s for s in args.sides.split(",") if s),
+        )
+    elif args.command == "recon":
+        from . import episode_recon as _recon
+        try:
+            out = _recon.reconstruct_episode(
+                args.dump, sample_id=args.sample_id,
+                source_key=args.source_key, fps=args.fps,
+            )
+        except KeyError as exc:
+            # Expected outcome when artifacts were pruned or provenance
+            # is incomplete — report structurally, not as a traceback.
+            out = {
+                "status": "unavailable",
+                "reason": str(exc).strip("'"),
+            }
+            print(json.dumps(_jsonable(out), indent=2, sort_keys=True))
+            return 3
+    elif args.command == "delta":
+        from . import episode_recon as _recon
+        out = _recon.cross_gen_delta(
+            args.dump, stride=args.stride,
+            max_checkpoints=args.max_checkpoints,
         )
     elif args.command == "dump":
         request = {"hypothesis": args.hypothesis}

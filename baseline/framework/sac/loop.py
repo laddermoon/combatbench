@@ -855,6 +855,11 @@ def train_sac(
                                     slice_contract=(
                                         experiment.slice_contract_spec()
                                     ),
+                                    behavior_policy_bp=(
+                                        policy_bp.to_dict()
+                                        if policy_bp is not None else None
+                                    ),
+                                    behavior_policy_dir=export_dir,
                                 )
                                 metrics.emit_debug(
                                     clocks,

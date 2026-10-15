@@ -383,6 +383,16 @@ _JOB_KINDS = {
     "drift": lambda p: [],
     "gradsig": lambda p: ["--sides",
                           str(p.get("sides", "actor,critic"))],
+    "recon": lambda p: [
+        *(["--sample-id", str(p["sample_id"])]
+          if p.get("sample_id") is not None else []),
+        *(["--source-key", str(p["source_key"])]
+          if p.get("source_key") else []),
+    ],
+    "delta": lambda p: [
+        "--stride", str(p.get("stride", 1)),
+        "--max-checkpoints", str(p.get("max_checkpoints", 24)),
+    ],
 }
 
 
