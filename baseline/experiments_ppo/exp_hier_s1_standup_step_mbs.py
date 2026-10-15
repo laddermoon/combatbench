@@ -57,6 +57,13 @@ class HierS1StandupStepMBS(Standup):
     _FOOT_OBS = {"robot_a": "foot_state_a", "robot_b": "foot_state_b"}
     _AGENT_IDS = ("robot_a", "robot_b")
 
+    # Uprightness shaping inside r_std_clip: the learned gait plateaued
+    # in a crouch (h≈1.15 vs clip root z≈1.28) because cadence was
+    # already maxed and the strict clip term underflowed at Σd²≈600.
+    # An explicit height pull plus stronger pose weight closes the gap.
+    _H_TARGET: float = 1.28
+    _H_SIGMA: float = 0.08
+
     # Track both criteria for best-checkpoint selection.
     _best_score: float = -1.0
 
@@ -131,7 +138,16 @@ class HierS1StandupStepMBS(Standup):
         cad_arr = (np.clip(np.asarray(cad_arr[:T], dtype=np.float32),
                            -1.0, 1.0) if cad_arr is not None
                    else np.zeros(T, dtype=np.float32))
-        r_clip = clip_arr + 0.3 * pose_arr + 0.5 * cad_arr
+
+        h_arr = extract_per_step_field(
+            episode.observer_outputs, obs_key, "h_torso", T_full,
+        )
+        h_arr = (np.asarray(h_arr[:T], dtype=np.float32)
+                 if h_arr is not None else np.zeros(T, dtype=np.float32))
+        h_term = np.exp(-((h_arr - self._H_TARGET) / self._H_SIGMA) ** 2)
+
+        r_clip = (clip_arr + 1.0 * pose_arr + 0.5 * cad_arr
+                  + 0.5 * h_term)
 
         channels = {
             self._ch_pot: ChannelData(
@@ -165,6 +181,9 @@ class HierS1StandupStepMBS(Standup):
         success = result["info"].get("success", 0.0)
 
         clip_standing: List[float] = []
+        pose_standing: List[float] = []
+        cad_standing: List[float] = []
+        h_standing: List[float] = []
         cycles_list: List[float] = []
         for ep in episodes:
             T = ep.num_frames
@@ -178,6 +197,14 @@ class HierS1StandupStepMBS(Standup):
                 clip = extract_per_step_field(
                     ep.observer_outputs, self._CLIP_OBS[agent_id],
                     "std_clip", T)
+                pose = extract_per_step_field(
+                    ep.observer_outputs, self._CLIP_OBS[agent_id],
+                    "std_pose", T)
+                cad = extract_per_step_field(
+                    ep.observer_outputs, self._CLIP_OBS[agent_id],
+                    "std_cad", T)
+                hh = extract_per_step_field(
+                    ep.observer_outputs, obs_key, "h_torso", T)
                 lc = extract_per_step_field(
                     ep.observer_outputs, self._FOOT_OBS[agent_id],
                     "left_foot_contact", T)
@@ -190,6 +217,15 @@ class HierS1StandupStepMBS(Standup):
                     if stand.any():
                         clip_standing.append(
                             float(np.asarray(clip[:T])[stand].mean()))
+                        if pose is not None:
+                            pose_standing.append(
+                                float(np.asarray(pose[:T])[stand].mean()))
+                        if cad is not None:
+                            cad_standing.append(
+                                float(np.asarray(cad[:T])[stand].mean()))
+                        if hh is not None:
+                            h_standing.append(
+                                float(np.asarray(hh[:T])[stand].mean()))
 
                 if lc is not None and rc is not None and phi is not None:
                     standing = np.asarray(phi[:T]) >= 0.9
@@ -217,6 +253,12 @@ class HierS1StandupStepMBS(Standup):
         result["is_new_best"] = is_new_best
         result["info"]["clip"] = round(clip_mean, 3)
         result["info"]["cycles"] = round(cycles_mean, 3)
+        result["info"]["pose"] = round(
+            sum(pose_standing) / max(len(pose_standing), 1), 3)
+        result["info"]["cad"] = round(
+            sum(cad_standing) / max(len(cad_standing), 1), 3)
+        result["info"]["h"] = round(
+            sum(h_standing) / max(len(h_standing), 1), 3)
         return result
 
     def state(self) -> dict:
