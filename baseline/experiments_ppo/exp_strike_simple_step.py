@@ -40,6 +40,12 @@ class StrikeSimpleStep(StrikeSparseStep):
 
     name = "strike_simple_step"
 
+    # Early-stop effectively disabled (user direction: keep training
+    # running — manual stop only).  The inherited rule was
+    # no_improvement>=200 AND update>=600 which cut s42b at u600.
+    _no_improvement_limit: int = 10 ** 9
+    _min_updates: int = 10 ** 9
+
     _channel_names = FollowStep._channel_names + ("r_strike",)
     _channel_gammas = {
         **FollowStep._channel_gammas,
