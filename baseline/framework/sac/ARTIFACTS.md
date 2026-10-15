@@ -19,6 +19,15 @@ Update this table whenever a schema is added or bumped.
 > with eternal sets load fine and are intersected down on `load_state_dict`.
 | Metrics event stream | `runs/<run>/metrics/events.jsonl` | `sac_metrics_v1` (`schema_version` per event) | `SACMetricsWriter` | `metrics.load_events` | `SACMetricsError`-family rejection |
 | Debug dump | `runs/<run>/debug_dumps/critic_tick_NNNNNN/` | `sac_dump_v3` (`manifest.json:schema_version`; `sac_dump_v2` readable) | `debugkit` dump capture | `debugkit.load_dump` / `analysis` / `debugserver` | unsupported schema → error listing `SUPPORTED_DUMP_SCHEMAS` |
+
+> WP1: dump `spec.json` now carries `slice_contract` (experiment-provided
+> reward/gate formula constants) — the contract ledger
+> (`analysis.verify_dump_contracts`, `DK contracts`) replays per-row
+> reward/gate math from `task_facts`/`reward_features` and checks
+> version provenance, Bellman closure, Polyak identity, etc.
+> `slice_contract: null` on legacy dumps → verifier falls back to class
+> defaults and marks `contract_source` accordingly; unregistered
+> `reward_semantics` produces WARN (unverifiable), never a silent PASS.
 | Transition slice | in-memory (collection → replay) | `sac_transition_v2` (`slice.schema_version`) | `experiment.build_slices` | `transition.validate_transition_slice` (called by `replay.add_slices`) | `ValueError` naming the unsupported schema |
 | Policy export blueprint | `runs/<run>/policy/`, `policy_exports/` | `PolicyBlueprint` YAML + TN payload `tn_kernel_v1` (`kernel_version`) | `actor.to_blueprint` | `PolicyBlueprint.load` → `TNActor.from_blueprint` | kernel_version mismatch → error naming the kernel |
 | Run config snapshot | `runs/<run>/config.json` | `sac_run_config_v1` (`config_schema`); pre-marker configs are implicitly unversioned | `loop.save_run_config_sac` | fingerprint compare on resume | fingerprint mismatch → `SACCheckpointError`; `config_schema` itself is excluded from the fingerprint via `RESUME_ALLOWED_OVERRIDES` so pre-marker checkpoints stay resumable |

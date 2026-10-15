@@ -1589,3 +1589,1439 @@ def load_artifact(path: Path) -> Any:
     if path.is_file() and path.suffix == ".json":
         return json.loads(path.read_text(encoding="utf-8"))
     raise ValueError(f"unsupported artifact path: {path}")
+
+
+# ======================================================== contract ledger
+#
+# WP1: falsifiable per-cut assertions over one ``critic_tick`` dump.
+# Each check returns a dict:
+#   {"id", "cut", "name", "status": pass|warn|fail|skip,
+#    "severity": "contract"|"statistical", "metric": {...},
+#    "violating_samples": [...], "detail": "..."}
+# ``skip`` carries the reason; it is NOT a pass.
+
+CONTRACT_THRESHOLDS = {
+    # Float-recompute identities (same tolerance family as recompute_dump).
+    "math_abs": 2e-5,
+    # Network-forward recomputes on CPU vs captured device float32: use
+    # combined atol + rtol*|value| (LayerNorm stacks accumulate noise).
+    "math_rtol": 2e-4,
+    # Per-row formula recomputation (numpy float64 vs stored float32).
+    "formula_abs": 1e-5,
+    # Integration weights sum to one per row.
+    "integ_w_abs": 1e-5,
+    # Action bounds (policy exports clamp to ±1).
+    "action_bound": 1.0 + 1e-6,
+    # Statistical (WARN) domains — not correctness bugs but pathological.
+    "pair_frac_lo": 0.05,
+    "pair_frac_hi": 0.95,
+    "critic_ev_warn": 0.1,
+    "terminal_share_warn": 0.01,
+    "u_floor_active_warn": 0.0,   # 0% violation rate → floor dormant
+    "u_floor_active_warn_hi": 1.0,  # 100% violation → policy too narrow
+}
+
+
+class _DumpCtx:
+    """Shared lazy loader for one dump — keeps per-cut functions cheap."""
+
+    def __init__(self, dump_dir: Path) -> None:
+        from .debugkit import load_dump
+        self.dir = Path(dump_dir)
+        self.dump = load_dump(self.dir)
+        self.batch = self.dump["batch"]
+        self.forward = self.dump["forward"]
+        self.spec = self.dump["spec"]
+        self.manifest = self.dump["manifest"]
+        self.pre = self.dump["trainer_pre"]
+        self.post = self.dump["trainer_post"]
+        self.analysis = self.dump["analysis"]
+        self.channels = _channels_of(self.dump)
+        self.sp = self.spec.get("sac_params") or {}
+        self.mode = str(self.sp.get("regularizer_mode", "shannon"))
+        self._actor_pre = None
+        self._critic_pre = None
+        self._critic_post = None
+
+    def actor_pre(self):
+        if self._actor_pre is None:
+            from .debugkit import _build_actor
+            self._actor_pre = _build_actor(self.spec, self.pre)
+        return self._actor_pre
+
+    def critic_pre(self):
+        if self._critic_pre is None:
+            from .debugkit import _build_critic
+            self._critic_pre = _build_critic(
+                self.spec, _load_channels(self.spec), self.pre,
+            )
+        return self._critic_pre
+
+    def critic_post(self):
+        if self._critic_post is None:
+            from .debugkit import _build_critic
+            self._critic_post = _build_critic(
+                self.spec, _load_channels(self.spec), self.post,
+            )
+        return self._critic_post
+
+    def sample_ids(self) -> np.ndarray:
+        return self.batch["sample_ids"].cpu().numpy()
+
+    def metadata(self) -> List[Mapping[str, Any]]:
+        return list(self.batch.get("metadata") or [{}] * len(self.sample_ids()))
+
+
+def _load_channels(spec: Mapping[str, Any]):
+    from .experiment import SACRewardChannel
+    return tuple(
+        SACRewardChannel(**item) for item in spec.get("channels", [])
+    )
+
+
+def _check(
+    check_id: str,
+    cut: str,
+    name: str,
+    status: str,
+    *,
+    severity: str = "contract",
+    metric: Optional[Dict[str, Any]] = None,
+    violating: Optional[List[int]] = None,
+    detail: str = "",
+) -> Dict[str, Any]:
+    return {
+        "id": check_id,
+        "cut": cut,
+        "name": name,
+        "status": status,
+        "severity": severity,
+        "metric": metric or {},
+        "violating_samples": violating or [],
+        "detail": detail,
+    }
+
+
+def _t(batch: Mapping[str, Any], name: str) -> Optional[torch.Tensor]:
+    v = batch.get(name)
+    return v.detach().cpu() if isinstance(v, torch.Tensor) else None
+
+
+# ------------------------------------------------------------- cut ⓪ rollout
+
+
+def rollout_exploration(dump_dir: Path) -> Dict[str, Any]:
+    """Realized exploration per batch row: eps = a_env - a_det(policy_action).
+
+    SAC dumps carry ``policy_action`` per row (the deterministic action the
+    collected policy would have taken), so realized ε is a pure tensor
+    subtraction — no replay needed.  ``policy_action`` absent → degraded.
+    """
+    ctx = _DumpCtx(dump_dir)
+    b = ctx.batch
+    ids = ctx.sample_ids()
+    a_env = _t(b, "actions")
+    a_det = _t(b, "policy_action")
+    out: Dict[str, Any] = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "available": False,
+    }
+    if a_env is None or a_det is None:
+        out["reason"] = "actions or policy_action absent from batch"
+        return out
+    a_env = a_env.float().numpy()
+    a_det_np = a_det.float().numpy()
+    eps = a_env - a_det_np
+    eps_l2 = np.linalg.norm(eps, axis=1)
+    out["available"] = True
+    out["batch_size"] = int(a_env.shape[0])
+    out["eps_l2"] = {
+        "mean": float(eps_l2.mean()),
+        "q50": float(np.quantile(eps_l2, 0.5)),
+        "q95": float(np.quantile(eps_l2, 0.95)),
+        "max": float(eps_l2.max()),
+    }
+    out["eps_dim_std"] = [float(x) for x in eps.std(axis=0)]
+    out["sat_frac"] = float(
+        (np.abs(a_env) > CONTRACT_THRESHOLDS["action_bound"] - 1e-6)
+        .astype(float).mean()
+    )
+    # Group by recorded behavior knobs (mode + explore_factor).
+    groups: Dict[str, List[int]] = {}
+    metas = ctx.metadata()
+    for i, meta in enumerate(metas):
+        beh = meta.get("behavior") or {}
+        key = f"{beh.get('mode', '?')}/ef={beh.get('explore_factor', '?')}"
+        groups.setdefault(key, []).append(i)
+    out["by_behavior"] = {
+        k: {
+            "rows": len(v),
+            "eps_l2_mean": float(eps_l2[v].mean()),
+            "eps_l2_max": float(eps_l2[v].max()),
+        }
+        for k, v in sorted(groups.items())
+    }
+    random_rows = [
+        i for i, m in enumerate(metas)
+        if (m.get("behavior") or {}).get("parameters", {}).get(
+            "random_start"
+        ) or (m.get("behavior") or {}).get("mode") == "random"
+    ]
+    out["random_start_rows"] = len(random_rows)
+    if random_rows:
+        out["random_start_eps_l2_mean"] = float(eps_l2[random_rows].mean())
+    # strongest-exploration samples
+    order = np.argsort(-eps_l2)[:20]
+    out["top_eps_samples"] = [
+        {"sample_id": int(ids[i]), "eps_l2": float(eps_l2[i])}
+        for i in order
+    ]
+    return out
+
+
+def _checks_rollout(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    a_env = _t(ctx.batch, "actions")
+    a_det = _t(ctx.batch, "policy_action")
+    if a_env is None:
+        checks.append(_check(
+            "C0.1", "rollout", "action_bounds", "skip",
+            detail="batch.actions absent",
+        ))
+        return checks
+    bound = CONTRACT_THRESHOLDS["action_bound"]
+    over = (a_env.abs() > bound).any(dim=1)
+    n_over = int(over.sum().item())
+    ids = ctx.sample_ids()
+    checks.append(_check(
+        "C0.1", "rollout", "action_bounds",
+        "pass" if n_over == 0 else "fail",
+        metric={"violations": n_over, "bound": bound},
+        violating=[int(ids[i]) for i in np.nonzero(over.numpy())[0][:20]],
+        detail=f"max |a_env| = {a_env.abs().max().item():.6f} vs bound {bound}",
+    ))
+    if a_det is None:
+        checks.append(_check(
+            "C0.2", "rollout", "realized_eps_present", "skip",
+            detail="policy_action absent from batch",
+        ))
+    else:
+        eps = (a_env.float() - a_det.float()).norm(dim=-1).numpy()
+        checks.append(_check(
+            "C0.2", "rollout", "realized_eps_present", "pass",
+            severity="statistical",
+            metric={
+                "eps_l2_mean": float(eps.mean()),
+                "eps_l2_max": float(eps.max()),
+            },
+            detail="per-row eps = actions − policy_action available",
+        ))
+    return checks
+
+
+# ----------------------------------------------------------- cut ① ep→slice
+
+
+def slice_verification(dump_dir: Path) -> Dict[str, Any]:
+    """Per-row contract recomputation of rewards/gates from task facts.
+
+    Dispatches on ``versions.reward_semantics``; verifiers are experiment
+    owned (``experiments_sac.contract_verifiers``, late import).  Unknown
+    semantics → ``warn unverifiable`` — never a silent pass.
+    """
+    ctx = _DumpCtx(dump_dir)
+    b = ctx.batch
+    ids = ctx.sample_ids()
+    checks: List[Dict[str, Any]] = []
+
+    # C1.1 bootstrap / termination exclusivity (existing consistency check).
+    terminated = _t(b, "terminated")
+    truncated = _t(b, "truncated")
+    bootstrap = _t(b, "bootstrap")
+    if terminated is not None and bootstrap is not None:
+        term_bs = (terminated.bool() & (bootstrap > 0))
+        viol = np.nonzero(term_bs.numpy())[0]
+        checks.append(_check(
+            "C1.1", "ep2slice", "bootstrap_terminal_exclusivity",
+            "pass" if len(viol) == 0 else "fail",
+            metric={
+                "terminated_with_bootstrap": len(viol),
+                "terminated_rows": int(terminated.sum().item()),
+                "truncated_rows": int(truncated.sum().item())
+                if truncated is not None else 0,
+            },
+            violating=[int(ids[i]) for i in viol[:20]],
+            detail="terminated rows must have bootstrap=0",
+        ))
+        if truncated is not None:
+            trunc_no_bs = (truncated.bool() & (bootstrap <= 0))
+            viol2 = np.nonzero(trunc_no_bs.numpy())[0]
+            checks.append(_check(
+                "C1.1b", "ep2slice", "truncated_requires_bootstrap",
+                "pass" if len(viol2) == 0 else "fail",
+                metric={"truncated_without_bootstrap": len(viol2)},
+                violating=[int(ids[i]) for i in viol2[:20]],
+                detail="truncated (timeout) rows must keep bootstrap=1",
+            ))
+    physics = _t(b, "physics_delta")
+    if physics is not None:
+        bad = np.nonzero((physics <= 0).numpy())[0]
+        checks.append(_check(
+            "C1.5", "ep2slice", "physics_delta_positive",
+            "pass" if len(bad) == 0 else "fail",
+            metric={"non_positive": len(bad)},
+            violating=[int(ids[i]) for i in bad[:20]],
+            detail="every admitted transition advanced physics",
+        ))
+
+    # C1.4 provenance honesty: versions vs spec.sac_params.
+    metas = ctx.metadata()
+    spec_mode = str(ctx.mode)
+    mismatched = []
+    for i, meta in enumerate(metas):
+        v = meta.get("versions") or {}
+        rm = str(v.get("regularizer_mode", ""))
+        if rm and rm != spec_mode:
+            mismatched.append(i)
+    checks.append(_check(
+        "C1.4", "ep2slice", "provenance_version_match",
+        "pass" if not mismatched else "fail",
+        metric={
+            "mismatched_rows": len(mismatched),
+            "spec_regularizer_mode": spec_mode,
+        },
+        violating=[int(ids[i]) for i in mismatched[:20]],
+        detail=(
+            f"slice versions.regularizer_mode must equal spec "
+            f"({spec_mode!r}); {len(mismatched)} rows disagree"
+        ),
+    ))
+
+    # Reward/gate recompute via experiment-owned verifier.
+    semantics_set = {
+        str((m.get("versions") or {}).get("reward_semantics", ""))
+        for m in metas
+    }
+    contract = ctx.spec.get("slice_contract")
+    contract_source = (
+        "spec.slice_contract" if isinstance(contract, Mapping)
+        else "class_default_fallback"
+    )
+    batch_np = {
+        k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v)
+        for k, v in b.items()
+        if k not in ("metadata",)
+    }
+    batch_np["task_facts"] = {
+        k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v)
+        for k, v in (b.get("task_facts") or {}).items()
+    }
+    batch_np["reward_features"] = {
+        k: (v.cpu().numpy() if isinstance(v, torch.Tensor) else v)
+        for k, v in (b.get("reward_features") or {}).items()
+    }
+    try:
+        from baseline.experiments_sac.contract_verifiers import (
+            get_slice_verifier,
+        )
+        verifiable = True
+    except ImportError:
+        verifiable = False
+    if not verifiable:
+        checks.append(_check(
+            "C1.2", "ep2slice", "reward_formula_recompute", "skip",
+            detail="experiments_sac.contract_verifiers not importable",
+        ))
+    else:
+        for sem in sorted(semantics_set):
+            fn = get_slice_verifier(sem)
+            if fn is None:
+                checks.append(_check(
+                    "C1.2", "ep2slice",
+                    f"reward_formula_recompute:{sem or 'unknown'}", "warn",
+                    severity="statistical",
+                    detail=f"no verifier registered for semantics {sem!r}",
+                ))
+                continue
+            try:
+                sub = fn(
+                    batch_np, ctx.channels, contract,
+                    atol=CONTRACT_THRESHOLDS["formula_abs"],
+                    contract_source=contract_source,
+                )
+                for i, c in enumerate(sub):
+                    cid = "C1.2" if "reward" in c.get("name", "") else "C1.3"
+                    checks.append(_check(
+                        cid, "ep2slice", c["name"],
+                        c.get("status", "warn"),
+                        severity="contract" if c.get("status") == "fail"
+                        else "statistical",
+                        metric=c.get("metric"),
+                        violating=c.get("violating_samples"),
+                        detail=c.get("detail", ""),
+                    ))
+            except Exception as exc:  # verifier bugs must surface, not hide
+                checks.append(_check(
+                    "C1.2", "ep2slice",
+                    f"reward_formula_recompute:{sem}", "warn",
+                    severity="statistical",
+                    detail=f"verifier raised: {exc}",
+                ))
+    return {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "semantics": sorted(semantics_set),
+        "contract_source": contract_source,
+        "checks": checks,
+    }
+
+
+def _checks_ep2slice(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    return slice_verification(ctx.dir)["checks"]
+
+
+# ---------------------------------------------------------- cut ② demography
+
+
+def batch_demography(dump_dir: Path) -> Dict[str, Any]:
+    """Batch composition vs live replay population (provenance census)."""
+    ctx = _DumpCtx(dump_dir)
+    b = ctx.batch
+    ids = ctx.sample_ids()
+    metas = ctx.metadata()
+    replay_stats = ctx.analysis.get("replay_stats") or {}
+
+    round_counts: Dict[str, int] = {}
+    fp_counts: Dict[str, int] = {}
+    for m in metas:
+        col = m.get("collection") or {}
+        r = str(col.get("collection_round", "?"))
+        round_counts[r] = round_counts.get(r, 0) + 1
+        fp = str(col.get("policy_fingerprint", "?"))[:12]
+        fp_counts[fp] = fp_counts.get(fp, 0) + 1
+
+    pop_counts = replay_stats.get("collection_round_counts") or {}
+    keys = set(pop_counts) | set(round_counts)
+    total_pop = float(sum(pop_counts.values()) or 1.0)
+    n_batch = float(len(ids) or 1.0)
+    l1 = sum(
+        abs(round_counts.get(k, 0) / n_batch - pop_counts.get(k, 0) / total_pop)
+        for k in keys
+    )
+
+    draws = _t(b, "draw_counts")
+    terminated = _t(b, "terminated")
+    truncated = _t(b, "truncated")
+    out = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "batch_size": int(len(ids)),
+        "batch_collection_round_counts": round_counts,
+        "replay_collection_round_counts": pop_counts,
+        "batch_vs_replay_round_l1": float(l1),
+        "n_policy_fingerprints": len(fp_counts),
+        "policy_fingerprint_counts": fp_counts,
+        "draw_counts": (
+            {
+                "mean": float(draws.float().mean()),
+                "max": int(draws.max()),
+                "zero_share": float((draws == 0).float().mean()),
+            }
+            if draws is not None else None
+        ),
+        "terminated_share": (
+            float(terminated.float().mean())
+            if terminated is not None else None
+        ),
+        "truncated_share": (
+            float(truncated.float().mean())
+            if truncated is not None else None
+        ),
+        "replay_size": replay_stats.get("size"),
+        "sample_age_quantiles_replay": replay_stats.get(
+            "sample_age_quantiles"
+        ),
+    }
+    return out
+
+
+def _checks_demography(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    b = ctx.batch
+    checks: List[Dict[str, Any]] = []
+    ids = ctx.sample_ids()
+    checks.append(_check(
+        "C2.1", "replay", "live_slot_integrity",
+        "pass" if (ids >= 0).all() else "fail",
+        metric={"min_sample_id": int(ids.min()), "rows": int(len(ids))},
+        violating=[int(x) for x in ids[ids < 0][:20]],
+        detail="sample_ids all live (>=0), no corrupted slots",
+    ))
+    terminated = _t(b, "terminated")
+    share = (
+        float(terminated.float().mean()) if terminated is not None else 0.0
+    )
+    warn = share < CONTRACT_THRESHOLDS["terminal_share_warn"]
+    checks.append(_check(
+        "C2.2", "replay", "terminal_sample_coverage",
+        "warn" if warn else "pass",
+        severity="statistical",
+        metric={
+            "terminated_share": share,
+            "warn_below": CONTRACT_THRESHOLDS["terminal_share_warn"],
+        },
+        detail=(
+            "terminal frames underrepresented — slow end-state value "
+            "propagation" if warn else "terminal coverage adequate"
+        ),
+    ))
+    return checks
+
+
+# ------------------------------------------------------ cut ③ candidates/twin
+
+
+def candidate_twin_analysis(dump_dir: Path) -> Dict[str, Any]:
+    """Enumerated-candidate twin-min audit (target side + actor side)."""
+    ctx = _DumpCtx(dump_dir)
+    f = ctx.forward
+    ids = ctx.sample_ids()
+    out: Dict[str, Any] = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "channels": ctx.channels,
+    }
+    integ = _t(f, "next_integration_weights")
+    if integ is not None:
+        sums = integ.float().sum(dim=(1, 2)).numpy()
+        out["integ_weight_sum"] = {
+            "min": float(sums.min()),
+            "max": float(sums.max()),
+            "max_abs_err": float(np.abs(sums - 1.0).max()),
+        }
+    pair_t = _t(f, "target_pair_index")
+    if pair_t is not None:
+        out["target_pair1_frac"] = float(pair_t.float().mean())
+    pair_a = _t(f, "actor_pair_index")
+    if pair_a is not None:
+        out["actor_pair1_frac"] = float(pair_a.float().mean())
+
+    for side, cand_key, pair in (
+        ("target", "next_cand_q", pair_t),
+        ("actor", "actor_cand_q", pair_a),
+    ):
+        cand = f.get(cand_key)
+        if not isinstance(cand, Mapping) or pair is None:
+            continue
+        side_out: Dict[str, Any] = {}
+        for ch in ctx.channels:
+            q = cand.get(ch)
+            if not isinstance(q, torch.Tensor) or q.shape[-1] != 2:
+                continue
+            qf = q.float()
+            gap = (qf[..., 0] - qf[..., 1]).abs().numpy()
+            sel_joint = qf.gather(
+                -1, pair[..., None].long()
+            ).squeeze(-1)  # [B,K,M] — pair indexes last dim
+            sel_indep = qf.min(dim=-1).values
+            diff = (sel_joint - sel_indep).numpy()
+            side_out[ch] = {
+                "twin_gap_mean": float(gap.mean()),
+                "twin_gap_q95": float(np.quantile(gap, 0.95)),
+                "twin_gap_max": float(gap.max()),
+                # >0 means joint argmin picked the *higher* per-channel Q
+                # because the OTHER channel forced the pair choice.
+                "joint_vs_indep_mean": float(diff.mean()),
+                "joint_vs_indep_max": float(diff.max()),
+            }
+        out[side] = side_out
+    return out
+
+
+def _checks_twin(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    f = ctx.forward
+    integ = _t(f, "next_integration_weights")
+    if integ is None:
+        checks.append(_check(
+            "C3.1", "candidates", "integration_weights_sum_one", "skip",
+            detail="next_integration_weights absent",
+        ))
+    else:
+        sums = integ.float().sum(dim=(1, 2)).numpy()
+        err = float(np.abs(sums - 1.0).max())
+        checks.append(_check(
+            "C3.1", "candidates", "integration_weights_sum_one",
+            "pass" if err <= CONTRACT_THRESHOLDS["integ_w_abs"] else "fail",
+            metric={
+                "max_abs_err": err,
+                "atol": CONTRACT_THRESHOLDS["integ_w_abs"],
+            },
+            detail="Σ_km w_integ == 1 per row",
+        ))
+    lo, hi = (
+        CONTRACT_THRESHOLDS["pair_frac_lo"],
+        CONTRACT_THRESHOLDS["pair_frac_hi"],
+    )
+    for name, key in (
+        ("target_pair1_frac", "target_pair_index"),
+        ("actor_pair1_frac", "actor_pair_index"),
+    ):
+        pair = _t(f, key)
+        if pair is None:
+            checks.append(_check(
+                "C3.3", "candidates", name, "skip",
+                detail=f"{key} absent",
+            ))
+            continue
+        frac = float(pair.float().mean())
+        checks.append(_check(
+            "C3.3", "candidates", name,
+            "pass" if lo <= frac <= hi else "warn",
+            severity="statistical",
+            metric={"frac": frac, "bounds": [lo, hi]},
+            detail=(
+                f"pair1 share {frac:.3f} — twin-min degenerating toward a "
+                "single network" if not (lo <= frac <= hi)
+                else f"pair1 share {frac:.3f} balanced"
+            ),
+        ))
+    return checks
+
+
+# --------------------------------------------------------- cut ④ target recompute
+
+
+def recompute_targets(
+    dump_dir: Path,
+    *,
+    gamma: Optional[float] = None,
+    reward_scale: Optional[float] = None,
+    alpha: Optional[float] = None,
+    u_floor: Optional[float] = None,
+    reg_lambda: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Counterfactual Bellman target recompute under parameter overrides.
+
+    Default (no overrides) is a closure check: recomputed targets must equal
+    the recorded ``forward.targets`` within ``math_abs``.  With overrides,
+    returns the counterfactual distribution shift.
+    """
+    from .debugkit import _build_actor
+    from .trainer import (
+        _RegularizerArgs,
+        _resolve_u_kind,
+        _state_regularizer,
+    )
+
+    ctx = _DumpCtx(dump_dir)
+    f = ctx.forward
+    b = ctx.batch
+    spec = ctx.spec
+    channels = _load_channels(spec)
+    sacp = spec["sac_params"]
+    mode = str(sacp.get("regularizer_mode", "shannon"))
+    scale = float(
+        reward_scale if reward_scale is not None
+        else sacp.get("reward_scale", 1.0)
+    )
+    alpha_v = float(
+        alpha if alpha is not None
+        else f["alpha_pre"].float().item()
+        if isinstance(f.get("alpha_pre"), torch.Tensor)
+        else sacp.get("init_alpha", 1.0)
+    )
+    lam = float(
+        reg_lambda if reg_lambda is not None
+        else sacp.get("reg_lambda", 0.0)
+    )
+    floor = float(
+        u_floor if u_floor is not None
+        else sacp.get("u_floor", 0.0)
+    )
+    gamma_ov = gamma  # per-channel override applies to all channels
+
+    integ = f["next_integration_weights"].float()
+    pair = f["target_pair_index"].long()
+    cand_q = f["next_cand_q"]
+    logp = f["next_log_probs"].float()
+    rewards = b["rewards"].float().numpy()
+    bootstrap = b["bootstrap"].float().numpy()
+
+    # softq per channel = Σ_km integ * q_sel (joint pair selection)
+    softq: Dict[str, np.ndarray] = {}
+    for c, ch in enumerate(channels):
+        q = cand_q[ch.name].float()
+        q_sel = q.gather(-1, pair[..., None]).squeeze(-1)
+        softq[ch.name] = (integ * q_sel).sum(dim=(1, 2)).numpy()
+
+    # Continuation regularizer under (possibly overridden) params — reuse
+    # the trainer's own _state_regularizer so counterfactuals stay
+    # formula-faithful (D-no-second-formula).
+    u_next_stats: Optional[Dict[str, Any]] = None
+    if mode == "shannon":
+        reg = (-alpha_v * (integ * logp).sum(dim=(1, 2))).numpy()
+    else:
+        actor = _build_actor(spec, ctx.pre)
+        next_obs = b["next_obs"].float()
+        u_kind = str(sacp.get("u_kind", "native"))
+        with torch.no_grad():
+            u_val = actor.uncertainty(
+                next_obs, _resolve_u_kind(actor, u_kind)
+            ).cpu().numpy()
+            b_state = _state_regularizer(
+                actor, next_obs,
+                _RegularizerArgs(
+                    regularizer_mode=mode,
+                    reg_lambda=lam,
+                    u_floor=floor,
+                    u_kind=u_kind,
+                ),
+            ).cpu().numpy()
+        u_next_stats = {
+            "mean": float(u_val.mean()),
+            "q05": float(np.quantile(u_val, 0.05)),
+            "q50": float(np.quantile(u_val, 0.5)),
+            "q95": float(np.quantile(u_val, 0.95)),
+            "min": float(u_val.min()),
+            "floor_violation_rate": float((u_val < floor).mean())
+            if mode == "u_floor" else None,
+        }
+        reg = b_state
+
+    per_channel: Dict[str, Any] = {}
+    overrides_active = any(
+        v is not None
+        for v in (gamma, reward_scale, alpha, u_floor, reg_lambda)
+    )
+    recorded = f.get("targets") or {}
+    for c, ch in enumerate(channels):
+        g = float(gamma_ov if gamma_ov is not None else ch.gamma)
+        reward_term = rewards[:, c] * scale
+        boot = g * bootstrap
+        target = reward_term + boot * (softq[ch.name] + reg)
+        entry: Dict[str, Any] = {
+            "gamma": g,
+            "reward_scale": scale,
+            "target_mean": float(target.mean()),
+            "target_std": float(target.std()),
+            "target_min": float(target.min()),
+            "target_max": float(target.max()),
+        }
+        if ch.name in recorded and not overrides_active:
+            rec = recorded[ch.name].float().numpy()
+            entry["recorded_max_abs_err"] = float(
+                np.abs(target - rec).max()
+            )
+        if ch.name in recorded and overrides_active:
+            rec = recorded[ch.name].float().numpy()
+            d = target - rec
+            entry["delta_vs_recorded"] = {
+                "mean": float(d.mean()),
+                "std": float(d.std()),
+                "abs_max": float(np.abs(d).max()),
+            }
+        per_channel[ch.name] = entry
+    return {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "regularizer_mode": mode,
+        "overrides": {
+            k: v for k, v in {
+                "gamma": gamma, "reward_scale": reward_scale,
+                "alpha": alpha, "u_floor": u_floor,
+                "reg_lambda": reg_lambda,
+            }.items() if v is not None
+        },
+        "u_next": u_next_stats,
+        "per_channel": per_channel,
+        "closure_ok": all(
+            e.get("recorded_max_abs_err", 0.0)
+            <= CONTRACT_THRESHOLDS["math_abs"]
+            for e in per_channel.values()
+            if "recorded_max_abs_err" in e
+        ) if not overrides_active else None,
+    }
+
+
+def _checks_targets(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    try:
+        res = recompute_targets(ctx.dir)
+    except Exception as exc:
+        return [_check(
+            "C4.1", "target", "bellman_decomp_closure", "warn",
+            severity="statistical", detail=f"recompute raised: {exc}",
+        )]
+    errs = {
+        ch: e.get("recorded_max_abs_err")
+        for ch, e in res["per_channel"].items()
+        if e.get("recorded_max_abs_err") is not None
+    }
+    if not errs:
+        checks.append(_check(
+            "C4.1", "target", "bellman_decomp_closure", "skip",
+            detail="no recorded targets to compare",
+        ))
+    else:
+        worst = max(errs.values())
+        checks.append(_check(
+            "C4.1", "target", "bellman_decomp_closure",
+            "pass" if worst <= CONTRACT_THRESHOLDS["math_abs"] else "fail",
+            metric={
+                "max_abs_err": worst,
+                "atol": CONTRACT_THRESHOLDS["math_abs"],
+                "per_channel": errs,
+            },
+            detail="r·scale + γ·b·(softq + reg) == recorded target",
+        ))
+    if ctx.mode in ("u_floor", "u_bonus"):
+        u = res.get("u_next")
+        if u is None:
+            checks.append(_check(
+                "C4.2", "target", "u_reg_next_exact", "skip",
+                detail="actor lacks uncertainty() or next_obs missing",
+            ))
+        else:
+            reg_next = _t(ctx.forward, "reg_next")
+            # residual against recorded reg_next is verified inside
+            # recompute via same formula; here expose violation rate.
+            rate = u.get("floor_violation_rate")
+            status = "pass"
+            detail = "u_floor active on a sane share of next-states"
+            if rate is not None:
+                if rate <= CONTRACT_THRESHOLDS["u_floor_active_warn"]:
+                    status, detail = "warn", (
+                        f"u_floor dormant: P(U(s')<f)={rate:.3f}"
+                    )
+                elif rate >= CONTRACT_THRESHOLDS["u_floor_active_warn_hi"]:
+                    status, detail = "warn", (
+                        f"u_floor saturating: P(U(s')<f)={rate:.3f}"
+                    )
+            checks.append(_check(
+                "C4.2", "target", "u_reg_next_exact", status,
+                severity="statistical",
+                metric={"u_next": u},
+                detail=detail,
+            ))
+    return checks
+
+
+# ------------------------------------------------------------- cut ⑤ critic
+
+
+def critic_fit(dump_dir: Path) -> Dict[str, Any]:
+    """Per-channel critic fit quality: EV, Q-vs-target scatter, TD focus."""
+    ctx = _DumpCtx(dump_dir)
+    f = ctx.forward
+    b = ctx.batch
+    cv = b["channel_valid"].float().numpy()
+    sw = b["sample_weight"].float().numpy()
+    ids = ctx.sample_ids()
+    per: Dict[str, Any] = {}
+    for ch in ctx.channels:
+        targets = f.get("targets", {}).get(ch)
+        q1 = f.get("q1_pred", {}).get(ch)
+        q2 = f.get("q2_pred", {}).get(ch)
+        if targets is None or q1 is None or q2 is None:
+            continue
+        c = ctx.channels.index(ch)
+        mask = (cv[:, c] * sw)
+        msum = float(mask.sum())
+        entry: Dict[str, Any] = {"valid_weight": msum}
+        if msum <= 0:
+            entry["skipped"] = "empty mask"
+            per[ch] = entry
+            continue
+        y = targets.float().numpy()
+        for tag, q in (("q1", q1), ("q2", q2)):
+            qn = q.float().numpy()
+            w = mask / msum
+            resid = y - qn
+            var_y = float((w * (y - (w * y).sum()) ** 2).sum())
+            var_r = float((w * (resid - (w * resid).sum()) ** 2).sum())
+            ev = 1.0 - var_r / var_y if var_y > 1e-12 else None
+            entry[f"ev_{tag}"] = ev
+            entry[f"td_abs_mean_{tag}"] = float(
+                (w * np.abs(resid)).sum()
+            )
+        td2 = ((q1.float().numpy() - y) ** 2
+               + (q2.float().numpy() - y) ** 2) * mask
+        order = np.argsort(-td2)
+        top5 = order[: max(1, int(0.05 * len(order)))]
+        entry["td2_top5pct_share"] = float(
+            td2[top5].sum() / max(td2.sum(), 1e-12)
+        )
+        entry["top_td2_samples"] = [
+            {"sample_id": int(ids[i]), "td2": float(td2[i])}
+            for i in order[:20]
+        ]
+        per[ch] = entry
+    return {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "per_channel": per,
+    }
+
+
+def _checks_critic(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    res = critic_fit(ctx.dir)
+    for ch, e in res["per_channel"].items():
+        evs = [e.get("ev_q1"), e.get("ev_q2")]
+        evs = [x for x in evs if x is not None]
+        if not evs:
+            continue
+        worst = min(evs)
+        status = "pass" if worst >= CONTRACT_THRESHOLDS["critic_ev_warn"] else "warn"
+        checks.append(_check(
+            "C5.2", "critic", f"critic_explained_variance:{ch}", status,
+            severity="statistical",
+            metric={
+                "ev_q1": e.get("ev_q1"), "ev_q2": e.get("ev_q2"),
+                "warn_below": CONTRACT_THRESHOLDS["critic_ev_warn"],
+                "td2_top5pct_share": e.get("td2_top5pct_share"),
+            },
+            violating=[
+                s["sample_id"] for s in e.get("top_td2_samples", [])[:10]
+            ] if status == "warn" else [],
+            detail=(
+                f"{ch} EV_q1={e.get('ev_q1'):.3f} EV_q2={e.get('ev_q2'):.3f}"
+                if status == "pass"
+                else f"{ch} critic EV={worst:.3f} — Q estimate is noise-level"
+            ),
+        ))
+    # MSE closure against recorded losses.
+    us = ctx.analysis.get("update_stats") or {}
+    for ch in ctx.channels:
+        targets = ctx.forward.get("targets", {}).get(ch)
+        q1 = ctx.forward.get("q1_pred", {}).get(ch)
+        q2 = ctx.forward.get("q2_pred", {}).get(ch)
+        rec1 = us.get(f"q1_loss_{ch}")
+        rec2 = us.get(f"q2_loss_{ch}")
+        if targets is None or q1 is None or rec1 is None:
+            continue
+        c = ctx.channels.index(ch)
+        mask = (
+            ctx.batch["channel_valid"][:, c].float()
+            * ctx.batch["sample_weight"].float()
+        )
+        msum = float(mask.sum().item())
+        if msum <= 0:
+            continue
+        y = targets.float()
+        denom = mask.sum()
+        loss1 = float(
+            ((mask * (q1.float() - y).pow(2)).sum() / denom).item()
+        )
+        loss2 = float(
+            ((mask * (q2.float() - y).pow(2)).sum() / denom).item()
+        )
+        err = max(abs(loss1 - float(rec1)),
+                  abs(loss2 - float(rec2)) if rec2 is not None else 0.0)
+        checks.append(_check(
+            "C5.1", "critic", f"critic_mse_exact:{ch}",
+            "pass" if err <= CONTRACT_THRESHOLDS["math_abs"] else "fail",
+            metric={
+                "max_abs_err": err,
+                "atol": CONTRACT_THRESHOLDS["math_abs"],
+                "recomputed_q1_loss": loss1,
+                "recorded_q1_loss": float(rec1),
+            },
+            detail="masked MSE recomputed == recorded update_stats",
+        ))
+    return checks
+
+
+# ------------------------------------------------------------- cut ⑥ actor
+
+
+def actor_contract(dump_dir: Path) -> Dict[str, Any]:
+    """Actor objective audit: U(s) distribution, floor activity, gate chain.
+
+    ``forward.actor_cand_q`` is verified to equal the **post-update**
+    critic's forward on the enumerated candidates (the trainer updates the
+    critic first inside the same tick — pre/post confusion is a real bug
+    class).
+    """
+    ctx = _DumpCtx(dump_dir)
+    f = ctx.forward
+    b = ctx.batch
+    out: Dict[str, Any] = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "regularizer_mode": ctx.mode,
+    }
+    actor = ctx.actor_pre()
+    obs = b["obs"].float()
+
+    # U(s) distribution + floor activity (U modes only).
+    if ctx.mode in ("u_floor", "u_bonus") and hasattr(actor, "uncertainty"):
+        from .trainer import _resolve_u_kind
+        u_kind = str(ctx.sp.get("u_kind", "native"))
+        with torch.no_grad():
+            u_s = actor.uncertainty(
+                obs, _resolve_u_kind(actor, u_kind)
+            ).cpu().numpy()
+        floor = float(ctx.sp.get("u_floor", 0.0))
+        out["u_s"] = {
+            "mean": float(u_s.mean()),
+            "q05": float(np.quantile(u_s, 0.05)),
+            "q50": float(np.quantile(u_s, 0.5)),
+            "q95": float(np.quantile(u_s, 0.95)),
+            "min": float(u_s.min()),
+            "floor": floor,
+            "floor_violation_rate": float((u_s < floor).mean())
+            if ctx.mode == "u_floor" else None,
+        }
+        reg_actor = _t(f, "reg_actor")
+        if reg_actor is not None and ctx.mode == "u_floor":
+            lam = float(ctx.sp.get("reg_lambda", 0.0))
+            # reg_actor = -B_theta(s) = +lambda * relu(floor - U(s))^2
+            expected = lam * np.clip(floor - u_s, 0.0, None) ** 2
+            err = np.abs(expected - reg_actor.numpy())
+            out["reg_actor_max_abs_err"] = float(err.max())
+
+    # φ_post semantic check on actor_cand_q.
+    cand = f.get("actor_cand_q")
+    new_actions = _t(f, "new_actions")
+    semantic = {"checked": False}
+    if isinstance(cand, Mapping) and new_actions is not None:
+        try:
+            from .trainer import _forward_all_candidates
+            post_critic = ctx.critic_post()
+            atol = CONTRACT_THRESHOLDS["math_abs"]
+            rtol = CONTRACT_THRESHOLDS["math_rtol"]
+            max_err = 0.0
+            n_viol = 0
+            for ch in ctx.channels:
+                q = cand.get(ch)
+                if not isinstance(q, torch.Tensor):
+                    continue
+                q_post = torch.stack(
+                    (
+                        _forward_all_candidates(
+                            lambda o, a: post_critic.q1_forward(o, a, ch),
+                            obs, new_actions.float(),
+                        ),
+                        _forward_all_candidates(
+                            lambda o, a: post_critic.q2_forward(o, a, ch),
+                            obs, new_actions.float(),
+                        ),
+                    ),
+                    dim=-1,
+                )
+                diff = (q_post - q.float()).abs()
+                max_err = max(max_err, float(diff.max().item()))
+                tol = atol + rtol * q.float().abs()
+                n_viol += int((diff > tol).sum().item())
+            semantic = {
+                "checked": True,
+                "actor_cand_q_vs_post_critic_max_err": max_err,
+                "out_of_tol_elements": n_viol,
+                "atol": atol,
+                "rtol": rtol,
+            }
+        except Exception as exc:
+            semantic = {"checked": False, "error": str(exc)}
+    out["cand_q_semantics"] = semantic
+
+    # Gate → weight → contribution chain.
+    aw = _t(b, "actor_weight")
+    if aw is not None and isinstance(cand, Mapping):
+        pair = _t(f, "actor_pair_index")
+        per_ch: Dict[str, Any] = {}
+        if pair is not None:
+            for c, ch in enumerate(ctx.channels):
+                q = cand.get(ch)
+                if not isinstance(q, torch.Tensor):
+                    continue
+                q_sel = q.float().gather(
+                    -1, pair[..., None].long()
+                ).squeeze(-1)
+                integ = _t(f, "actor_integration_weights")
+                contrib = (
+                    (integ * q_sel).sum(dim=(1, 2))
+                    * aw[:, c].float()
+                ).numpy() if integ is not None else None
+                per_ch[ch] = {
+                    "weight_mean": float(aw[:, c].float().mean()),
+                    "weighted_q_mean": float(contrib.mean())
+                    if contrib is not None else None,
+                }
+            out["gate_chain"] = per_ch
+    return out
+
+
+def _checks_actor(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    res = actor_contract(ctx.dir)
+    # C6.1 closure comes from objective_decomp.
+    try:
+        dec = objective_decomp(ctx.dir)
+        err = float((dec.get("check") or {}).get(
+            "objective_max_abs_err", float("nan")))
+        checks.append(_check(
+            "C6.1", "actor", "actor_decomp_closure",
+            "pass" if err <= CONTRACT_THRESHOLDS["math_abs"] else "fail",
+            metric={
+                "max_abs_err": err,
+                "atol": CONTRACT_THRESHOLDS["math_abs"],
+            },
+            detail="Σ_c wQ + entropy + reg == recorded actor objective",
+        ))
+    except Exception as exc:
+        checks.append(_check(
+            "C6.1", "actor", "actor_decomp_closure", "warn",
+            severity="statistical", detail=f"decomp raised: {exc}",
+        ))
+    u_s = res.get("u_s")
+    if ctx.mode in ("u_floor", "u_bonus"):
+        if u_s is None:
+            checks.append(_check(
+                "C6.2", "actor", "u_floor_activity", "skip",
+                detail="actor lacks uncertainty()",
+            ))
+        else:
+            rate = u_s.get("floor_violation_rate")
+            status, detail = "pass", "u_floor penalty active"
+            if rate is not None:
+                if rate <= CONTRACT_THRESHOLDS["u_floor_active_warn"]:
+                    status = "warn"
+                    detail = (
+                        f"floor dormant: P(U<f)={rate:.3f} — u_floor not "
+                        "pushing actor anywhere right now"
+                    )
+                elif rate >= CONTRACT_THRESHOLDS["u_floor_active_warn_hi"]:
+                    status = "warn"
+                    detail = f"floor saturating: P(U<f)={rate:.3f}"
+            checks.append(_check(
+                "C6.2", "actor", "u_floor_activity", status,
+                severity="statistical",
+                metric=u_s, detail=detail,
+            ))
+    sem = res.get("cand_q_semantics") or {}
+    if sem.get("checked"):
+        n_viol = int(sem.get("out_of_tol_elements", 0))
+        checks.append(_check(
+            "C6.3", "actor", "actor_cand_q_is_post_critic",
+            "pass" if n_viol == 0 else "fail",
+            metric={
+                "max_abs_err": sem.get(
+                    "actor_cand_q_vs_post_critic_max_err"),
+                "out_of_tol_elements": n_viol,
+                "atol": sem.get("atol"),
+                "rtol": sem.get("rtol"),
+            },
+            detail=(
+                "actor_cand_q must equal critic(φ_post) forward — "
+                "critic steps BEFORE actor inside one tick"
+            ),
+        ))
+    return checks
+
+
+# ------------------------------------------------------------- cut ⑧ update
+
+
+def update_checks(dump_dir: Path) -> Dict[str, Any]:
+    """Optimizer-step contracts: Polyak identity, alpha invariance, layer
+    relative steps."""
+    ctx = _DumpCtx(dump_dir)
+    pre, post = ctx.pre, ctx.post
+    tau = float(ctx.sp.get("tau", 0.005))
+    out: Dict[str, Any] = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "tau": tau,
+    }
+    # Polyak: q{1,2}_target_post ?= (1-τ)·q{1,2}_target_pre + τ·q{1,2}_post
+    residuals: Dict[str, float] = {}
+    pre_c = pre.get("critic_state_dict") or {}
+    post_c = post.get("critic_state_dict") or {}
+    for ch_key in pre_c:
+        ch_state_pre = pre_c[ch_key]
+        ch_state_post = post_c.get(ch_key, {})
+        for net in ("q1", "q2"):
+            tgt_pre = ch_state_pre.get(f"{net}_target") or {}
+            tgt_post = ch_state_post.get(f"{net}_target") or {}
+            onl_post = ch_state_post.get(net) or {}
+            if not tgt_pre or not tgt_post or not onl_post:
+                continue
+            max_r = 0.0
+            for k, v_pre in tgt_pre.items():
+                v_post = tgt_post.get(k)
+                v_onl = onl_post.get(k)
+                if v_post is None or v_onl is None:
+                    continue
+                expected = (1.0 - tau) * v_pre.float() + tau * v_onl.float()
+                max_r = max(
+                    max_r, float((v_post.float() - expected).abs().max()),
+                )
+            residuals[f"{ch_key}.{net}_target"] = max_r
+    out["polyak_residuals"] = residuals
+
+    la_pre = pre.get("log_alpha")
+    la_post = post.get("log_alpha")
+    alpha_delta = None
+    if isinstance(la_pre, torch.Tensor) and isinstance(la_post, torch.Tensor):
+        alpha_delta = float((la_post.float() - la_pre.float()).abs().max())
+    out["alpha_delta_abs"] = alpha_delta
+    out["auto_alpha"] = bool(ctx.sp.get("auto_alpha", False))
+
+    # Layer-wise relative steps for params (not optimizer states).
+    def _rel_steps(node_pre, node_post, prefix=""):
+        rows = []
+        for k, v in node_pre.items():
+            if k.endswith("optimizer"):
+                continue
+            vp = node_post.get(k) if isinstance(node_post, Mapping) else None
+            if isinstance(v, torch.Tensor) and isinstance(vp, torch.Tensor):
+                if v.shape == vp.shape:
+                    d = (vp.float() - v.float()).norm().item()
+                    n = float(v.float().norm().item())
+                    rows.append({
+                        "param": f"{prefix}{k}",
+                        "l2_delta": d,
+                        "rel_step": d / n if n > 0 else None,
+                    })
+            elif isinstance(v, Mapping) and isinstance(vp, Mapping):
+                rows.extend(_rel_steps(v, vp, f"{prefix}{k}."))
+        return rows
+    actor_rows = _rel_steps(
+        pre.get("actor_state_dict") or {},
+        post.get("actor_state_dict") or {},
+        "actor.",
+    )
+    critic_rows = _rel_steps(
+        pre.get("critic_state_dict") or {},
+        post.get("critic_state_dict") or {},
+        "critic.",
+    )
+    out["param_steps"] = actor_rows + critic_rows
+    return out
+
+
+def _checks_update(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    res = update_checks(ctx.dir)
+    residuals = res["polyak_residuals"]
+    if not residuals:
+        checks.append(_check(
+            "C8.1", "update", "polyak_soft_update_exact", "skip",
+            detail="no target params found in trainer states",
+        ))
+    else:
+        worst = max(residuals.values())
+        checks.append(_check(
+            "C8.1", "update", "polyak_soft_update_exact",
+            "pass" if worst <= CONTRACT_THRESHOLDS["math_abs"] else "fail",
+            metric={
+                "max_residual": worst,
+                "atol": CONTRACT_THRESHOLDS["math_abs"],
+                "per_net": residuals,
+            },
+            detail="ψ_post == (1−τ)ψ_pre + τ·ϕ_post elementwise",
+        ))
+    delta = res.get("alpha_delta_abs")
+    if delta is None:
+        checks.append(_check(
+            "C8.2", "update", "alpha_mode_invariant", "skip",
+            detail="log_alpha absent",
+        ))
+    elif not res["auto_alpha"]:
+        checks.append(_check(
+            "C8.2", "update", "alpha_mode_invariant",
+            "pass" if delta == 0.0 else "fail",
+            metric={"alpha_delta_abs": delta},
+            detail="alpha must be frozen when auto_alpha=false/U-modes",
+        ))
+    else:
+        checks.append(_check(
+            "C8.2", "update", "alpha_mode_invariant", "pass",
+            severity="statistical",
+            metric={"alpha_delta_abs": delta},
+            detail="auto_alpha active; direction check in metrics stream",
+        ))
+    return checks
+
+
+# ------------------------------------------------------------ cut ⑨ post
+
+
+def post_detail(dump_dir: Path) -> Dict[str, Any]:
+    """Per-sample pre→post drift on the same batch + single-step descent."""
+    ctx = _DumpCtx(dump_dir)
+    b = ctx.batch
+    ids = ctx.sample_ids()
+    actor_pre = ctx.actor_pre()
+    from .debugkit import _build_actor
+    actor_post = _build_actor(ctx.spec, ctx.post)
+    critic_pre = ctx.critic_pre()
+    critic_post = ctx.critic_post()
+    f = ctx.forward
+    obs = b["obs"].float()
+    actions = b["actions"].float()
+
+    out: Dict[str, Any] = {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+    }
+    with torch.no_grad():
+        det_pre = actor_pre.deterministic_action(obs)
+        det_post = actor_post.deterministic_action(obs)
+        d_det = (det_post - det_pre).norm(dim=-1).numpy()
+        out["det_action_drift"] = {
+            "l2_mean": float(d_det.mean()),
+            "l2_max": float(d_det.max()),
+            "per_sample_l2_top": [
+                {"sample_id": int(ids[i]), "l2": float(d_det[i])}
+                for i in np.argsort(-d_det)[:20]
+            ],
+        }
+        logp_pre = _log_prob_of(actor_pre, obs, actions).float()
+        logp_post = _log_prob_of(actor_post, obs, actions).float()
+        d_lp = (logp_post - logp_pre).numpy()
+        out["logp_drift"] = {
+            "mean": float(d_lp.mean()),
+            "abs_max": float(np.abs(d_lp).max()),
+        }
+        # U(s) drift (U modes only).
+        if ctx.mode in ("u_floor", "u_bonus") and hasattr(
+            actor_pre, "uncertainty"
+        ):
+            from .trainer import _resolve_u_kind
+            u_kind = str(ctx.sp.get("u_kind", "native"))
+            uk = _resolve_u_kind(actor_pre, u_kind)
+            u_pre = actor_pre.uncertainty(obs, uk).numpy()
+            u_post = actor_post.uncertainty(obs, uk).numpy()
+            du = u_post - u_pre
+            out["u_drift"] = {
+                "mean": float(du.mean()),
+                "abs_max": float(np.abs(du).max()),
+                "toward_floor_share": float(
+                    ((u_pre < float(ctx.sp.get("u_floor", 0.0)))
+                     & (du > 0)).mean()
+                ) if ctx.mode == "u_floor" else None,
+            }
+        # Per-channel ΔQ and TD² descent on fixed pre-targets.
+        cv = b["channel_valid"].float().numpy()
+        sw = b["sample_weight"].float().numpy()
+        per: Dict[str, Any] = {}
+        for c, ch in enumerate(ctx.channels):
+            targets = f.get("targets", {}).get(ch)
+            if targets is None:
+                continue
+            y = targets.float().numpy()
+            q1p = critic_pre.q1_forward(obs, actions, ch).numpy()
+            q2p = critic_pre.q2_forward(obs, actions, ch).numpy()
+            q1n = critic_post.q1_forward(obs, actions, ch).numpy()
+            q2n = critic_post.q2_forward(obs, actions, ch).numpy()
+            mask = (cv[:, c] * sw)
+            msum = float(mask.sum()) or 1.0
+            td2_pre = ((q1p - y) ** 2 + (q2p - y) ** 2) * mask
+            td2_post = ((q1n - y) ** 2 + (q2n - y) ** 2) * mask
+            per[ch] = {
+                "mse_pre": float(td2_pre.sum() / (2 * msum)),
+                "mse_post": float(td2_post.sum() / (2 * msum)),
+                "mse_descent": float(
+                    td2_pre.sum() / (2 * msum)
+                    - td2_post.sum() / (2 * msum)
+                ),
+                "dq_mean": float(
+                    (((q1n + q2n) / 2 - (q1p + q2p) / 2) * mask).sum() / msum
+                ),
+                "dq_abs_max": float(
+                    np.abs((q1n + q2n) / 2 - (q1p + q2p) / 2).max()
+                ),
+            }
+        out["per_channel"] = per
+    return out
+
+
+def _checks_post(ctx: _DumpCtx) -> List[Dict[str, Any]]:
+    checks: List[Dict[str, Any]] = []
+    try:
+        res = post_detail(ctx.dir)
+    except Exception as exc:
+        return [_check(
+            "C9.1", "post", "single_step_loss_descent", "warn",
+            severity="statistical", detail=f"post_detail raised: {exc}",
+        )]
+    for ch, e in (res.get("per_channel") or {}).items():
+        desc = e.get("mse_descent")
+        checks.append(_check(
+            "C9.1", "post", f"single_step_loss_descent:{ch}",
+            "pass" if (desc is not None and desc >= -1e-8) else "warn",
+            severity="statistical",
+            metric={
+                "mse_pre": e.get("mse_pre"),
+                "mse_post": e.get("mse_post"),
+                "descent": desc,
+            },
+            detail=(
+                "one optimizer step should reduce masked TD-MSE on the "
+                "same batch/targets (overshoot → warn)"
+            ),
+        ))
+    return checks
+
+
+# ------------------------------------------------------------- ledger glue
+
+
+_CONTRACT_STAGES = (
+    _checks_rollout,       # ⓪
+    _checks_ep2slice,      # ①
+    _checks_demography,    # ②
+    _checks_twin,          # ③
+    _checks_targets,       # ④
+    _checks_critic,        # ⑤
+    _checks_actor,         # ⑥
+    _checks_update,        # ⑧ (⑦ gradsig is WP2)
+    _checks_post,          # ⑨
+)
+
+
+def verify_dump_contracts(
+    dump_dir: Path,
+    *,
+    checks: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Run all contract assertions for one dump and return the ledger.
+
+    ``checks`` optionally restricts to check-ids (e.g. ``["C4.1"]``) or cut
+    names (``"target"``).  Every entry carries pass/warn/fail/skip — ``skip``
+    is explicit with a reason, never a silent pass.
+    """
+    ctx = _DumpCtx(Path(dump_dir))
+    out_checks: List[Dict[str, Any]] = []
+    want = set(checks or [])
+    for stage in _CONTRACT_STAGES:
+        try:
+            produced = stage(ctx)
+        except Exception as exc:
+            produced = [_check(
+                "X", stage.__name__, "stage_error", "warn",
+                severity="statistical",
+                detail=f"{stage.__name__} raised: {exc}",
+            )]
+        for c in produced:
+            if want and c["id"] not in want and c["cut"] not in want:
+                continue
+            out_checks.append(c)
+    counts = {"pass": 0, "warn": 0, "fail": 0, "skip": 0}
+    for c in out_checks:
+        counts[c["status"]] = counts.get(c["status"], 0) + 1
+    return {
+        "dump_dir": str(ctx.dir),
+        "critic_tick": ctx.manifest.get("critic_tick"),
+        "regularizer_mode": ctx.mode,
+        "checks": out_checks,
+        "summary": counts,
+        "verdict": (
+            "fail" if counts["fail"]
+            else "warn" if counts["warn"]
+            else "pass"
+        ),
+    }

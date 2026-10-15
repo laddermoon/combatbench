@@ -804,6 +804,35 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     qy = sub.add_parser("query")
     qy.add_argument("artifact", type=Path)
     qy.add_argument("path")
+    # ---- contract ledger + diagnostic cuts (WP1) ----
+    lc = sub.add_parser(
+        "contracts",
+        help="run the falsifiable contract ledger for one critic_tick dump",
+    )
+    lc.add_argument("dump", type=Path)
+    lc.add_argument(
+        "--check", action="append", default=None,
+        help="restrict to check id (C4.1) or cut name (target); repeatable",
+    )
+    for name, helptext in (
+        ("explore", "cut 0: realized exploration eps = a_env - a_det"),
+        ("slice-verify", "cut 1: episode→slice reward/gate contract recompute"),
+        ("demography", "cut 2: batch vs replay provenance census"),
+        ("twins", "cut 3: twin-min / candidate-enumeration audit"),
+        ("targets", "cut 4: Bellman target closure + counterfactual recompute"),
+        ("fit", "cut 5: critic EV / scatter / TD concentration"),
+        ("actor", "cut 6: actor objective gate chain + U(s)/floor activity"),
+        ("update-checks", "cut 8: Polyak identity / alpha / layer steps"),
+        ("post", "cut 9: post-update per-sample drift on same batch"),
+    ):
+        p = sub.add_parser(name, help=helptext)
+        p.add_argument("dump", type=Path)
+        if name == "targets":
+            p.add_argument("--gamma", type=float, default=None)
+            p.add_argument("--reward-scale", type=float, default=None)
+            p.add_argument("--alpha", type=float, default=None)
+            p.add_argument("--u-floor", type=float, default=None)
+            p.add_argument("--reg-lambda", type=float, default=None)
     dq = sub.add_parser(
         "dump",
         help="write dump_request.json so a running SAC loop captures "
@@ -901,6 +930,33 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
             args.path, source_key=args.source_key,
             slice_id=args.slice_id, sample_id=args.sample_id,
         )
+    elif args.command == "contracts":
+        out = analysis.verify_dump_contracts(
+            args.dump, checks=args.check,
+        )
+    elif args.command == "explore":
+        out = analysis.rollout_exploration(args.dump)
+    elif args.command == "slice-verify":
+        out = analysis.slice_verification(args.dump)
+    elif args.command == "demography":
+        out = analysis.batch_demography(args.dump)
+    elif args.command == "twins":
+        out = analysis.candidate_twin_analysis(args.dump)
+    elif args.command == "targets":
+        out = analysis.recompute_targets(
+            args.dump,
+            gamma=args.gamma, reward_scale=args.reward_scale,
+            alpha=args.alpha, u_floor=args.u_floor,
+            reg_lambda=args.reg_lambda,
+        )
+    elif args.command == "fit":
+        out = analysis.critic_fit(args.dump)
+    elif args.command == "actor":
+        out = analysis.actor_contract(args.dump)
+    elif args.command == "update-checks":
+        out = analysis.update_checks(args.dump)
+    elif args.command == "post":
+        out = analysis.post_detail(args.dump)
     elif args.command == "dump":
         request = {"hypothesis": args.hypothesis}
         if args.at_tick is not None:

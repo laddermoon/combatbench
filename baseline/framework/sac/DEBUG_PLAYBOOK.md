@@ -25,7 +25,17 @@ DK() { PYTHONPATH=. python3 -B -m baseline.framework.sac.debugkit "$@"; }
 | slice 上下文 | `DK slice-ctx <run|ckpt|replay.pt> [--source-key K|--slice-id S|--sample-id N]` |
 | replay 人口学 | `DK replay <run_dir>` |
 | 精确复算 | `DK recompute <dump>`（全正则模式，应 `max_abs_diff≈0`） |
-| JSON API | `DK serve baseline/runs_sac --port 8766` |
+| **契约账本** | `DK contracts <dump> [--check C4.1|target]`——每条断言 PASS/WARN/FAIL/SKIP；FAIL=实现错误证据，WARN=统计异常（unverifiable semantics 也是 WARN，绝不静默 PASS） |
+| 切口⓪ 实现探索 | `DK explore <dump>`——逐样本 ε = a_env − policy_action，按 behavior 分组 |
+| 切口① slice 契约 | `DK slice-verify <dump>`——从 task_facts 复算 reward/门控权重 + provenance 一致性 |
+| 切口② batch 人口学 | `DK demography <dump>`——batch vs replay 的 round/指纹/抽样覆盖分布 |
+| 切口③ twin/候选 | `DK twins <dump>`——integ_w 归一、Q1/Q2 pair 份额、joint-vs-indep min 差 |
+| 切口④ 目标重算 | `DK targets <dump> [--gamma/--reward-scale/--alpha/--u-floor/--reg-lambda X]`——闭合核验 + 反事实滑杆 |
+| 切口⑤ critic 拟合 | `DK fit <dump>`——逐通道 EV / MSE 闭合 / TD² Top5% 集中度 |
+| 切口⑥ actor 契约 | `DK actor <dump>`——U(s) 分布与 floor 激活率、门控链、actor_cand_q ≡ φ_post |
+| 切口⑧ 更新检查 | `DK update-checks <dump>`——Polyak 逐参数恒等式 / alpha 不变量 / 分层相对步长 |
+| 切口⑨ 后更新 | `DK post <dump>`——同批 det-action/logπ/U 漂移 + 单步 TD-MSE 是否下降 |
+| JSON API | `DK serve baseline/runs_sac --port 8766`（dump 端点同名：`contracts/explore/slice-verify/demography/twins/targets/fit/actor/update-checks/post`） |
 
 ## 1. 不收敛 / 回报平台期
 

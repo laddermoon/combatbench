@@ -168,7 +168,43 @@ def _dump_endpoint(path: str, root: Path, q: Dict[str, list]) -> Any:
             raise KeyError(
                 f"no {kind} result for {dump.name} yet — POST a job first")
         return json.loads(out.read_text(encoding="utf-8"))
+    # ---- contract ledger + diagnostic cuts (WP1) ----
+    if path == "contracts":
+        checks = q.get("check") or None
+        return analysis.verify_dump_contracts(
+            _resolve_dump(root, q), checks=checks,
+        )
+    if path == "explore":
+        return analysis.rollout_exploration(_resolve_dump(root, q))
+    if path == "slice-verify":
+        return analysis.slice_verification(_resolve_dump(root, q))
+    if path == "demography":
+        return analysis.batch_demography(_resolve_dump(root, q))
+    if path == "twins":
+        return analysis.candidate_twin_analysis(_resolve_dump(root, q))
+    if path == "targets":
+        return analysis.recompute_targets(
+            _resolve_dump(root, q),
+            gamma=_opt_float(_opt, "gamma"),
+            reward_scale=_opt_float(_opt, "reward_scale"),
+            alpha=_opt_float(_opt, "alpha"),
+            u_floor=_opt_float(_opt, "u_floor"),
+            reg_lambda=_opt_float(_opt, "reg_lambda"),
+        )
+    if path == "fit":
+        return analysis.critic_fit(_resolve_dump(root, q))
+    if path == "actor":
+        return analysis.actor_contract(_resolve_dump(root, q))
+    if path == "update-checks":
+        return analysis.update_checks(_resolve_dump(root, q))
+    if path == "post":
+        return analysis.post_detail(_resolve_dump(root, q))
     raise KeyError(f"unknown dump endpoint {path!r}")
+
+
+def _opt_float(_opt, name: str) -> Optional[float]:
+    v = _opt(name)
+    return float(v) if v not in (None, "") else None
 
 
 def _run_endpoint(

@@ -180,6 +180,22 @@
   .stage-stats .kv { display: flex; gap: 5px; }
   .stage-stats .k { color: var(--muted); }
   .stage-stats .v { font-family: ui-monospace, monospace; }
+  /* --- Contract Ledger (dump home) --- */
+  .ledger-summary { display: flex; gap: 14px; font-size: 12px; margin: 6px 0 10px; align-items: center; }
+  .ledger-pill { padding: 2px 10px; border-radius: 10px; font-family: ui-monospace, monospace; font-weight: 600; }
+  .ledger-pill.pass { background: rgba(46,160,67,.18); color: var(--green); }
+  .ledger-pill.warn { background: rgba(210,153,34,.18); color: var(--orange); }
+  .ledger-pill.fail { background: rgba(248,81,73,.18); color: var(--red); }
+  .ledger-pill.skip { background: var(--panel-alt); color: var(--muted); }
+  table.check-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  table.check-table th { text-align: left; padding: 4px 8px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 600; }
+  table.check-table td { padding: 4px 8px; border-bottom: 1px solid var(--border); font-family: ui-monospace, monospace; vertical-align: top; }
+  table.check-table td.detail { font-family: inherit; color: var(--muted); white-space: normal; }
+  .chk-status { font-weight: 700; text-transform: uppercase; font-size: 10px; }
+  .chk-status.pass { color: var(--green); }
+  .chk-status.warn { color: var(--orange); }
+  .chk-status.fail { color: var(--red); }
+  .chk-status.skip { color: var(--muted); }
   .stage-mini { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-top: 6px; }
   .gs-scope { color: var(--muted); font-size: 11px; font-weight: 400; }
 
@@ -403,6 +419,12 @@
       <div class="card">
         <h2>Dump Overview <span class="gs-scope" id="dump-overview-scope"></span></h2>
         <div class="stage-stats" id="dump-overview"><div class="loading">loading...</div></div>
+      </div>
+      <div class="card" id="contract-ledger-card">
+        <h2>Contract Ledger <span class="gs-scope" id="ledger-scope"></span>
+          <span class="stage-open" id="ledger-rerun" style="cursor:pointer">rerun ↻</span></h2>
+        <div id="ledger-summary"><div class="loading">loading…</div></div>
+        <div id="ledger-body"></div>
       </div>
       <div id="dump-stages"></div>
     </div>
@@ -1905,6 +1927,56 @@
       $('sum-collection').innerHTML =
         `<div class="error-msg">${escapeHtml(e.message)}</div>`;
     }
+    _renderContractLedger();
+  }
+
+  // --- Contract Ledger card (WP1): falsifiable per-cut assertions.
+  // Sorted fail > warn > skip > pass so violations surface first.
+  async function _renderContractLedger() {
+    const sumEl = $('ledger-summary');
+    const bodyEl = $('ledger-body');
+    if (!sumEl) return;
+    sumEl.innerHTML = '<div class="loading">verifying contracts…</div>';
+    bodyEl.innerHTML = '';
+    $('ledger-rerun').onclick = () => _renderContractLedger();
+    let d;
+    try {
+      d = await fetchJson(api('dump/contracts'));
+    } catch (e) {
+      sumEl.innerHTML =
+        `<div class="error-msg">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const s = d.summary || {};
+    $('ledger-scope').textContent =
+      `${state.dumpName || ''} · mode ${d.regularizer_mode || '?'}`;
+    const pill = (k) =>
+      `<span class="ledger-pill ${k}">${k.toUpperCase()} ${s[k] || 0}</span>`;
+    sumEl.innerHTML = '<div class="ledger-summary">' +
+      `<span class="ledger-pill ${d.verdict || 'skip'}">VERDICT ${escapeHtml(String(d.verdict || '?').toUpperCase())}</span>` +
+      ['fail', 'warn', 'skip', 'pass'].map(pill).join('') +
+      '</div>';
+    const rank = {fail: 0, warn: 1, skip: 2, pass: 3};
+    const checks = (d.checks || []).slice().sort(
+      (a, b) => (rank[a.status] ?? 4) - (rank[b.status] ?? 4)
+        || String(a.id).localeCompare(String(b.id)));
+    if (!checks.length) { bodyEl.innerHTML = ''; return; }
+    const rows = checks.map(c => {
+      const viol = (c.violating_samples || []).length;
+      return `<tr>` +
+        `<td><span class="chk-status ${c.status}">${c.status}</span></td>` +
+        `<td>${escapeHtml(c.id || '')}</td>` +
+        `<td>${escapeHtml(c.cut || '')}</td>` +
+        `<td>${escapeHtml(c.name || '')}</td>` +
+        `<td>${viol ? viol + ' rows' : ''}</td>` +
+        `<td class="detail">${escapeHtml(c.detail || '')}</td>` +
+        `</tr>`;
+    }).join('');
+    bodyEl.innerHTML =
+      '<table class="check-table"><thead><tr>' +
+      '<th>status</th><th>id</th><th>cut</th><th>check</th>' +
+      '<th>violations</th><th>detail</th></tr></thead>' +
+      `<tbody>${rows}</tbody></table>`;
   }
 
   function _kvSpan(k, v) {
