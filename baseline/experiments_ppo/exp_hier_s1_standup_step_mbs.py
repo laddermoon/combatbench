@@ -1,4 +1,4 @@
-"""Hierarchy Step 1 — from-scratch standup + standard stepping (65-dim).
+"""Hierarchy Step 1 — from-scratch standup + standard stepping (66-dim).
 
 Per the revised bootstrip plan: NO warm-start.  The robot learns to get
 up from a random fallen pose AND to settle into the standard dynamic
@@ -39,14 +39,14 @@ from .exp_standup import Standup
 
 
 class HierS1StandupStepMBS(Standup):
-    """Standup + standard-clip stepping under the 65-dim command contract."""
+    """Standup + standard-clip stepping under the 66-dim command contract."""
 
     name = "hier_s1_standup_step_mbs"
 
     # --- Network ---
-    obs_dim: int = 65
+    obs_dim: int = 66
     action_dim: int = 21
-    actor_blueprint = "init_policy_mbs_65d.yaml"
+    actor_blueprint = "init_policy_mbs_66d.yaml"
 
     # --- Reward channels ---
     _ch_pot = "r_potential"

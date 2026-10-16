@@ -30,6 +30,7 @@ runtime:
 simulator:
   cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
   config:
+    cmd_version: "v1"  # legacy 65-dim contract
     initial_distance: ${initial_distance}
     debug_torque: false
     initial_pose_a: "standing"

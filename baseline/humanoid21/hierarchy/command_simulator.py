@@ -1,67 +1,87 @@
-"""Command-conditioned simulator — 65-dim obs = 57 proprio + 8 cmd.
+"""Command-conditioned simulator — 66-dim obs = 57 proprio + 9 cmd.
 
 Strips the 39-dim opponent block (obs[57:96]) from the canonical
-Humanoid21Simulator observation and appends an 8-dim physical-semantic
-command vector, producing a 65-dim input for the low-level executor.
+Humanoid21Simulator observation and appends a command vector for the
+low-level executor.  See ``COMMAND_DESIGN.md`` for the full contract.
 
-Stage 0 contract: the command schedule always emits STAND (all zeros).
-Future stages will manage STAND → PUNCH/MOVE → STAND segment switching
-inside this class.
+Two command layouts are supported via ``cmd_version``:
 
-Command layout (all values already in [-1.5, 1.5] O(1) range):
+v2 (default, 9-dim, 66-dim obs) — finalized contract:
 
-    cmd[0]  eff_type   ∈ {-1(foot), 0(torso), +1(hand)}
-    cmd[1]  eff_side   ∈ {-1(right), 0(bilateral), +1(left)}
-    cmd[2]  act_mode   ∈ {-1(locate), 0(idle), +1(strike)}
-    cmd[3]  phase      ∈ [0.0, 1.0]   — normalized progress in current
-                                        command window (0 for STAND)
-    cmd[4]  target_x   ∈ [-1.5, 1.5]  — ego-frame forward coord (m)
-    cmd[5]  target_y   ∈ [-1.5, 1.5]  — ego-frame lateral coord (m)
-    cmd[6]  target_z   ∈ [-1.5, 1.5]  — ego-frame vertical coord (m)
-    cmd[7]  target_aux ∈ [-1.0, 1.0]  — MOVE: Δψ/π;  PUNCH: force coef
+    cmd[0]  vx        ego-frame forward target speed   (m/s → /V_MAX)
+    cmd[1]  vy        ego-frame lateral target speed   (m/s → /V_MAX)
+    cmd[2]  w         target yaw rate, +left           (rad/s → /W_MAX)
+    cmd[3]  h         torso height offset from nominal (m → /H_SCALE)
+    cmd[4]  eff_type  0 none, +1 hand, -1 foot
+    cmd[5]  eff_side  +1 left, -1 right (ignored if eff_type=0)
+    cmd[6]  tx        effector target, ego forward     (m → /TGT_SCALE)
+    cmd[7]  ty        effector target, ego lateral     (m → /TGT_SCALE)
+    cmd[8]  tz        effector target, ego vertical    (m → /TGT_SCALE)
+
+v1 (legacy 8-dim, 65-dim obs) — kept only so in-flight 65-dim runs
+(e.g. hier_s2_balance_s42b) remain resumable under current code:
+
+    cmd[0] eff_type {-1 foot, 0 torso, +1 hand}
+    cmd[1] eff_side {-1 right, 0 bilateral, +1 left}
+    cmd[2] act_mode {-1 locate, 0 idle, +1 strike}
+    cmd[3] phase ∈ [0,1]
+    cmd[4:7] target xyz
+    cmd[7] target_aux
+
+Instantaneous semantics: every field holds "what is wanted right now"
+until overwritten — there are no action macros, modes, phases or
+urgency fields.  Retracting a hand is just a new target point (or
+``clear_effector``); stopping motion is a zero velocity command.
+All-zero command = nominal-height in-place standard stepping.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
 from envs.humanoid21.simulator import Humanoid21Simulator
 
-# ---------------------------------------------------------------------------
-# Command field indices within the 8-dim vector.
-# ---------------------------------------------------------------------------
-EFF_TYPE = 0
-EFF_SIDE = 1
-ACT_MODE = 2
-PHASE = 3
-TGT_X = 4
-TGT_Y = 5
-TGT_Z = 6
-TGT_AUX = 7
-
-CMD_DIM = 8
 BODY_DIM = 57  # obs[0:57] — proprioception, no opponent
 
-# Canonical STAND command — all zeros.
-STAND_CMD = np.zeros(CMD_DIM, dtype=np.float32)
+# ---------------------------------------------------------------------------
+# v2 command field indices within the 9-dim vector.
+# ---------------------------------------------------------------------------
+VX, VY, WZ, HT = 0, 1, 2, 3
+EFF_TYPE, EFF_SIDE = 4, 5
+TGT_X, TGT_Y, TGT_Z = 6, 7, 8
+
+# Normalisation scales — fixed for the whole training lineage so a
+# given command value always means the same physical quantity.
+V_MAX = 1.0       # m/s
+W_MAX = 1.0       # rad/s
+H_SCALE = 0.4     # m  (h field = height offset / H_SCALE)
+TGT_SCALE = 1.5   # m  (workspace radius for effector targets)
+
+CMD_V1_DIM = 8
+CMD_V2_DIM = 9
 
 
 class CommandSimulator(Humanoid21Simulator):
-    """Humanoid21Simulator → 65-dim observation (57 proprio + 8 cmd).
+    """Humanoid21Simulator → 57-dim proprio + N-dim command observation.
 
-    For Stage 0 the schedule emits STAND for every step.  The
-    command-generation interface (``_next_command``) is the single
-    extension point for later stages.
+    ``cmd_version`` selects the command layout (``v2`` default = the
+    finalized 9-dim contract; ``v1`` = legacy 8-dim, kept for resuming
+    65-dim runs).  Commands persist until changed via ``set_motion`` /
+    ``set_effector`` / ``clear_effector`` / ``reset_command``; fresh
+    episodes start at the all-zero command.
     """
 
     OBS_BASE_DIM = 96
-    OBS_OUT_DIM = BODY_DIM + CMD_DIM  # 65
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, cmd_version: str = "v2", **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        if cmd_version not in ("v1", "v2"):
+            raise ValueError(f"cmd_version must be 'v1' or 'v2', got {cmd_version!r}")
+        self._cmd_version = cmd_version
+        self.cmd_dim = CMD_V1_DIM if cmd_version == "v1" else CMD_V2_DIM
+        self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim
         self._action_step = 0
-        # Per-agent current command (Stage 0: always STAND).
         self._cmd: Dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
@@ -75,21 +95,75 @@ class CommandSimulator(Humanoid21Simulator):
     def reset(self, seed=None, options=None) -> None:
         super().reset(seed=seed, options=options)
         self._action_step = 0
-        # Fresh episode → every agent back to STAND.
+        # Fresh episode → every agent back to the all-zero command.
         self._cmd = {}
 
     # ------------------------------------------------------------------
-    # Command generation — extension point for Stage 1+.
+    # Command interface (v2 semantics; v1 accepts raw vectors only)
+    # ------------------------------------------------------------------
+
+    def _require_v2(self) -> None:
+        if self._cmd_version != "v2":
+            raise RuntimeError("structured command setters require cmd_version='v2'")
+
+    def set_motion(self, robot_id: str, vx: float, vy: float, w: float,
+                   h: float = 0.0) -> None:
+        """Set the body channel; keeps the current effector channel.
+
+        ``vx``/``vy`` in m/s, ``w`` in rad/s, ``h`` = torso height
+        offset from nominal in m.
+        """
+        self._require_v2()
+        cmd = self._current_cmd(robot_id)
+        cmd[VX] = vx / V_MAX
+        cmd[VY] = vy / V_MAX
+        cmd[WZ] = w / W_MAX
+        cmd[HT] = h / H_SCALE
+
+    def set_effector(self, robot_id: str, eff_type: int, eff_side: int,
+                     target_xyz: Tuple[float, float, float]) -> None:
+        """Command one effector to reach ``target_xyz`` (ego frame, m).
+
+        ``eff_type``: +1 hand, -1 foot.  ``eff_side``: +1 left, -1 right.
+        The target persists until changed — speed of approach is what
+        the reward measures, not a commanded mode.
+        """
+        self._require_v2()
+        assert eff_type in (+1, -1) and eff_side in (+1, -1)
+        cmd = self._current_cmd(robot_id)
+        cmd[EFF_TYPE] = float(eff_type)
+        cmd[EFF_SIDE] = float(eff_side)
+        cmd[TGT_X:TGT_Z + 1] = np.asarray(target_xyz) / TGT_SCALE
+
+    def clear_effector(self, robot_id: str) -> None:
+        """Release the effector task (back to default posture); motion
+        channel is untouched."""
+        self._require_v2()
+        cmd = self._current_cmd(robot_id)
+        cmd[EFF_TYPE:TGT_Z + 1] = 0.0
+
+    def set_command(self, robot_id: str, cmd: np.ndarray) -> None:
+        """Overwrite the full command vector (already normalised)."""
+        cmd = np.asarray(cmd, dtype=np.float32)
+        if cmd.shape != (self.cmd_dim,):
+            raise ValueError(f"expected ({self.cmd_dim},), got {cmd.shape}")
+        self._cmd[robot_id] = cmd.copy()
+
+    def reset_command(self, robot_id: str) -> None:
+        """Back to the all-zero command (standard stepping)."""
+        self._cmd[robot_id] = np.zeros(self.cmd_dim, dtype=np.float32)
+
+    # ------------------------------------------------------------------
+    # Command storage — persistent until changed.
     # ------------------------------------------------------------------
 
     def _next_command(self, robot_id: str) -> np.ndarray:
-        """Return the 8-dim command for *robot_id* at this step.
+        """Initial command for *robot_id* (all zeros = STAND).
 
-        Stage 0: always STAND (all zeros).  Later stages override
-        this to implement segment scheduling, launch gating, and
-        mid-action abort.
+        Extension point for command schedulers: override to inject a
+        scripted or curriculum-driven command sequence per episode.
         """
-        return STAND_CMD
+        return np.zeros(self.cmd_dim, dtype=np.float32)
 
     def _current_cmd(self, robot_id: str) -> np.ndarray:
         if robot_id not in self._cmd:
@@ -117,5 +191,5 @@ class CommandSimulator(Humanoid21Simulator):
     # ------------------------------------------------------------------
 
     def get_command(self, robot_id: str) -> np.ndarray:
-        """Current 8-dim command for *robot_id* (read-only copy)."""
+        """Current command for *robot_id* (read-only copy)."""
         return self._current_cmd(robot_id).copy()

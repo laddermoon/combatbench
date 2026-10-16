@@ -1,16 +1,22 @@
-"""Migrate a 96-dim checkpoint to the 65-dim hierarchy contract.
+"""Migrate a checkpoint to the 66-dim v2 hierarchy contract.
 
-Slices the actor/critic first-layer weight matrices from (H, 96) to
-(H, 65): keeps columns [0:57] (proprioception) and appends 8 zero
-columns for the new command dims.  The resulting checkpoint is
-compatible with --resume-from: all other layers pass through
-unchanged, missing critics (r_fall/r_cross/r_guard) get fresh init.
+Keeps the proprioceptive columns [0:57] of every first-layer weight
+matrix and writes zero columns for the 9 command dims [57:66]:
+  - (H, 96) → (H, 66): drop opponent block [57:96], append 9 zeros
+  - (H, 65) → (H, 66): keep body [0:57], drop legacy cmd cols, 9 zeros
+
+Command-input columns are always zeroed (not carried over): the v1
+command layout had different semantics, and under the all-zero
+command those weights are unidentifiable anyway.
+
+The resulting checkpoint is compatible with --resume-from: all other
+layers pass through unchanged, missing critics get fresh init.
 
 Usage::
 
     python3 baseline/humanoid21/hierarchy/init_hier_ckpt.py \
-        --src baseline/runs/standup_mbs_ef05_s42/checkpoints/checkpoint_u00350.pt \
-        --dst baseline/humanoid21/hierarchy/ckpts/hier_s0_init.pt
+        --src baseline/runs/<run>/checkpoints/checkpoint_uNNNNN.pt \
+        --dst baseline/humanoid21/hierarchy/ckpts/hier_v2_init.pt
 """
 from __future__ import annotations
 
@@ -20,19 +26,20 @@ from pathlib import Path
 import torch
 
 BODY_DIM = 57
-CMD_DIM = 8
-NEW_OBS_DIM = BODY_DIM + CMD_DIM  # 65
+CMD_DIM = 9
+NEW_OBS_DIM = BODY_DIM + CMD_DIM  # 66
+_SRC_DIMS = (65, 96)
 
 
 def _migrate_2d(w: torch.Tensor, tag: str) -> torch.Tensor:
-    """(H, 96) → (H, 65): keep [0:57], zero-pad [57:65]."""
-    if w.ndim != 2 or w.shape[1] != 96:
-        print(f"  skip {tag}: shape {tuple(w.shape)} (not (?, 96))")
+    """(H, 96|65) → (H, 66): keep [0:57], zero-pad [57:66]."""
+    if w.ndim != 2 or w.shape[1] not in _SRC_DIMS:
+        print(f"  skip {tag}: shape {tuple(w.shape)}")
         return w
     body = w[:, :BODY_DIM]          # (H, 57)
     pad = torch.zeros(
         w.shape[0], CMD_DIM, dtype=w.dtype, device=w.device)
-    out = torch.cat([body, pad], dim=1)  # (H, 65)
+    out = torch.cat([body, pad], dim=1)  # (H, 66)
     print(f"  {tag}: {tuple(w.shape)} → {tuple(out.shape)}")
     return out
 
@@ -40,9 +47,9 @@ def _migrate_2d(w: torch.Tensor, tag: str) -> torch.Tensor:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=Path, required=True,
-                    help="Source 96-dim checkpoint path")
+                    help="Source 96- or 65-dim checkpoint path")
     ap.add_argument("--dst", type=Path, required=True,
-                    help="Destination 65-dim checkpoint path")
+                    help="Destination 66-dim checkpoint path")
     args = ap.parse_args()
 
     src = args.src.resolve()
