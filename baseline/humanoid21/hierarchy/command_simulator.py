@@ -33,6 +33,17 @@ until overwritten — there are no action macros, modes, phases or
 urgency fields.  Retracting a hand is just a new target point (or
 ``clear_effector``); stopping motion is a zero velocity command.
 All-zero command = nominal-height in-place standard stepping.
+
+Dynamic strike targets: for ``move_schedule`` rows with
+``eff_type=+1`` the target issued by the schedule is a *segment
+intent* (choose clip + anchor).  During the segment the displayed
+``(tx,ty,tz)`` is overwritten each step with the *current* frame of
+the resolved reference clip's punching hand — ego-anchored at the
+segment's first step (same transform as ``StrikeTrackObserver``) and
+re-expressed in the robot's instantaneous ego frame.  The command
+contract is unchanged (a target that may move over time); the moving
+target gives the policy the phase information a constant target
+cannot carry.  ``get_command`` still reports the issued intent.
 """
 from __future__ import annotations
 
@@ -61,6 +72,41 @@ TGT_SCALE = 1.5   # m  (workspace radius for effector targets)
 CMD_V1_DIM = 8
 CMD_V2_DIM = 9
 
+# ---------------------------------------------------------------------------
+# Strike reference helpers (shared with StrikeTrackObserver).
+# ---------------------------------------------------------------------------
+_REF_CACHE: Dict[str, Any] = {}
+
+
+def _ref_clip(clip_id: str):
+    if clip_id not in _REF_CACHE:
+        from mocap.humanoid21.tracking.ref_data import (
+            RefClip, DEFAULT_CLIPS_DIR)
+        _REF_CACHE[clip_id] = RefClip(clip_id, DEFAULT_CLIPS_DIR)
+    return _REF_CACHE[clip_id]
+
+
+def _yaw_of(quat_wxyz) -> float:
+    from scipy.spatial.transform import Rotation as _R
+    r = _R.from_quat([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3],
+                      quat_wxyz[0]])
+    return float(r.as_euler('xyz')[2])
+
+
+def _rz(dyaw: float) -> np.ndarray:
+    c, s = np.cos(dyaw), np.sin(dyaw)
+    return np.array([[c, -s], [s, c]], dtype=np.float64)
+
+
+def _punch_hand_idx(ref) -> int:
+    kn = ref.keypoint_names
+    vl = np.linalg.norm(np.gradient(
+        ref.keypoints[:, kn.index('hand_left'), :], axis=0), axis=1)
+    vr = np.linalg.norm(np.gradient(
+        ref.keypoints[:, kn.index('hand_right'), :], axis=0), axis=1)
+    return kn.index('hand_left' if vl.max() > vr.max()
+                    else 'hand_right')
+
 
 class CommandSimulator(Humanoid21Simulator):
     """Humanoid21Simulator → 57-dim proprio + N-dim command observation.
@@ -74,16 +120,20 @@ class CommandSimulator(Humanoid21Simulator):
 
     OBS_BASE_DIM = 96
 
-    def __init__(self, cmd_version: str = "v2", **kwargs: Any) -> None:
+    def __init__(self, cmd_version: str = "v2",
+                 strike_dyn_target: bool = True,
+                 **kwargs: Any) -> None:
         super().__init__(**kwargs)
         if cmd_version not in ("v1", "v2"):
             raise ValueError(f"cmd_version must be 'v1' or 'v2', got {cmd_version!r}")
         self._cmd_version = cmd_version
+        self._strike_dyn_target = bool(strike_dyn_target)
         self.cmd_dim = CMD_V1_DIM if cmd_version == "v1" else CMD_V2_DIM
         self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim
         self._action_step = 0
         self._cmd: Dict[str, np.ndarray] = {}
         self._schedules: Dict[str, np.ndarray] = {}
+        self._strike_segs: Dict[str, list] = {}
 
     # ------------------------------------------------------------------
     # Step accounting — mirrors GaitClockSimulator convention.
@@ -102,20 +152,33 @@ class CommandSimulator(Humanoid21Simulator):
         #   options["move_schedule"] = {robot_id: [[n_steps, vx, vy, w], ...]}
         # speeds in m/s, w in rad/s (v2 semantics; h stays 0).
         self._schedules: Dict[str, np.ndarray] = {}
+        self._strike_segs = {}
         sched_opts = (options or {}).get("move_schedule") or {}
         for rid, segs in sched_opts.items():
-            self._schedules[rid] = self._build_schedule(rid, segs)
+            table, strikes = self._build_schedule(rid, segs)
+            self._schedules[rid] = table
+            self._strike_segs[rid] = strikes
 
-    def _build_schedule(self, robot_id: str, segs) -> np.ndarray:
+    def _build_schedule(self, robot_id: str, segs):
         """Compile schedule rows into a (T, cmd_dim) table.
 
         Row formats (physical units, v2 semantics):
           [n, vx, vy, w]                                     — body only
           [n, vx, vy, w, h, eff_type, eff_side, tx, ty, tz]  — full cmd
+
+        Also resolves ``eff_type=+1`` rows to their strike reference
+        clip once here — the binding is fixed for the whole segment
+        (``strike_dyn_target`` then replays the reference hand path
+        through the displayed target each step).
+        Returns ``(table, strike_segments)``.
         """
         if self._cmd_version != "v2":
             raise RuntimeError("move_schedule requires cmd_version='v2'")
+        from baseline.humanoid21.hierarchy.strike_track_observer import (
+            resolve_clip)
         rows = []
+        strikes = []
+        t0 = 0
         for seg in segs:
             n_steps = int(seg[0])
             c = np.zeros(self.cmd_dim, dtype=np.float32)
@@ -127,8 +190,16 @@ class CommandSimulator(Humanoid21Simulator):
                 c[EFF_TYPE] = seg[5]
                 c[EFF_SIDE] = seg[6]
                 c[TGT_X:TGT_Z + 1] = np.asarray(seg[7:10]) / TGT_SCALE
+                if self._strike_dyn_target \
+                        and int(round(seg[5])) == +1:
+                    ref = _ref_clip(resolve_clip(
+                        int(round(seg[6])), seg[7:10]))
+                    strikes.append(dict(
+                        a=t0, b=t0 + max(1, n_steps), ref=ref,
+                        hand=_punch_hand_idx(ref), anchor=None))
             rows.append(np.broadcast_to(c, (max(1, n_steps), self.cmd_dim)))
-        return np.concatenate(rows, axis=0).astype(np.float32)
+            t0 += max(1, n_steps)
+        return (np.concatenate(rows, axis=0).astype(np.float32), strikes)
 
     # ------------------------------------------------------------------
     # Command interface (v2 semantics; v1 accepts raw vectors only)
@@ -210,6 +281,51 @@ class CommandSimulator(Humanoid21Simulator):
     # Observation augmentation
     # ------------------------------------------------------------------
 
+    def _displayed_cmd(self, robot_id: str) -> np.ndarray:
+        """Command as shown in the observation.
+
+        For schedule-bound strike segments (``eff_type=+1``) the issued
+        target is a static *intent*; the displayed target replays the
+        anchored reference hand position — set once at the segment's
+        first step, then advanced frame-by-frame — so the target field
+        carries the phase information a constant target cannot."""
+        cmd = self._current_cmd(robot_id).copy()
+        if not self._strike_dyn_target or cmd[EFF_TYPE] < 0.5:
+            return cmd
+        tgt = self._strike_target_ego(robot_id)
+        if tgt is not None:
+            cmd[TGT_X:TGT_Z + 1] = tgt / TGT_SCALE
+        return cmd
+
+    def _strike_target_ego(self, robot_id: str):
+        """Current anchored reference hand pos in the robot's ego frame
+        (pelvis-relative), or None when not inside a strike segment."""
+        seg = next((s for s in self._strike_segs.get(robot_id) or ()
+                    if s['a'] <= self._action_step < s['b']), None)
+        if seg is None:
+            return None
+        ref = seg['ref']
+        core = self.get_core_state()[robot_id]
+        root_pos = np.asarray(core['root_pos'], dtype=np.float64)
+        yaw_now = _yaw_of(np.asarray(core['root_rot'], dtype=np.float64))
+        if seg['anchor'] is None:
+            yaw_ref0 = _yaw_of(ref.root_quat[0])
+            pi = ref.keypoint_names.index('pelvis')
+            seg['anchor'] = dict(
+                p0=root_pos[:2].copy(), M=_rz(yaw_now - yaw_ref0),
+                pel0=ref.keypoints[0][pi][:2].copy())
+        anc = seg['anchor']
+        k = min(self._action_step - seg['a'], ref.n_ctrl - 1)
+        pi = ref.keypoint_names.index('pelvis')
+        hk = ref.keypoints[k, seg['hand']]
+        d = anc['M'] @ (hk[:2] - anc['pel0'])
+        rel = np.array([anc['p0'][0] + d[0] - root_pos[0],
+                        anc['p0'][1] + d[1] - root_pos[1],
+                        hk[2] - ref.keypoints[k][pi][2]])
+        c, s = np.cos(-yaw_now), np.sin(-yaw_now)
+        return np.array([c * rel[0] - s * rel[1],
+                         s * rel[0] + c * rel[1], rel[2]])
+
     def get_observation(self) -> Dict[str, Any]:
         if "_obs_cmd" in self._data_cache:
             return self._data_cache["_obs_cmd"]
@@ -217,7 +333,7 @@ class CommandSimulator(Humanoid21Simulator):
         out = {}
         for rid, o in base.items():
             proprio = np.asarray(o, dtype=np.float32)[:BODY_DIM]
-            cmd = self._current_cmd(rid)
+            cmd = self._displayed_cmd(rid)
             out[rid] = np.concatenate([proprio, cmd])
         self._data_cache["_obs_cmd"] = out
         return out
