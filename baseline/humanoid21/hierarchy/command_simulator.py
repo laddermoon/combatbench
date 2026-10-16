@@ -53,8 +53,8 @@ TGT_X, TGT_Y, TGT_Z = 6, 7, 8
 
 # Normalisation scales — fixed for the whole training lineage so a
 # given command value always means the same physical quantity.
-V_MAX = 1.0       # m/s
-W_MAX = 1.0       # rad/s
+V_MAX = 1.5       # m/s
+W_MAX = 2.0 * np.pi  # rad/s
 H_SCALE = 0.4     # m  (h field = height offset / H_SCALE)
 TGT_SCALE = 1.5   # m  (workspace radius for effector targets)
 
