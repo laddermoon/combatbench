@@ -48,7 +48,10 @@ _HALF = np.array([
 ])
 
 W_POSE, W_VEL, W_KP, W_HEIGHT, W_ROOT = 0.35, 0.10, 0.25, 0.10, 0.20
-W_HAND, SIGMA_HAND = 0.35, 0.15   # dense reach term on the punching hand
+W_HAND, SIGMA_HAND = 0.35, 0.45   # dense reach term on the punching hand
+# σ=0.45 keeps useful gradient across the whole workspace: at d=0.5 m
+# r_hand≈0.30 with ∂r/∂d≈1.3/m; σ=0.15 would be ~0 gradient there
+# (needle-in-haystack — it only pays once the hand is already close).
 
 # (eff_side, is_near) → clip_id
 _CLIP_MAP = {
