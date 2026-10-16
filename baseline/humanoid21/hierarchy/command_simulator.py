@@ -99,13 +99,9 @@ def _rz(dyaw: float) -> np.ndarray:
 
 
 def _punch_hand_idx(ref) -> int:
-    kn = ref.keypoint_names
-    vl = np.linalg.norm(np.gradient(
-        ref.keypoints[:, kn.index('hand_left'), :], axis=0), axis=1)
-    vr = np.linalg.norm(np.gradient(
-        ref.keypoints[:, kn.index('hand_right'), :], axis=0), axis=1)
-    return kn.index('hand_left' if vl.max() > vr.max()
-                    else 'hand_right')
+    from baseline.humanoid21.hierarchy.strike_track_observer import (
+        punch_hand_name)
+    return ref.keypoint_names.index(punch_hand_name(ref))
 
 
 class CommandSimulator(Humanoid21Simulator):

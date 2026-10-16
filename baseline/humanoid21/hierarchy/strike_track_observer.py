@@ -48,6 +48,7 @@ _HALF = np.array([
 ])
 
 W_POSE, W_VEL, W_KP, W_HEIGHT, W_ROOT = 0.35, 0.10, 0.25, 0.10, 0.20
+W_HAND, SIGMA_HAND = 0.35, 0.15   # dense reach term on the punching hand
 
 # (eff_side, is_near) → clip_id
 _CLIP_MAP = {
@@ -98,6 +99,16 @@ def _clip_meta(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR
     return _LANDING[clip_id]
 
 
+def punch_hand_name(ref: RefClip) -> str:
+    """The clip's punching hand: the one with the higher speed peak."""
+    kn = ref.keypoint_names
+    vl = np.linalg.norm(np.gradient(
+        ref.keypoints[:, kn.index('hand_left'), :], axis=0), axis=1)
+    vr = np.linalg.norm(np.gradient(
+        ref.keypoints[:, kn.index('hand_right'), :], axis=0), axis=1)
+    return 'hand_left' if vl.max() > vr.max() else 'hand_right'
+
+
 def resolve_clip(eff_side: int, target_xyz,
                  clips_dir=DEFAULT_CLIPS_DIR) -> str:
     """side + nearest-landing → clip_id ("近→刺拳, 远→弓步" emerges from
@@ -136,7 +147,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
     @staticmethod
     def _zero() -> Dict[str, float]:
         return {'reward': 0.0, 'pose': 0.0, 'vel': 0.0, 'kp': 0.0,
-                'height': 0.0, 'root': 0.0, 'kp_err_m': 0.0,
+                'height': 0.0, 'root': 0.0, 'hand': 0.0,
+                'hand_err_m': 0.0, 'kp_err_m': 0.0, 'kp_err_rel_m': 0.0,
+                'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
                 'frame': -1.0}
 
@@ -160,6 +173,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 cid = resolve_clip(side, seg[7:10], self._clips_dir)
                 row['clip'] = cid
                 row['ref'] = self._clip(cid)
+                row['hand'] = punch_hand_name(row['ref'])
             self._segments.append(row)
             t += n
 
@@ -220,6 +234,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
         R_ref = R.from_quat([q_ref[1], q_ref[2], q_ref[3], q_ref[0]])
         sq_rel, sq_world = [], []
         M = anc['M']
+        hand_err = 0.0
         for n in KP_SUBSET:
             if n not in kn or n not in kp_names:
                 continue
@@ -228,6 +243,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
             e_ref = R_ref.inv().as_matrix() @ (ref_kp[kn.index(n)]
                                              - p_ref_pelvis)
             sq_rel.append(float(np.sum((e_self - e_ref) ** 2)))
+            if n == seg.get('hand'):
+                hand_err = float(np.linalg.norm(e_self - e_ref))
             # world-frame err vs anchored ref (report only)
             p_ref_world = np.concatenate(
                 [anc['p0'] + M @ (ref_kp[kn.index(n)][:2]
@@ -237,6 +254,10 @@ class StrikeTrackObserver(BaseObserverPlugin):
         kp_mse = float(np.mean(sq_rel)) if sq_rel else 0.0
         r_kp = float(np.exp(-40.0 * kp_mse))
         kp_err_m = float(np.sqrt(np.mean(sq_world))) if sq_world else 0.0
+
+        # --- dense reach term: punching hand to its reference position --
+        # (same trajectory the displayed cmd target replays)
+        r_hand = float(np.exp(-(hand_err / SIGMA_HAND) ** 2))
 
         # --- height -----------------------------------------------------
         z_err = float(root_pos[2] - ref.root_pos[k][2])
@@ -251,10 +272,12 @@ class StrikeTrackObserver(BaseObserverPlugin):
             + 0.5 * float(np.exp(-1.0 * dyaw ** 2))
 
         reward = (W_POSE * r_pose + W_VEL * r_vel
-                  + W_KP * r_kp + W_HEIGHT * r_height + W_ROOT * r_root)
+                  + W_KP * r_kp + W_HEIGHT * r_height + W_ROOT * r_root
+                  + W_HAND * r_hand)
         return {
             'reward': reward, 'pose': r_pose, 'vel': r_vel,
             'kp': r_kp, 'height': r_height, 'root': r_root,
+            'hand': r_hand, 'hand_err_m': hand_err,
             'kp_err_m': kp_err_m, 'kp_err_rel_m': float(np.sqrt(kp_mse)),
             'root_dxy_m': dxy, 'root_dyaw_deg': float(np.degrees(dyaw)),
             'q_rmse_deg': q_rmse_deg,
