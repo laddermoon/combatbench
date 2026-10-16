@@ -107,16 +107,26 @@ class CommandSimulator(Humanoid21Simulator):
             self._schedules[rid] = self._build_schedule(rid, segs)
 
     def _build_schedule(self, robot_id: str, segs) -> np.ndarray:
-        """Compile [[n_steps, vx, vy, w], ...] into a (T, cmd_dim) table."""
+        """Compile schedule rows into a (T, cmd_dim) table.
+
+        Row formats (physical units, v2 semantics):
+          [n, vx, vy, w]                                     — body only
+          [n, vx, vy, w, h, eff_type, eff_side, tx, ty, tz]  — full cmd
+        """
         if self._cmd_version != "v2":
             raise RuntimeError("move_schedule requires cmd_version='v2'")
         rows = []
         for seg in segs:
-            n_steps, vx, vy, w = int(seg[0]), seg[1], seg[2], seg[3]
+            n_steps = int(seg[0])
             c = np.zeros(self.cmd_dim, dtype=np.float32)
-            c[VX] = vx / V_MAX
-            c[VY] = vy / V_MAX
-            c[WZ] = w / W_MAX
+            c[VX] = seg[1] / V_MAX
+            c[VY] = seg[2] / V_MAX
+            c[WZ] = seg[3] / W_MAX
+            if len(seg) > 4:
+                c[HT] = seg[4] / H_SCALE
+                c[EFF_TYPE] = seg[5]
+                c[EFF_SIDE] = seg[6]
+                c[TGT_X:TGT_Z + 1] = np.asarray(seg[7:10]) / TGT_SCALE
             rows.append(np.broadcast_to(c, (max(1, n_steps), self.cmd_dim)))
         return np.concatenate(rows, axis=0).astype(np.float32)
 
