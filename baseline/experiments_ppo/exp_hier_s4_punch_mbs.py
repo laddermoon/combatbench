@@ -175,13 +175,13 @@ class HierS4PunchMBS(HierS3MoveMBS):
         else:
             segs = []
 
-        r_move = np.zeros(T, dtype=np.float32)
-        r_turn = np.zeros(T, dtype=np.float32)
+        r_move, r_turn = self._dense_move_rewards(obs_all[:T], root_xy,
+                                                  yaw_arr, T) \
+            if kin_ok else (np.zeros(T, np.float32),
+                            np.zeros(T, np.float32))
         stop_mask = np.zeros(T, dtype=bool)
         strike_cmd = np.abs(obs_all[:T, BODY_DIM + EFF_TYPE]) > 0.5
         for sg in segs:
-            r_move[sg["a"]:sg["b"]] = sg["s_move"]
-            r_turn[sg["a"]:sg["b"]] = sg["s_turn"]
             if sg["is_stop"]:
                 stop_mask[sg["a"]:sg["b"]] = True
         stop_mask &= ~strike_cmd          # strikes are not STOP segments

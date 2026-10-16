@@ -61,6 +61,8 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
     _SIGMA_V = 0.25      # m/s
     _SIGMA_W = 0.4       # rad/s
     _MOVE_AW = 3.0
+    _EMA_SPAN = 16       # steps; ~1.5 gait cycles — smooths stepping
+                       # oscillation while staying responsive (~8-step lag)
 
     _MOVE_OBS = {"robot_a": "move_track_a", "robot_b": "move_track_b"}
 
@@ -202,6 +204,43 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
                              w_cmd=float(w_s[a])))
         return segs
 
+    def _dense_move_rewards(self, obs_all, root_xy, yaw_arr, T):
+        """Per-step (r_move, r_turn) from EMA-smoothed ego velocity.
+
+        Broadcasting one segment score over a 60-80-step window gives no
+        credit for *when* the robot moves — the only gradient is "do
+        better somewhere in this window".  Here every step is scored on
+        how well the EMA of realized ego velocity / yaw-rate matches the
+        command issued at that step, so early acceleration is rewarded
+        immediately.  The EMA (~1.5 gait cycles) smooths stepping
+        oscillation, preserving the segment-mean semantics: sustained
+        mean velocity is what counts.
+        """
+        cmd_t = obs_all[:, BODY_DIM:]
+        vx_c = cmd_t[:, VX].astype(np.float64) * V_MAX
+        vy_c = cmd_t[:, VY].astype(np.float64) * V_MAX
+        w_c = cmd_t[:, WZ].astype(np.float64) * W_MAX
+        dp = np.diff(root_xy, axis=0) / _DT
+        yw = yaw_arr[1:]
+        c, s = np.cos(-yw), np.sin(-yw)
+        vel = np.zeros((T, 3))
+        vel[1:, 0] = c * dp[:, 0] - s * dp[:, 1]
+        vel[1:, 1] = s * dp[:, 0] + c * dp[:, 1]
+        vel[1:, 2] = np.diff(np.unwrap(yaw_arr)) / _DT
+        alpha = 2.0 / (self._EMA_SPAN + 1)
+        ema = np.zeros(3)
+        vel_s = np.empty_like(vel)
+        for t in range(T):
+            ema += alpha * (vel[t] - ema)
+            vel_s[t] = ema
+        v_err_t = np.hypot(vel_s[:, 0] - vx_c, vel_s[:, 1] - vy_c)
+        r_move = np.exp(-v_err_t ** 2 / self._SIGMA_V ** 2) \
+            .astype(np.float32)
+        w_err_t = np.abs(vel_s[:, 2] - w_c)
+        r_turn = np.exp(-w_err_t ** 2 / self._SIGMA_W ** 2) \
+            .astype(np.float32)
+        return r_move, r_turn
+
     # ------------------------------------------------------------------
     def _build_agent_trajectory(self, episode, agent_id: str, obs_key: str):
         T_full = episode.num_frames
@@ -246,12 +285,14 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
         else:
             segs = []
 
-        r_move = np.zeros(T, dtype=np.float32)
-        r_turn = np.zeros(T, dtype=np.float32)
+        # Dense per-step tracking reward (see _dense_move_rewards).  The
+        # segment-mean score is kept for eval metrics only.
+        r_move, r_turn = self._dense_move_rewards(obs_all[:T], root_xy,
+                                                  yaw_arr, T) \
+            if kin_ok else (np.zeros(T, np.float32),
+                            np.zeros(T, np.float32))
         stop_mask = np.zeros(T, dtype=bool)
         for sg in segs:
-            r_move[sg["a"]:sg["b"]] = sg["s_move"]
-            r_turn[sg["a"]:sg["b"]] = sg["s_turn"]
             if sg["is_stop"]:
                 stop_mask[sg["a"]:sg["b"]] = True
 
