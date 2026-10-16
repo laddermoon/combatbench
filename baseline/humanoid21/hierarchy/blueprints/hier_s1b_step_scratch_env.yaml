@@ -1,0 +1,66 @@
+# Hierarchy Step 1b — from-scratch gait learning, standing spawn (65-dim).
+#
+# Track B (parallel with the migration track): a FRESH 65-dim MBS
+# policy, robots spawn STANDING (no fallen-state init), and learn the
+# standard cyclic-stepping gait (s42i clip library) directly — no
+# standup task, no pushes.  Isolates the question "can the clip reward
+# alone produce the target gait from scratch".
+#
+# Channels (in exp_hier_s1b_step_scratch.py):
+#   r_potential = 0.01 × φ(t),   aw = 1.0 (fixed)
+#   r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term,  aw = 3·φ²
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins: []
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
