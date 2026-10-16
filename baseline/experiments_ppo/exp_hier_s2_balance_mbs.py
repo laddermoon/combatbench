@@ -1,6 +1,6 @@
-"""Hierarchy Step 2 — push recovery -> standard stepping (65-dim).
+"""Hierarchy Step 2 — push recovery -> standard stepping (66-dim).
 
-Warm-start from the Step-1 final checkpoint (65-dim MBS).  The robot
+Warm-start from the Step-1 final checkpoint (66-dim MBS).  The robot
 already stands up and steps cyclically; this stage adds the 12-level
 StandingTriggeredForce curriculum (40N -> 100N) and teaches it to
 survive pushes and re-settle into the standard stepping gait.
@@ -42,10 +42,10 @@ class HierS2BalanceMBS(BalancePure):
 
     name = "hier_s2_balance_mbs"
 
-    # --- Network (65-dim CommandSimulator contract) ---
-    obs_dim: int = 65
+    # --- Network (66-dim CommandSimulator v2 contract) ---
+    obs_dim: int = 66
     action_dim: int = 21
-    actor_blueprint = "init_policy_mbs_65d.yaml"
+    actor_blueprint = "init_policy_mbs_66d.yaml"
 
     # --- Channels: replace r_cross with r_std_clip ---
     _channel_names = ("r_potential", "r_fall", "r_std_clip")
