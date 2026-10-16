@@ -70,12 +70,12 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
     _level: int = 0
     _promote_streak: int = 0
     _LEVELS = (
-        # v_hi, seg_len, p_stop, p_turn, p_arc, w_hi
-        dict(v_hi=0.5, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0),
-        dict(v_hi=0.9, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0),
-        dict(v_hi=1.5, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0),
-        dict(v_hi=1.5, seg=(60, 80),  p_stop=0.30, p_turn=0.25, p_arc=0.20, w_hi=1.5),
-        dict(v_hi=1.5, seg=(30, 60),  p_stop=0.30, p_turn=0.25, p_arc=0.20, w_hi=6.28),
+        # v_hi, seg_len, p_stop, p_turn, p_arc, w_hi, dir (heading cone)
+        dict(v_hi=0.5, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0,  dir=np.pi / 4),
+        dict(v_hi=0.9, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0,  dir=np.pi / 2),
+        dict(v_hi=1.5, seg=(60, 80),  p_stop=0.35, p_turn=0.0,  p_arc=0.0,  w_hi=0.0,  dir=np.pi),
+        dict(v_hi=1.5, seg=(60, 80),  p_stop=0.30, p_turn=0.25, p_arc=0.20, w_hi=1.5,  dir=np.pi),
+        dict(v_hi=1.5, seg=(30, 60),  p_stop=0.30, p_turn=0.25, p_arc=0.20, w_hi=6.28, dir=np.pi),
     )
     _V_LO = 0.2
     _LEAD_STOP = (60, 100)   # first segment: STOP so the robot can stand
@@ -120,7 +120,10 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
                 w = float(rng.uniform(0.5, lv["w_hi"]) * rng.choice([-1, 1]))
                 segs.append([n, 0.0, 0.0, w])
             else:
-                th = float(rng.uniform(0.0, 2 * np.pi))
+                # Heading cone narrows with level: the s42i stepping gait
+                # is fore-aft, so early levels train forward-cone walking
+                # before opening up to lateral/backward commands.
+                th = float(rng.uniform(-lv["dir"], lv["dir"]))
                 v = float(rng.uniform(self._V_LO, lv["v_hi"]))
                 w = 0.0
                 if u > 1.0 - lv["p_arc"]:
@@ -313,31 +316,52 @@ class HierS3MoveMBS(HierS1StandupStepMBS):
         h_term = np.exp(-((h_arr - self._H_TARGET) / self._H_SIGMA) ** 2)
         r_clip = clip_arr + pose_arr + 0.5 * cad_arr + 0.5 * h_term
 
-        channels = {
-            "r_potential": ChannelData(
-                reward=(0.01 * phi_arr).astype(np.float32),
-                is_terminated=False,
-                actor_weight=np.ones(T, dtype=np.float32)),
-            "r_move": ChannelData(
-                reward=r_move, is_terminated=False,
-                actor_weight=(self._MOVE_AW * phi2).astype(np.float32)),
-            "r_turn": ChannelData(
-                reward=r_turn, is_terminated=False,
-                actor_weight=(self._MOVE_AW * phi2).astype(np.float32)),
-            "r_std_clip": ChannelData(
-                reward=r_clip.astype(np.float32), is_terminated=False,
-                actor_weight=(self._clip_aw_scale * phi2
-                              * stop_mask.astype(np.float32)
-                              ).astype(np.float32)),
-        }
-        return [Trajectory(
-            obs=obs_all[:T],
-            actions=acts_all[:T],
-            last_obs=np.asarray(fin_obs, dtype=np.float32),
-            channels=channels,
-            importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T),
-        )]
+        # --- one trajectory per constant-command segment ---------------
+        # Aligns GAE boundaries with task boundaries (same machinery as
+        # s4's strike spans): each critic gets a per-segment baseline, so
+        # e.g. the "free" move reward on STOP segments is absorbed by
+        # V(s) instead of inflating advantages elsewhere.  All channels
+        # ride every segment — STOP segments still need the move/turn
+        # penalty against drift.  Mid-episode spans bootstrap from the
+        # next segment's first obs (which already carries its command).
+        spans = [(sg["a"], sg["b"]) for sg in segs] if segs else [(0, T)]
+        sctx = self.extract_sampling_ctx(episode, agent_id, T)
+        fin = np.asarray(fin_obs, dtype=np.float32)
+        trajs = []
+        for a, b in spans:
+            if b - a < 4:
+                continue
+            last = fin if b >= T else obs_all[b]
+            ctx_slice = ({k: v[a:b] for k, v in sctx.items()}
+                         if sctx is not None else None)
+            trajs.append(Trajectory(
+                obs=obs_all[a:b],
+                actions=acts_all[a:b],
+                last_obs=last,
+                channels={
+                    "r_potential": ChannelData(
+                        reward=(0.01 * phi_arr[a:b]).astype(np.float32),
+                        is_terminated=False,
+                        actor_weight=np.ones(b - a, dtype=np.float32)),
+                    "r_move": ChannelData(
+                        reward=r_move[a:b], is_terminated=False,
+                        actor_weight=(self._MOVE_AW * phi2[a:b])
+                            .astype(np.float32)),
+                    "r_turn": ChannelData(
+                        reward=r_turn[a:b], is_terminated=False,
+                        actor_weight=(self._MOVE_AW * phi2[a:b])
+                            .astype(np.float32)),
+                    "r_std_clip": ChannelData(
+                        reward=r_clip[a:b].astype(np.float32),
+                        is_terminated=False,
+                        actor_weight=(self._clip_aw_scale * phi2[a:b]
+                                      * stop_mask[a:b].astype(np.float32)
+                                      ).astype(np.float32)),
+                },
+                importance=1.0,
+                sampling_ctx=ctx_slice,
+            ))
+        return trajs
 
     # ------------------------------------------------------------------
     # Eval & curriculum promotion
