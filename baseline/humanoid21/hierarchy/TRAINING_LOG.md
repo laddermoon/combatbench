@@ -39,7 +39,17 @@
 | `hier_s1b_step_s42a` | 10:44–11:44 | ~1h | 5→130 | success=1.0, clip=0.69 | **错误实验**：站姿出生而非倒地出生，方向偏差，已废弃删除 ❌ |
 | `hier_s1_s42i_scratch_65d` | 11:44–11:47 | 3m | 1→2 | — | 65 维启动后即切 66 维，废弃 |
 | **`hier_s1_s42i_scratch`** | 11:47–12:47 | **~1h** | 1→380 | **success=1.0, clip=0.607, cad=0.96, h=1.195, cycles=17.2** | ✅ **Stage 1 通过**（66 维从零，倒地→起身→s42i 踱步） |
-| **`hier_s2_balance_s42i_a`** | 12:49– | 进行中 | 381→ | 待出结果 | 从 scratch u380 续训，12 级推力课程从 level 0 开始 |
+| **`hier_s2_balance_s42i_a`** | 12:49–15:40 | ~2h51m | 381→845 | level 4，recovery 起步 | 空心推力 bug（见事故记录 5），弃 run 保 checkpoint |
+| **`hier_s2_balance_s42i_b`** | 15:42–23:10 | ~7.5h | 845→1680 | **level 11 封顶（最高级），recovery 0.948** | ✅ **Stage 2 收敛完成**，手动终止；最强策略=u1635 |
+
+## Stage 2 最终收敛结果（2026-10-16 23:10 手动停止）
+
+- **最强策略**：`baseline/runs/hier_s2_balance_s42i_b/checkpoints/checkpoint_u01635.pt`
+  （已自动导出至 `baseline/runs/hier_s2_balance_s42i_b/policy/`，与 u01635 权重逐一比对一致）
+- **峰值 eval（u1635）**：`recovery=0.948`（100N 推力课程最高级 L11，~2s 持续推下 95% 恢复）、
+  `push_falls=40/764`、`success=1.0`、`clip=0.388`、`cad=0.610`
+- 课程 12 级全部打穿（L0-L11）；L11 下 recovery 从 0.82 → 0.948 缓慢爬升后趋平，收益递减故停
+- 用作 S3/S4 的初始化 checkpoint：`hier_s3_move_*`、`hier_s4_punch_*` 各 run 均从 s2b 系 checkpoint 续训
 
 ## 实验目录与关键产物
 
@@ -48,7 +58,12 @@ baseline/runs/hier_s1_s42i_scratch/        # Stage 1 成果（66 维）
   checkpoints/checkpoint_u00380.pt         # ← Stage 2 的初始化 checkpoint
   videos/u00375.mp4 等                     # 起身+踱步 eval 视频
 
-baseline/runs/hier_s2_balance_s42i_a/      # Stage 2 当前 run
+baseline/runs/hier_s2_balance_s42i_b/      # Stage 2 最终收敛 run（已完成）
+  policy/                                  # ← 最强策略（u1635，recovery=0.948）
+  checkpoints/checkpoint_u01635.pt         # ← 对应 checkpoint（含优化器状态）
+  train.log  videos/
+
+baseline/runs/hier_s2_balance_s42i_a/      # Stage 2 前段 run（空心推力 bug，止于 u845）
   train.log  checkpoints/  videos/
 
 baseline/runs/hier_s2_balance_s42a/        # 旧迁移线 level-9 存档（65 维，step_mbs 步态）
