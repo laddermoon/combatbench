@@ -1,0 +1,87 @@
+# Hierarchy Step 3 — command-conditioned movement (66-dim, v2 contract).
+#
+# Warm-start from the Step-2 final checkpoint.  Per-episode command
+# schedules arrive via episode_options["move_schedule"] (compiled by
+# CommandSimulator into per-step 9-dim commands; see COMMAND_DESIGN.md).
+# Both robots spawn from random fallen states, stand up, then follow
+# scheduled (vx, vy, w) body commands.
+#
+# MoveTrackObserver only RECORDS raw kinematics (root x/y, yaw, h) —
+# all scoring happens offline in the experiment's trajectory builder
+# (segment-level intent matching, not per-step velocity rewards).
+#
+# Reward channels (in exp_hier_s3_move_mbs.py):
+#   r_potential = 0.01 × φ(t),                    aw = 1.0
+#   r_move      = seg exp(-||v̂-v*||²/σ_v²),       aw = 3·φ²
+#   r_turn      = seg exp(-(ŵ-w*)²/σ_w²),         aw = 3·φ²
+#   r_std_clip  = clip + pose + 0.5·cad + h_term, aw = 3·φ² × I(STOP seg)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  move_track_a:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_a"
+  move_track_b:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_b"

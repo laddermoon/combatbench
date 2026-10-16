@@ -83,6 +83,7 @@ class CommandSimulator(Humanoid21Simulator):
         self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim
         self._action_step = 0
         self._cmd: Dict[str, np.ndarray] = {}
+        self._schedules: Dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Step accounting — mirrors GaitClockSimulator convention.
@@ -97,6 +98,27 @@ class CommandSimulator(Humanoid21Simulator):
         self._action_step = 0
         # Fresh episode → every agent back to the all-zero command.
         self._cmd = {}
+        # Optional per-episode command schedule from episode_options:
+        #   options["move_schedule"] = {robot_id: [[n_steps, vx, vy, w], ...]}
+        # speeds in m/s, w in rad/s (v2 semantics; h stays 0).
+        self._schedules: Dict[str, np.ndarray] = {}
+        sched_opts = (options or {}).get("move_schedule") or {}
+        for rid, segs in sched_opts.items():
+            self._schedules[rid] = self._build_schedule(rid, segs)
+
+    def _build_schedule(self, robot_id: str, segs) -> np.ndarray:
+        """Compile [[n_steps, vx, vy, w], ...] into a (T, cmd_dim) table."""
+        if self._cmd_version != "v2":
+            raise RuntimeError("move_schedule requires cmd_version='v2'")
+        rows = []
+        for seg in segs:
+            n_steps, vx, vy, w = int(seg[0]), seg[1], seg[2], seg[3]
+            c = np.zeros(self.cmd_dim, dtype=np.float32)
+            c[VX] = vx / V_MAX
+            c[VY] = vy / V_MAX
+            c[WZ] = w / W_MAX
+            rows.append(np.broadcast_to(c, (max(1, n_steps), self.cmd_dim)))
+        return np.concatenate(rows, axis=0).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Command interface (v2 semantics; v1 accepts raw vectors only)
@@ -166,6 +188,10 @@ class CommandSimulator(Humanoid21Simulator):
         return np.zeros(self.cmd_dim, dtype=np.float32)
 
     def _current_cmd(self, robot_id: str) -> np.ndarray:
+        sched = self._schedules.get(robot_id)
+        if sched is not None:
+            t = min(self._action_step, sched.shape[0] - 1)
+            return sched[t]
         if robot_id not in self._cmd:
             self._cmd[robot_id] = self._next_command(robot_id)
         return self._cmd[robot_id]
