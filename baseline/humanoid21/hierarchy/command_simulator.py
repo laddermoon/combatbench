@@ -55,6 +55,13 @@ from envs.humanoid21.simulator import Humanoid21Simulator
 
 BODY_DIM = 57  # obs[0:57] — proprioception, no opponent
 
+# Optional end-effector proprioception (appended after the command block):
+# pelvis-relative ego positions of both hands and both feet, /TGT_SCALE.
+# Closed-loop counterpart of the effector-target command — without it the
+# policy sees where the hand should be but not where it currently is.
+EE_OBS_DIM = 12  # (hand_l, hand_r, foot_l, foot_r) × xyz
+_EE_BODIES = ("hand_left", "hand_right", "foot_left", "foot_right")
+
 # ---------------------------------------------------------------------------
 # v2 command field indices within the 9-dim vector.
 # ---------------------------------------------------------------------------
@@ -118,14 +125,17 @@ class CommandSimulator(Humanoid21Simulator):
 
     def __init__(self, cmd_version: str = "v2",
                  strike_dyn_target: bool = True,
+                 ee_obs: bool = False,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
         if cmd_version not in ("v1", "v2"):
             raise ValueError(f"cmd_version must be 'v1' or 'v2', got {cmd_version!r}")
         self._cmd_version = cmd_version
         self._strike_dyn_target = bool(strike_dyn_target)
+        self._ee_obs = bool(ee_obs)
         self.cmd_dim = CMD_V1_DIM if cmd_version == "v1" else CMD_V2_DIM
-        self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim
+        self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim \
+            + (EE_OBS_DIM if self._ee_obs else 0)
         self._action_step = 0
         self._cmd: Dict[str, np.ndarray] = {}
         self._schedules: Dict[str, np.ndarray] = {}
@@ -322,6 +332,30 @@ class CommandSimulator(Humanoid21Simulator):
         return np.array([c * rel[0] - s * rel[1],
                          s * rel[0] + c * rel[1], rel[2]])
 
+    def _ee_positions_ego(self, robot_id: str) -> np.ndarray:
+        """(12,) pelvis-relative ego positions of the four end effectors,
+        normalized by TGT_SCALE (same scale as the target command)."""
+        from scipy.spatial.transform import Rotation as R
+        static = self.get_static_data().get(robot_id, {})
+        kp_names = static.get('keypoint_body_names', {})
+        ds = self.get_derived_state().get(robot_id, {})
+        body_xpos = ds.get('body_xpos', {})
+        core = self.get_core_state()[robot_id]
+        root_rot = np.asarray(core['root_rot'], dtype=np.float64)
+        R_inv = R.from_quat(
+            [root_rot[1], root_rot[2], root_rot[3], root_rot[0]]
+        ).inv().as_matrix()
+        pelvis = np.asarray(body_xpos[kp_names['pelvis']],
+                            dtype=np.float64)
+        out = np.zeros(EE_OBS_DIM, dtype=np.float32)
+        for i, n in enumerate(_EE_BODIES):
+            if n not in kp_names or kp_names[n] not in body_xpos:
+                continue
+            p = np.asarray(body_xpos[kp_names[n]], dtype=np.float64)
+            out[3 * i:3 * i + 3] = (R_inv @ (p - pelvis) / TGT_SCALE) \
+                .astype(np.float32)
+        return out
+
     def get_observation(self) -> Dict[str, Any]:
         if "_obs_cmd" in self._data_cache:
             return self._data_cache["_obs_cmd"]
@@ -330,7 +364,10 @@ class CommandSimulator(Humanoid21Simulator):
         for rid, o in base.items():
             proprio = np.asarray(o, dtype=np.float32)[:BODY_DIM]
             cmd = self._displayed_cmd(rid)
-            out[rid] = np.concatenate([proprio, cmd])
+            parts = [proprio, cmd]
+            if self._ee_obs:
+                parts.append(self._ee_positions_ego(rid))
+            out[rid] = np.concatenate(parts)
         self._data_cache["_obs_cmd"] = out
         return out
 

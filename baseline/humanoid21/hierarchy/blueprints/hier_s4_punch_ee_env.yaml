@@ -1,0 +1,98 @@
+# Hierarchy Step 4-EE — same as s4, obs 78-dim (57+9+12 ee ego pos).
+#
+# Warm-start from the Step-2/3 lineage.  Per-episode command schedules
+# arrive via episode_options["move_schedule"]; strike segments use the
+# extended 10-field row:
+#   [n_steps, vx, vy, w, h, eff_type=+1, eff_side=±1, tx, ty, tz]
+# The target is given in pelvis-ego coordinates at segment onset.
+# Distance selects the reference style (near→jab, far→lunge); side
+# selects the hand — see strike_track_observer._CLIP_MAP.
+#
+# StrikeTrackObserver computes the DeepMimic-style tracking reward
+# ONLINE per step (only inside strike segments, in_strike=1) against the
+# ego-anchored reference clip; all other steps output zeros.
+#
+# Reward channels (in exp_hier_s4_punch_mbs.py):
+#   r_potential = 0.01 × φ(t),                     aw = 1.0
+#   r_move / r_turn = seg intent matching,          aw = 3·φ²  (dead at L0)
+#   r_std_clip  = clip + pose + 0.5·cad + h_term,  aw = 3·φ²·I(STOP seg)
+#   r_strike    = DeepMimic tracking vs clip,      aw = 4·φ²·I(in_strike)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    ee_obs: true
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  move_track_a:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_a"
+  move_track_b:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_b"
+  strike_track_a:
+    cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
+    config:
+      agent_id: "robot_a"
+  strike_track_b:
+    cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
+    config:
+      agent_id: "robot_b"
