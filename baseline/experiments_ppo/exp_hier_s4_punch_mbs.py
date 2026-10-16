@@ -55,6 +55,9 @@ class HierS4PunchMBS(HierS3MoveMBS):
     name = "hier_s4_punch_mbs"
 
     _STRIKE_AW = 4.0
+    _STRIKE_LEAD_IN = 5     # extra pre-onset frames inside a strike traj:
+                          # GAE credits pre-strike stabilization through
+                          # the strike channel rather than balance ones
 
     # --- Curriculum: intent-sampling only ---
     # (s4-prefixed attrs: s3's on_eval also touches self._level/_LEVELS —
@@ -211,38 +214,85 @@ class HierS4PunchMBS(HierS3MoveMBS):
             episode.observer_outputs, sk, "in_strike", T_full)
         r_strike = (np.asarray(s_rew[:T], dtype=np.float32)
                     if s_rew is not None else np.zeros(T, np.float32))
-        strike_mask = (np.asarray(s_in[:T], dtype=np.float32)
-                       if s_in is not None else np.zeros(T, np.float32))
+        in_strike = (np.asarray(s_in[:T]) > 0.5
+                     if s_in is not None else np.zeros(T, bool))
 
-        channels = {
-            "r_potential": ChannelData(
-                reward=(0.01 * phi_arr).astype(np.float32),
-                is_terminated=False,
-                actor_weight=np.ones(T, dtype=np.float32)),
-            "r_move": ChannelData(
-                reward=r_move, is_terminated=False,
-                actor_weight=(self._MOVE_AW * phi2).astype(np.float32)),
-            "r_turn": ChannelData(
-                reward=r_turn, is_terminated=False,
-                actor_weight=(self._MOVE_AW * phi2).astype(np.float32)),
-            "r_std_clip": ChannelData(
-                reward=r_clip.astype(np.float32), is_terminated=False,
-                actor_weight=(self._clip_aw_scale * phi2
-                              * stop_mask.astype(np.float32)
-                              ).astype(np.float32)),
-            "r_strike": ChannelData(
-                reward=r_strike, is_terminated=False,
-                actor_weight=(self._STRIKE_AW * phi2
-                              * strike_mask).astype(np.float32)),
-        }
-        return [Trajectory(
-            obs=obs_all[:T],
-            actions=acts_all[:T],
-            last_obs=np.asarray(fin_obs, dtype=np.float32),
-            channels=channels,
-            importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(episode, agent_id, T),
-        )]
+        # --- partition [0, T) into alternating non-strike / strike
+        #     spans.  A strike span becomes its OWN trajectory carrying
+        #     only r_strike: the dedicated critic absorbs the static
+        #     reward floor (height/root/vel pay ~0.4-0.5 for just
+        #     standing), so its advantage reflects only strike quality —
+        #     and strike frames no longer get pulled toward "stand
+        #     still" by the movement channels.  Lead-in steps before
+        #     onset are included so the GAE back-propagation credits
+        #     pre-strike stabilization.  Strike trajs are terminal
+        #     (no bootstrap): the window is a self-contained sub-episode
+        #     whose return should not leak future rewards.
+        strike_runs = []
+        t = 0
+        while t < T:
+            if in_strike[t]:
+                a = t
+                while t < T and in_strike[t]:
+                    t += 1
+                strike_runs.append((a, t))
+            else:
+                t += 1
+        spans = []          # (a, b, is_strike)
+        cur = 0
+        for a, b in strike_runs:
+            sa = max(cur, a - self._STRIKE_LEAD_IN)
+            if sa > cur:
+                spans.append((cur, sa, False))
+            spans.append((sa, b, True))
+            cur = b
+        if cur < T:
+            spans.append((cur, T, False))
+
+        sctx = self.extract_sampling_ctx(episode, agent_id, T)
+        fin = np.asarray(fin_obs, dtype=np.float32)
+        trajs = []
+        for a, b, is_strike in spans:
+            last = fin if b >= T else obs_all[b]
+            ctx_slice = ({k: v[a:b] for k, v in sctx.items()}
+                         if sctx is not None else None)
+            if is_strike:
+                channels = {
+                    "r_strike": ChannelData(
+                        reward=r_strike[a:b], is_terminated=True,
+                        actor_weight=(self._STRIKE_AW * phi2[a:b])
+                            .astype(np.float32)),
+                }
+            else:
+                channels = {
+                    "r_potential": ChannelData(
+                        reward=(0.01 * phi_arr[a:b]).astype(np.float32),
+                        is_terminated=False,
+                        actor_weight=np.ones(b - a, dtype=np.float32)),
+                    "r_move": ChannelData(
+                        reward=r_move[a:b], is_terminated=False,
+                        actor_weight=(self._MOVE_AW * phi2[a:b])
+                            .astype(np.float32)),
+                    "r_turn": ChannelData(
+                        reward=r_turn[a:b], is_terminated=False,
+                        actor_weight=(self._MOVE_AW * phi2[a:b])
+                            .astype(np.float32)),
+                    "r_std_clip": ChannelData(
+                        reward=r_clip[a:b].astype(np.float32),
+                        is_terminated=False,
+                        actor_weight=(self._clip_aw_scale * phi2[a:b]
+                                      * stop_mask[a:b].astype(np.float32)
+                                      ).astype(np.float32)),
+                }
+            trajs.append(Trajectory(
+                obs=obs_all[a:b],
+                actions=acts_all[a:b],
+                last_obs=last,
+                channels=channels,
+                importance=1.0,
+                sampling_ctx=ctx_slice,
+            ))
+        return trajs
 
     # ------------------------------------------------------------------
     def on_eval(self, episodes, update) -> Dict[str, Any]:
