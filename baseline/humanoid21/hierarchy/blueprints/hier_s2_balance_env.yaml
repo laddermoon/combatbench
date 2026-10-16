@@ -68,12 +68,14 @@ observer_plugins:
       agent_id: "robot_a"
       sigma: 8.0
       sigma_pose: 0.9
+      cadence_lag: 5
   standard_clip_b:
     cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
     config:
       agent_id: "robot_b"
       sigma: 8.0
       sigma_pose: 0.9
+      cadence_lag: 5
   foot_state_a:
     cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
     config:

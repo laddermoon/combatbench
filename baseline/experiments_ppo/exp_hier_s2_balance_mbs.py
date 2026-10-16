@@ -160,7 +160,7 @@ class HierS2BalanceMBS(BalancePure):
         h_arr = (np.asarray(h_arr[:T], dtype=np.float32)
                  if h_arr is not None else np.zeros(T, dtype=np.float32))
         r_clip = r_clip + 0.5 * np.exp(
-            -((h_arr - 1.28) / 0.08) ** 2)
+            -((h_arr - 1.20) / 0.08) ** 2)
 
         aw_clip = (self._clip_aw_scale * phi_arr * phi_arr
                    * not_pushing.astype(np.float32)).astype(np.float32)

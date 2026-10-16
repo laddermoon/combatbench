@@ -58,10 +58,9 @@ class HierS1StandupStepMBS(Standup):
     _AGENT_IDS = ("robot_a", "robot_b")
 
     # Uprightness shaping inside r_std_clip: the learned gait plateaued
-    # in a crouch (h≈1.15 vs clip root z≈1.28) because cadence was
-    # already maxed and the strict clip term underflowed at Σd²≈600.
+    # in a crouch (h≈1.15 vs clip root z≈1.20 for the s42i gait).
     # An explicit height pull plus stronger pose weight closes the gap.
-    _H_TARGET: float = 1.28
+    _H_TARGET: float = 1.20
     _H_SIGMA: float = 0.08
 
     # Track both criteria for best-checkpoint selection.
