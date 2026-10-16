@@ -63,6 +63,7 @@ baseline/humanoid21/hierarchy/assets/
 2. **s1b 方向偏差**：误将"从头开始"实现为随机权重+站姿出生（只训保持踱步），实际要求是倒地出生+起身+踱步。已删除实验文件；正确做法就是直接重跑 `hier_s1_standup_step_mbs`（随机初始化本就内建）。
 3. **蹲姿盆地修复**（s42a→s42b）：转移匹配 σ=4 下梯度 underflow，加宽到 8 并增加 pose 权重 0.3→1.0、收窄 σ_pose 1.5→0.9、新增身高项（目标 1.28→后改 1.20）后 clip 从恒 0 升到 0.63。
 4. **步态源纠正**：最初片段库来自 `step_mbs_s42`（慢速高抬腿），用户指定改用 `balance_step_s42i`（抗推训练出的高频小碎步），同步更新 cadence_lag 8→5、身高目标 1.28→1.20。
+5. **空心推力课程（s42i_a，重大）**：`StandingTriggeredForcePlugin` 的站立触发要求 `root_pos[2] > 1.15` 连续 20 步不中断；s42i 动态踱步 h≈1.17 且 ~20-25% 步数跌破 1.15，`standing_timer` 峰值只有 17-18 → 推力几乎从未施加（eval pushes=0-5/128 eps，旧步态同配置为 70+）。后果：L0→L6 晋级靠"偶发 1-2 推恰好没摔"，s2 全程实际无推恢复训练。修复（commit 见下）：插件加 `standing_grace_steps`（连续低于阈值 N+1 帧才重置计时器，默认 0 保持旧语义），s2 蓝图改 `standing_height_threshold: 1.10` + `grace: 5`。修复后 eval pushes≈1547。run `hier_s2_balance_s42i_b` 从 u845 checkpoint 重启，level patch 回 4。
 
 ## Stage 2 监控要点
 

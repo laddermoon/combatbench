@@ -47,7 +47,12 @@ plugins:
   - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
     config:
       target_robots: ["robot_a", "robot_b"]
-      standing_height_threshold: 1.15
+      standing_height_threshold: 1.10
+      # s42i 步态是动态踱步，h_root 均值 ~1.17 且 ~20% 步数跌破 1.15；
+      # 无 grace 时 standing_timer 永远到不了 20，推力从不触发（实测
+      # eval pushes=0-5/128 eps vs 旧步态 70+）。阈值 1.10 + grace 5：
+      # 短促振荡不打断计时，连续 6 帧低于阈值（真倒）才重置。
+      standing_grace_steps: 5
       standing_settle_steps: 20
       random_delay_max_steps: 10
       observe_steps: 20

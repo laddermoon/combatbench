@@ -74,6 +74,7 @@ class _RobotPushState:
         "fall_count",
         "fell_during_push",
         "wall_hist",
+        "below_count",
     )
 
     def __init__(self, robot_id: str, body_name: str):
@@ -92,6 +93,7 @@ class _RobotPushState:
         self.fall_count: int = 0
         self.fell_during_push: bool = False
         self.wall_hist: list = []
+        self.below_count: int = 0
 
 
 class StandingTriggeredForcePlugin(BasePlugin):
@@ -115,12 +117,18 @@ class StandingTriggeredForcePlugin(BasePlugin):
         impulse_body: str = "torso",
         force_threshold: float = 1.0,
         random_seed: Optional[int] = None,
+        standing_grace_steps: int = 0,
     ):
         """
         Args:
             target_robots: 目标机器人 ID 或 ID 列表。
             standing_height_threshold: 站立判断的 torso 高度阈值 (m)。
             standing_settle_steps: 站稳所需持续站立步数（action steps，默认 20=1 秒）。
+            standing_grace_steps: 高度跌破阈值的容忍帧数。动态步态的躯干
+                高度会周期性振荡（如 s42i 步态 ~20% 步数低于 1.15），若每
+                次跌破都清零 standing_timer，计时器永远到不了 settle 步数、
+                推力永远不触发。设为 N 表示仅当连续 N+1 帧低于阈值时才判定
+                "不再站立"并重置计时器；默认 0 = 旧行为（单帧跌破即重置）。
             random_delay_max_steps: 站稳后随机等待步数上限（action steps，默认 10=0.5 秒）。
             observe_steps: 施力后观察窗口步数（action steps，默认 20=1 秒）。
             impulse_body: 默认施力部位。
@@ -138,6 +146,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
         self.observe_steps = int(observe_steps)
         self.impulse_body = impulse_body
         self.force_threshold = float(force_threshold)
+        self.standing_grace_steps = int(standing_grace_steps)
         self._rng = np.random.RandomState(random_seed)
         self._ground_geom_name: Optional[str] = None
 
@@ -167,6 +176,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             "observe_steps": self.observe_steps,
             "impulse_body": self.impulse_body,
             "force_threshold": self.force_threshold,
+            "standing_grace_steps": self.standing_grace_steps,
         }
 
     @classmethod
@@ -348,6 +358,7 @@ class StandingTriggeredForcePlugin(BasePlugin):
             st.fall_count = 0
             st.fell_during_push = False
             st.wall_hist = []
+            st.below_count = 0
             ctx.metrics[f"{rid}_push_count"] = 0
             ctx.metrics[f"{rid}_fall_count"] = 0
             ctx.metrics[f"{rid}_push_active"] = False
@@ -364,10 +375,15 @@ class StandingTriggeredForcePlugin(BasePlugin):
             height = self._get_height(ctx, rid)
 
             # --- 站立计时器：始终运行，跨状态 ---
+            # grace: 短暂低于阈值（步态振荡）不打断计时，只有连续
+            # standing_grace_steps+1 帧低于阈值才重置（真摔倒）。
             if height > self.standing_height_threshold:
                 st.standing_timer += 1
+                st.below_count = 0
             else:
-                st.standing_timer = 0
+                st.below_count += 1
+                if st.below_count > self.standing_grace_steps:
+                    st.standing_timer = 0
 
             # --- 墙接触窗口密度：全状态运行 ---
             # 推中短暂撑墙是合法恢复；窗口内接触密度超阈值（连续长靠
