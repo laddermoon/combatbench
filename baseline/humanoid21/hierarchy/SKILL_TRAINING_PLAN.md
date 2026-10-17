@@ -1,10 +1,10 @@
 # Skill 训练方案（初步技能阶段）
 
-> 状态：**v3 待审阅**。S3/S4 判定失败终止，回到 S2 收敛策略
+> 状态：**v4 待审阅**。S3/S4 判定失败终止，回到 S2 收敛策略
 > （`hier_s2_balance_s42i_b` @ u1635，recovery=0.948）之上训练
 > 离散单技能。**复合实验**：按技能族划分 env 变体，job 级
 > episode_options 携带技能标签，build_trajectory 按标签挂通道。
-> 全新实验文件，不改既有代码。
+> 全新实验文件，不改既有代码（唯一例外见 §3 注）。
 
 ## 1. 目标
 
@@ -47,31 +47,46 @@ heavy=`cmu_144_20`(_m)`_seg01`。
 
 ## 3. Episode 时序结构（统一模板）
 
-**所有技能 episode 统一为三段**（step 族只有前两段语义）：
+**所有技能 episode 统一为两段**：
 
 ```
 [ lead-in：零指令原地踏步 ~10 步 (0.5s) ]   ← 从站姿初态收敛到标准步态
 [ 技能段：技能指令，时长按技能 ]
-[ settle：零指令原地踏步 ~12 步 (0.6s) ]   ← 仅 strike 需要（收势）
 ```
 
 - **lead-in**：即使站姿初始，也先跑一段原地踏步指令，让机器人
-  进入标准步态再发技能指令（用户指定）。时长 ~10 步可调。
-- **strike 时序**（⚠ 需确认，见 §9-1）：
-  - lead-in 10 步（零指令）→ **技能段 = 完整 clip 时长**
-    （jab 22 步 / heavy 13 步，dyn_target 回放覆盖打出+收回全程）
-    → settle ~12 步（零指令原地踏步，收势回标准姿势）
-  - 依据：clip 本身含收回动作（jab 峰值在第 7/22 帧，
-    heavy 在第 7/13 帧，后半段全是收回）。若在峰值处切掉
-    打击指令，dyn_target 停播 + in_strike 关闭 → 收回过程
-    无相位信号也无奖励引导。
-  - 即"打出+收回"由 mocap 跟踪全程塑形，"回位到标准姿势"
-    由零指令踏步收尾段完成。
-- **step 族**：lead-in 即全部内容（零指令贯穿），时长 ~60 步；
-  fallen 变体给 ~120 步（起身需要 ~50 步 + 稳定）。
+  进入标准步态再发技能指令。时长 ~10 步可调。
+- **结束即终**：技能段结束 episode 即终止（不要求回标准姿势；
+  打击结尾姿态由 clip 末帧自己定义）。
+- **step 族**：整 episode 零指令贯穿，时长 ~60 步；
+  fallen 变体 ~120 步（起身 ~50 步 + 稳定）。
 - 摔倒（非 fallen 初始 episode）→ 提前终止。
-- move/turn 技能段 ~70 步（+10 lead ≈ 80 总）；step ~60；
-  strike ~10+13~22+12 ≈ 35-45；step_fallen ~120。
+- 总步数：move/turn ≈ 10+70=80；step ≈ 60；jab ≈ 10+22+3=35；
+  heavy ≈ 10+13+3=26；step_fallen ≈ 120。
+
+### 打击指令的两段式语义（核心设计）
+
+v2 指令语义 = "手尽快到达 ego 系某点"。打击动作天然两段：
+
+| 相位 | 帧范围 | 观测 tgt 列 | 语义 |
+|---|---|---|---|
+| 打出 | k < k_land | **clip 落点**（jab (0.44,±0.39,0.50) / heavy (0.62,±0.21,0.41)） | 尽快到打击点 |
+| 收回 | k ≥ k_land | **clip 末帧手位**（jab (0.07,±0.01,0.60) / heavy (0.22,±0.10,0.49)） | 尽快回护架点 |
+
+- `k_land` = clip 峰值伸展帧（`_clip_meta` argmax）：jab=7、
+  heavy=7，动捕自动得出。
+- 收回点 = clip 末帧手部 ego 位置（动捕出处，非任意值）。
+- **实现**：保持一条打击 schedule 行覆盖全 clip（绑定/锚定/
+  帧推进机制不变），仅 `CommandSimulator` 的 tgt 回放加
+  ~10-15 行 additive 选项 `strike_phase_targets`：
+  `k<k_land → 落点，k≥k_land → 收回点`（替代现有逐帧
+  ref-hand 回放；回放机制保留作 fallback flag）。
+  `StrikeTrackObserver` 零改动。
+- **奖励不分相**（§5 r_strike）：统一 mocap 跟踪全 clip——
+  时序结构由 clip 承载，指令只表达空间目标；分相只会多建
+  critic 而无信息增益。
+- in_strike 门控覆盖全 clip 不变；settle 段取消
+  （用户确认末姿态无要求）。
 
 ## 4. Env 变体（5 个 yaml，4 族）
 
@@ -100,10 +115,10 @@ heavy=`cmu_144_20`(_m)`_seg01`。
 follow 式逐帧归因（滑窗 17 平滑 root_xy → 居中差分 → 分解）：
 
 - 方向移动：`r = 2.0·v_along − 1.0·|v_off|`（线性=最速）
-- step/lead-in/settle（cmd=0 时）：`r = exp(−(|v_xy|/0.15)²)·exp(−(|w|/0.5)²)`
+- step/lead-in（cmd=0 时）：`r = exp(−(|v_xy|/0.15)²)·exp(−(|w|/0.5)²)`
   静止≈1，起身上升过程中 ≈0（不惩罚，由 φ/std_clip 引导）
 - strike env：r_move 仅作用于非打击帧（乘 (1−in_strike) 掩码），
-  负责 lead-in/settle 的原地收束
+  负责 lead-in 的原地站稳
 
 ### `r_turn`（turn env，aw=3.0·φ²）
 
@@ -149,14 +164,10 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 
 ## 9. 待确认
 
-1. **strike 技能段时长**：推荐覆盖完整 clip（含 clip 内收回，
-   dyn_target 全程有相位信号），收尾用零指令踏步段——vs
-   字面方案"打击指令只到出拳峰值、收回段零指令"（收回无引导，
-   不推荐）。
-2. **step/起身 env 实现**：两个仅差 fallen 插件的 yaml（零代码，
+1. **step/起身 env 实现**：两个仅差 fallen 插件的 yaml（零代码，
    推荐）vs 给插件加 fallen option（~10 行 additive，字面单 env）。
-3. **lead-in 时长** ~10 步(0.5s)、settle ~12 步(0.6s)：可调。
-4. **采样分布** §6：比例是否合适。
+2. **lead-in 时长** ~10 步(0.5s)：可调。
+3. **采样分布** §6：比例是否合适。
 
 ## 10. 已定案
 
@@ -164,5 +175,8 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 - 重拳 `cmu_144_20`(_m)`_seg01` ✓
 - B 同策略同练 ✓
 - 起身/踏步同技能同指令（初始状态区分）✓
-- 所有技能带零指令 lead-in；strike 带零指令 settle 收尾 ✓
+- 所有技能带零指令 lead-in ✓
+- **打击两段式指令**：phase1 tgt=clip 落点、phase2 tgt=clip 末帧
+  手位，边界 = k_land；奖励统一 mocap 不分相；无 settle 要求，
+  clip 结束即终 ✓
 - env 按技能族划分，job 级标签挂通道（复合实验）✓
