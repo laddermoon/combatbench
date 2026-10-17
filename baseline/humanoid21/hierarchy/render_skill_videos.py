@@ -112,10 +112,13 @@ def main() -> None:
                 float(rng.uniform(exp.init_distance_min,
                                   exp.init_distance_max)))
         rows = _skill_rows(skill)
+        manifest = json.loads((export_dir / "MANIFEST.json").read_text())
+        pol_cls = f"file:{export_dir / 'policy.py'}:{manifest['exported_class']}"
         options = {
             "initial_distance": dist,
             "skills": {"robot_a": skill, "robot_b": skill},
             "move_schedule": {"robot_a": rows, "robot_b": rows},
+            "warmup_policy_cls": pol_cls,
         }
         opts_json = out_dir / f"{skill}_options.json"
         opts_json.write_text(json.dumps(options))

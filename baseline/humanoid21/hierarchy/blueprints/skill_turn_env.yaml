@@ -2,7 +2,7 @@
 #
 # In-place turning skill episodes: same observer set as move env
 # (yaw comes from move_track), separate blueprint so parameters can
-# be tuned independently.  Standing spawn, no fallen init, no strikes.
+# be tuned independently.  WarmupSteppingPlugin mid-gait init.
 #
 # Reward channels (in exp_skill_train_mbs.py):
 #   r_potential / r_fall / r_turn
@@ -30,7 +30,16 @@ simulator:
     initial_pose_b: "standing"
     strike_dyn_target: false
 
-plugins: []
+plugins:
+  - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
+    config:
+      target_robots: "both"
+      action_steps: 10
+      phy_steps_per_action: 25
+      body_dim: 57
+      cmd_dim: 9
+      sample_actions: true
+
 
 observer_plugins:
   standing_balance_a:

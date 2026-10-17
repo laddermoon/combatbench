@@ -1,6 +1,6 @@
 # Skill training — STRIKE family env (66-dim).
 #
-# Single-strike skill episodes: standing spawn, zero-command lead-in,
+# Single-strike skill episodes: WarmupSteppingPlugin mid-gait init,
 # then one strike segment bound to a mocap clip.  The displayed tgt
 # uses the two-phase semantic (strike_phase_targets): punch-out frames
 # aim at the clip landing point, retract frames aim at the clip-end
@@ -34,7 +34,16 @@ simulator:
     strike_dyn_target: false       # phase targets replace hand replay
     strike_phase_targets: true
 
-plugins: []
+plugins:
+  - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
+    config:
+      target_robots: "both"
+      action_steps: 10
+      phy_steps_per_action: 25
+      body_dim: 57
+      cmd_dim: 9
+      sample_actions: true
+
 
 observer_plugins:
   standing_balance_a:

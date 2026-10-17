@@ -5,7 +5,8 @@ Post S3/S4 reset.  Warm-start from the accepted S2 checkpoint
 experiment: four env variants, one skill per episode, per-episode
 reward-channel attachment.
 
-Skills (one per episode, standing spawn unless noted):
+Skills (one per episode; WarmupSteppingPlugin puts robots into a
+mid-gait state at reset so every recorded frame IS the skill):
   move_fwd/back/left/right — max-speed cardinal translation (cmd ±1)
   turn_left/right          — max-speed in-place turn
   step                     — fallen init; zero cmd = standup+hold
@@ -46,7 +47,6 @@ from .exp_balance_pure import BalancePure
 # ---------------------------------------------------------------------------
 # Skill table — one entry per skill: family, schedule rows, episode length
 # ---------------------------------------------------------------------------
-_LEAD = 10            # zero-cmd lead-in for all scheduled skills
 _STRIKE_PAD = 3       # small tail after clip ends (hold final pose)
 
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
@@ -58,7 +58,6 @@ _HEAVY_NCTRL = 13
 def _strike_rows(side: int, land: Tuple[float, float, float],
                  n_ctrl: int) -> List[list]:
     return [
-        [_LEAD, 0.0, 0.0, 0.0],
         [n_ctrl + _STRIKE_PAD, 0.0, 0.0, 0.0, 0.0,
          +1, side, land[0], land[1] * (1 if side > 0 else -1), land[2]],
     ]
@@ -82,8 +81,6 @@ SKILLS: Dict[str, Dict[str, Any]] = {
                        n_ctrl=_HEAVY_NCTRL),
 }
 
-_MOVE_LEN = _LEAD + 70
-_TURN_LEN = _LEAD + 70
 _IDLE_LEN = 50
 
 
@@ -93,11 +90,9 @@ def _skill_rows(skill: str) -> List[list]:
     fam = s["fam"]
     if fam == "move":
         vx, vy = s["dir_ego"]
-        return [[_LEAD, 0.0, 0.0, 0.0],
-                [70, vx * V_MAX, vy * V_MAX, 0.0]]
+        return [[70, vx * V_MAX, vy * V_MAX, 0.0]]
     if fam == "turn":
-        return [[_LEAD, 0.0, 0.0, 0.0],
-                [70, 0.0, 0.0, s["w_sign"] * W_MAX]]
+        return [[70, 0.0, 0.0, s["w_sign"] * W_MAX]]
     if fam == "idle":
         return [[_IDLE_LEN, 0.0, 0.0, 0.0]]
     return _strike_rows(s["side"], s["land"], s["n_ctrl"])
@@ -228,6 +223,7 @@ class SkillTrainMBS(BalancePure):
                             "robot_a": _skill_rows(sa),
                             "robot_b": _skill_rows(sb),
                         },
+                        "warmup_policy_cls": policy_bp.cls,
                     },
                     sampling_a=sampling, sampling_b=sampling,
                     stochastic=False,
@@ -253,6 +249,7 @@ class SkillTrainMBS(BalancePure):
                         "robot_a": _skill_rows(sa),
                         "robot_b": _skill_rows(sb),
                     },
+                    "warmup_policy_cls": policy_bp.cls,
                 },
                 sampling_a=sampling, sampling_b=sampling,
                 stochastic=True,
@@ -339,7 +336,6 @@ class SkillTrainMBS(BalancePure):
         }
 
         kin = self._kin(episode, agent_id, T_full)
-        seg0 = _LEAD          # skill segment start (lead-in length)
 
         if kin is not None and fam in ("move", "turn", "idle"):
             xy, yaw, _h = kin
@@ -351,7 +347,7 @@ class SkillTrainMBS(BalancePure):
             v_xy = np.linalg.norm(v, axis=1)
 
             if fam == "move":
-                yaw0 = yaw_u[min(seg0, T - 1)]
+                yaw0 = yaw_u[0]
                 c, s = np.cos(yaw0), np.sin(yaw0)
                 de = np.asarray(SKILLS[skill]["dir_ego"])
                 d_hat = np.array([c * de[0] - s * de[1],
@@ -361,13 +357,11 @@ class SkillTrainMBS(BalancePure):
                     v - v_along[:, None] * d_hat[None, :], axis=1)
                 dyaw = np.abs((yaw_u - yaw0 + np.pi)
                               % (2 * np.pi) - np.pi)
-                in_seg = np.zeros(T, dtype=np.float32)
-                in_seg[seg0:] = 1.0
                 channels["r_move"] = ChannelData(
                     reward=(2.0 * v_along).astype(np.float32),
                     is_terminated=False,
                     actor_weight=(self.r_move_actor_weight
-                                  * phi ** 2 * in_seg).astype(np.float32),
+                                  * phi ** 2).astype(np.float32),
                 )
                 channels["r_drift"] = ChannelData(
                     reward=(-1.0 * v_off - 0.5 * np.abs(w)
@@ -379,11 +373,8 @@ class SkillTrainMBS(BalancePure):
             elif fam == "turn":
                 w_sign = float(SKILLS[skill]["w_sign"])
                 w_signed = w * w_sign
-                r_turn = np.where(
-                    np.arange(T) >= seg0,
-                    0.5 * np.clip(w_signed, -4.0, 4.0) - 1.0 * v_xy,
-                    -(v_xy + 0.5 * np.abs(w)),
-                ).astype(np.float32)
+                r_turn = (0.5 * np.clip(w_signed, -4.0, 4.0)
+                          - 1.0 * v_xy).astype(np.float32)
                 channels["r_turn"] = ChannelData(
                     reward=r_turn, is_terminated=False,
                     actor_weight=(self.r_turn_actor_weight
@@ -500,15 +491,15 @@ class SkillTrainMBS(BalancePure):
                     xy, yaw, _ = kin
                     yaw_u = np.unwrap(yaw)
                     disp = self._smooth_vel(xy) * 20.0
-                    yaw0 = yaw_u[min(_LEAD, T - 1)]
+                    yaw0 = yaw_u[0]
                     c, s = np.cos(yaw0), np.sin(yaw0)
                     de = np.asarray(SKILLS[skill]["dir_ego"])
                     d_hat = np.array([c * de[0] - s * de[1],
                                       s * de[0] + c * de[1]])
-                    v_along = (disp @ d_hat)[_LEAD:]
+                    v_along = disp @ d_hat
                     v_off = np.linalg.norm(
-                        disp - (disp @ d_hat)[:, None] * d_hat[None, :],
-                        axis=1)[_LEAD:]
+                        disp - v_along[:, None] * d_hat[None, :],
+                        axis=1)
                     m.setdefault("v_along", []).append(
                         float(np.mean(v_along)))
                     m.setdefault("v_off", []).append(
@@ -521,10 +512,10 @@ class SkillTrainMBS(BalancePure):
                     w_signed = (np.gradient(yaw_u) * 20.0
                                 * SKILLS[skill]["w_sign"])
                     m.setdefault("w", []).append(
-                        float(np.mean(w_signed[_LEAD:])))
+                        float(np.mean(w_signed)))
                     disp = self._smooth_vel(xy) * 20.0
                     m.setdefault("vxy", []).append(float(
-                        np.mean(np.linalg.norm(disp[_LEAD:], axis=1))))
+                        np.mean(np.linalg.norm(disp, axis=1))))
                 elif fam == "idle" and kin is not None:
                     xy, yaw, _ = kin
                     yaw_u = np.unwrap(yaw)

@@ -1,9 +1,9 @@
 # Skill training — MOVE family env (66-dim).
 #
-# Directional-movement skill episodes: both robots spawn standing,
-# each gets a single-segment move_schedule command (±1 normalized =
-# max-speed semantic) after a zero-command lead-in.  No fallen init,
-# no pushes, no strikes.
+# Directional-movement skill episodes: WarmupSteppingPlugin runs
+# ~0.5s of in-place stepping under the current exported policy at
+# reset, so the episode starts mid-gait and every frame is the skill
+# itself (single-segment move_schedule, ±1 = max-speed).
 #
 # Reward channels (in exp_skill_train_mbs.py):
 #   r_potential / r_fall / r_move / r_drift
@@ -31,7 +31,16 @@ simulator:
     initial_pose_b: "standing"
     strike_dyn_target: false
 
-plugins: []
+plugins:
+  - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
+    config:
+      target_robots: "both"
+      action_steps: 10
+      phy_steps_per_action: 25
+      body_dim: 57
+      cmd_dim: 9
+      sample_actions: true
+
 
 observer_plugins:
   standing_balance_a:
