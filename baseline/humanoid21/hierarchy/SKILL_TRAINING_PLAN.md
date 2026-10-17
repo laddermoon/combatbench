@@ -1,168 +1,168 @@
 # Skill 训练方案（初步技能阶段）
 
-> 状态：**v2 待审阅**。S3/S4 判定失败终止，回到 S2 收敛策略
+> 状态：**v3 待审阅**。S3/S4 判定失败终止，回到 S2 收敛策略
 > （`hier_s2_balance_s42i_b` @ u1635，recovery=0.948）之上训练
-> 离散单技能。**复合实验**：4 种 env 变体 × 按技能挂通道，
+> 离散单技能。**复合实验**：按技能族划分 env 变体，job 级
+> episode_options 携带技能标签，build_trajectory 按标签挂通道。
 > 全新实验文件，不改既有代码。
 
 ## 1. 目标
 
 在 S2 基座上训练一组语义明确的单技能，每个技能独立可调用：
 
-- 移动：前/后/左/右（最速，无速度参数）
-- 原地转身：左/右（最速）
-- 原地踏步（默认站姿保持）
+- 移动：前/后/左/右（最速，cmd 归一化 ±1，无速度参数）
+- 原地转身：左/右（最速，±1）
+- 原地踏步（含倒地起身——同一指令，不同初始状态）
 - 打击：左/右刺拳、左/右重拳（纯贴合 mocap 形状）
-- 倒地恢复（维持 S2 能力）
 
-核心机制（已验证框架支持，零改动）：
+机制（已验证框架原生支持，零改动）：
 
-1. `Job.env_bp` 是 per-job 的——rollouter 按 env 分组各自构建。
-2. `Episode.episode_options` 持久化——job 里写 `skill` 标签 +
-   `move_schedule`，build_trajectory 时按技能挂对应奖励通道。
-3. Trajectory 缺通道 → 该 critic 不在这条 traj 上训练——
-   **每类技能免费获得专用 critic**。
+1. `Job.env_bp` per-job——rollouter 按 env 分组各自构建。
+2. `Episode.episode_options` 持久化——job 写 `skill` 标签 +
+   `move_schedule`，build_trajectory 按技能挂对应通道。
+3. Trajectory 缺通道 → 该 critic 不训——每族技能免费专用 critic。
 
-## 2. 四种 env 变体
+## 2. 指令编码
 
-同 simulator（CommandSimulator v2），仅插件/参数差异——全部是
-纯 yaml 配置，零新代码：
+观测不变：57 proprio + 9 cmd = 66。指令值全部**归一化 ±1**
+（schedule 物理单位写 ±V_MAX / ±W_MAX，cmd 列饱和 ±1.0）：
 
-| env | 用途 | 专属配置 |
+| 技能 | cmd 编码 | 语义 |
 |---|---|---|
-| `skill_move_env.yaml` | move_* + step | move_track_a/b（运动学观测）+ standing_balance(φ) + wall_contact + foot_state + standard_clip；无 strike observer；`strike_dyn_target` 关 |
-| `skill_turn_env.yaml` | turn_l/r | 同 move env 的观测集（转向指标从同一运动学源取），独立 yaml 便于单独调参（如 max_steps） |
-| `skill_strike_env.yaml` | jab/heavy | `strike_dyn_target=true` + strike_track_a/b + standing_balance + wall_contact + foot_state |
-| `skill_fallen_env.yaml` | recover | `RandomFallenStatePlugin`（写回摔后姿态）+ move_track + standing_balance + wall_contact + foot_state + standard_clip |
+| move_fwd | VX=+1 | 最速前进 |
+| move_back | VX=−1 | 最速后退 |
+| move_left | VY=+1 | 最速左移 |
+| move_right | VY=−1 | 最速右移 |
+| turn_left | WZ=+1 | 最速原地左转 |
+| turn_right | WZ=−1 | 最速原地右转 |
+| step | 全零 | 原地踏步/起身（S2 自然指令） |
+| jab_l | EFF=+1,SIDE=+1,TGT=(0.438,+0.391,0.498) | 左刺拳 |
+| jab_r | EFF=+1,SIDE=−1,TGT=(0.438,−0.391,0.498) | 右刺拳 |
+| heavy_l | EFF=+1,SIDE=+1,TGT=(0.622,−0.213,0.413) | 左重拳 |
+| heavy_r | EFF=+1,SIDE=−1,TGT=(0.622,+0.213,0.413) | 右重拳 |
 
-每个 env 的 observer 集合决定它产出什么奖励信号——move env
-不跑 strike observer，strike env 不跑 clip observer，各取所需。
-`build_jobs` 按技能给 job 指派对应 `env_bp` + 写入
-`episode_options={"skill": <name>, "move_schedule": {...}}`。
+打击目标点 = 该 clip 自然落点（`_clip_meta` landing），
+`resolve_clip` 按最近落点确定性绑定：jab=`hdm05_3146_88_2895_127`(_m)、
+heavy=`cmu_144_20`(_m)`_seg01`。
 
-## 3. 技能清单与指令编码
+## 3. Episode 时序结构（统一模板）
 
-观测不变：57 proprio + 9 cmd = 66。编码沿用 v2 字段：
+**所有技能 episode 统一为三段**（step 族只有前两段语义）：
 
-| 技能 | env | 指令（物理量） | 长度(步) |
-|---|---|---|---|
-| move_fwd | move | vx=+1.5（列饱和 +1.0=最速） | 80 |
-| move_back | move | vx=−1.5 | 80 |
-| move_left | move | vy=+1.5 | 80 |
-| move_right | move | vy=−1.5 | 80 |
-| step | move | 全零 | 60 |
-| turn_left | turn | w=+2π | 80 |
-| turn_right | turn | w=−2π | 80 |
-| jab_l | strike | eff=+1,side=+1,tgt=(0.438,+0.391,0.498) | 10+37 |
-| jab_r | strike | eff=+1,side=−1,tgt=(0.438,−0.391,0.498) | 10+37 |
-| heavy_l | strike | eff=+1,side=+1,tgt=(0.622,−0.213,0.413) | 10+28 |
-| heavy_r | strike | eff=+1,side=−1,tgt=(0.622,+0.213,0.413) | 10+28 |
-| recover | fallen | 全零 + 摔倒初始 | 120 |
+```
+[ lead-in：零指令原地踏步 ~10 步 (0.5s) ]   ← 从站姿初态收敛到标准步态
+[ 技能段：技能指令，时长按技能 ]
+[ settle：零指令原地踏步 ~12 步 (0.6s) ]   ← 仅 strike 需要（收势）
+```
 
-- 转身双向两条指令（cmd 支持 ±w，高层可选方向）。
-- 打击目标点 = 该 clip 的自然落点（`_clip_meta` landing），
-  `resolve_clip` 按最近落点确定性绑定片段，指令语义 =
-  "向该拳型的典型落点出拳"。jab=`hdm05_3146_88_2895_127`(_m)，
-  heavy=`cmu_144_20`(_m)_seg01（已定案）。
-- 打击段结构：`[10 步 STOP lead]` + `[n_ctrl+15 pad strike 行]`，
-  经 `move_schedule` 走既有通道，simulator/observer 零改动。
-  ego 锚定在段首步自动建立。
+- **lead-in**：即使站姿初始，也先跑一段原地踏步指令，让机器人
+  进入标准步态再发技能指令（用户指定）。时长 ~10 步可调。
+- **strike 时序**（⚠ 需确认，见 §9-1）：
+  - lead-in 10 步（零指令）→ **技能段 = 完整 clip 时长**
+    （jab 22 步 / heavy 13 步，dyn_target 回放覆盖打出+收回全程）
+    → settle ~12 步（零指令原地踏步，收势回标准姿势）
+  - 依据：clip 本身含收回动作（jab 峰值在第 7/22 帧，
+    heavy 在第 7/13 帧，后半段全是收回）。若在峰值处切掉
+    打击指令，dyn_target 停播 + in_strike 关闭 → 收回过程
+    无相位信号也无奖励引导。
+  - 即"打出+收回"由 mocap 跟踪全程塑形，"回位到标准姿势"
+    由零指令踏步收尾段完成。
+- **step 族**：lead-in 即全部内容（零指令贯穿），时长 ~60 步；
+  fallen 变体给 ~120 步（起身需要 ~50 步 + 稳定）。
+- 摔倒（非 fallen 初始 episode）→ 提前终止。
+- move/turn 技能段 ~70 步（+10 lead ≈ 80 总）；step ~60；
+  strike ~10+13~22+12 ≈ 35-45；step_fallen ~120。
 
-## 4. 奖励设计（按技能挂通道）
+## 4. Env 变体（5 个 yaml，4 族）
 
-公共：`r_potential`=0.01·φ（aw=1.0）、`r_fall`=摔倒+靠墙惩罚
-（沿用 S2 组成，aw=2.0）。摔倒在非 recover episode 提前终止。
+| env | 技能 | 差异点 |
+|---|---|---|
+| `skill_move_env` | move_* ×4 | move_track 运动学 + standing_balance + wall_contact + foot_state |
+| `skill_turn_env` | turn_* ×2 | 同 move 观测集，独立 yaml 便于调参 |
+| `skill_strike_env` | jab/heavy ×4 | + `strike_dyn_target=true` + strike_track 观测 |
+| `skill_idle_env` | step（站姿初始） | move_track + std_clip + balance/foot/wall |
+| `skill_idle_fall_env` | step（倒地初始） | = idle_env + `RandomFallenStatePlugin`(both) |
 
-### `r_move`（move env：move_* / step，aw=3.0·φ²）
+⚠ 说明（§9-2）：step 与起身是**同一技能同一指令**（全零），
+"倒地就起身"由初始状态决定。但 `RandomFallenStatePlugin` 是
+无条件触发的，无法用选项关掉——所以零代码实现是同一族拆
+两个仅差该插件的 yaml，build_jobs 按比例分配。替代方案：
+给插件加 ~10 行 `fallen` episode-option 开关（additive），
+则可字面单 env。
 
-follow 式归因：居中滑动平均去步态摆动 → 居中差分 → 投影分解：
+## 5. 奖励设计（按技能族挂通道）
 
-- 方向移动：`r = 2.0·v_along − 1.0·|v_off|`
-  （线性无封顶=最速语义；反向自动为负惩罚）
-- step：`r = exp(−(|v_xy|/0.15)²)·exp(−(|w|/0.5)²)`（静止≈1）
+公共：`r_potential`=0.01·φ（aw=1.0）、`r_fall`=摔倒+靠墙
+（S2 组成，aw=2.0）。
+
+### `r_move`（move/turn/strike/idle env 均挂，aw=3.0·φ²）
+
+follow 式逐帧归因（滑窗 17 平滑 root_xy → 居中差分 → 分解）：
+
+- 方向移动：`r = 2.0·v_along − 1.0·|v_off|`（线性=最速）
+- step/lead-in/settle（cmd=0 时）：`r = exp(−(|v_xy|/0.15)²)·exp(−(|w|/0.5)²)`
+  静止≈1，起身上升过程中 ≈0（不惩罚，由 φ/std_clip 引导）
+- strike env：r_move 仅作用于非打击帧（乘 (1−in_strike) 掩码），
+  负责 lead-in/settle 的原地收束
 
 ### `r_turn`（turn env，aw=3.0·φ²）
 
-`r = 2.0·ω_signed − 2.0·|v_xy|`（转得越快越好 + 平移漂移惩罚，
-ω_signed = d(yaw)/dt·sign(cmd_w)，方向错自动为负）
+`r = 2.0·ω_signed − 2.0·|v_xy|`
 
 ### `r_strike`（strike env，aw=4.0·φ²·in_strike）
 
-纯 mocap 形状跟踪（`StrikeTrackObserver` 现成输出）：
+纯 mocap 形状（无命中/目标点奖惩）：
 
 ```
 r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
     + 0.20·root + 0.35·hand_reach(σ=0.45)
 ```
 
-hand_reach 是"手 vs 参考手"的贴合项（形状的一部分，
-非命中奖励）。观测 tgt 列由 dyn_target 回放参考手轨迹
-（隐式相位，已验证有效）。**无目标点/命中奖惩**。
+### `r_std_clip`（idle env 双变体，aw=2.0·φ²）
 
-### `r_std_clip`（fallen env recover + move env step，aw=2.0·φ²）
+标准站姿片段质量；step 与起身共用这个"回标准姿势"信号。
+**不挂**在 move/turn/strike 任务段（防通道打架）。
 
-标准站姿片段质量。**不挂**在 move/strike/turn 任务上——
-避免 S3 时代步态奖励与任务奖励打架。
+## 6. 采样与初始
 
-## 5. Episode 结构与采样
+- 每 update job 分布（可调）：move×4+step ~35%、turn×2 ~15%、
+  strike×4 ~35%、step_fallen ~15%。
+- 双方同策略同练：a/b 各独立采样技能，共享权重双倍数据。
+  initial_distance 2.0 不变。
+- 站立初始 pose="standing"；fallen 由插件写回摔后姿态。
 
-- 单技能 episode = 单条 trajectory，无切分需求。
-- 采样比例（每 update 的 job 分布，可调）：
-  - move_*×4 + step：~35%（每方向 ~7%，step ~7%）
-  - turn_*×2：~15%
-  - strike×4：~35%（每种 ~9%）
-  - recover：~15%（fallen env，维持起身能力）
-- 双方同策略同练：robot_a/robot_b 各自独立采样技能，共享
-  权重、各自产轨迹（双倍数据）。initial_distance 2.0 不变；
-  技能是 ego 系的，碰撞偶发且是真实物理。
-- 摔倒（非 recover）→ 提前终止，短 episode 失败廉价。
-- 帧数估算：~50-100 步/ep × 512 eps ≈ 25-50k 帧/update，
-  比 S3/S4（400 步 ep）快 5-10 倍。
+## 7. 网络与暖启动
 
-## 6. 网络与暖启动
+obs_dim=66 不变；暖启动 `checkpoint_u01635.pt`（S2 最优）。
+actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
+`r_move`/`r_turn`/`r_strike` critic 冷启动。
 
-- obs_dim=66 不变，`init_policy_mbs_66d.yaml` 不变。
-- 暖启动 `checkpoint_u01635.pt`（S2 最优，recovery=0.948）。
-- Actor 全量加载；`r_potential`/`r_fall`/`r_std_clip` critic
-  同名继承；`r_move`/`r_turn`/`r_strike` 新 critic 冷启动。
-
-## 7. 评测与验收
-
-per-skill eval（每技能独立若干 episode）：
+## 8. 评测与验收
 
 | 技能 | 指标 | 一期目标 |
 |---|---|---|
 | move_* | v_along / v_off / 摔倒率 | ≥0.4 m/s 不摔 |
 | turn_* | ω_signed / \|v_xy\| | ≥1.5 rad/s |
 | step | \|v_xy\|、yaw 漂移、std_clip | 基本不动 |
-| jab/heavy | kp_err、q_rmse、hand_err、完成率 | kp≤0.10 且动作可见 |
-| recover | 起身成功率、耗时 | ≥90% |
+| step_fallen | 起身成功率、耗时 | ≥90% |
+| jab/heavy | kp_err、q_rmse、hand_err、完成率 | kp≤0.10 动作可见 |
 
-## 8. S3/S4 失败教训 → 本方案对策
+## 9. 待确认
 
-| 失败 | 根因 | 对策 |
-|---|---|---|
-| S3 v_err 卡 ~0.2、跟随率 30% | 多技能混排 400 步 ep，信用稀释+通道竞争 | 单技能短 ep + 每 ep 只挂相关通道 |
-| S4 出拳动作不出现 | 常量指令相位盲+折中静止 | dyn_target 回放保留（已验证） |
-| S4 strike_r 涨但无动作 | 静态地板淹没出拳梯度 | 专用 critic 吸收地板 |
-| 移动奖励稀疏 | 段级标量广播 | 逐帧位移投影（follow 式） |
-| 步态 vs 任务互相侵蚀 | clip 通道挂在所有任务上 | clip 只挂 step/recover |
-
-## 9. 文件计划（全部新增）
-
-- `baseline/experiments_ppo/exp_skill_train_mbs.py` —— 实验类
-- `baseline/humanoid21/hierarchy/blueprints/skill_move_env.yaml`
-- `baseline/humanoid21/hierarchy/blueprints/skill_turn_env.yaml`
-- `baseline/humanoid21/hierarchy/blueprints/skill_strike_env.yaml`
-- `baseline/humanoid21/hierarchy/blueprints/skill_fallen_env.yaml`
-- 复用：CommandSimulator、StrikeTrackObserver、
-  StandardClipObserver、MoveTrackObserver、standing_balance、
-  wall_contact、foot_state、RandomFallenStatePlugin、
-  follow 的平滑/分解逻辑（新实验文件内改写为指令方向版）
+1. **strike 技能段时长**：推荐覆盖完整 clip（含 clip 内收回，
+   dyn_target 全程有相位信号），收尾用零指令踏步段——vs
+   字面方案"打击指令只到出拳峰值、收回段零指令"（收回无引导，
+   不推荐）。
+2. **step/起身 env 实现**：两个仅差 fallen 插件的 yaml（零代码，
+   推荐）vs 给插件加 fallen option（~10 行 additive，字面单 env）。
+3. **lead-in 时长** ~10 步(0.5s)、settle ~12 步(0.6s)：可调。
+4. **采样分布** §6：比例是否合适。
 
 ## 10. 已定案
 
-- 转身：双向两条指令 ✓
-- 重拳：`cmu_144_20_seg01`/`_m_seg01`（已定案）✓
-- 机器人 B：同策略同练 ✓
-- env 划分：move / turn / strike / fallen 四种 ✓
+- 转身双向两条指令；cmd 归一化 ±1=最速 ✓
+- 重拳 `cmu_144_20`(_m)`_seg01` ✓
+- B 同策略同练 ✓
+- 起身/踏步同技能同指令（初始状态区分）✓
+- 所有技能带零指令 lead-in；strike 带零指令 settle 收尾 ✓
+- env 按技能族划分，job 级标签挂通道（复合实验）✓
