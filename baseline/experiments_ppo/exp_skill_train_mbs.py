@@ -141,7 +141,7 @@ class SkillTrainMBS(BalancePure):
 
     # --- Rollout: short episodes → more episodes per update ---
     episodes_per_update: int = 1536
-    max_updates: int = 4000
+    max_updates: int = 8000
     eval_episodes: int = 96
 
     # --- Family sampling weights ---
