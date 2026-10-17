@@ -133,7 +133,7 @@ class SkillTrainMBS(BalancePure):
 
     # --- Reward constants ---
     r_move_actor_weight: float = 3.0
-    r_drift_actor_weight: float = 2.0
+    r_drift_actor_weight: float = 3.0
     r_turn_actor_weight: float = 3.0
     r_hold_actor_weight: float = 3.0
     r_strike_actor_weight: float = 4.0
