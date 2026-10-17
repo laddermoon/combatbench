@@ -364,7 +364,7 @@ class SkillTrainMBS(BalancePure):
                 )
                 channels["r_drift"] = ChannelData(
                     reward=(-1.0 * v_off - 0.5 * np.abs(w)
-                            - 0.5 * dyaw).astype(np.float32),
+                            - 1.5 * dyaw).astype(np.float32),
                     is_terminated=False,
                     actor_weight=(self.r_drift_actor_weight
                                   * phi ** 2).astype(np.float32),
