@@ -99,7 +99,20 @@ def _clip_meta(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR
         k = int(np.argmax(ex))
         _LANDING[clip_id] = (np.array([ex[k], ey[k], rel[k, 2]]),
                              ref.n_ctrl)
+        _LAND_FRAME[clip_id] = k
     return _LANDING[clip_id]
+
+
+_LAND_FRAME: Dict[str, int] = {}
+
+
+def clip_land_frame(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR) -> int:
+    """Frame index of the clip's peak hand extension — the natural
+    phase boundary between "punch out" and "retract" for two-phase
+    strike targets (``strike_phase_targets`` in CommandSimulator)."""
+    if clip_id not in _LAND_FRAME:
+        _clip_meta(clip_id, clips_dir)   # fills _LAND_FRAME as a side effect
+    return _LAND_FRAME[clip_id]
 
 
 def punch_hand_name(ref: RefClip) -> str:

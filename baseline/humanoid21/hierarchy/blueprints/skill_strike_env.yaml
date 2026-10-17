@@ -1,0 +1,79 @@
+# Skill training — STRIKE family env (66-dim).
+#
+# Single-strike skill episodes: standing spawn, zero-command lead-in,
+# then one strike segment bound to a mocap clip.  The displayed tgt
+# uses the two-phase semantic (strike_phase_targets): punch-out frames
+# aim at the clip landing point, retract frames aim at the clip-end
+# guard point.  Reward is pure motion-capture shape tracking — no
+# hit/target scoring.
+#
+# Reward channels (in exp_skill_train_mbs.py):
+#   r_potential / r_fall / r_strike
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 40
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    strike_dyn_target: false       # phase targets replace hand replay
+    strike_phase_targets: true
+
+plugins: []
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  move_track_a:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_a"
+  move_track_b:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_b"
+  strike_track_a:
+    cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
+    config:
+      agent_id: "robot_a"
+  strike_track_b:
+    cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
+    config:
+      agent_id: "robot_b"
