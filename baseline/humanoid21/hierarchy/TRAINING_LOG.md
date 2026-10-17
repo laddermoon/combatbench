@@ -92,3 +92,54 @@ baseline/humanoid21/hierarchy/assets/
 ```bash
 grep "\[eval" baseline/runs/hier_s2_balance_s42i_a/train.log | tail -3
 ```
+
+---
+
+# 基础技能训练（skill_train_mbs，S2 基座之上）
+
+> 最后更新：2026-10-18
+> 当前在跑：`skill_train_s2b_u5855_p1000`（GPU0，从 u5855 热恢复）
+
+## 概况
+
+11 个技能（move×4 / turn×2 / jab×2 / heavy×2 / step）复合训练，job 级
+`skills` 标签决定奖励通道挂载（详见 `SKILL_TRAINING_PLAN.md` v7）。
+从 S2 收敛 checkpoint `u1635`（recovery 0.948）热启动。
+
+## 运行历史
+
+| Run | Updates | 结果 | 备注 |
+|---|---|---|---|
+| `skill_train_s2b_u1635e` | 1→3910 | quality 0.02→0.63 | 首版（warmup 初始化前）；`max_updates=4000` 到顶正常退出 |
+| `skill_train_s2b_u4000b_ext` | 4000→5855 | quality →0.774 | ext_only 版；`r_drift` 权重 2→3 后 fwd_dyaw 1.4→0.4；u5855 早停（patience 400 触发） |
+| `skill_train_s2b_u5855_p1000` | 5855→ | — | patience 放宽至 1000 继续磨 heavy strike |
+
+## 收敛水位（u5850 附近）
+
+| 技能族 | 指标 |
+|---|---|
+| move | v_along fwd 0.86 / back 0.55 / left 0.39 / right 0.61 m/s；dyaw fwd 0.4 / left 0.23 / right 0.38 rad |
+| turn | w left 5.3 / right 4.5 rad/s，vxy<0.05 m/s |
+| strike | jab kp 0.15/0.13、hand 0.09-0.10；heavy kp 0.27-0.28、hand 0.13/0.29 |
+| step | stood 1.0，d_pos ~0.13m，d_yaw ~0.2rad（80 步/4s） |
+| falls | 3-5% |
+
+验收视频：`baseline/humanoid21/hierarchy/videos/20261018_071515/`（u5840，quality=0.775）
+
+## 事故与教训记录（技能线）
+
+1. **fork worker 读新配置崩溃（两次）**：运行中的 run 修改 yaml/构造参数（`ext_only`），
+   fork worker 读新蓝图 TypeError 静默死。教训同事故 1：改配置前先停 run 或热恢复。
+2. **`max_updates` 静默到顶**：run 到 u4000 正常退出但无提示，恢复 run 从 u4001 秒退。
+   查因方向：先查 `max_updates`/`early_stop` 再查崩溃。
+3. **早停误判**：`quality` 复合分不含 dyaw，朝向改善不计入 → patience 400 触发时
+   strike kp/q 仍在缓降。已将 `_no_improvement_limit` 放宽至 1000。
+4. **朝向漂移套利（已治）**：move 技能长期以朝向漂移换速度（fwd_dyaw 峰值 1.4 rad）。
+   干预路径：dyaw 系数 0.5→1.5 → r_drift 权重 1→2 → 2→3，最终 fwd_dyaw 收敛 ~0.4，
+   speed 无损。
+
+监控命令：
+
+```bash
+grep "\[eval" baseline/runs/skill_train_s2b_u5855_p1000/train.log | tail -3
+```
