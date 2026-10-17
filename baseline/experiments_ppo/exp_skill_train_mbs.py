@@ -146,6 +146,11 @@ class SkillTrainMBS(BalancePure):
     FAMILY_WEIGHTS: Dict[str, float] = {
         "move": 0.30, "turn": 0.15, "strike": 0.35, "idle": 0.20,
     }
+    # Per-skill oversampling: S2 gait has a right-side handedness,
+    # weak left skills get extra gradient share.
+    SKILL_SAMPLE_W: Dict[str, float] = {
+        "turn_left": 2.5, "move_left": 1.5, "jab_l": 1.5,
+    }
 
     _MOVE_OBS = {"robot_a": "move_track_a", "robot_b": "move_track_b"}
     _STRIKE_OBS = {"robot_a": "strike_track_a", "robot_b": "strike_track_b"}
@@ -232,8 +237,10 @@ class SkillTrainMBS(BalancePure):
         for i in range(n_episodes):
             fam = str(rng.choice(fams, p=probs))
             ks = _FAMILY_SKILLS[fam]
-            sa = str(rng.choice(ks))
-            sb = str(rng.choice(ks))
+            kw = np.array([self.SKILL_SAMPLE_W.get(k, 1.0) for k in ks])
+            kw = kw / kw.sum()
+            sa = str(rng.choice(ks, p=kw))
+            sb = str(rng.choice(ks, p=kw))
             n = max(_skill_len(sa), _skill_len(sb))
             jobs.append(Job(
                 policy_a_bp=policy_bp, policy_b_bp=policy_bp,
