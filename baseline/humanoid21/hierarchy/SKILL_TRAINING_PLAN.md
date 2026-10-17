@@ -61,8 +61,9 @@ heavy=`cmu_144_20`(_m)`_seg01`。
 - **step 族**：整 episode 零指令贯穿，时长 ~60 步；
   fallen 变体 ~120 步（起身 ~50 步 + 稳定）。
 - 摔倒（非 fallen 初始 episode）→ 提前终止。
-- 总步数：move/turn ≈ 10+70=80；step ≈ 60；jab ≈ 10+22+3=35；
-  heavy ≈ 10+13+3=26；step（fallen_init 变体）≈ 120。
+- 总步数：move/turn ≈ 10+70=80；step ≈ 120（随机倒地初始，
+  起身 ~50 步 + 站稳后原地踏步 ~70 步）；jab ≈ 10+22+3=35；
+  heavy ≈ 10+13+3=26。
 
 ### 打击指令的两段式语义（核心设计）
 
@@ -97,12 +98,12 @@ v2 指令语义 = "手尽快到达 ego 系某点"。打击动作天然两段：
 | `skill_strike_env` | jab/heavy ×4 | + `strike_dyn_target=true` + strike_track 观测 |
 | `skill_idle_env` | step（含起身，同一指令） | move_track + std_clip + balance/foot/wall + `RandomFallenStatePlugin`(both) |
 
-**step/起身字面单 env**（已定案）：idle env 含 fallen 插件；
-插件加 ~10 行 additive 支持 `ctx.episode_options["fallen_init"]`
-（False → 跳过摔倒初始化保持站姿，True → 倒地初始；默认 True
-保持现有行为不破坏旧实验）。build_jobs 按比例（~40%）给 step
-episode 发 `fallen_init=True`。这是本方案对共享代码的唯一
-改动（additive、默认行为不变）。
+**step/起身单 env 单指令**（已定案，最简版）：idle env 的
+**每个 episode 都从随机倒地初始开始**（fallen 插件无条件触发，
+target=both），全程零指令原地踏步——指令的语义天然覆盖两种
+情况：倒地→起身→原地踏步；站稳→保持原地踏步。站起后的剩余
+帧本身就是"站姿原地踏步"训练。与 S2 的初始分布一致，
+**无需任何代码改动**。
 
 ## 5. 奖励设计（按技能族挂通道）
 
@@ -155,7 +156,7 @@ r_turn   = 2.0·ω_signed − 2.0·|v_xy|  # 最速转 + 平移漂移惩罚
 原地性硬约束（用户强调：位置和朝向都**不许变**，必须惩罚）：
 
 ```
-锚点 = φ 首次 ≥0.8 的帧（站姿 ep≈第0帧；fallen ep=站起后）
+锚点 = φ 首次 ≥0.8 的帧（全倒地初始 → 锚定即"站起后"）
 d_pos  = |root_xy − root_xy[锚点]|     # 累计位置漂移
 d_yaw  = |wrap(yaw − yaw[锚点])|       # 累计朝向漂移
 r_hold = −(0.3·|v_xy| + 0.3·|ω|)       # 即时运动惩罚
@@ -182,7 +183,7 @@ r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
 ## 6. 采样与初始
 
 - 每 update job 分布（可调）：move×4 ~28%、turn×2 ~14%、
-  strike×4 ~36%、step ~22%（其中 ~40% fallen_init 倒地初始）。
+  strike×4 ~36%、step ~22%（全部随机倒地初始）。
 - 双方同策略同练：a/b 各独立采样技能，共享权重双倍数据。
   initial_distance 2.0 不变。
 - 站立初始 pose="standing"；fallen 由插件写回摔后姿态。
@@ -214,8 +215,8 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 - 转身双向两条指令；cmd 归一化 ±1=最速 ✓
 - 重拳 `cmu_144_20`(_m)`_seg01` ✓
 - B 同策略同练 ✓
-- 起身/踏步同 env 同指令（`fallen_init` option 区分初始；
-  插件加 ~10 行 additive 开关）✓
+- 起身/踏步同 env 同指令：idle env 全随机倒地初始、全程零指令，
+  零代码改动 ✓
 - 所有技能带零指令 lead-in ✓
 - **打击两段式指令**：phase1 tgt=clip 落点、phase2 tgt=clip 末帧
   手位，边界 = k_land；奖励统一 mocap 不分相；无 settle 要求，
@@ -231,7 +232,6 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 
 | 文件 | 改动 | 兼容性 |
 |---|---|---|
-| `disturbance_plugins.py` | `RandomFallenStatePlugin` 读 `episode_options["fallen_init"]`（默认 True 不变） | 旧实验行为不变 |
 | `command_simulator.py` | `strike_phase_targets` 选项：两段式 tgt 回放 | 默认关，旧行为不变 |
 
 其余全部新文件：1 实验类 + 4 env yaml + 本文档。
