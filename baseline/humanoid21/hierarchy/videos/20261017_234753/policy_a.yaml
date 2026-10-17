@@ -1,3 +1,0 @@
-version: 1
-cls: file:/data1/mono/things/combatbench/baseline/runs/skill_train_s2b_u1635d/policy_exports/u03730/policy.py:ExportedStateMixtureBoundedStdTruncNormPolicy
-config: {}
