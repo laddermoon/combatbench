@@ -62,7 +62,7 @@ heavy=`cmu_144_20`(_m)`_seg01`。
   fallen 变体 ~120 步（起身 ~50 步 + 稳定）。
 - 摔倒（非 fallen 初始 episode）→ 提前终止。
 - 总步数：move/turn ≈ 10+70=80；step ≈ 60；jab ≈ 10+22+3=35；
-  heavy ≈ 10+13+3=26；step_fallen ≈ 120。
+  heavy ≈ 10+13+3=26；step（fallen_init 变体）≈ 120。
 
 ### 打击指令的两段式语义（核心设计）
 
@@ -88,60 +88,101 @@ v2 指令语义 = "手尽快到达 ego 系某点"。打击动作天然两段：
 - in_strike 门控覆盖全 clip 不变；settle 段取消
   （用户确认末姿态无要求）。
 
-## 4. Env 变体（5 个 yaml，4 族）
+## 4. Env 变体（4 个 yaml，4 族）
 
 | env | 技能 | 差异点 |
 |---|---|---|
 | `skill_move_env` | move_* ×4 | move_track 运动学 + standing_balance + wall_contact + foot_state |
 | `skill_turn_env` | turn_* ×2 | 同 move 观测集，独立 yaml 便于调参 |
 | `skill_strike_env` | jab/heavy ×4 | + `strike_dyn_target=true` + strike_track 观测 |
-| `skill_idle_env` | step（站姿初始） | move_track + std_clip + balance/foot/wall |
-| `skill_idle_fall_env` | step（倒地初始） | = idle_env + `RandomFallenStatePlugin`(both) |
+| `skill_idle_env` | step（含起身，同一指令） | move_track + std_clip + balance/foot/wall + `RandomFallenStatePlugin`(both) |
 
-⚠ 说明（§9-2）：step 与起身是**同一技能同一指令**（全零），
-"倒地就起身"由初始状态决定。但 `RandomFallenStatePlugin` 是
-无条件触发的，无法用选项关掉——所以零代码实现是同一族拆
-两个仅差该插件的 yaml，build_jobs 按比例分配。替代方案：
-给插件加 ~10 行 `fallen` episode-option 开关（additive），
-则可字面单 env。
+**step/起身字面单 env**（已定案）：idle env 含 fallen 插件；
+插件加 ~10 行 additive 支持 `ctx.episode_options["fallen_init"]`
+（False → 跳过摔倒初始化保持站姿，True → 倒地初始；默认 True
+保持现有行为不破坏旧实验）。build_jobs 按比例（~40%）给 step
+episode 发 `fallen_init=True`。这是本方案对共享代码的唯一
+改动（additive、默认行为不变）。
 
 ## 5. 奖励设计（按技能族挂通道）
 
 公共：`r_potential`=0.01·φ（aw=1.0）、`r_fall`=摔倒+靠墙
-（S2 组成，aw=2.0）。
+（S2 组成，aw=2.0）。门控全部放 actor_weight（critic 看原始
+奖励）——follow 实验验证过的模式，照搬。
 
-### `r_move`（move/turn/strike/idle env 均挂，aw=3.0·φ²）
+**核心结构参照 `exp_follow_step`**：follow 的
+r_radial（镜像径向 +接近/−远离）/ r_tangential（切向惩罚）/
+r_face（朝向）三件映射到技能域——目标方向由"朝对手方向"
+换成"指令固定 ego 方向"，朝向由"面向对手"换成"保持初始朝向"。
 
-follow 式逐帧归因（滑窗 17 平滑 root_xy → 居中差分 → 分解）：
+逐帧归因（与 follow 相同的管线）：root_xy 居中滑窗平滑
+（win=17 去步态摆动）→ 居中差分得位移 → 投影分解。
 
-- 方向移动：`r = 2.0·v_along − 1.0·|v_off|`（线性=最速）
-- step/lead-in（cmd=0 时）：`r = exp(−(|v_xy|/0.15)²)·exp(−(|w|/0.5)²)`
-  静止≈1，起身上升过程中 ≈0（不惩罚，由 φ/std_clip 引导）
-- strike env：r_move 仅作用于非打击帧（乘 (1−in_strike) 掩码），
-  负责 lead-in 的原地站稳
+### `r_move`（move env 方向移动，aw=3.0·φ²）
+
+镜像径向进度（follow 的 r_radial 对应物）：
+
+```
+d_hat   = 指令方向（ego，技能段起始帧朝向定义：
+          fwd=+forward / back=−forward / left=+left / right=−left，
+          段内固定——朝向本身被 r_head 约束不变）
+v_along = disp · d_hat          # 有符号沿指令速度
+r_move  = 2.0 · v_along         # 线性=最速语义；反向自动为负
+```
+
+### `r_drift`（move env，aw=1.0·φ²）
+
+切向 + 朝向惩罚（follow 的 r_tangential + r_face 对应物）：
+
+```
+v_off   = |disp − v_along·d_hat|   # 切向漂移
+Δyaw    = |wrap(yaw − yaw_seg0)|   # 相对段起始朝向的偏移
+r_drift = −1.0·v_off − 0.5·|ω| − 0.5·Δyaw
+```
+
+方向移动期间**朝向不许变**——strafe 不许转身，前后移不许
+偏头。惩罚形式（负值通道），镜像 follow 的切向惩罚。
 
 ### `r_turn`（turn env，aw=3.0·φ²）
 
-`r = 2.0·ω_signed − 2.0·|v_xy|`
+```
+ω_signed = d(yaw)/dt · sign(cmd_w)    # 指令方向的有符号角速度
+r_turn   = 2.0·ω_signed − 2.0·|v_xy|  # 最速转 + 平移漂移惩罚
+```
+
+### `r_hold`（idle env：step+起身，aw=3.0·φ²）
+
+原地性硬约束（用户强调：位置和朝向都**不许变**，必须惩罚）：
+
+```
+锚点 = φ 首次 ≥0.8 的帧（站姿 ep≈第0帧；fallen ep=站起后）
+d_pos  = |root_xy − root_xy[锚点]|     # 累计位置漂移
+d_yaw  = |wrap(yaw − yaw[锚点])|       # 累计朝向漂移
+r_hold = −(0.3·|v_xy| + 0.3·|ω|)       # 即时运动惩罚
+         −(1.0·d_pos + 1.0·d_yaw)      # 累计漂移惩罚
+```
+
+起身过程中 φ<0.8 → r_hold 不激活（drift 未锚定，即时项也
+被 aw·φ² 压低），不干扰起身；站稳后位置+朝向双重锁定。
 
 ### `r_strike`（strike env，aw=4.0·φ²·in_strike）
 
-纯 mocap 形状（无命中/目标点奖惩）：
+纯 mocap 形状（无命中/目标点奖惩），统一跟踪不分相：
 
 ```
 r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
     + 0.20·root + 0.35·hand_reach(σ=0.45)
 ```
 
-### `r_std_clip`（idle env 双变体，aw=2.0·φ²）
+### `r_std_clip`（idle env，aw=2.0·φ²）
 
-标准站姿片段质量；step 与起身共用这个"回标准姿势"信号。
+标准站姿片段质量；step/起身共用的"回标准姿势"信号。
 **不挂**在 move/turn/strike 任务段（防通道打架）。
 
 ## 6. 采样与初始
 
-- 每 update job 分布（可调）：move×4+step ~35%、turn×2 ~15%、
-  strike×4 ~35%、step_fallen ~15%。
+- 每 update job 分布（可调）：move×4 ~28%、turn×2 ~14%、
+  strike×4 ~36%、step ~22%（其中 ~40% fallen_init 倒地初始）。
 - 双方同策略同练：a/b 各独立采样技能，共享权重双倍数据。
   initial_distance 2.0 不变。
 - 站立初始 pose="standing"；fallen 由插件写回摔后姿态。
@@ -150,7 +191,7 @@ r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
 
 obs_dim=66 不变；暖启动 `checkpoint_u01635.pt`（S2 最优）。
 actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
-`r_move`/`r_turn`/`r_strike` critic 冷启动。
+`r_move`/`r_drift`/`r_turn`/`r_hold`/`r_strike` critic 冷启动。
 
 ## 8. 评测与验收
 
@@ -158,25 +199,39 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 |---|---|---|
 | move_* | v_along / v_off / 摔倒率 | ≥0.4 m/s 不摔 |
 | turn_* | ω_signed / \|v_xy\| | ≥1.5 rad/s |
-| step | \|v_xy\|、yaw 漂移、std_clip | 基本不动 |
-| step_fallen | 起身成功率、耗时 | ≥90% |
+| step | 位置/朝向漂移、std_clip | 基本不动 |
+| step（倒地初始） | 起身成功率、耗时、站后漂移 | ≥90% |
 | jab/heavy | kp_err、q_rmse、hand_err、完成率 | kp≤0.10 动作可见 |
 
 ## 9. 待确认
 
-1. **step/起身 env 实现**：两个仅差 fallen 插件的 yaml（零代码，
-   推荐）vs 给插件加 fallen option（~10 行 additive，字面单 env）。
-2. **lead-in 时长** ~10 步(0.5s)：可调。
-3. **采样分布** §6：比例是否合适。
+1. **lead-in 时长** ~10 步(0.5s)：可调。
+2. **采样分布** §6：比例是否合适。
+3. **r_drift/r_hold 惩罚系数**：初值按量级估的，训练中微调。
 
 ## 10. 已定案
 
 - 转身双向两条指令；cmd 归一化 ±1=最速 ✓
 - 重拳 `cmu_144_20`(_m)`_seg01` ✓
 - B 同策略同练 ✓
-- 起身/踏步同技能同指令（初始状态区分）✓
+- 起身/踏步同 env 同指令（`fallen_init` option 区分初始；
+  插件加 ~10 行 additive 开关）✓
 - 所有技能带零指令 lead-in ✓
 - **打击两段式指令**：phase1 tgt=clip 落点、phase2 tgt=clip 末帧
   手位，边界 = k_land；奖励统一 mocap 不分相；无 settle 要求，
   clip 结束即终 ✓
+- **原地性硬约束**：step/起身 r_hold = 位置漂移+朝向漂移累计惩罚
+  +即时运动惩罚（锚点=φ 首次 ≥0.8 帧）✓
+- **方向移动朝向不变**：r_drift = −v_off −|ω| −|Δyaw| ✓
+- **奖励结构镜像 follow**：径向进度(+)/切向(−)/朝向(−) 分通道，
+  门控全放 actor_weight ✓
 - env 按技能族划分，job 级标签挂通道（复合实验）✓
+
+## 11. 对共享代码的改动清单（全部 additive）
+
+| 文件 | 改动 | 兼容性 |
+|---|---|---|
+| `disturbance_plugins.py` | `RandomFallenStatePlugin` 读 `episode_options["fallen_init"]`（默认 True 不变） | 旧实验行为不变 |
+| `command_simulator.py` | `strike_phase_targets` 选项：两段式 tgt 回放 | 默认关，旧行为不变 |
+
+其余全部新文件：1 实验类 + 4 env yaml + 本文档。
