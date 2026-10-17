@@ -15,7 +15,7 @@ parameters:
     default: 2.0
     description: "Spawn distance between robots (m)."
   max_steps:
-    default: 50
+    default: 80
     description: "Max action steps."
 
 runtime:

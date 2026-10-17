@@ -88,7 +88,7 @@ SKILLS: Dict[str, Dict[str, Any]] = {
                        k_land=_HEAVY_KLAND),
 }
 
-_IDLE_LEN = 50
+_IDLE_LEN = 80        # 4 s: fallen → standup (~10) → in-place stepping
 
 
 def _skill_rows(skill: str) -> List[list]:
