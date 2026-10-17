@@ -1,7 +1,7 @@
 """StrikeTrackObserver — ego-anchored mocap tracking reward for strikes.
 
-S4 punch training: the command schedule (``move_schedule`` rows with the
-full 10-field form) may contain strike segments
+Strike segments in the command schedule (``move_schedule`` rows with
+the full 10-field form) may contain strike segments
 ``[n, vx, vy, w, h, eff_type=+1, eff_side=±1, tx, ty, tz]``.  This
 observer resolves which reference clip a strike segment maps to —
 
@@ -27,6 +27,12 @@ reported world-frame kp error need the transform).
 Outputs per step: ``reward, pose, vel, kp, height, root, kp_err_m,
 q_rmse_deg, in_strike, phase, frame`` — ``in_strike`` marks steps inside
 a resolved strike segment so downstream gating is exact.
+
+``ext_only=True`` (skill-training "punch-out" phase): the reference
+frame clamps at the clip's landing frame ``k_land`` — frames beyond it
+score the *held landing pose*, so a faster punch banks more margin
+frames at full score (speed = time-at-target).  Everything after the
+segment is out of the scored window by construction.
 """
 from __future__ import annotations
 
@@ -107,9 +113,8 @@ _LAND_FRAME: Dict[str, int] = {}
 
 
 def clip_land_frame(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR) -> int:
-    """Frame index of the clip's peak hand extension — the natural
-    phase boundary between "punch out" and "retract" for two-phase
-    strike targets (``strike_phase_targets`` in CommandSimulator)."""
+    """Frame index of the clip's peak hand extension — the reference
+    frame the strike is held at in ``ext_only`` tracking mode."""
     if clip_id not in _LAND_FRAME:
         _clip_meta(clip_id, clips_dir)   # fills _LAND_FRAME as a side effect
     return _LAND_FRAME[clip_id]
@@ -145,9 +150,16 @@ class StrikeTrackObserver(BaseObserverPlugin):
     """Per-step strike tracking reward for one agent."""
 
     def __init__(self, agent_id: str = 'robot_a',
-                 clips_dir: str = str(DEFAULT_CLIPS_DIR)) -> None:
+                 clips_dir: str = str(DEFAULT_CLIPS_DIR),
+                 ext_only: bool = False) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
+        # ext_only (skill-training extension phase): track only the
+        # punch-out — reference frame clamps at the clip's landing
+        # frame, so margin frames beyond it score the held landing
+        # pose (speed = time-at-target).  Default False keeps the
+        # full-clip tracking of the older experiments.
+        self._ext_only = bool(ext_only)
         self._clips: Dict[str, RefClip] = {}
         self._segments: List[Dict[str, Any]] = []
         self._t = -1
@@ -190,6 +202,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 row['clip'] = cid
                 row['ref'] = self._clip(cid)
                 row['hand'] = punch_hand_name(row['ref'])
+                row['k_max'] = (clip_land_frame(cid, self._clips_dir)
+                                if self._ext_only else
+                                row['ref'].n_ctrl - 1)
             self._segments.append(row)
             t += n
 
@@ -207,7 +222,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
             return self._zero()
 
         ref: RefClip = seg['ref']
-        k = min(self._t - seg['a'], ref.n_ctrl - 1)
+        k = min(self._t - seg['a'], seg['k_max'])
         ds = ctx.accessor.get_derived_state()
         core = ctx.accessor.get_core_state()[self.agent_id]
 
@@ -297,7 +312,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
             'kp_err_m': kp_err_m, 'kp_err_rel_m': float(np.sqrt(kp_mse)),
             'root_dxy_m': dxy, 'root_dyaw_deg': float(np.degrees(dyaw)),
             'q_rmse_deg': q_rmse_deg,
-            'in_strike': 1.0, 'phase': k / max(1, ref.n_ctrl - 1),
+            'in_strike': 1.0, 'phase': k / max(1, seg['k_max']),
             'frame': float(k),
         }
 

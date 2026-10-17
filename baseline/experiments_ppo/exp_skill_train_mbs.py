@@ -10,13 +10,16 @@ mid-gait state at reset so every recorded frame IS the skill):
   move_fwd/back/left/right — max-speed cardinal translation (cmd ±1)
   turn_left/right          — max-speed in-place turn
   step                     — fallen init; zero cmd = standup+hold
-  jab_l/r, heavy_l/r       — mocap-shape strike, two-phase targets
+  jab_l/r, heavy_l/r       — extension-only strike: scored window
+                             [0, k_land+margin], ref clamps at k_land
+                             (speed = time-at-target), single landing-
+                             point target, post-window unscored
 
 Reward channels (attached per skill family):
-  r_potential / r_fall                     — all episodes
+  r_potential / r_fall                     — all episodes (strike: t<k_land)
   r_move  = 2·v_along                      — move segs (mirror radial)
-  r_drift = −v_off −0.5|w| −0.5|Δyaw|      — move eps (tangential+heading)
-  r_turn  = 2·ω_signed −2|v_xy|            — turn segs
+  r_drift = −v_off −0.5|w| −1.5|Δyaw|      — move eps (tangential+heading)
+  r_turn  = 0.5·clip(ω_signed,±4) −|v_xy|  — turn segs
   r_hold  = −motion −(d_pos + d_yaw)       — idle eps (in-place hard lock)
   r_strike = mocap composite               — strike segs (in_strike gated)
   r_std_clip                               — idle eps only
@@ -47,18 +50,22 @@ from .exp_balance_pure import BalancePure
 # ---------------------------------------------------------------------------
 # Skill table — one entry per skill: family, schedule rows, episode length
 # ---------------------------------------------------------------------------
-_STRIKE_PAD = 3       # small tail after clip ends (hold final pose)
+# Extension-only strikes: scored window = clip landing frame + margin
+# (slower attempts get room to finish; margin frames score the held
+# landing pose → speed = time-at-target).  Nothing past the window is
+# scored — the episode ends there.
+_STRIKE_MARGIN = 13
 
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
 _HEAVY_LAND = (0.622, -0.213, 0.413)   # cmu_144_20_m_seg01 landing (left)
-_JAB_NCTRL = 22
-_HEAVY_NCTRL = 13
+_JAB_KLAND = 11      # clip_land_frame('hdm05_3146_88_2895_127')
+_HEAVY_KLAND = 6     # clip_land_frame('cmu_144_20(_m)_seg01')
 
 
 def _strike_rows(side: int, land: Tuple[float, float, float],
-                 n_ctrl: int) -> List[list]:
+                 k_land: int) -> List[list]:
     return [
-        [n_ctrl + _STRIKE_PAD, 0.0, 0.0, 0.0, 0.0,
+        [k_land + _STRIKE_MARGIN, 0.0, 0.0, 0.0, 0.0,
          +1, side, land[0], land[1] * (1 if side > 0 else -1), land[2]],
     ]
 
@@ -72,13 +79,13 @@ SKILLS: Dict[str, Dict[str, Any]] = {
     "turn_right": dict(fam="turn",  w_sign=-1.0),
     "step":       dict(fam="idle"),
     "jab_l":      dict(fam="strike", side=+1, land=_JAB_LAND,
-                       n_ctrl=_JAB_NCTRL),
+                       k_land=_JAB_KLAND),
     "jab_r":      dict(fam="strike", side=-1, land=_JAB_LAND,
-                       n_ctrl=_JAB_NCTRL),
+                       k_land=_JAB_KLAND),
     "heavy_l":    dict(fam="strike", side=+1, land=_HEAVY_LAND,
-                       n_ctrl=_HEAVY_NCTRL),
+                       k_land=_HEAVY_KLAND),
     "heavy_r":    dict(fam="strike", side=-1, land=_HEAVY_LAND,
-                       n_ctrl=_HEAVY_NCTRL),
+                       k_land=_HEAVY_KLAND),
 }
 
 _IDLE_LEN = 50
@@ -95,7 +102,7 @@ def _skill_rows(skill: str) -> List[list]:
         return [[70, 0.0, 0.0, s["w_sign"] * W_MAX]]
     if fam == "idle":
         return [[_IDLE_LEN, 0.0, 0.0, 0.0]]
-    return _strike_rows(s["side"], s["land"], s["n_ctrl"])
+    return _strike_rows(s["side"], s["land"], s["k_land"])
 
 
 def _skill_len(skill: str) -> int:
@@ -320,18 +327,27 @@ class SkillTrainMBS(BalancePure):
         phi = (np.clip(np.asarray(phi[:T], dtype=np.float32), 0.0, 1.0)
                if phi is not None else np.zeros(T, dtype=np.float32))
 
+        # Extension-only strikes: balance channels only score the
+        # punch-out itself — post-landing behavior (falling etc.) is
+        # explicitly out of scope for this skill.
+        if fam == "strike":
+            win = (np.arange(T) < SKILLS[skill]["k_land"]
+                   ).astype(np.float32)
+        else:
+            win = np.ones(T, dtype=np.float32)
+
         channels: Dict[str, ChannelData] = {
             "r_potential": ChannelData(
                 reward=(self.per_step_phi_coef * phi).astype(np.float32),
                 is_terminated=False,
-                actor_weight=np.full(
-                    T, self.r_potential_actor_weight, dtype=np.float32),
+                actor_weight=(self.r_potential_actor_weight
+                              * win).astype(np.float32),
             ),
             "r_fall": ChannelData(
                 reward=self._r_fall(episode, agent_id, phi, T, T_full),
                 is_terminated=False,
-                actor_weight=np.full(
-                    T, self.r_fall_actor_weight, dtype=np.float32),
+                actor_weight=(self.r_fall_actor_weight
+                              * win).astype(np.float32),
             ),
         }
 

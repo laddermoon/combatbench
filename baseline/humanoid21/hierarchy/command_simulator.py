@@ -125,7 +125,6 @@ class CommandSimulator(Humanoid21Simulator):
 
     def __init__(self, cmd_version: str = "v2",
                  strike_dyn_target: bool = True,
-                 strike_phase_targets: bool = False,
                  ee_obs: bool = False,
                  **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -133,7 +132,6 @@ class CommandSimulator(Humanoid21Simulator):
             raise ValueError(f"cmd_version must be 'v1' or 'v2', got {cmd_version!r}")
         self._cmd_version = cmd_version
         self._strike_dyn_target = bool(strike_dyn_target)
-        self._strike_phase_targets = bool(strike_phase_targets)
         self._ee_obs = bool(ee_obs)
         self.cmd_dim = CMD_V1_DIM if cmd_version == "v1" else CMD_V2_DIM
         self.OBS_OUT_DIM = BODY_DIM + self.cmd_dim \
@@ -198,7 +196,7 @@ class CommandSimulator(Humanoid21Simulator):
                 c[EFF_TYPE] = seg[5]
                 c[EFF_SIDE] = seg[6]
                 c[TGT_X:TGT_Z + 1] = np.asarray(seg[7:10]) / TGT_SCALE
-                if (self._strike_dyn_target or self._strike_phase_targets) \
+                if self._strike_dyn_target \
                         and int(round(seg[5])) == +1:
                     cid = resolve_clip(
                         int(round(seg[6])), seg[7:10])
@@ -299,8 +297,7 @@ class CommandSimulator(Humanoid21Simulator):
         first step, then advanced frame-by-frame — so the target field
         carries the phase information a constant target cannot."""
         cmd = self._current_cmd(robot_id).copy()
-        if not (self._strike_dyn_target or self._strike_phase_targets) \
-                or cmd[EFF_TYPE] < 0.5:
+        if not self._strike_dyn_target or cmd[EFF_TYPE] < 0.5:
             return cmd
         tgt = self._strike_target_ego(robot_id)
         if tgt is not None:
@@ -326,16 +323,6 @@ class CommandSimulator(Humanoid21Simulator):
                 pel0=ref.keypoints[0][pi][:2].copy())
         anc = seg['anchor']
         k = min(self._action_step - seg['a'], ref.n_ctrl - 1)
-        if self._strike_phase_targets:
-            # Two-phase target semantics: the issued target is a fixed
-            # POINT per phase, not the moving reference hand —
-            #   punch-out (k < k_land): aim at the clip's landing point
-            #   retract   (k >= k_land): aim at the clip-end guard point
-            # while the tracking reward still follows the full clip.
-            from baseline.humanoid21.hierarchy.strike_track_observer import (
-                clip_land_frame)
-            k = clip_land_frame(seg['cid']) \
-                if k < clip_land_frame(seg['cid']) else ref.n_ctrl - 1
         pi = ref.keypoint_names.index('pelvis')
         hk = ref.keypoints[k, seg['hand']]
         d = anc['M'] @ (hk[:2] - anc['pel0'])

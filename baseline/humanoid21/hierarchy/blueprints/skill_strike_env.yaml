@@ -1,11 +1,11 @@
 # Skill training — STRIKE family env (66-dim).
 #
-# Single-strike skill episodes: WarmupSteppingPlugin mid-gait init,
-# then one strike segment bound to a mocap clip.  The displayed tgt
-# uses the two-phase semantic (strike_phase_targets): punch-out frames
-# aim at the clip landing point, retract frames aim at the clip-end
-# guard point.  Reward is pure motion-capture shape tracking — no
-# hit/target scoring.
+# Extension-only strike skill episodes: WarmupSteppingPlugin mid-gait
+# init, then one strike segment [0, k_land+margin] pointing at the clip
+# landing point (single phase — no retract target).  The observer runs
+# ext_only tracking: the reference clamps at the landing frame, so the
+# margin frames score the held landing pose (faster = more time at
+# target).  Everything after the window is unscored by construction.
 #
 # Reward channels (in exp_skill_train_mbs.py):
 #   r_potential / r_fall / r_strike
@@ -31,8 +31,7 @@ simulator:
     debug_torque: false
     initial_pose_a: "standing"
     initial_pose_b: "standing"
-    strike_dyn_target: false       # phase targets replace hand replay
-    strike_phase_targets: true
+    strike_dyn_target: false       # static landing-point target in obs
 
 plugins:
   - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
@@ -82,7 +81,9 @@ observer_plugins:
     cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
     config:
       agent_id: "robot_a"
+      ext_only: true
   strike_track_b:
     cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
     config:
       agent_id: "robot_b"
+      ext_only: true
