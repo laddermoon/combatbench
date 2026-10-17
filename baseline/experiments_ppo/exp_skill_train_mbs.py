@@ -143,6 +143,9 @@ class SkillTrainMBS(BalancePure):
     episodes_per_update: int = 1536
     max_updates: int = 8000
     eval_episodes: int = 96
+    # Quality composite saturates early (no dyaw term); strike kp/q
+    # still improving past the first plateau → generous patience.
+    _no_improvement_limit: int = 1000
 
     # --- Family sampling weights ---
     FAMILY_WEIGHTS: Dict[str, float] = {
