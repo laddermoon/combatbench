@@ -178,13 +178,23 @@ d_yaw  = |wrap(yaw − yaw[锚点])|
 r_hold = −(0.3·|v_xy| + 0.3·|ω|) − (d_pos + d_yaw)
 ```
 
-### `r_strike`（strike env，aw=4.0·φ²·in_strike）
+### `r_strike`（strike env，aw=4.0·in_strike）
 
-纯 mocap 形状，ext_only 窗口内统一跟踪：
+纯 mocap 形状，**单调进度跟踪**（monotone progress tracking）：
+
+- 进度指针 k 从 0 起，每步在 `[k, k+2]` 内取完整 reward 最高的
+  ref 帧；只进不退——打多快时钟走多快，速度不被 clip 限速；
+  缩手则姿态与当前帧不匹配自动掉分（天然禁止收回）。
+- 指针到达 `k_land`（出拳伸展位）后，每剩余一步额外 +0.25
+  hold bonus：落地越早赚得越多（speed = time-at-target）。
+- 站架慢的尝试不罚时（指针会等），episode 长度 = 到达预算 +
+  margin=13 保持帧。
+
+单帧 reward（候选帧共用同一函数）：
 
 ```
 r = 0.35·pose + 0.10·vel + 0.50·arm + 0.25·kp + 0.10·height
-    + 0.20·root + 0.50·hand_reach(σ=0.45)
+    + 0.20·root + 0.50·hand_reach(σ=0.45)   [+0.25 if landed]
 ```
 
 strike ep 的 `r_potential`/`r_fall` actor_weight 恒 0（重心完全放开）。
@@ -196,8 +206,8 @@ strike ep 的 `r_potential`/`r_fall` actor_weight 恒 0（重心完全放开）�
 ## 6. 采样与初始
 
 - 族分布：move 30%、turn 15%、strike 35%、idle 20%。
-- 族内左弱技能过采样（S2 步态右利手性）：
-  turn_left ×2.5、move_left ×1.5、jab_l ×1.5。
+- 族内弱技能过采样（S2 步态右利手性）：
+  turn_left ×2.5、move_left ×1.5、jab_l ×1.5、heavy_r ×3.0。
 - 双方同策略同练：a/b 各独立采样技能，共享权重双倍数据。
 - episodes_per_update = 1536（episode 短，翻倍吞吐）。
 
@@ -214,10 +224,11 @@ actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
 | move_* | v_along / v_off / dyaw / 摔倒率 | ≥0.5 m/s、dyaw<0.3 |
 | turn_* | ω_signed / \|v_xy\| | ≥1.5 rad/s |
 | step | stood / d_pos / d_yaw | 起身 100%、漂移 <0.1 |
-| jab/heavy | kp_err / q_rmse / hand_err（in_strike 内） | kp≤0.10 动作可见 |
+| jab/heavy | kp_err / q_rmse / hand_err / land_t（in_strike 内） | kp≤0.10 动作可见 |
 
 quality = 各族归一化均值（move v/0.6、turn w/2.0、
-strike 1−kp/0.30、idle 1−d_pos/0.5），best-of-run 需 falls<0.2。
+strike 1−mean(kp,hand)/0.30、idle 1−d_pos/0.5），best-of-run 需
+falls<0.2。`land_t` = 进度指针首次到达 k_land 的步号（出拳速度）。
 
 ## 9. 待定
 

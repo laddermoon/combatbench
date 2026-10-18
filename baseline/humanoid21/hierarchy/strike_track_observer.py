@@ -25,14 +25,19 @@ relative ego — both unchanged by the anchor; only root xy/yaw and the
 reported world-frame kp error need the transform).
 
 Outputs per step: ``reward, pose, vel, arm, kp, height, root, kp_err_m,
-q_rmse_deg, in_strike, phase, frame`` — ``in_strike`` marks steps inside
-a resolved strike segment so downstream gating is exact.
+q_rmse_deg, in_strike, phase, frame, landed`` — ``in_strike`` marks
+steps inside a resolved strike segment so downstream gating is exact.
 
-``ext_only=True`` (skill-training "punch-out" phase): the reference
-frame clamps at the clip's landing frame ``k_land`` — frames beyond it
-score the *held landing pose*, so a faster punch banks more margin
-frames at full score (speed = time-at-target).  Everything after the
-segment is out of the scored window by construction.
+``ext_only=True`` (skill-training "punch-out" phase) uses *monotone
+progress tracking*: a per-segment progress pointer ``k`` starts at 0
+and each step advances to the highest-reward reference frame within
+``[k, k + lookahead]``.  The pointer never retreats — punching faster
+advances the clock faster (speed unbounded by the clip), while falling
+behind just keeps the pointer waiting; nothing penalizes being ahead.
+Reaching the landing frame ``k_land`` banks a hold bonus every
+remaining step, so faster completion scores strictly better (speed =
+time-at-target, plus γ-discount favours early progress).  Everything
+after the segment is out of the scored window by construction.
 """
 from __future__ import annotations
 
@@ -71,6 +76,10 @@ _ARM_JOINTS = {
 # σ=0.45 keeps useful gradient across the whole workspace: at d=0.5 m
 # r_hand≈0.30 with ∂r/∂d≈1.3/m; σ=0.15 would be ~0 gradient there
 # (needle-in-haystack — it only pays once the hand is already close).
+
+# Landing-hold bonus per step once the progress pointer reaches the
+# landing frame — makes earlier arrival strictly better (speed pay).
+W_HOLD = 0.25
 
 # (eff_side, is_near) → clip_id
 _CLIP_MAP = {
@@ -165,19 +174,16 @@ class StrikeTrackObserver(BaseObserverPlugin):
     def __init__(self, agent_id: str = 'robot_a',
                  clips_dir: str = str(DEFAULT_CLIPS_DIR),
                  ext_only: bool = False,
-                 clip_rates: Optional[Dict[str, float]] = None) -> None:
+                 lookahead: int = 2) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
-        # ext_only (skill-training extension phase): track only the
-        # punch-out — reference frame clamps at the clip's landing
-        # frame, so margin frames beyond it score the held landing
-        # pose (speed = time-at-target).  Default False keeps the
-        # full-clip tracking of the older experiments.
+        # ext_only (skill-training extension phase): monotone progress
+        # tracking — see module docstring.  Default False keeps the
+        # strict-clock full-clip tracking of the older experiments.
         self._ext_only = bool(ext_only)
-        # clip_rates: per-clip reference-clock rate.  <1 slows the
-        # reference playback (e.g. 0.5 doubles the frames to reach
-        # k_land) — gives the robot physical time to form a stance.
-        self._clip_rates = dict(clip_rates or {})
+        # lookahead: max ref-frame advance per step for progress
+        # tracking (bounds how much of the wind-up may be skipped).
+        self._la = int(lookahead)
         self._clips: Dict[str, RefClip] = {}
         self._segments: List[Dict[str, Any]] = []
         self._t = -1
@@ -197,7 +203,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'hand_err_m': 0.0, 'kp_err_m': 0.0, 'kp_err_rel_m': 0.0,
                 'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
-                'frame': -1.0}
+                'frame': -1.0, 'landed': 0.0}
 
     # ------------------------------------------------------------------
     # Episode setup — compile schedule rows, resolve clips
@@ -213,7 +219,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
         t = 0
         for seg in sched:
             n = int(seg[0])
-            row = dict(a=t, b=t + n, clip=None, ref=None)
+            row = dict(a=t, b=t + n, clip=None, ref=None, k_ptr=0)
             if len(seg) > 6 and int(round(seg[5])) == +1:   # eff_type=hand
                 side = int(round(seg[6]))
                 cid = resolve_clip(side, seg[7:10], self._clips_dir)
@@ -240,15 +246,40 @@ class StrikeTrackObserver(BaseObserverPlugin):
             return self._zero()
 
         ref: RefClip = seg['ref']
-        rate = self._clip_rates.get(seg['clip'], 1.0)
-        k = min(int((self._t - seg['a']) * rate), seg['k_max'])
+        live = self._live(ctx, seg, ref)
+        if self._ext_only:
+            # Monotone progress tracking: advance the pointer to the
+            # highest-reward frame within [k, k+lookahead]; never back.
+            lo = seg['k_ptr']
+            hi = min(lo + self._la, seg['k_max'])
+            k, out = max(
+                ((c, self._frame_score(live, seg, ref, c))
+                 for c in range(lo, hi + 1)),
+                key=lambda p: p[1]['reward'])
+            seg['k_ptr'] = k
+            if k >= seg['k_max']:
+                out['reward'] += W_HOLD
+                out['landed'] = 1.0
+            out['frame'] = float(k)
+            out['phase'] = k / max(1, seg['k_max'])
+            return out
+
+        k = min(self._t - seg['a'], seg['k_max'])
+        out = self._frame_score(live, seg, ref, k)
+        out['frame'] = float(k)
+        out['phase'] = k / max(1, seg['k_max'])
+        return out
+
+    def _live(self, ctx, seg, ref: RefClip) -> Dict[str, Any]:
+        """Live-state bundle gathered once per step (shared by all
+        candidate-frame scorings in progress mode)."""
         ds = ctx.accessor.get_derived_state()
         core = ctx.accessor.get_core_state()[self.agent_id]
-
-        # --- ego anchor: set on first step inside the segment -----------
         root_pos = np.asarray(core['root_pos'], dtype=np.float64)
         root_rot = np.asarray(core['root_rot'], dtype=np.float64)
         yaw_self = _yaw_of(root_rot)
+
+        # --- ego anchor: set on first step inside the segment -----------
         if self._active is not seg:
             yaw_ref0 = _yaw_of(ref.root_quat[0])
             seg['anchor'] = dict(
@@ -256,7 +287,35 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 p_ref0=ref.root_pos[0][:2].copy(), yaw_ref0=yaw_ref0,
                 M=_rz(yaw_self - yaw_ref0))
             self._active = seg
-        anc = seg['anchor']
+
+        static = ctx.accessor.get_static_data()
+        kp_names = static.get(self.agent_id, {}).get(
+            'keypoint_body_names', {})
+        body_xpos = ds.get(self.agent_id, {}).get('body_xpos', {})
+        p_self_pelvis = np.asarray(body_xpos[kp_names['pelvis']],
+                                   dtype=np.float64)
+        R_self_inv = R.from_quat(
+            [root_rot[1], root_rot[2], root_rot[3], root_rot[0]]
+        ).inv().as_matrix()
+        # pelvis-relative ego position + world position of every scored
+        # keypoint, computed once for all candidate frames
+        e_self, p_self = {}, {}
+        for n in KP_SUBSET:
+            if n in kp_names:
+                p = np.asarray(body_xpos[kp_names[n]], dtype=np.float64)
+                e_self[n] = R_self_inv @ (p - p_self_pelvis)
+                p_self[n] = p
+        return dict(core=core, root_pos=root_pos, root_rot=root_rot,
+                    yaw_self=yaw_self, anc=seg['anchor'],
+                    e_self=e_self, p_self=p_self)
+
+    def _frame_score(self, live, seg, ref: RefClip,
+                     k: int) -> Dict[str, float]:
+        """Full reward + metrics of the live state vs reference frame k."""
+        core = live['core']
+        root_pos, root_rot = live['root_pos'], live['root_rot']
+        anc = live['anc']
+        kn = ref.keypoint_names
 
         # --- pose / velocity -------------------------------------------
         q_err = np.asarray(core['joint_pos_norm'], dtype=np.float64) \
@@ -268,33 +327,24 @@ class StrikeTrackObserver(BaseObserverPlugin):
         arm_idx = _ARM_JOINTS.get(seg.get('hand'))
         r_arm = (float(np.exp(-2.0 * np.mean(q_err[arm_idx] ** 2)))
                  if arm_idx else 0.0)
-        q_rmse_deg = float(np.degrees(np.sqrt(np.mean((q_err * _HALF) ** 2))))
+        q_rmse_deg = float(np.degrees(
+            np.sqrt(np.mean((q_err * _HALF) ** 2))))
 
         # --- keypoints (pelvis-relative ego both sides — anchor-free) ---
-        static = ctx.accessor.get_static_data()
-        kp_names = static.get(self.agent_id, {}).get(
-            'keypoint_body_names', {})
-        body_xpos = ds.get(self.agent_id, {}).get('body_xpos', {})
-        p_self_pelvis = np.asarray(body_xpos[kp_names['pelvis']],
-                                   dtype=np.float64)
-        R_self = R.from_quat([root_rot[1], root_rot[2], root_rot[3],
-                              root_rot[0]])
-        kn = ref.keypoint_names
         ref_kp = ref.keypoints[k]
         pi = kn.index('pelvis')
         p_ref_pelvis = ref_kp[pi]
         q_ref = ref.root_quat[k]
-        R_ref = R.from_quat([q_ref[1], q_ref[2], q_ref[3], q_ref[0]])
+        R_ref_inv = R.from_quat(
+            [q_ref[1], q_ref[2], q_ref[3], q_ref[0]]).inv().as_matrix()
         sq_rel, sq_world = [], []
         M = anc['M']
         hand_err = 0.0
         for n in KP_SUBSET:
-            if n not in kn or n not in kp_names:
+            if n not in kn or n not in live['e_self']:
                 continue
-            p_self = np.asarray(body_xpos[kp_names[n]], dtype=np.float64)
-            e_self = R_self.inv().as_matrix() @ (p_self - p_self_pelvis)
-            e_ref = R_ref.inv().as_matrix() @ (ref_kp[kn.index(n)]
-                                             - p_ref_pelvis)
+            e_self = live['e_self'][n]
+            e_ref = R_ref_inv @ (ref_kp[kn.index(n)] - p_ref_pelvis)
             sq_rel.append(float(np.sum((e_self - e_ref) ** 2)))
             if n == seg.get('hand'):
                 hand_err = float(np.linalg.norm(e_self - e_ref))
@@ -303,7 +353,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 [anc['p0'] + M @ (ref_kp[kn.index(n)][:2]
                                  - ref.keypoints[0][pi][:2]),
                  [ref_kp[kn.index(n)][2]]])
-            sq_world.append(float(np.sum((p_self - p_ref_world) ** 2)))
+            sq_world.append(float(np.sum(
+                (live['p_self'][n] - p_ref_world) ** 2)))
         kp_mse = float(np.mean(sq_rel)) if sq_rel else 0.0
         r_kp = float(np.exp(-40.0 * kp_mse))
         kp_err_m = float(np.sqrt(np.mean(sq_world))) if sq_world else 0.0
@@ -319,8 +370,10 @@ class StrikeTrackObserver(BaseObserverPlugin):
         # --- root xy/yaw vs anchored ref --------------------------------
         p_anch = anc['p0'] + M @ (ref.root_pos[k][:2] - anc['p_ref0'])
         dxy = float(np.linalg.norm(root_pos[:2] - p_anch))
-        yaw_anch = _yaw_of(ref.root_quat[k]) - anc['yaw_ref0'] + anc['yaw0']
-        dyaw = float((yaw_self - yaw_anch + np.pi) % (2 * np.pi) - np.pi)
+        yaw_anch = _yaw_of(ref.root_quat[k]) - anc['yaw_ref0'] \
+            + anc['yaw0']
+        dyaw = float((live['yaw_self'] - yaw_anch + np.pi)
+                     % (2 * np.pi) - np.pi)
         r_root = 0.5 * float(np.exp(-3.0 * dxy ** 2)) \
             + 0.5 * float(np.exp(-1.0 * dyaw ** 2))
 
@@ -333,9 +386,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
             'hand': r_hand, 'hand_err_m': hand_err,
             'kp_err_m': kp_err_m, 'kp_err_rel_m': float(np.sqrt(kp_mse)),
             'root_dxy_m': dxy, 'root_dyaw_deg': float(np.degrees(dyaw)),
-            'q_rmse_deg': q_rmse_deg,
-            'in_strike': 1.0, 'phase': k / max(1, seg['k_max']),
-            'frame': float(k),
+            'q_rmse_deg': q_rmse_deg, 'in_strike': 1.0, 'landed': 0.0,
         }
 
     # ------------------------------------------------------------------

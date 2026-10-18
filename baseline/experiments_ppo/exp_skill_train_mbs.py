@@ -10,14 +10,16 @@ mid-gait state at reset so every recorded frame IS the skill):
   move_fwd/back/left/right — max-speed cardinal translation (cmd ±1)
   turn_left/right          — max-speed in-place turn
   step                     — fallen init; zero cmd = standup+hold
-  jab_l/r, heavy_l/r       — extension-only strike: scored window
-                             [0, k_land+margin], ref clamps at k_land
-                             (speed = time-at-target), single landing-
-                             point target, post-window unscored.
-                             Balance channels carry ZERO actor weight
-                             (full CoM commitment allowed); heavy refs
-                             run at half clock rate so the staggered
-                             stance has physical time to form.
+  jab_l/r, heavy_l/r       — extension-only strike with monotone
+                             progress tracking: a per-ep pointer walks
+                             the ref clip, advancing ≤2 frames/step to
+                             the best-scoring frame (never retreats);
+                             reaching the landing pose banks a hold
+                             bonus each remaining step → faster punches
+                             score strictly better, speed unbounded by
+                             the clip.  Balance channels carry ZERO
+                             actor weight (full CoM commitment allowed);
+                             episode len = arrival budget + hold margin.
 
 Reward channels (attached per skill family):
   r_potential / r_fall                     — all episodes (strike: t<k_land)
@@ -54,12 +56,13 @@ from .exp_balance_pure import BalancePure
 # ---------------------------------------------------------------------------
 # Skill table — one entry per skill: family, schedule rows, episode length
 # ---------------------------------------------------------------------------
-# Extension-only strikes: scored window = clip landing frame + margin
-# (slower attempts get room to finish; margin frames score the held
-# landing pose → speed = time-at-target).  Nothing past the window is
-# scored — the episode ends there.
+# Extension-only strikes under monotone progress tracking: episode
+# length = arrival budget + hold margin.  The progress pointer waits
+# for slow attempts (they still reach the landing pose if they can)
+# while fast attempts bank every remaining margin step at full score
+# plus the hold bonus — speed = time-at-target.
 _STRIKE_MARGIN = 13
-_HEAVY_RATE = 0.5    # strike env runs heavy refs at half clock rate
+_HEAVY_LEAD = 6       # extra arrival budget: staggered stance needs it
 
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
 _HEAVY_LAND = (0.622, -0.213, 0.413)   # cmu_144_20_m_seg01 landing (left)
@@ -68,8 +71,7 @@ _HEAVY_KLAND = 6     # clip_land_frame('cmu_144_20(_m)_seg01')
 
 
 def _strike_rows(side: int, land: Tuple[float, float, float],
-                 k_land: int, rate: float = 1.0) -> List[list]:
-    n = int(round(k_land / rate)) + _STRIKE_MARGIN
+                 n: int) -> List[list]:
     return [
         [n, 0.0, 0.0, 0.0, 0.0,
          +1, side, land[0], land[1] * (1 if side > 0 else -1), land[2]],
@@ -85,13 +87,13 @@ SKILLS: Dict[str, Dict[str, Any]] = {
     "turn_right": dict(fam="turn",  w_sign=-1.0),
     "step":       dict(fam="idle"),
     "jab_l":      dict(fam="strike", side=+1, land=_JAB_LAND,
-                       k_land=_JAB_KLAND),
+                       n=_JAB_KLAND + _STRIKE_MARGIN),
     "jab_r":      dict(fam="strike", side=-1, land=_JAB_LAND,
-                       k_land=_JAB_KLAND),
+                       n=_JAB_KLAND + _STRIKE_MARGIN),
     "heavy_l":    dict(fam="strike", side=+1, land=_HEAVY_LAND,
-                       k_land=_HEAVY_KLAND, rate=_HEAVY_RATE),
+                       n=_HEAVY_KLAND + _HEAVY_LEAD + _STRIKE_MARGIN),
     "heavy_r":    dict(fam="strike", side=-1, land=_HEAVY_LAND,
-                       k_land=_HEAVY_KLAND, rate=_HEAVY_RATE),
+                       n=_HEAVY_KLAND + _HEAVY_LEAD + _STRIKE_MARGIN),
 }
 
 _IDLE_LEN = 80        # 4 s: fallen → standup (~10) → in-place stepping
@@ -108,8 +110,7 @@ def _skill_rows(skill: str) -> List[list]:
         return [[70, 0.0, 0.0, s["w_sign"] * W_MAX]]
     if fam == "idle":
         return [[_IDLE_LEN, 0.0, 0.0, 0.0]]
-    return _strike_rows(s["side"], s["land"], s["k_land"],
-                        s.get("rate", 1.0))
+    return _strike_rows(s["side"], s["land"], s["n"])
 
 
 def _skill_len(skill: str) -> int:
@@ -148,7 +149,7 @@ class SkillTrainMBS(BalancePure):
 
     # --- Rollout: short episodes → more episodes per update ---
     episodes_per_update: int = 1536
-    max_updates: int = 8000
+    max_updates: int = 10000
     eval_episodes: int = 96
     # Quality composite saturates early (no dyaw term); strike kp/q
     # still improving past the first plateau → generous patience.
@@ -572,6 +573,16 @@ class SkillTrainMBS(BalancePure):
                             if arr is not None:
                                 m.setdefault(out, []).append(float(
                                     np.asarray(arr[:T])[ins].mean()))
+                        # land_t: step index where the progress pointer
+                        # first reaches the landing frame — direct
+                        # punch-speed measure (T = never arrived).
+                        lnd = extract_per_step_field(
+                            ep.observer_outputs, sk, "landed", T)
+                        if lnd is not None:
+                            hit = np.flatnonzero(
+                                np.asarray(lnd[:T]) > 0)
+                            m.setdefault("land_t", []).append(
+                                float(hit[0]) if hit.size else float(T))
 
         info: Dict[str, Any] = {"n_eps": n_eps,
                                 "falls": round(n_fall / max(n_eps, 1), 3)}

@@ -82,17 +82,13 @@ observer_plugins:
     config:
       agent_id: "robot_a"
       ext_only: true
-      # Heavy (lunge-stance) clips run the reference clock at half
-      # rate: reaching k_land takes 12 frames instead of 6, giving the
-      # robot physical time to form the staggered stance from stepping.
-      clip_rates:
-        cmu_144_20_m_seg01: 0.5
-        cmu_144_20_seg01: 0.5
+      # Monotone progress tracking: the ref pointer advances at most
+      # `lookahead` frames per step to the best-matching frame — punch
+      # speed is unbounded by the clip; landing banks a hold bonus.
+      lookahead: 2
   strike_track_b:
     cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
     config:
       agent_id: "robot_b"
       ext_only: true
-      clip_rates:
-        cmu_144_20_m_seg01: 0.5
-        cmu_144_20_seg01: 0.5
+      lookahead: 2
