@@ -184,7 +184,7 @@ r_hold = −(0.3·|v_xy| + 0.3·|ω|) − (d_pos + d_yaw)
 
 ```
 r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
-    + 0.20·root + 0.35·hand_reach(σ=0.45)
+    + 0.20·root + 0.50·hand_reach(σ=0.45)
 ```
 
 strike ep 的 `r_potential`/`r_fall` actor_weight 恒 0（重心完全放开）。

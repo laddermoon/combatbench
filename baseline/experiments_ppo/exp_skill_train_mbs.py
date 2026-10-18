@@ -162,7 +162,7 @@ class SkillTrainMBS(BalancePure):
     # weak left skills get extra gradient share.
     SKILL_SAMPLE_W: Dict[str, float] = {
         "turn_left": 2.5, "move_left": 1.5, "jab_l": 1.5,
-        "heavy_r": 1.5,
+        "heavy_r": 3.0,
     }
 
     _MOVE_OBS = {"robot_a": "move_track_a", "robot_b": "move_track_b"}
@@ -590,11 +590,15 @@ class SkillTrainMBS(BalancePure):
         if ws:
             fam_scores["turn"] = float(np.clip(
                 np.mean(ws) / 2.0, 0.0, 1.0))
-        kp = [v for s, m in agg.items()
-              if SKILLS[s]["fam"] == "strike" for v in m.get("kp", [])]
-        if kp:
+        # Strike score blends keypoint and punching-hand errors — kp
+        # alone is blind to the "arm never leaves guard" failure (a
+        # static pose can score decent kp while the punch never lands).
+        st = [v for s, m in agg.items()
+              if SKILLS[s]["fam"] == "strike"
+              for k in ("kp", "hand") for v in m.get(k, [])]
+        if st:
             fam_scores["strike"] = float(np.clip(
-                1.0 - np.mean(kp) / 0.30, 0.0, 1.0))
+                1.0 - np.mean(st) / 0.30, 0.0, 1.0))
         dp = [v for s, m in agg.items()
               if SKILLS[s]["fam"] == "idle" for v in m.get("d_pos", [])]
         if dp:
