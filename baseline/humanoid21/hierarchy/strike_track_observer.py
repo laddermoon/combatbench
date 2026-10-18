@@ -24,7 +24,7 @@ error terms then compare the live state against the anchored reference
 relative ego — both unchanged by the anchor; only root xy/yaw and the
 reported world-frame kp error need the transform).
 
-Outputs per step: ``reward, pose, vel, kp, height, root, kp_err_m,
+Outputs per step: ``reward, pose, vel, arm, kp, height, root, kp_err_m,
 q_rmse_deg, in_strike, phase, frame`` — ``in_strike`` marks steps inside
 a resolved strike segment so downstream gating is exact.
 
@@ -55,6 +55,19 @@ _HALF = np.array([
 
 W_POSE, W_VEL, W_KP, W_HEIGHT, W_ROOT = 0.35, 0.10, 0.25, 0.10, 0.20
 W_HAND, SIGMA_HAND = 0.50, 0.45   # dense reach term on the punching hand
+# Punching-arm joint-chain term: arm pose errors are diluted in the
+# 21-dim pose mean, so a bent punching elbow is nearly free under
+# r_pose alone — track the striking arm's joints separately.
+W_ARM = 0.30
+_JOINT_IDX = {n: i for i, n in enumerate(CONTROLLED_JOINTS)}
+_ARM_JOINTS = {
+    'hand_left': [_JOINT_IDX[n] for n in
+                  ('shoulder1_left', 'shoulder2_left', 'elbow_left')
+                  if n in _JOINT_IDX],
+    'hand_right': [_JOINT_IDX[n] for n in
+                   ('shoulder1_right', 'shoulder2_right', 'elbow_right')
+                   if n in _JOINT_IDX],
+}
 # σ=0.45 keeps useful gradient across the whole workspace: at d=0.5 m
 # r_hand≈0.30 with ∂r/∂d≈1.3/m; σ=0.15 would be ~0 gradient there
 # (needle-in-haystack — it only pays once the hand is already close).
@@ -180,7 +193,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
     @staticmethod
     def _zero() -> Dict[str, float]:
         return {'reward': 0.0, 'pose': 0.0, 'vel': 0.0, 'kp': 0.0,
-                'height': 0.0, 'root': 0.0, 'hand': 0.0,
+                'height': 0.0, 'root': 0.0, 'hand': 0.0, 'arm': 0.0,
                 'hand_err_m': 0.0, 'kp_err_m': 0.0, 'kp_err_rel_m': 0.0,
                 'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
@@ -252,6 +265,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
             - ref.qv_norm[k]
         r_pose = float(np.exp(-2.0 * np.mean(q_err ** 2)))
         r_vel = float(np.exp(-0.02 * np.mean(qv_err ** 2)))
+        arm_idx = _ARM_JOINTS.get(seg.get('hand'))
+        r_arm = (float(np.exp(-2.0 * np.mean(q_err[arm_idx] ** 2)))
+                 if arm_idx else 0.0)
         q_rmse_deg = float(np.degrees(np.sqrt(np.mean((q_err * _HALF) ** 2))))
 
         # --- keypoints (pelvis-relative ego both sides — anchor-free) ---
@@ -310,9 +326,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
 
         reward = (W_POSE * r_pose + W_VEL * r_vel
                   + W_KP * r_kp + W_HEIGHT * r_height + W_ROOT * r_root
-                  + W_HAND * r_hand)
+                  + W_HAND * r_hand + W_ARM * r_arm)
         return {
-            'reward': reward, 'pose': r_pose, 'vel': r_vel,
+            'reward': reward, 'pose': r_pose, 'vel': r_vel, 'arm': r_arm,
             'kp': r_kp, 'height': r_height, 'root': r_root,
             'hand': r_hand, 'hand_err_m': hand_err,
             'kp_err_m': kp_err_m, 'kp_err_rel_m': float(np.sqrt(kp_mse)),
