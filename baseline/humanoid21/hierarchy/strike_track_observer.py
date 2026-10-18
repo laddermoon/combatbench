@@ -58,7 +58,7 @@ W_HAND, SIGMA_HAND = 0.50, 0.45   # dense reach term on the punching hand
 # Punching-arm joint-chain term: arm pose errors are diluted in the
 # 21-dim pose mean, so a bent punching elbow is nearly free under
 # r_pose alone — track the striking arm's joints separately.
-W_ARM = 0.30
+W_ARM = 0.50
 _JOINT_IDX = {n: i for i, n in enumerate(CONTROLLED_JOINTS)}
 _ARM_JOINTS = {
     'hand_left': [_JOINT_IDX[n] for n in

@@ -183,7 +183,7 @@ r_hold = −(0.3·|v_xy| + 0.3·|ω|) − (d_pos + d_yaw)
 纯 mocap 形状，ext_only 窗口内统一跟踪：
 
 ```
-r = 0.35·pose + 0.10·vel + 0.30·arm + 0.25·kp + 0.10·height
+r = 0.35·pose + 0.10·vel + 0.50·arm + 0.25·kp + 0.10·height
     + 0.20·root + 0.50·hand_reach(σ=0.45)
 ```
 
