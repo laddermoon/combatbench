@@ -222,3 +222,12 @@ hand_err/kp 无牺牲（jab ~0.07、heavy ~0.055），move/turn/step/falls
 物理下限。
 
 验收视频：`videos/20261018_233504/`（u8103 导出，heavy_r/jab_l）
+
+### 终态（u9860 早停，run `skill_train_s2b_u8000_prog`）
+
+`land_t` 全程：heavy_r 11.5→**4.1**、heavy_l 12.3→**4.9**、
+jab_l 15.1→**6.9**、jab_r 11.0→**7.3**（≈0.2-0.4s 出拳，贴进度指针
+下限）。终态 eval（u9855）：hand jab 0.044/0.054、heavy 0.043/0.045；
+kp jab 0.128/0.121、heavy 0.168/0.138；move_fwd v 0.98、turn 5.75/5.0；
+falls ~2-5%；quality 峰值 0.881。移动/转身/踏步零回归。
+验收视频：`videos/20261019_052455/`（u9860 导出，4 个打击全渲）
