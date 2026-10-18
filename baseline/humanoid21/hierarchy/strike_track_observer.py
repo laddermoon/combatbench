@@ -151,7 +151,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
 
     def __init__(self, agent_id: str = 'robot_a',
                  clips_dir: str = str(DEFAULT_CLIPS_DIR),
-                 ext_only: bool = False) -> None:
+                 ext_only: bool = False,
+                 clip_rates: Optional[Dict[str, float]] = None) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
         # ext_only (skill-training extension phase): track only the
@@ -160,6 +161,10 @@ class StrikeTrackObserver(BaseObserverPlugin):
         # pose (speed = time-at-target).  Default False keeps the
         # full-clip tracking of the older experiments.
         self._ext_only = bool(ext_only)
+        # clip_rates: per-clip reference-clock rate.  <1 slows the
+        # reference playback (e.g. 0.5 doubles the frames to reach
+        # k_land) — gives the robot physical time to form a stance.
+        self._clip_rates = dict(clip_rates or {})
         self._clips: Dict[str, RefClip] = {}
         self._segments: List[Dict[str, Any]] = []
         self._t = -1
@@ -222,7 +227,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
             return self._zero()
 
         ref: RefClip = seg['ref']
-        k = min(self._t - seg['a'], seg['k_max'])
+        rate = self._clip_rates.get(seg['clip'], 1.0)
+        k = min(int((self._t - seg['a']) * rate), seg['k_max'])
         ds = ctx.accessor.get_derived_state()
         core = ctx.accessor.get_core_state()[self.agent_id]
 

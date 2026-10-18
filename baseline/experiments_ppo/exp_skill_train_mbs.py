@@ -13,7 +13,11 @@ mid-gait state at reset so every recorded frame IS the skill):
   jab_l/r, heavy_l/r       — extension-only strike: scored window
                              [0, k_land+margin], ref clamps at k_land
                              (speed = time-at-target), single landing-
-                             point target, post-window unscored
+                             point target, post-window unscored.
+                             Balance channels carry ZERO actor weight
+                             (full CoM commitment allowed); heavy refs
+                             run at half clock rate so the staggered
+                             stance has physical time to form.
 
 Reward channels (attached per skill family):
   r_potential / r_fall                     — all episodes (strike: t<k_land)
@@ -55,6 +59,7 @@ from .exp_balance_pure import BalancePure
 # landing pose → speed = time-at-target).  Nothing past the window is
 # scored — the episode ends there.
 _STRIKE_MARGIN = 13
+_HEAVY_RATE = 0.5    # strike env runs heavy refs at half clock rate
 
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
 _HEAVY_LAND = (0.622, -0.213, 0.413)   # cmu_144_20_m_seg01 landing (left)
@@ -63,9 +68,10 @@ _HEAVY_KLAND = 6     # clip_land_frame('cmu_144_20(_m)_seg01')
 
 
 def _strike_rows(side: int, land: Tuple[float, float, float],
-                 k_land: int) -> List[list]:
+                 k_land: int, rate: float = 1.0) -> List[list]:
+    n = int(round(k_land / rate)) + _STRIKE_MARGIN
     return [
-        [k_land + _STRIKE_MARGIN, 0.0, 0.0, 0.0, 0.0,
+        [n, 0.0, 0.0, 0.0, 0.0,
          +1, side, land[0], land[1] * (1 if side > 0 else -1), land[2]],
     ]
 
@@ -83,9 +89,9 @@ SKILLS: Dict[str, Dict[str, Any]] = {
     "jab_r":      dict(fam="strike", side=-1, land=_JAB_LAND,
                        k_land=_JAB_KLAND),
     "heavy_l":    dict(fam="strike", side=+1, land=_HEAVY_LAND,
-                       k_land=_HEAVY_KLAND),
+                       k_land=_HEAVY_KLAND, rate=_HEAVY_RATE),
     "heavy_r":    dict(fam="strike", side=-1, land=_HEAVY_LAND,
-                       k_land=_HEAVY_KLAND),
+                       k_land=_HEAVY_KLAND, rate=_HEAVY_RATE),
 }
 
 _IDLE_LEN = 80        # 4 s: fallen → standup (~10) → in-place stepping
@@ -102,7 +108,8 @@ def _skill_rows(skill: str) -> List[list]:
         return [[70, 0.0, 0.0, s["w_sign"] * W_MAX]]
     if fam == "idle":
         return [[_IDLE_LEN, 0.0, 0.0, 0.0]]
-    return _strike_rows(s["side"], s["land"], s["k_land"])
+    return _strike_rows(s["side"], s["land"], s["k_land"],
+                        s.get("rate", 1.0))
 
 
 def _skill_len(skill: str) -> int:
@@ -155,6 +162,7 @@ class SkillTrainMBS(BalancePure):
     # weak left skills get extra gradient share.
     SKILL_SAMPLE_W: Dict[str, float] = {
         "turn_left": 2.5, "move_left": 1.5, "jab_l": 1.5,
+        "heavy_r": 1.5,
     }
 
     _MOVE_OBS = {"robot_a": "move_track_a", "robot_b": "move_track_b"}
@@ -330,12 +338,13 @@ class SkillTrainMBS(BalancePure):
         phi = (np.clip(np.asarray(phi[:T], dtype=np.float32), 0.0, 1.0)
                if phi is not None else np.zeros(T, dtype=np.float32))
 
-        # Extension-only strikes: balance channels only score the
-        # punch-out itself — post-landing behavior (falling etc.) is
-        # explicitly out of scope for this skill.
+        # Extension-only strikes: the robot is allowed to commit its
+        # center of mass fully — lunge, lean, even fall.  Balance
+        # channels (r_potential / r_fall) carry zero actor weight for
+        # the whole episode so "fear of falling" can't suppress the
+        # punch.
         if fam == "strike":
-            win = (np.arange(T) < SKILLS[skill]["k_land"]
-                   ).astype(np.float32)
+            win = np.zeros(T, dtype=np.float32)
         else:
             win = np.ones(T, dtype=np.float32)
 
@@ -424,7 +433,10 @@ class SkillTrainMBS(BalancePure):
                          if ins is not None else np.zeros(T, np.float32))
             channels["r_strike"] = ChannelData(
                 reward=r_strike, is_terminated=False,
-                actor_weight=(self.r_strike_actor_weight * phi ** 2
+                # No phi**2 gate: committing the CoM (leaning/lunging)
+                # must not suppress the strike gradient — full weight
+                # inside the scored window.
+                actor_weight=(self.r_strike_actor_weight
                               * in_strike).astype(np.float32),
             )
 

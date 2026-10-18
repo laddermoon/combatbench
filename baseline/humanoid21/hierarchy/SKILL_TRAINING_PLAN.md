@@ -66,7 +66,7 @@ episode 本体 = 纯技能段：
 | move | [70, ±V_MAX, 0, 0] 等 | 70 步 |
 | turn | [70, 0, 0, ±W_MAX] | 70 步 |
 | step | [80, 0,0,0] | 80 步 4s（随机倒地初始） |
-| strike | [k_land+margin, ..., eff,sid,tgt] | jab 11+13=24 / heavy 6+13=19 |
+| strike | [k_land/rate+margin, ..., eff,sid,tgt] | jab 11+13=24 / heavy 12+13=25（rate=0.5）|
 
 ### 3.1 WarmupSteppingPlugin（替代 lead-in，核心修订）
 
@@ -100,17 +100,18 @@ target=both），全程零指令——倒地→起身→原地踏步。时长 80
 
 - **打分窗口 = [0, k_land + margin]**：k_land = clip 峰值伸展帧
   （`_clip_meta` argmax 实测：jab=11、heavy=6）；margin=13 给慢速
-  尝试留足完成时间。
+  尝试留足完成时间。重拳参考时钟半速（`clip_rates=0.5`，
+  12 帧到 k_land）——开立步站架需要 ~1 步位移，6 帧物理上不可达。
 - **余量帧的参考 = 钳在 k_land 的保持打击姿态**
   （`StrikeTrackObserver` 新 `ext_only` 选项，参考帧
   `min(t, k_land)`）——**速度自动变成"在目标姿态上停留的时间"**：
   打得快→余量帧全程拿满跟踪分；打得慢→余量帧还在够，分少。
   无需显式速度项。
-- **打完后的行为完全不计分**：窗口内 r_fall/r_potential 只计到
-  k_land（打出后摔倒不罚），episode 在窗口末尾即终止。
-  打出过程中摔倒仍罚（r_fall 窗口内生效 + 跟踪分丢失）。
-- 窗口内摔倒仍受罚的边界=到达即停：v1 用 `t < k_land` 近似，
-  比 clip 还快的提前到位不额外加分（frame-锁定跟踪
+- **重心完全放开（v8）**：strike ep 的 r_fall/r_potential 全程
+  actor_weight=0——允许扑出去打、允许打完摔倒；"怕摔"曾压制
+  CoM 前移（实测收敛策略全程 φ≈1.0）。r_strike 也去掉 φ² 门控
+  （窗口内恒 4.0），重心下沉不再衰减打击梯度。
+- 比 clip 还快的提前到位不额外加分（frame-锁定跟踪
   只奖励"按时+保持"），先不做更复杂的到达即冻结参考。
 
 ### 3.4 后续规划（暂不实现）
@@ -186,7 +187,7 @@ r = 0.35·pose + 0.10·vel + 0.25·kp + 0.10·height
     + 0.20·root + 0.35·hand_reach(σ=0.45)
 ```
 
-strike ep 的 `r_potential`/`r_fall` actor_weight 额外 ×(t<k_land)。
+strike ep 的 `r_potential`/`r_fall` actor_weight 恒 0（重心完全放开）。
 
 ### `r_std_clip`（idle env，aw=2.0·φ²）
 
