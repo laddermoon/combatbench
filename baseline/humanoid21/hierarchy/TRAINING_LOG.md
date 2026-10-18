@@ -143,3 +143,38 @@ grep "\[eval" baseline/runs/hier_s2_balance_s42i_a/train.log | tail -3
 ```bash
 grep "\[eval" baseline/runs/skill_train_s2b_u5855_p1000/train.log | tail -3
 ```
+
+## 打击技能：放开约束 + 右臂局部最优攻坚（u6285 起）
+
+### 干预 1：放开"怕摔"约束（commit `04b36b89`）
+
+诊断（逐帧 rollout）：strike ep 的 `r_fall`/`r_potential` 在 `t<k_land` 生效 +
+`r_strike` 自身带 `φ²` 门控 → 重心前移会让打击梯度二次方衰减。policy 学到
+"宁可打不到也不能掉重心"（phi 全程顶 0.98+）。重拳另有时序问题：clip 6 帧
+到位（0.3s），开立步站架物理上来不及。
+
+修复：strike ep 的 r_fall/r_potential 全窗置零；r_strike 去 φ² 门控；
+重拳参考时钟半速（clip_rates=0.5，12 帧到位）；heavy_r 采样 1.5。
+
+效果：jab hand →0.06-0.07，heavy_l hand →0.08，heavy_r hand 0.30→0.24。
+
+### 干预 2：右臂局部最优（commit `a061f52c`+`6ebe69e1`）
+
+逐关节诊断发现 heavy_r 的 `elbow_right` 在 k_land 误差 **57°**——
+手臂根本不伸，而"不出拳"本身 kp 反而更低（不动身体各关键点误差小），
+kp 指标对"没出拳"完全失明。jab_r 手臂能伸，排除硬件/clip/目标点不对称。
+
+修复：heavy_r 采样 1.5→3.0；W_HAND 0.35→0.50；新增 `r_arm` 项
+（出拳手臂 shoulder1/2/elbow 独立 pose 跟踪，W_ARM=0.30——手臂误差在
+21 维 pose 均值里被稀释）；eval strike 分并入 hand_err。
+
+效果（u7310 起）：heavy_r hand 0.24→**0.14** 持续下探，elbow_right
+误差 57→49°；heavy_l hand →0.055 最佳水位。quality 0.835 new_best。
+
+监控命令：
+
+```bash
+grep "\[eval" baseline/runs/skill_train_s2b_u7310_armterm/train.log | tail -3
+```
+
+验收视频：`videos/20261018_122822/`（u7454，heavy_r 右臂半伸、肘仍弯 ~45°）
