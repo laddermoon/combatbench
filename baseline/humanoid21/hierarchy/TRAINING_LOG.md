@@ -178,3 +178,21 @@ grep "\[eval" baseline/runs/skill_train_s2b_u7310_armterm/train.log | tail -3
 ```
 
 验收视频：`videos/20261018_122822/`（u7454，heavy_r 右臂半伸、肘仍弯 ~45°）
+
+### 阶段收敛（u8000 终态，run `skill_train_s2b_u7540_arm50`）
+
+| 技能 | 指标 |
+|---|---|
+| jab_l/r | hand 0.067-0.075 双侧对称，kp ~0.15 |
+| heavy_l/r | hand **0.055 / 0.050**（右侧反超），kp 0.18/0.15，q 14.3/12.5 |
+| move ×4 | v fwd 0.90 / back 0.55 / left 0.61 / right 0.73；dyaw ≤0.31 |
+| turn ×2 | w 5.4 / 5.0 rad/s 对称，vxy ~0.05 |
+| step | stood 1.0，4s 漂移 ~0.14-0.21m |
+| falls | 2-4% |
+| quality | 峰值 0.848（含 hand_err 口径） |
+
+heavy_r 局部最优全程：hand_err 0.30→0.24（放开约束）→0.20（采样×3+W_HAND↑）
+→0.14（r_arm 0.3）→0.10（r_arm 0.5）→0.05 收敛。elbow_right 误差 57°→~30°
+以内。经验：**多关节均值型跟踪项会稀释单关节误差，关键末端/关节链需要独立项。**
+
+验收视频：`videos/20261018_141445/`（u8000 导出，11 技能全渲）
