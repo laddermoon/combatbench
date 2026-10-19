@@ -61,9 +61,11 @@ def render_compare(clip_id: str, outdir: Path, every: int = 4, fps: int = 30):
     import matplotlib.pyplot as plt
     import imageio.v2 as imageio
 
-    if clip_id.endswith("_m"):
+    if clip_id.endswith("_m") or "_m_" in clip_id:
         # 镜像片段无自有 _src：取父片段源骨架做 mj 系 y->-y 镜像显示
-        parent_src = np.load(LIBRARY / "clips" / f"{clip_id[:-2]}_src.npz")
+        parent_id = clip_id[:-2] if clip_id.endswith("_m") \
+            else clip_id.replace("_m_", "_", 1)
+        parent_src = np.load(LIBRARY / "clips" / f"{parent_id}_src.npz")
         M = np.array([[1., 0., 0.], [0., -1., 0.], [0., 0., 1.]])
         from scipy.spatial.transform import Rotation as _R
         mirrored = {}
