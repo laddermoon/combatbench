@@ -31,8 +31,22 @@
 | 移动 | move_fwd / back / left / right | 沿指令方向走 |
 | 转身 | turn_left / turn_right | 原地转向 |
 | 保持 | step | 原地踏步（零指令的默认行为） |
-| 打击 | jab_l / jab_r | 左右刺拳 |
-| 打击 | heavy_l / heavy_r | 左右重拳 |
+| 打击 | jab_l / jab_r | **前手拳**：出拳手与前脚同侧，转胯小、距离近、速度快 |
+| 打击 | heavy_l / heavy_r | **后手拳（cross）**：出拳手与后脚同侧，转胯送肩、后脚上步，力量与射程更大 |
+
+打击技能的参考 clip 绑定（`strike_track_observer.resolve_clip`，
+资产根 `/data1/dev/combatbench_mocap/clips/`）：
+
+| 技能 | clip_id | 说明 |
+|---|---|---|
+| jab_l | `hdm05_3146_88_2895_127` | HDM05 源段，落地帧 k_land=11 |
+| jab_r | `hdm05_3146_88_2895_127_m` | 左 clip 的镜像（`_m` 后缀） |
+| heavy_l | `cmu_144_20_m_seg01` | 右 clip 的镜像 |
+| heavy_r | `cmu_144_20_seg01` | CMU 源段（曲肘重拳/摆拳式），k_land=6 |
+
+clip 本体 `clips/<clip_id>.npz`（humanoid21 重定向关节角+关键点，
+120Hz），人类源骨架在 `clips/<clip_id>_src.npz`；源动作形态与
+渲染方法见 `REFERENCE_VIDEOS.md`。
 
 指令行格式：`[n, vx, vy, w, rsv, eff_type, eff_side, tx, ty, tz]`——
 n 为该段持续 action 步数（20Hz），其余为语义参数。
