@@ -1,287 +1,146 @@
-# Skill 训练方案（初步技能阶段）
+# 基础 Skill 训练总体方案
 
-> 状态：**v7 实施中**。S3/S4 判定失败终止，回到 S2 收敛策略
-> （`hier_s2_balance_s42i_b` @ u1635，recovery=0.948）之上训练
-> 离散单技能。**复合实验**：按技能族划分 env 变体，job 级
-> episode_options 携带技能标签，build_trajectory 按标签挂通道。
->
-> v7 两大结构性修订：
-> 1. **episode 内 lead-in 废除** → `WarmupSteppingPlugin` 在 reset
->    阶段直接把机器人初始化到"步态中间态"——episode 本体 100%
->    是纯技能，奖励/观测无任何门控。
-> 2. **打击只学"打出去"** → 打分窗口 = 打出段+余量帧，打完后的
->    一切（摔倒、乱动）不计分；"收招回位"留作后续独立技能。
+当前基线技能训练的完整设计（实验 `skill_full_mbs`）。本文只描述
+现行方案与决策理由，不记录历史演变。专项细节见
+`STRIDE_REWARD_PLAN.md`（移动）与 `STRIKE_LAUNCH_GATE.md`（打击门控）。
 
-## 1. 目标
+## 1. 定位
 
-在 S2 基座上训练一组语义明确的单技能，每个技能独立可调用：
+在已验收的 S2 基础（站立平衡 + 原地踏步，checkpoint
+`hier_s2_balance_s42i_b/checkpoints/checkpoint_u01635.pt`）之上，
+训练一个**可复用的低层技能策略**：高层战术策略只需下发语义指令，
+低层策略自行完成平衡、协调、接触与恢复。不为每个任务重训一个
+端到端控制器。
 
-- 移动：前/后/左/右（最速，cmd 归一化 ±1，无速度参数）
-- 原地转身：左/右（最速，±1）
-- 原地踏步（含倒地起身——同一指令，不同初始状态）
-- 打击：左/右刺拳、左/右重拳（只学打出去：贴合 mocap + 越快越好）
+核心决策原则：
 
-机制（已验证框架原生支持，零改动）：
+- **指令表达意图，不编动作序列**。指令行只携带方向/拳型/目标等
+  语义，怎么迈腿、怎么发力由策略自己学。
+- **结果评价优先于过程塑形**。能用"这一步/这一拳的结果"评价的，
+  就不用逐帧稠密信号去逼近——奖励归因越贴近动作单元越准。
+- **饱和指令**。`+1/-1` = 该方向最大运动意图，第一阶段不做连续
+  速度/任意方向条件化，减少探索维度。
+- **零指令 = 原地踏步**。从倒地起手时零指令同时意味着"先恢复再
+  踏步"（S2 已具备此能力）。
 
-1. `Job.env_bp` per-job——rollouter 按 env 分组各自构建。
-2. `Episode.episode_options` 持久化——job 写 `skill` 标签 +
-   `move_schedule` + `warmup_policy_cls`，build_trajectory 按技能
-   挂对应通道。
-3. Trajectory 缺通道 → 该 critic 不训——每族技能免费专用 critic。
+## 2. 技能集（11 个）
 
-## 2. 指令编码
-
-观测不变：57 proprio + 9 cmd = 66。指令值全部**归一化 ±1**
-（schedule 物理单位写 ±V_MAX / ±W_MAX，cmd 列饱和 ±1.0）：
-
-| 技能 | cmd 编码 | 语义 |
+| 类别 | 技能 | 语义 |
 |---|---|---|
-| move_fwd | VX=+1 | 最速前进 |
-| move_back | VX=−1 | 最速后退 |
-| move_left | VY=+1 | 最速左移 |
-| move_right | VY=−1 | 最速右移 |
-| turn_left | WZ=+1 | 最速原地左转 |
-| turn_right | WZ=−1 | 最速原地右转 |
-| step | 全零 | 原地踏步/起身（S2 自然指令） |
-| jab_l | EFF=+1,SIDE=+1,TGT=(0.438,+0.391,0.498) | 左刺拳打出 |
-| jab_r | EFF=+1,SIDE=−1,TGT=(0.438,−0.391,0.498) | 右刺拳打出 |
-| heavy_l | EFF=+1,SIDE=+1,TGT=(0.622,−0.213,0.413) | 左重拳打出 |
-| heavy_r | EFF=+1,SIDE=−1,TGT=(0.622,+0.213,0.413) | 右重拳打出 |
+| 移动 | move_fwd / back / left / right | 沿指令方向走 |
+| 转身 | turn_left / turn_right | 原地转向 |
+| 保持 | step | 原地踏步（零指令的默认行为） |
+| 打击 | jab_l / jab_r | 左右刺拳 |
+| 打击 | heavy_l / heavy_r | 左右重拳 |
 
-打击指令 = "手尽快到达 ego 系打击点"，**单相位全程指向落点**
-（无收回段——v6 的两段式设计废弃，`strike_phase_targets`
-已从 CommandSimulator 移除，不留死代码）。
+指令行格式：`[n, vx, vy, w, rsv, eff_type, eff_side, tx, ty, tz]`——
+n 为该段持续 action 步数（20Hz），其余为语义参数。
 
-打击目标点 = 该 clip 自然落点（`_clip_meta` landing），
-`resolve_clip` 按最近落点确定性绑定：jab=`hdm05_3146_88_2895_127`(_m)、
-heavy=`cmu_144_20`(_m)`_seg01`。
+## 3. Episode 结构：warmup 泛化起手
 
-## 3. Episode 时序结构
+每个 episode 允许以一段**热身前缀**开始：先执行一个随机先序技能
+（最长约 35 步），再切换到本 episode 的目标技能指令。
 
-**初始状态即步态中间态**（WarmupSteppingPlugin，详见 §3.1），
-episode 本体 = 纯技能段：
+**决策理由**：高层策略组合技能时，每个技能的起点都是"上一技能的
+中段姿态"，不是干净站姿。只在站立起手下训出的技能无法被序列化
+使用。warmup 让训练分布直接覆盖全部"技能→技能"衔接面；从 S2
+起步时先序技能只会踏步，coverage 随技能成长自动变真。
 
-| 族 | schedule | 时长 |
+## 4. 奖励通道（8 条）
+
+| 通道 | 挂载范围 | 作用 |
 |---|---|---|
-| move | [70, ±V_MAX, 0, 0] 等 | 70 步 |
-| turn | [70, 0, 0, ±W_MAX] | 70 步 |
-| step | [80, 0,0,0] | 80 步 4s（随机倒地初始） |
-| strike | [k_land/rate+margin, ..., eff,sid,tgt] | jab 11+13=24 / heavy 12+13=25（rate=0.5）|
+| `r_potential` | 全部 | 平衡势能 phi（奖励截断于 0.90，见 §5） |
+| `r_fall` | 全部（strike 豁免 actor_weight） | 摔倒惩罚 |
+| `r_move_step` | move×4 | 按步结算的径向进度（§6） |
+| `r_drift_step` | move×4 | 按步结算的侧漂+偏航惩罚（§6） |
+| `r_turn` | turn×2 | 朝向指令角速度（密集，已收敛不动） |
+| `r_hold` | step/idle | 原地保持 |
+| `r_strike` | strike×4 | 两段式：对齐门控 + 单调进度跟踪（§7） |
+| `r_std_clip` | step/idle | 标准站姿 clip 匹配 |
 
-### 3.1 WarmupSteppingPlugin（替代 lead-in，核心修订）
+**打击 episode 的平衡豁免**：strike 段内 r_potential/r_fall 的
+actor_weight = 0——允许重心全情投入（弓步前倾甚至扑倒），"怕摔"
+不能压制出拳梯度。
 
-参照 `ImpulsePerturbationPlugin`/`RandomFallenStatePlugin` 的
-**内部 sim 写回**模式，新增实验侧插件
-`baseline/humanoid21/plugins/warmup_stepping.py`：
+## 5. 平衡势能上限截断（phi cap = 0.90）
 
-1. `on_pre_episode`：真实环境 core state → 内部 Humanoid21Simulator。
-2. 内部 sim 跑 ~10 动作步（0.5s）原地踏步：obs = 本体 57 维 +
-   全零 cmd9（v2 零指令=踏步语义），两个机器人同步驱动。
-3. 结束 core state 写回真实环境 → episode 第 0 帧就是步态中间态。
+`r_potential` 用 StandingBalance4Stage 的 phi（[0,1]，stage4 为
+`0.30 + 0.70·w_foot·h_score`，h_score 由躯干高度 [0.15, 1.28m]
+归一化）。奖励值截断为 `min(phi, 0.90)`，对应躯干 ~1.12m 满分。
 
-**引导策略 = 当前 post-update 导出策略**（每次都不一样，且始终
-跟随训练中步态）——实验在 `build_jobs` 里把
-`policy_bp.cls`（file:<export>/policy.py:<Cls>）写入
-`episode_options["warmup_policy_cls"]`，插件惰性加载、按 cls
-字符串缓存（上限 8 条）。采样动作（`policy.sample`）提供
-相位多样性；无策略注入时退化零 action（PD 站姿）。
+**决策理由**：phi→1.0 的梯度一直把躯干推向 1.28m 顶格站直——
+物理上即腿打直、重心提到最高，与"移动时降重心/微前倾"完全反向。
+截断后 1.12–1.28m 之间不再分高低，策略可以选择屈膝前倾的运动
+站姿而不亏分。raw phi 仍用于摔倒检测和 φ² 门控，语义不变。
 
-收益：奖励无门控（r_move/r_turn/r_drift 全帧激活、dyaw 锚定
-第 0 帧）、第 0 帧观测即"步态中间态+技能指令"、episode 各短
-10 帧。
+## 6. 移动奖励：按步结算
 
-### 3.2 step/起身（不变）
+替换原稠密平滑速度方案（17 帧滑窗 ≈0.85s 会把瞬时方向误差摊平，
+且逐帧信号难以归因到"某一步迈歪了"）。
 
-idle env 每个 episode **随机倒地初始**（fallen 插件无条件触发，
-target=both），全程零指令——倒地→起身→原地踏步。时长 80 步
-4 秒（起身 ~10 步已掌握 + 原地踏步 ~70 步）。
+- **步界检测**：`feet_forces`（obs[52:54]，体重归一化）的接触
+  上升沿 = foot-strike。离线从轨迹提取，不动环境/observer。
+- **步周期**：每两次连续落地划一个**滑动两步窗口** `(s_{i-2}, s_i]`
+  —— 左右脚各落地一次 = 一个完整步态周期；每次落地都结算最近
+  一个周期（信号密度是非重叠方案的两倍）。
+- **每周期评三量**（move_track 原始 xy/yaw，周期本身消步态摆动，
+  无需滑窗）：径向净速度 `v_rad`（沿指令方向）、横向净漂移
+  `v_off`、净偏航 `|Δyaw|`。
+- **单点结算**：`r_move_step[t_end] += 2·v_rad·Δt`，
+  `r_drift_step[t_end] += -(v_off·Δt + 0.5·|Δyaw|)`，
+  actor_weight = `3·φ²(t_end)`。不摊回该周期各帧——"一步一评价"。
+- **兜底**：episode 末半个周期补结算；整段不足 2 次落地则在
+  ep 末整段结算一次（拖行/不迈步拿不到迈步红利，且零进展的周期
+  也照常被评——"没走"本身就是负证据）。
+- 折扣因子不动（0.99）——只缩短评价视野，不引入第二变量。
 
-### 3.3 打击：只学"打出去"（核心修订）
+## 7. 打击奖励：两段式（对齐 → 出拳）
 
-- **打分窗口 = [0, k_land + margin]**：k_land = clip 峰值伸展帧
-  （`_clip_meta` argmax 实测：jab=11、heavy=6）；margin=13 给慢速
-  尝试留足完成时间。重拳参考时钟半速（`clip_rates=0.5`，
-  12 帧到 k_land）——开立步站架需要 ~1 步位移，6 帧物理上不可达。
-- **余量帧的参考 = 钳在 k_land 的保持打击姿态**
-  （`StrikeTrackObserver` 新 `ext_only` 选项，参考帧
-  `min(t, k_land)`）——**速度自动变成"在目标姿态上停留的时间"**：
-  打得快→余量帧全程拿满跟踪分；打得慢→余量帧还在够，分少。
-  无需显式速度项。
-- **重心完全放开（v8）**：strike ep 的 r_fall/r_potential 全程
-  actor_weight=0——允许扑出去打、允许打完摔倒；"怕摔"曾压制
-  CoM 前移（实测收敛策略全程 φ≈1.0）。r_strike 也去掉 φ² 门控
-  （窗口内恒 4.0），重心下沉不再衰减打击梯度。
-- 比 clip 还快的提前到位不额外加分（frame-锁定跟踪
-  只奖励"按时+保持"），先不做更复杂的到达即冻结参考。
+**语义：extension-only。**"打击"只学到出拳至最大伸展为止；落地帧
+之后的行为（收招、失衡）不评分——收招是后续技能。命中精度
+（参数化目标锥）在基础阶段之外，当前不加 `r_tgt_*` 通道。
 
-### 3.4 后续规划（暂不实现）
+每个 strike episode 显式分两段，复用同一 `_frame_score` 复合分
+（keypoints + 关节角 RMSE + 手位置 + 手臂链形状项，满分 ~2.0）：
 
-打出去学会后，把"打完瞬间状态"（手臂伸展、重心不稳）作为
-初始状态，把"收招回位到标准姿态"当**另一个技能**学——
-同一套 WarmupSteppingPlugin 模式：内部 sim 跑完打拳，取终态
-作为收招技能的 episode 初始状态。
+**段 A 对齐段（launch gate）**：先回到发力准备姿态——live pose 与
+clip 起始窗口 [0,4] 帧的最高复合分 ≥ **θ=1.65** 才算过门。过门前
+该分直接作 r_strike（稠密 shaping 回架），`in_strike=1` 保持梯度。
+θ=1.65 是严格档：站姿 1.80 即过，移动/重拳异侧起手需站稳 1-3 步，
+转身中未稳的乱出拳被拒。
 
-### 3.5 阶段二：技能衔接（`skill_trans_mbs`，进行中）
+**段 B 执行段（单调进度跟踪）**：过门后指针沿参考 clip 走，每步最多
+前进 2 帧到"未来帧里最匹配"的帧，**只进不退**；到达落地帧后剩余
+每步拿满 hold bonus——**出拳越快得分严格越高**，速度不被 clip
+节奏封顶。episode 预算 n = clip 到达预算 + 13 步 hold margin
+（heavy 额外 +6 弓步预算）。
 
-EXP_CURVED_MOTION（`EXP_CURVED_MOTION.md`）实测：阶段一技能只在
-"站立起步"分布下可靠——fwd/turn 穿插与 vx+w 组合下 10-42%
-episode 时间处于失衡低位。阶段二目标：**任意技能的任意阶段都可
-作为任意技能的初始状态**，补齐衔接瞬态。
+**决策理由**：泛化起手下机器人必须先学"回到准备姿态再发力"——
+纯指针方案会让指针去迁就当前姿态、跳过回架段，技能不可重入
+（打下一拳前永远收不回来）。严格门控把"收招回架"免费内嵌进了
+每个 strike episode；对站立起手近乎零成本（1-2 步过门）。
 
-机制（对阶段一零侵入）：
+## 8. 不动的部分
 
-- `WarmupSteppingPlugin` 新增技能热身路径：
-  `episode_options["warmup"][robot_id] = {skill, steps, schedule}`。
-  有 spec 时内部 sim 用 `CommandSimulator(strike_dyn_target=True)`
-  按 `move_schedule` 驱动（打击动态目标/锚点自动生效）；无 spec
-  时走原零指令踏步路径——**eval、视频渲染、阶段一训练完全不变**。
-- 新实验 `exp_skill_trans_mbs.py`（`SkillTransMBS`）继承
-  `SkillTrainMBS`，**只**重写 stochastic `build_jobs`：每 robot
-  独立采热身技能（全技能均匀）+ 时长（均匀 [0,cap]，0=无热身）。
-  Eval 路径（stochastic=False）调用父类不变。
-- 排除规则：仅"热身打击 == 目标打击"（同 clip 相位冲突）；
-  其余允许，含同技能延续（move→move）与异打击衔接（jab→heavy）。
-- 热身时长上限：move 35 / turn 30 / idle 40 / strike 20 步
-  （打击窗口短 → cap 小）。
+- **turn**：dense 角速度跟踪，已收敛且质量好，不并入步界方案。
+- **step/idle**：`r_hold + r_std_clip`，4s/80 步；行为已达标。
+- **gamma、lr 等 PPO 超参**：全部沿用标准配置（lr 3e-5，
+  critic 3e-4，1536 ep/update，96 workers，KL 0.03 等）。
 
-技能集合 = 11 个（move×4 / turn×2 / step / jab×2 / heavy×2）。
-"12 种"的说法以 11 为准（`SKILLS` 表）。
+## 9. 明确排除（第一阶段范围外）
 
-## 4. Env 变体（4 个 yaml，4 族）
+- 连续速度/任意方向条件化（饱和 ±1 指令即可）
+- 打击命中精度的参数化目标通道（`r_tgt_*`，属后续精确化阶段）
+- 出拳后的收招/恢复评分（extension-only 语义内由对齐门控部分覆盖）
+- 高层战术策略与 self-play（低层技能验收之后）
 
-| env | 技能 | 差异点 |
-|---|---|---|
-| `skill_move_env` | move_* ×4 | WarmupStepping + move_track + standing_balance + wall + foot |
-| `skill_turn_env` | turn_* ×2 | WarmupStepping + 同 move 观测集 |
-| `skill_strike_env` | jab/heavy ×4 | WarmupStepping + strike_track(ext_only) |
-| `skill_idle_env` | step（含起身，同一指令） | fallen 插件 + move_track + std_clip + balance/foot/wall |
+## 10. 当前训练
 
-## 5. 奖励设计（按技能族挂通道）
+`skill_full_mbs` = 步界结算移动 + 打击对齐门控 + warmup 泛化起手
+（`SkillStepMBS`/`SkillGateMBS`/`SkillTransMBS` 的 cooperative
+MRO 合并），从 S2 u1635 起跑。
 
-公共：`r_potential`=0.01·φ（aw=3.0）、`r_fall`=摔倒+靠墙
-（aw=2.0）。门控全部放 actor_weight（critic 看原始奖励）——
-follow 实验验证过的模式，照搬。
-
-**核心结构参照 `exp_follow_step`**：r_radial（镜像径向）/
-r_tangential（切向惩罚）/ r_face（朝向）映射到技能域。
-
-逐帧归因管线：root_xy 居中滑窗平滑（win=17）→ 居中差分得位移
-→ 投影分解；位移上限 0.10 m/step（2 m/s 物理帽）。
-
-### `r_move`（move env，aw=3.0·φ²）
-
-```
-d_hat   = 指令方向（ego，第 0 帧朝向定义；段内固定）
-v_along = disp · d_hat
-r_move  = 2.0 · v_along              # 线性=最速；反向自动为负
-```
-
-### `r_drift`（move env，aw=2.0·φ²）
-
-```
-v_off   = |disp − v_along·d_hat|
-Δyaw    = |wrap(yaw − yaw[0])|
-r_drift = −1.0·v_off − 0.5·|ω| − 1.5·Δyaw
-```
-
-方向移动期间**朝向不许变**。系数经两轮热修：Δyaw 0.5→1.5
-（dyaw 曾平台 ~1.2-1.6 rad）、权重 1→2（加权优势曾被 r_move
-打平）。
-
-### `r_turn`（turn env，aw=3.0·φ²）
-
-```
-ω_signed = d(yaw)/dt · sign(cmd_w)   # clip ±8
-r_turn   = 0.5·clip(ω_signed,−4,4) − 1.0·|v_xy|
-```
-
-### `r_hold`（idle env，aw=3.0·φ²）
-
-```
-锚点 = φ 首次 ≥0.8 的帧（倒地初始 → 锚定即"站起后"）
-d_pos  = clip(|root_xy − root_xy[锚点]|, 0, 3)
-d_yaw  = |wrap(yaw − yaw[锚点])|
-r_hold = −(0.3·|v_xy| + 0.3·|ω|) − (d_pos + d_yaw)
-```
-
-### `r_strike`（strike env，aw=4.0·in_strike）
-
-纯 mocap 形状，**单调进度跟踪**（monotone progress tracking）：
-
-- 进度指针 k 从 0 起，每步在 `[k, k+2]` 内取完整 reward 最高的
-  ref 帧；只进不退——打多快时钟走多快，速度不被 clip 限速；
-  缩手则姿态与当前帧不匹配自动掉分（天然禁止收回）。
-- 指针到达 `k_land`（出拳伸展位）后，每剩余一步额外 +0.25
-  hold bonus：落地越早赚得越多（speed = time-at-target）。
-- 站架慢的尝试不罚时（指针会等），episode 长度 = 到达预算 +
-  margin=13 保持帧。
-
-单帧 reward（候选帧共用同一函数）：
-
-```
-r = 0.35·pose + 0.10·vel + 0.50·arm + 0.25·kp + 0.10·height
-    + 0.20·root + 0.50·hand_reach(σ=0.45)   [+0.25 if landed]
-```
-
-strike ep 的 `r_potential`/`r_fall` actor_weight 恒 0（重心完全放开）。
-
-### `r_std_clip`（idle env，aw=2.0·φ²）
-
-标准站姿片段质量；不挂在 move/turn/strike 段（防通道打架）。
-
-## 6. 采样与初始
-
-- 族分布：move 30%、turn 15%、strike 35%、idle 20%。
-- 族内弱技能过采样（S2 步态右利手性）：
-  turn_left ×2.5、move_left ×1.5、jab_l ×1.5、heavy_r ×3.0。
-- 双方同策略同练：a/b 各独立采样技能，共享权重双倍数据。
-- episodes_per_update = 1536（episode 短，翻倍吞吐）。
-
-## 7. 网络与暖启动
-
-obs_dim=66 不变；暖启动 `checkpoint_u01635.pt`（S2 最优）。
-actor 全量；`r_potential`/`r_fall`/`r_std_clip` critic 同名继承；
-`r_move`/`r_drift`/`r_turn`/`r_hold`/`r_strike` critic 冷启动。
-
-## 8. 评测与验收
-
-| 技能 | 指标 | 一期目标 |
-|---|---|---|
-| move_* | v_along / v_off / dyaw / 摔倒率 | ≥0.5 m/s、dyaw<0.3 |
-| turn_* | ω_signed / \|v_xy\| | ≥1.5 rad/s |
-| step | stood / d_pos / d_yaw | 起身 100%、漂移 <0.1 |
-| jab/heavy | kp_err / q_rmse / hand_err / land_t（in_strike 内） | kp≤0.10 动作可见 |
-
-quality = 各族归一化均值（move v/0.6、turn w/2.0、
-strike 1−mean(kp,hand)/0.30、idle 1−d_pos/0.5），best-of-run 需
-falls<0.2。`land_t` = 进度指针首次到达 k_land 的步号（出拳速度）。
-
-## 9. 待定
-
-1. margin=13 是否合适（慢速尝试的完成余量 vs 保持姿态的负担）。
-2. r_drift/r_hold 系数继续按指标微调。
-3. 左弱技能是否还有空间（可能步态物理上限）。
-
-## 10. 已定案
-
-- 转身双向两条指令；cmd 归一化 ±1=最速 ✓
-- 重拳 `cmu_144_20`(_m)`_seg01` ✓
-- B 同策略同练 ✓
-- 起身/踏步同 env 同指令：idle env 全随机倒地初始、全程零指令 ✓
-- **WarmupSteppingPlugin 替代 lead-in**：引导策略=当前导出策略，
-  episode 本体纯技能 ✓
-- **打击只学打出去**：打分窗=[0,k_land+margin]、参考帧钳 k_land、
-  窗口后一切不计分、指令单相位指落点 ✓
-- 不留死代码：`strike_phase_targets` 移除 ✓
-- 原地性硬约束 + 方向移动朝向不变 + follow 式三件套 ✓
-- env 按技能族划分，job 级标签挂通道（复合实验）✓
-
-## 11. 对共享代码的改动清单
-
-| 文件 | 改动 | 兼容性 |
-|---|---|---|
-| `command_simulator.py` | 移除 `strike_phase_targets`（两段式回放废弃） | 唯一使用者即本实验 |
-| `strike_track_observer.py` | 新增 `ext_only` 选项：参考帧钳 `k_land`；`clip_land_frame` 保留供窗口计算 | 默认关，旧实验不变 |
-
-新文件：实验类 + 4 env yaml + `warmup_stepping.py` + 本文档 +
-`render_skill_videos.py`（带 warmup_policy_cls 注入）。
+观察口径：eval 指标 `{skill}_{strides,svrad,svoff,sdyaw,nostep}`
+（移动质量）+ `{skill}_{gate_t,ungated}`（回架对齐成本与过门率）
++ falls/quality（整体健康度）；最终判据以渲染视频的定性检查为准。
