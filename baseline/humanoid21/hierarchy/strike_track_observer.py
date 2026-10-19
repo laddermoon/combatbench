@@ -34,8 +34,11 @@ and each step advances to the highest-reward reference frame within
 ``[k, k + lookahead]``.  The pointer never retreats — punching faster
 advances the clock faster (speed unbounded by the clip), while falling
 behind just keeps the pointer waiting; nothing penalizes being ahead.
-Reaching the landing frame ``k_land`` banks a hold bonus every
-remaining step, so faster completion scores strictly better (speed =
+Reaching the landing frame ``k_land`` is only *progress* — ``landed``
+and the per-step hold bonus additionally require the live state to
+actually match that frame (hand within ``LAND_HAND_ERR_M`` of its
+reference point, composite score ≥ ``LAND_MIN_SCORE``), re-evaluated
+every step.  Faster completion scores strictly better (speed =
 time-at-target, plus γ-discount favours early progress).  Everything
 after the segment is out of the scored window by construction.
 """
@@ -77,9 +80,21 @@ _ARM_JOINTS = {
 # r_hand≈0.30 with ∂r/∂d≈1.3/m; σ=0.15 would be ~0 gradient there
 # (needle-in-haystack — it only pays once the hand is already close).
 
-# Landing-hold bonus per step once the progress pointer reaches the
-# landing frame — makes earlier arrival strictly better (speed pay).
+# Landing-hold bonus per step while the LIVE state verifiably matches
+# the landing frame — makes earlier arrival strictly better (speed =
+# time-at-target).
 W_HOLD = 0.25
+# Completion criterion for `landed` — the progress pointer reaching
+# k_max is only progress, not success: "best match among candidates"
+# stays meaningful even when every candidate matches badly.  Landing
+# additionally requires (a) the punching hand within LAND_HAND_ERR_M of
+# its reference point (successful runs land ~0.05 m; 0.10 m ≈ 2× slack,
+# still inside the fist-face scale) and (b) a coherent composite frame
+# score (catches "hand coincidentally at the ego point while the body
+# is off-pose" — e.g. fallen).  Re-evaluated every step: drifting out
+# of the landing pose stops the hold bonus (time-at-target literally).
+LAND_HAND_ERR_M = 0.10
+LAND_MIN_SCORE = 1.0      # frame reward max ≈ 2.40 (all terms = 1)
 
 # (eff_side, is_near) → clip_id
 _CLIP_MAP = {
@@ -296,8 +311,15 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 key=lambda p: p[1]['reward'])
             seg['k_ptr'] = k
             if k >= seg['k_max']:
-                out['reward'] += W_HOLD
-                out['landed'] = 1.0
+                # Pointer at the landing frame = progress, not success.
+                # `landed` requires the live state to actually match
+                # that frame; re-evaluated per step so the hold bonus
+                # tracks time-at-target, not pointer position.
+                landed = (out['hand_err_m'] <= LAND_HAND_ERR_M
+                          and out['reward'] >= LAND_MIN_SCORE)
+                if landed:
+                    out['reward'] += W_HOLD
+                    out['landed'] = 1.0
             out['frame'] = float(k)
             out['phase'] = k / max(1, seg['k_max'])
             out['gated'] = float(seg['gated'])
