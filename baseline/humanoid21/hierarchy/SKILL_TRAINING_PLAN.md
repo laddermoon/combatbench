@@ -46,10 +46,7 @@
 
 clip 本体 `clips/<clip_id>.npz`（humanoid21 重定向关节角+关键点，
 120Hz），人类源骨架在 `clips/<clip_id>_src.npz`；源动作形态与
-渲染方法见 `REFERENCE_VIDEOS.md`。
-
-指令行格式：`[n, vx, vy, w, rsv, eff_type, eff_side, tx, ty, tz]`——
-n 为该段持续 action 步数（20Hz），其余为语义参数。
+渲染方法见 `REFERENCE_VIDEOS.md`。指令下发机制见 §11。
 
 ## 3. Episode 结构：warmup 泛化起手
 
@@ -162,3 +159,44 @@ MRO 合并），从 S2 u1635 起跑。
 观察口径：eval 指标 `{skill}_{strides,svrad,svoff,sdyaw,nostep}`
 （移动质量）+ `{skill}_{gate_t,ungated}`（回架对齐成本与过门率）
 + falls/quality（整体健康度）；最终判据以渲染视频的定性检查为准。
+
+## 11. 实现关键设计
+
+### 指令链路：move_schedule
+
+指令行格式 `[n, vx, vy, w, rsv, eff_type, eff_side, tx, ty, tz]`——
+`n` 为该段持续的 action 步数（20Hz），其余为语义参数。使用链路：
+
+- **写入**：`build_jobs` 中 `_skill_rows(skill)` 把技能编译成一行，
+  经 `episode_options["move_schedule"][robot_id]` 传入 episode；
+  train/eval/warmup 全部走这条路。
+- **编译**：`CommandSimulator.reset` → `_build_schedule()` 把行展开
+  成 `(T, 9)` 逐帧指令表，物理量归一化（vx/vy÷1.5 m/s、w÷2π rad/s、
+  tgt÷1.5 m）；打击行在此一次性 `resolve_clip` 绑定参考 clip。
+- **消费**：每步把当前 9 维指令拼进 obs[57:66]（57 维本体感之后）
+  ——policy 看到的"要做什么"就是这张表；`StrikeTrackObserver` 读
+  同一份 schedule 判定技能段并打分；warmup 插件用同格式 schedule
+  在内部 sim 里跑先序技能前缀。
+- **部署等价物**：高层策略实时下发走 `set_motion` /
+  `set_effector` / `clear_effector`——写进同一份 9 维指令契约；
+  schedule 行是训练期的批量脚本形式，两者落同一 obs 字段。
+
+### 观测结构（66 维）
+
+obs[0:57] 本体感（无对手）+ obs[57:66] 指令块。`feet_forces`
+（双足触地力/体重）在 obs[52:54]——步界检测直接离线读轨迹，
+不需要改环境。
+
+### 打击动态目标
+
+打击段的 `tx,ty,tz` 不在段内保持常数：段首把参考 clip 的拳手
+轨迹锚定到当时位姿，随后每帧覆写为参考手的当前位置（世界系锚定
+→ ego 重投影）。指令契约不变（"目标点可以随时间动"），动态目标
+携带了恒定目标给不了的出拳相位信息。
+
+### 多 critic 通道化
+
+每个奖励通道一个独立 critic（`RewardChannel`），实验类通过
+`_channel_names`/`_channel_gammas` 声明全集，按技能家族在
+`build_trajectories` 里挂子集；`actor_weight` 逐帧调制梯度强度
+（φ² 门控、结算掩码、strike 豁免都用这个钩子实现）。
