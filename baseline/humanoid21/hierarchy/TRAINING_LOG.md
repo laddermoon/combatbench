@@ -238,3 +238,33 @@ falls ~2-5%；quality 峰值 0.881。移动/转身/踏步零回归。
 （cross，出拳手同后脚侧，靠转胯+后脚上步发力）。两者手-脚关系
 不同属 boxing 本职特性。已记录于 `REFERENCE_VIDEOS.md`；当前不处理，
 未来若做换架/左右对称分析时注意 `_m` 镜像只翻肢体侧别、不翻站架语义。
+
+## 阶段二启动：技能衔接（2026-10-19）
+
+**动因**：EXP_CURVED_MOTION 实验（`EXP_CURVED_MOTION.md`）证明阶段一
+技能集不完整——episode 全从踏步中间态起步，fwd/turn 穿插与 vx+w
+组合下 10-42% 时间失衡（纯转身 0% 对比）。病灶 = 技能切换瞬态从未
+被覆盖。
+
+**设计**（对阶段一零侵入）：
+- `warmup_stepping.py` 新增技能热身：`episode_options["warmup"]
+  [rid]={skill,steps,schedule}` → 内部 sim 换 CommandSimulator
+  （strike_dyn_target 全套机制复用），按 move_schedule 驱动；
+  无 spec 走原路径——eval/渲染/阶段一训练不变。
+- `exp_skill_trans_mbs.py`（`SkillTransMBS`，name=`skill_trans_mbs`）
+  继承 SkillTrainMBS，仅重写 stochastic build_jobs：每 robot 均匀
+  采热身技能 + [0,cap] 时长（cap: move35/turn30/idle40/strike20）；
+  排除同打击热身（相位冲突），允许其余一切组合（含 move→move 延续
+  与 jab→heavy 异打击）。eval 走父类不变。
+- 启动点：`skill_train_s2b_u8000_prog/checkpoints/checkpoint_u09860.pt`
+  （阶段一收敛策略），续训于 update≈9861。
+- 已验证：技能热身实测起步姿态正确（heavy_r 15 步热身后手已伸展、
+  turn 20 步热身 yaw≈2π）、legacy 路径不变、同打击排除=0、
+  eval 无 warmup 键。
+- 实跑验证：从 u9860 checkpoint 续训，rollout≈10s/update、
+  u9868 正常产出（进程退出码 0，无崩溃）。
+
+**踩坑**：`--smoke` 把 `max_updates` 覆写为绝对值 2——
+`--smoke --resume-from` 续训起点 ~9861 时循环体一次不进、
+打印完 `[collector]` 即退出码 0 正常返回，表象像"collector 挂死"。
+验证续训路径请用非 smoke 短跑或直接放后台 run，勿用 smoke+resume。

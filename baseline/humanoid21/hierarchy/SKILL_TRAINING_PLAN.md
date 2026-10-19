@@ -121,6 +121,32 @@ target=both），全程零指令——倒地→起身→原地踏步。时长 80
 同一套 WarmupSteppingPlugin 模式：内部 sim 跑完打拳，取终态
 作为收招技能的 episode 初始状态。
 
+### 3.5 阶段二：技能衔接（`skill_trans_mbs`，进行中）
+
+EXP_CURVED_MOTION（`EXP_CURVED_MOTION.md`）实测：阶段一技能只在
+"站立起步"分布下可靠——fwd/turn 穿插与 vx+w 组合下 10-42%
+episode 时间处于失衡低位。阶段二目标：**任意技能的任意阶段都可
+作为任意技能的初始状态**，补齐衔接瞬态。
+
+机制（对阶段一零侵入）：
+
+- `WarmupSteppingPlugin` 新增技能热身路径：
+  `episode_options["warmup"][robot_id] = {skill, steps, schedule}`。
+  有 spec 时内部 sim 用 `CommandSimulator(strike_dyn_target=True)`
+  按 `move_schedule` 驱动（打击动态目标/锚点自动生效）；无 spec
+  时走原零指令踏步路径——**eval、视频渲染、阶段一训练完全不变**。
+- 新实验 `exp_skill_trans_mbs.py`（`SkillTransMBS`）继承
+  `SkillTrainMBS`，**只**重写 stochastic `build_jobs`：每 robot
+  独立采热身技能（全技能均匀）+ 时长（均匀 [0,cap]，0=无热身）。
+  Eval 路径（stochastic=False）调用父类不变。
+- 排除规则：仅"热身打击 == 目标打击"（同 clip 相位冲突）；
+  其余允许，含同技能延续（move→move）与异打击衔接（jab→heavy）。
+- 热身时长上限：move 35 / turn 30 / idle 40 / strike 20 步
+  （打击窗口短 → cap 小）。
+
+技能集合 = 11 个（move×4 / turn×2 / step / jab×2 / heavy×2）。
+"12 种"的说法以 11 为准（`SKILLS` 表）。
+
 ## 4. Env 变体（4 个 yaml，4 族）
 
 | env | 技能 | 差异点 |
