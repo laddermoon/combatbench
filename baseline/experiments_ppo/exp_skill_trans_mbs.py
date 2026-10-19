@@ -38,6 +38,9 @@ class SkillTransMBS(SkillTrainMBS):
     WARMUP_STEP_CAP: Dict[str, int] = {
         "move": 35, "turn": 30, "idle": 40, "strike": 20,
     }
+    # 衔接阶段预算独立于上半阶段：trans 从 u9861 续训起步，
+    # 10000 的继承上限只够 ~140 update——本阶段单独放宽。
+    max_updates: int = 20000
     # 热身技能候选 = 全技能；目标为打击时排除同名打击（相位冲突）
     warmup_exclude_same_strike: bool = True
 
