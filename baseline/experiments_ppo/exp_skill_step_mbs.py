@@ -23,6 +23,12 @@ a virtual strike at T−1 closes the in-flight stride; <2 strikes → one
 settlement over the whole episode at T−1 (shuffling earns the
 displacement verdict but no stepping bonus).
 
+Only the REWARD is single-point: actor_weight stays the parent's
+dense φ² per-frame weight so GAE can backpropagate each settlement
+through the whole gait cycle that produced it (weight shift, swing,
+placement) — masking non-settlement frames would zero exactly the
+credit the cycle deserves.
+
 step/idle episodes reuse the same machinery: ``r_hold`` is dropped and
 each stride settles ``r_drift_step[t_end] = −(|Δxy| + 0.5·|Δyaw|)`` —
 with no command direction every displacement is drift.
@@ -110,7 +116,6 @@ class SkillStepMBS(SkillTrainMBS):
         drift_aw = tr.channels.pop("r_drift").actor_weight
         r_move = np.zeros(T, dtype=np.float32)
         r_drift = np.zeros(T, dtype=np.float32)
-        settle = np.zeros(T, dtype=np.float32)
         if kin is not None:
             xy, yaw, _ = kin
             yaw_u = np.unwrap(np.asarray(yaw[:T], dtype=np.float64))
@@ -125,7 +130,6 @@ class SkillStepMBS(SkillTrainMBS):
                 dt = (t_b - t_a) / 20.0
                 if dt <= 0:
                     continue
-                settle[t_b] = 1.0
                 dxy = xy[t_b] - xy[t_a]
                 v_rad = float(dxy @ d_hat) / dt
                 lat = dxy - (dxy @ d_hat) * d_hat
@@ -133,15 +137,15 @@ class SkillStepMBS(SkillTrainMBS):
                 dyaw = abs(float(yaw_u[t_b] - yaw_u[t_a]))
                 r_move[t_b] += 2.0 * v_rad * dt
                 r_drift[t_b] += -(v_off * dt + self._DYAW_W * dyaw)
-        # Settlement frames only: a zero-reward stride still carries
-        # signal ("no progress this cycle"), so gate by the settle mask
-        # rather than reward != 0.
+        # Reward is settled at the window's closing foot-strike only,
+        # but actor_weight stays dense (parent's 3·phi²): the whole
+        # gait cycle — not just the landing frame — earned the verdict.
         tr.channels["r_move_step"] = ChannelData(
             reward=r_move, is_terminated=False,
-            actor_weight=(move_aw * settle).astype(np.float32))
+            actor_weight=move_aw)
         tr.channels["r_drift_step"] = ChannelData(
             reward=r_drift, is_terminated=False,
-            actor_weight=(drift_aw * settle).astype(np.float32))
+            actor_weight=drift_aw)
 
     def _settle_idle_strides(self, episode, agent_id, tr) -> None:
         """step/idle: same stride settlement, but with no commanded
@@ -151,7 +155,6 @@ class SkillStepMBS(SkillTrainMBS):
         kin = self._kin(episode, agent_id, T)
         hold_aw = tr.channels.pop("r_hold").actor_weight
         r_drift = np.zeros(T, dtype=np.float32)
-        settle = np.zeros(T, dtype=np.float32)
         if kin is not None:
             xy, yaw, _ = kin
             yaw_u = np.unwrap(np.asarray(yaw[:T], dtype=np.float64))
@@ -159,13 +162,12 @@ class SkillStepMBS(SkillTrainMBS):
                     self._strike_bounds(tr.obs), T):
                 if t_b <= t_a:
                     continue
-                settle[t_b] = 1.0
                 d_tot = float(np.linalg.norm(xy[t_b] - xy[t_a]))
                 dyaw = abs(float(yaw_u[t_b] - yaw_u[t_a]))
                 r_drift[t_b] += -(d_tot + self._DYAW_W * dyaw)
         tr.channels["r_drift_step"] = ChannelData(
             reward=r_drift, is_terminated=False,
-            actor_weight=(hold_aw * settle).astype(np.float32))
+            actor_weight=hold_aw)
 
     # ------------------------------------------------------------------
     # Eval: parent's metrics + per-stride stats for move skills
