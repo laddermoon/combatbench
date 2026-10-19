@@ -61,6 +61,7 @@ class SkillStepMBS(SkillTrainMBS):
     # --- Stride detection / settlement constants ---
     _FEET = slice(52, 54)      # feet_forces index in obs (weight-normalized)
     _CONTACT_TAU = 0.10        # contact threshold (×body weight)
+    _MIN_STRIKE_GAP = 3        # frames — contact bounce debounce
     _DYAW_W = 0.5              # heading-change penalty per rad / stride
 
     # ------------------------------------------------------------------
@@ -68,28 +69,52 @@ class SkillStepMBS(SkillTrainMBS):
     # ------------------------------------------------------------------
 
     @classmethod
-    def _strike_bounds(cls, obs: np.ndarray) -> List[int]:
-        """Foot-strike frame indices (rising edge of either foot's
-        contact), plus a virtual strike at the last frame so the
-        in-flight stride gets settled."""
+    def _strike_bounds(cls, obs: np.ndarray) -> Dict[int, List[int]]:
+        """Per-foot foot-strike frame indices {foot: [t, ...]}.
+
+        Rising edge of that foot's ground contact; frame 0 never counts
+        (initial contact state, not a landing); edges closer than
+        _MIN_STRIKE_GAP frames after that foot's previous strike are
+        dropped as contact bounce."""
         ff = np.asarray(obs[:, cls._FEET], dtype=np.float64)
         contact = ff > cls._CONTACT_TAU           # (T,2)
         prev = np.zeros_like(contact)
         prev[1:] = contact[:-1]
-        rise = contact & ~prev                    # rising edges
-        bounds = np.flatnonzero(rise.any(axis=1)).tolist()
-        T = obs.shape[0]
-        if not bounds or bounds[-1] < T - 1:
-            bounds.append(T - 1)
+        rise = contact & ~prev
+        rise[0] = False
+        bounds: Dict[int, List[int]] = {}
+        for foot in range(2):
+            strikes: List[int] = []
+            for t in np.flatnonzero(rise[:, foot]):
+                if strikes and t - strikes[-1] < cls._MIN_STRIKE_GAP:
+                    continue
+                strikes.append(int(t))
+            bounds[foot] = strikes
         return bounds
 
     @staticmethod
-    def _stride_windows(bounds: List[int], T: int) -> List[tuple]:
-        """Sliding two-strike windows (s_{i-2}, s_i]."""
-        wins = [(bounds[i - 2], bounds[i]) for i in
-                range(2, len(bounds))]
-        if not wins and len(bounds) >= 2:
-            wins = [(bounds[0], bounds[1])]
+    def _stride_windows(bounds: Dict[int, List[int]],
+                        T: int) -> List[tuple]:
+        """Sliding per-foot windows (prev same-foot strike, strike].
+
+        Consecutive landings of the SAME foot bound one full gait
+        cycle — under normal alternation it contains exactly one
+        strike of each foot; a one-legged hop still yields windows
+        (and earns the honest displacement verdict).  A virtual
+        closing strike on the most recently landed foot settles the
+        in-flight cycle at T−1; no complete cycle → one whole-episode
+        settlement."""
+        wins: List[tuple] = []
+        last_foot, last_t = -1, -1
+        for foot, strikes in bounds.items():
+            for i in range(1, len(strikes)):
+                wins.append((strikes[i - 1], strikes[i]))
+            if strikes and strikes[-1] > last_t:
+                last_foot, last_t = foot, strikes[-1]
+        if last_foot >= 0 and last_t < T - 1 and \
+                len(bounds[last_foot]) >= 2:
+            wins.append((bounds[last_foot][-2], T - 1))
+        wins.sort(key=lambda w: w[1])
         if not wins:
             wins = [(0, T - 1)]
         return wins
