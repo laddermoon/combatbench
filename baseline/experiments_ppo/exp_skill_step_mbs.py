@@ -143,6 +143,13 @@ class SkillStepMBS(SkillTrainMBS):
         r_drift = np.zeros(T, dtype=np.float32)
         if kin is not None:
             xy, yaw, _ = kin
+            # obs[t] is the PRE-action state; move_track[t] is the
+            # post-action state.  Strike bounds come from obs indices —
+            # shift kinematics one step so kin_obs[t] ≈ state at obs[t].
+            # Index 0 has no recorded pre-step kin; only the
+            # whole-episode fallback window starts there.
+            xy = np.concatenate([xy[:1], xy[:-1]], axis=0)
+            yaw = np.concatenate([yaw[:1], yaw[:-1]], axis=0)
             yaw_u = np.unwrap(np.asarray(yaw[:T], dtype=np.float64))
             skills = (episode.episode_options or {}).get("skills") or {}
             de = np.asarray(SKILLS[str(skills.get(
@@ -160,8 +167,11 @@ class SkillStepMBS(SkillTrainMBS):
                 lat = dxy - (dxy @ d_hat) * d_hat
                 v_off = float(np.linalg.norm(lat)) / dt
                 dyaw = abs(float(yaw_u[t_b] - yaw_u[t_a]))
-                r_move[t_b] += 2.0 * v_rad * dt
-                r_drift[t_b] += -(v_off * dt + self._DYAW_W * dyaw)
+                # The window's outcome is produced by actions
+                # [t_a, t_b-1] — settle on the landing transition,
+                # not the action taken after landing.
+                r_move[t_b - 1] += 2.0 * v_rad * dt
+                r_drift[t_b - 1] += -(v_off * dt + self._DYAW_W * dyaw)
         # Reward is settled at the window's closing foot-strike only,
         # but actor_weight stays dense (parent's 3·phi²): the whole
         # gait cycle — not just the landing frame — earned the verdict.
@@ -182,6 +192,8 @@ class SkillStepMBS(SkillTrainMBS):
         r_drift = np.zeros(T, dtype=np.float32)
         if kin is not None:
             xy, yaw, _ = kin
+            xy = np.concatenate([xy[:1], xy[:-1]], axis=0)
+            yaw = np.concatenate([yaw[:1], yaw[:-1]], axis=0)
             yaw_u = np.unwrap(np.asarray(yaw[:T], dtype=np.float64))
             for t_a, t_b in self._stride_windows(
                     self._strike_bounds(tr.obs), T):
@@ -189,7 +201,7 @@ class SkillStepMBS(SkillTrainMBS):
                     continue
                 d_tot = float(np.linalg.norm(xy[t_b] - xy[t_a]))
                 dyaw = abs(float(yaw_u[t_b] - yaw_u[t_a]))
-                r_drift[t_b] += -(d_tot + self._DYAW_W * dyaw)
+                r_drift[t_b - 1] += -(d_tot + self._DYAW_W * dyaw)
         tr.channels["r_drift_step"] = ChannelData(
             reward=r_drift, is_terminated=False,
             actor_weight=hold_aw)
@@ -216,6 +228,9 @@ class SkillStepMBS(SkillTrainMBS):
                     continue
                 obs = np.asarray(obs, dtype=np.float32)
                 xy, yaw, _ = kin
+                # Same obs-time alignment as the trajectory builder.
+                xy = np.concatenate([xy[:1], xy[:-1]], axis=0)
+                yaw = np.concatenate([yaw[:1], yaw[:-1]], axis=0)
                 yaw_u = np.unwrap(np.asarray(yaw, dtype=np.float64))
                 m = per_skill.setdefault(
                     skill, {"strides": [], "svrad": [], "svoff": [],
