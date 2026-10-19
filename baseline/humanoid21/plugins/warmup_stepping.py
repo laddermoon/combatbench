@@ -186,7 +186,13 @@ class WarmupSteppingPlugin(BasePlugin):
 
         ``specs[rid] = {"skill": str, "steps": int, "schedule": rows}``;
         robots without a schedule spec warm up with zero-cmd stepping
-        for ``action_steps`` steps."""
+        for ``action_steps`` steps.  Each robot's warmup length is
+        independent: its core-state snapshot is captured when its own
+        step budget expires (the shared sim keeps running for the
+        longer warmups, so the two snapshots may come from different
+        sim times — each robot still starts n_i steps into its own
+        warmup, which is the intended semantics).  A robot whose
+        spec says ``steps: 0`` keeps its spawn state untouched."""
         sim = self._ensure_internal_sim("skills")
         real_state = ctx.accessor.get_core_state()
         schedules: Dict[str, Any] = {}
@@ -205,7 +211,8 @@ class WarmupSteppingPlugin(BasePlugin):
 
         zero_action = np.zeros(21, dtype=np.float32)
         n_total = max(steps_map.values(), default=0)
-        for _ in range(n_total):
+        final_states: Dict[str, Any] = {}
+        for i in range(n_total):
             obs = sim.get_observation()   # {rid: 66-dim obs incl. cmd}
             actions: Dict[str, np.ndarray] = {}
             for rid in ("robot_a", "robot_b"):
@@ -217,9 +224,13 @@ class WarmupSteppingPlugin(BasePlugin):
             sim.set_action(actions)
             for _ in range(self.phy_steps_per_action):
                 sim.physical_step()
+            done = [rid for rid, n in steps_map.items() if n == i + 1]
+            if done:
+                state_now = sim.get_core_state()
+                for rid in done:
+                    final_states[rid] = state_now[rid]
 
-        final_state = sim.get_core_state()
         ctx.mutator.set_core_state({
-            rid: final_state[rid]
-            for rid in self._target_set if rid in final_state
+            rid: s for rid, s in final_states.items()
+            if rid in self._target_set
         })

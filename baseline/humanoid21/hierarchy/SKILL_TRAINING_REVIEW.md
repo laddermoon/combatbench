@@ -47,7 +47,7 @@ obs）；`move_track[t]` 是动作执行**后**的状态。用前者检步界、
 
 需统一接触与位移的时间基准，并确认 reward 应落在哪个 transition。
 
-### P1-4 warmup 的独立采样时长没有被独立执行【高】
+### P1-4 warmup 的独立采样时长没有被独立执行【高】【已修】
 
 `warmup_stepping._run_skill_warmup` 读各机器人的 `steps`，但跑
 `n_total = max(steps)` 步、两台机器人同步结束——短 warmup 被
