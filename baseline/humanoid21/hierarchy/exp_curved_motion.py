@@ -80,7 +80,7 @@ def run_condition(name: str, rows: list, policy, pol_cls: str,
     })
     policy.reset(seed)
     sim = rt.simulator
-    xs, ys, yaws, cmds, frames = [], [], [], [], []
+    xs, ys, yaws, cmds, frames, phis = [], [], [], [], [], []
     fell_step = None
     while rt.is_episode_active:
         obs_a, obs_b = rt.get_observation()
@@ -92,6 +92,8 @@ def run_condition(name: str, rows: list, policy, pol_cls: str,
         xs.append(float(core["root_pos"][0]))
         ys.append(float(core["root_pos"][1]))
         yaws.append(yaw_of(np.asarray(core["root_rot"], dtype=np.float64)))
+        phis.append(float(rt.get_observer_output(
+            "standing_balance_a")["potential"]))
         img = sim.get_broadcastview_image()
         if img is not None:
             frames.append(img)
@@ -114,10 +116,26 @@ def run_condition(name: str, rows: list, policy, pol_cls: str,
     path_len = float(np.sum(np.linalg.norm(dp * 0.05, axis=1))) if n > 1 else 0.0
     disp = float(np.hypot(xs[-1] - xs[0], ys[-1] - ys[0])) if n > 1 else 0.0
     dyaw = float(np.unwrap(yaws)[-1] - np.unwrap(yaws)[0]) if n > 1 else 0.0
-    # mean realized ego v/w over the *composite* portion (skip first 20 warmup-ish)
+    # fall events: sustained phi<0.3 runs >=10 steps (same criterion as
+    # eval's fell flag); count each distinct run = one fall-and-recover
+    phi = np.asarray(phis)
+    low = (phi < 0.3).astype(np.int8)
+    fall_events = 0
+    i0 = None
+    for t in range(n + 1):
+        v = low[t] if t < n else 0
+        if v and i0 is None:
+            i0 = t
+        elif not v and i0 is not None:
+            if t - i0 >= 10:
+                fall_events += 1
+            i0 = None
     lo = min(20, n - 1)
     res = dict(
         name=name, steps=n, fell=fell_step,
+        n_falls=fall_events,
+        phi_min=round(float(phi.min()), 3) if n else 0.0,
+        phi_mean=round(float(phi.mean()), 3) if n else 0.0,
         path_len=round(path_len, 3), disp=round(disp, 3),
         dyaw_deg=round(float(np.degrees(dyaw)), 1),
         vx_real=round(float(np.mean(vx_e[lo:])), 3) if n > lo else 0.0,
@@ -128,7 +146,8 @@ def run_condition(name: str, rows: list, policy, pol_cls: str,
         w_cmd=round(float(cmds[lo:, WZ].mean() * W_MAX), 3) if n > lo else 0.0,
     )
     np.savez(out_dir / f"curved_{name}.npz",
-             x=xs, y=ys, yaw=yaws, cmd=cmds, fell=fell_step or -1)
+             x=xs, y=ys, yaw=yaws, cmd=cmds, phi=phi,
+             fell=fell_step or -1)
     return res
 
 
@@ -159,7 +178,8 @@ def main() -> None:
         r = run_condition(name, CONDITIONS[name], policy, pol_cls,
                           args.seed, out_dir)
         results.append(r)
-        print(f"  {name:<10s} steps={r['steps']:>3} fell={r['fell']} "
+        print(f"  {name:<10s} steps={r['steps']:>3} falls={r['n_falls']} "
+              f"phi_min={r['phi_min']:.2f} "
               f"disp={r['disp']:.2f} dyaw={r['dyaw_deg']:+.0f}deg "
               f"v=({r['vx_real']:+.2f},{r['vy_real']:+.2f}) vs "
               f"cmd({r['vx_cmd']:+.2f},{r['vy_cmd']:+.2f}) "
