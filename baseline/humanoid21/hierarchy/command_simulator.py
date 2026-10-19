@@ -140,6 +140,13 @@ class CommandSimulator(Humanoid21Simulator):
         self._cmd: Dict[str, np.ndarray] = {}
         self._schedules: Dict[str, np.ndarray] = {}
         self._strike_segs: Dict[str, list] = {}
+        # Anchored-target mode (precision strikes): episode option
+        # ``tgt_anchor``=True makes schedule strike rows' tx,ty,tz a
+        # commanded ego point baked to a WORLD anchor at segment start,
+        # then re-expressed in the instantaneous ego frame each step.
+        # ``tgt_drift`` = {rid: [dx,dy,dz]} drifts the anchor m/action-step.
+        self._tgt_anchor: bool = False
+        self._tgt_drift: Dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Step accounting — mirrors GaitClockSimulator convention.
@@ -159,6 +166,13 @@ class CommandSimulator(Humanoid21Simulator):
         # speeds in m/s, w in rad/s (v2 semantics; h stays 0).
         self._schedules: Dict[str, np.ndarray] = {}
         self._strike_segs = {}
+        ta = (options or {}).get("tgt_anchor")
+        self._tgt_anchor = bool(ta) if not isinstance(ta, dict) \
+            else any(ta.values())
+        self._tgt_drift = {
+            rid: np.asarray(v, dtype=np.float64)
+            for rid, v in ((options or {}).get("tgt_drift") or {}).items()
+        }
         sched_opts = (options or {}).get("move_schedule") or {}
         for rid, segs in sched_opts.items():
             table, strikes = self._build_schedule(rid, segs)
@@ -196,14 +210,19 @@ class CommandSimulator(Humanoid21Simulator):
                 c[EFF_TYPE] = seg[5]
                 c[EFF_SIDE] = seg[6]
                 c[TGT_X:TGT_Z + 1] = np.asarray(seg[7:10]) / TGT_SCALE
-                if self._strike_dyn_target \
-                        and int(round(seg[5])) == +1:
-                    cid = resolve_clip(
-                        int(round(seg[6])), seg[7:10])
-                    ref = _ref_clip(cid)
-                    strikes.append(dict(
-                        a=t0, b=t0 + max(1, n_steps), ref=ref, cid=cid,
-                        hand=_punch_hand_idx(ref), anchor=None))
+                if int(round(seg[5])) == +1 and (
+                        self._strike_dyn_target or self._tgt_anchor):
+                    srec = dict(a=t0, b=t0 + max(1, n_steps),
+                                tgt_ego=np.asarray(seg[7:10],
+                                                 dtype=np.float64),
+                                anchor=None, ref=None)
+                    if self._strike_dyn_target:
+                        cid = resolve_clip(
+                            int(round(seg[6])), seg[7:10])
+                        ref = _ref_clip(cid)
+                        srec.update(ref=ref, cid=cid,
+                                    hand=_punch_hand_idx(ref))
+                    strikes.append(srec)
             rows.append(np.broadcast_to(c, (max(1, n_steps), self.cmd_dim)))
             t0 += max(1, n_steps)
         return (np.concatenate(rows, axis=0).astype(np.float32), strikes)
@@ -297,12 +316,49 @@ class CommandSimulator(Humanoid21Simulator):
         first step, then advanced frame-by-frame — so the target field
         carries the phase information a constant target cannot."""
         cmd = self._current_cmd(robot_id).copy()
-        if not self._strike_dyn_target or cmd[EFF_TYPE] < 0.5:
+        if cmd[EFF_TYPE] < 0.5:
             return cmd
-        tgt = self._strike_target_ego(robot_id)
+        tgt = None
+        if self._tgt_anchor:
+            tgt = self._anchored_tgt_ego(robot_id)
+        elif self._strike_dyn_target:
+            tgt = self._strike_target_ego(robot_id)
         if tgt is not None:
             cmd[TGT_X:TGT_Z + 1] = tgt / TGT_SCALE
         return cmd
+
+    def _anchored_tgt_ego(self, robot_id: str):
+        """Anchored commanded target re-expressed in the instantaneous
+        pelvis-relative ego frame (full-rotation, same convention as
+        ``_ee_positions_ego``), or None outside strike segments.
+
+        Anchor semantics: at the segment's first displayed step the
+        row's ``tgt_ego`` is baked to a world point via the robot's
+        pelvis pose; afterwards the point is static (plus optional
+        ``tgt_drift`` m/action-step) while the robot moves.  The policy
+        therefore sees an absolute-position target drifting in ego
+        coordinates — the "xyz stays absolute" contract."""
+        seg = next((s for s in self._strike_segs.get(robot_id) or ()
+                    if s['a'] <= self._action_step < s['b']), None)
+        if seg is None or 'tgt_ego' not in seg:
+            return None
+        from scipy.spatial.transform import Rotation as R
+        kp = (self.get_static_data().get(robot_id, {})
+              .get('keypoint_body_names') or {}).get('pelvis')
+        if kp is None:
+            return None
+        pelvis = np.asarray(
+            self.get_derived_state()[robot_id]['body_xpos'][kp],
+            dtype=np.float64)
+        rot = R.from_quat(np.asarray(
+            self.get_core_state()[robot_id]['root_rot'],
+            dtype=np.float64)[[1, 2, 3, 0]])
+        if seg.get('p_anchor') is None:
+            seg['p_anchor'] = pelvis + rot.apply(seg['tgt_ego'])
+        p_w = seg['p_anchor'] + (
+            self._tgt_drift.get(robot_id, np.zeros(3))
+            * (self._action_step - seg['a']))
+        return rot.inv().apply(p_w - pelvis)
 
     def _strike_target_ego(self, robot_id: str):
         """Current anchored reference hand pos in the robot's ego frame

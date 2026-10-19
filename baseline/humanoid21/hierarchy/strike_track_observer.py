@@ -203,7 +203,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'hand_err_m': 0.0, 'kp_err_m': 0.0, 'kp_err_rel_m': 0.0,
                 'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
-                'frame': -1.0, 'landed': 0.0}
+                'frame': -1.0, 'landed': 0.0,
+                'hand_ex': 0.0, 'hand_ey': 0.0, 'hand_ez': 0.0,
+                'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0}
 
     # ------------------------------------------------------------------
     # Episode setup — compile schedule rows, resolve clips
@@ -217,12 +219,18 @@ class StrikeTrackObserver(BaseObserverPlugin):
         sched = (ctx.episode_options.get('move_schedule') or {}).get(
             self.agent_id) or []
         t = 0
+        clip_ov = (ctx.episode_options.get('strike_clip') or {}).get(
+            self.agent_id)
         for seg in sched:
             n = int(seg[0])
             row = dict(a=t, b=t + n, clip=None, ref=None, k_ptr=0)
             if len(seg) > 6 and int(round(seg[5])) == +1:   # eff_type=hand
                 side = int(round(seg[6]))
-                cid = resolve_clip(side, seg[7:10], self._clips_dir)
+                # explicit clip binding (precision strikes: tgt is a
+                # free point, NOT a clip selector) overrides nearest-
+                # landing resolution.
+                cid = clip_ov or resolve_clip(
+                    side, seg[7:10], self._clips_dir)
                 row['clip'] = cid
                 row['ref'] = self._clip(cid)
                 row['hand'] = punch_hand_name(row['ref'])
@@ -262,12 +270,35 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 out['landed'] = 1.0
             out['frame'] = float(k)
             out['phase'] = k / max(1, seg['k_max'])
-            return out
+            return self._augment_tgt(ctx, seg, live, out)
 
         k = min(self._t - seg['a'], seg['k_max'])
         out = self._frame_score(live, seg, ref, k)
         out['frame'] = float(k)
         out['phase'] = k / max(1, seg['k_max'])
+        return self._augment_tgt(ctx, seg, live, out)
+
+    def _augment_tgt(self, ctx, seg, live, out):
+        """Precision-strike fields: punching-hand ego position and the
+        DISPLAYED ego target (what the policy saw — world-anchored when
+        ``tgt_anchor`` is on).  ||hand_ego − tgt_ego|| equals the world
+        distance to the commanded point, so downstream reward building
+        needs no anchor reconstruction."""
+        hand = seg.get('hand')
+        if hand in live['e_self']:
+            hx, hy, hz = live['e_self'][hand]
+            out['hand_ex'], out['hand_ey'], out['hand_ez'] = \
+                float(hx), float(hy), float(hz)
+        try:
+            obs = ctx.accessor.get_observation()[self.agent_id]
+            from baseline.humanoid21.hierarchy.command_simulator import (
+                BODY_DIM, TGT_SCALE, TGT_X, TGT_Z)
+            tgt = np.asarray(obs[BODY_DIM + TGT_X: BODY_DIM + TGT_Z + 1],
+                             dtype=np.float64) * TGT_SCALE
+            out['tgt_ex'], out['tgt_ey'], out['tgt_ez'] = \
+                float(tgt[0]), float(tgt[1]), float(tgt[2])
+        except Exception:
+            pass
         return out
 
     def _live(self, ctx, seg, ref: RefClip) -> Dict[str, Any]:

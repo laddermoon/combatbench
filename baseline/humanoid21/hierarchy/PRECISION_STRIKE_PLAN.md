@@ -181,6 +181,47 @@ checkpoint 续训恢复。
 - 阶段 3b（移动点）：v_drift 0.3m/s 下 hit_rate ≥ 0.5
 - 回归：move/turn/step/hold/衔接指标不因新通道退化
 
-## 附：待补数据
+## 附：P0 实测命中分布（2026-10-19，u10135 导出，带 warmup 泛化起手）
 
-- [ ] P0 实测命中点分布表（四技能 × 均值/方差/方向锥）
+数据：`hit_distribution_p0.json`。锥心取 **φ0≥0.8 站立起手**条件化
+统计（倒地起手的野点已剔除——其 land 落在身后，属恢复过程乱序数据）：
+
+| skill | 命中点 mean (ego, m) | std (m) | t_reach 均值 |
+|---|---|---|---|
+| jab_l | (0.17, 0.30, 0.54) | (0.25, 0.24, 0.03) | 16.6 步 |
+| jab_r | (0.37, −0.32, 0.53) | (0.27, 0.23, 0.03) | 12.0 步 |
+| heavy_l | (0.51, −0.13, 0.52) | (0.32, 0.41, 0.08) | — |
+| heavy_r | (0.42, 0.14, 0.48) | (0.25, 0.34, 0.05) | — |
+
+- 泛化起手下命中点自然散布 ±0.2–0.4m —— 正是本阶段要收敛的量
+- 实测命中点与 clip 落点有系统偏移（如 jab_l mean.x=0.17 vs
+  clip 0.44）—— 泛化起手下起手姿态影响出拳落点，印证"锥心取
+  实测分布而非 clip 落点"的决定
+
+## 附：实施状态（2026-10-19）
+
+已实现并启动训练 `train_skill_precise_mbs_ppo_20261019_141450`
+（GPU2，从 `skill_trans_s2b_u9860b/checkpoint_u10170.pt` 续训）：
+
+- `command_simulator.py`：`tgt_anchor` option + `tgt_drift` 规格；
+  段首锚定 `p_anchor = pelvis + R·tgt_ego`，逐帧重投影回 ego 写入
+  cmd[6:9]（与 policy 所见一致）；无 spec 时旧路径不变
+- `strike_track_observer.py`：clip 显式覆盖（`strike_clip` option）+
+  每步输出 `hand_ex/y/z`、`tgt_ex/y/z`（ego 系，经 accessor
+  `get_observation` 读到的逐帧显示目标——与 policy 输入完全一致，
+  无需双端重建锚点）
+- `exp_skill_precise_mbs.py`：10 通道（+`r_tgt_dist`/`r_tgt_time`），
+  `SkillTransMBS` 子类保留 warmup；锥形目标采样 + r_curr 课程
+  （eval hit_rate 门控晋级，state/load_state 持久化）；eval 报
+  `{skill}_tgt_{dmin,t,hit}` 指标
+
+验证记录：
+
+- build_jobs：strike ep 带 `tgt_anchor`+`tgt_spec`，eval 同；move/
+  turn ep 无锚——✓
+- 锚定实测：25 步内重投影世界点与 p_anchor 逐位一致（机器人弓步
+  前移 0.27m 而世界目标不动）——✓
+- smoke：10 通道全部产出，r_tgt_* 在 strike traj 上激活 1086 条——✓
+- 首 eval(u10175)：falls=0.026 quality=0.797（warm-start 保留）；
+  jab_r_tgt_dmin=0.077 hit=0.611，jab_l 0.154，heavy_l 0.174，
+  heavy_r 0.235 —— 课程将从 r≈0.1m 起步放宽
