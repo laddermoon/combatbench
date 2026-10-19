@@ -585,9 +585,10 @@ class SkillTrainMBS(BalancePure):
                             if arr is not None:
                                 m.setdefault(out, []).append(float(
                                     np.asarray(arr[:T])[ins].mean()))
-                        # land_t: step index where the progress pointer
-                        # first reaches the landing frame — direct
-                        # punch-speed measure (T = never arrived).
+                        # land_t: step index of the first VERIFIED
+                        # landing (pointer at k_max AND completion
+                        # criteria met) — direct punch-speed measure
+                        # (T = never landed).
                         lnd = extract_per_step_field(
                             ep.observer_outputs, sk, "landed", T)
                         if lnd is not None:
