@@ -189,6 +189,10 @@ class StrikeTrackObserver(BaseObserverPlugin):
         self._t = -1
         self._active: Optional[Dict[str, Any]] = None
         self._output: Dict[str, float] = self._zero()
+        # Launch-pose gate (episode_options['launch_gate']):
+        # {"score": θ, "frames": k} — strict alignment with the clip's
+        # ready pose must be reached before progress tracking starts.
+        self._gate: Optional[Dict[str, float]] = None
 
     # ------------------------------------------------------------------
     def _clip(self, clip_id: str) -> RefClip:
@@ -205,7 +209,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
                 'frame': -1.0, 'landed': 0.0,
                 'hand_ex': 0.0, 'hand_ey': 0.0, 'hand_ez': 0.0,
-                'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0}
+                'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0,
+                'gated': 0.0, 'gate_t': -1.0}
 
     # ------------------------------------------------------------------
     # Episode setup — compile schedule rows, resolve clips
@@ -218,12 +223,14 @@ class StrikeTrackObserver(BaseObserverPlugin):
         self._output = self._zero()
         sched = (ctx.episode_options.get('move_schedule') or {}).get(
             self.agent_id) or []
+        self._gate = ctx.episode_options.get('launch_gate')
         t = 0
         clip_ov = (ctx.episode_options.get('strike_clip') or {}).get(
             self.agent_id)
         for seg in sched:
             n = int(seg[0])
-            row = dict(a=t, b=t + n, clip=None, ref=None, k_ptr=0)
+            row = dict(a=t, b=t + n, clip=None, ref=None, k_ptr=0,
+                       gated=False, gate_t=-1)
             if len(seg) > 6 and int(round(seg[5])) == +1:   # eff_type=hand
                 side = int(round(seg[6]))
                 # explicit clip binding (precision strikes: tgt is a
@@ -256,6 +263,29 @@ class StrikeTrackObserver(BaseObserverPlugin):
         ref: RefClip = seg['ref']
         live = self._live(ctx, seg, ref)
         if self._ext_only:
+            # Launch-pose gate (STRIKE_LAUNCH_GATE.md): before progress
+            # tracking may start, the live state must match some frame
+            # of the launch window [0, k_launch] with score >= θ.
+            # Until then the per-step reward IS the alignment score —
+            # dense shaping toward the ready pose.  in_strike stays 1
+            # so r_strike actor weight flows during the approach.
+            if self._gate is not None and not seg['gated']:
+                kf = int(self._gate.get('frames', 4))
+                th = float(self._gate.get('score', 0.0))
+                hi_g = min(kf, seg['k_max'])
+                k, out = max(
+                    ((c, self._frame_score(live, seg, ref, c))
+                     for c in range(0, hi_g + 1)),
+                    key=lambda p: p[1]['reward'])
+                if out['reward'] >= th:
+                    seg['gated'] = True
+                    seg['gate_t'] = float(self._t - seg['a'])
+                    seg['k_ptr'] = k
+                out['frame'] = float(k)
+                out['phase'] = 0.0
+                out['gated'] = float(seg['gated'])
+                out['gate_t'] = seg['gate_t']
+                return self._augment_tgt(ctx, seg, live, out)
             # Monotone progress tracking: advance the pointer to the
             # highest-reward frame within [k, k+lookahead]; never back.
             lo = seg['k_ptr']
@@ -270,6 +300,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 out['landed'] = 1.0
             out['frame'] = float(k)
             out['phase'] = k / max(1, seg['k_max'])
+            out['gated'] = float(seg['gated'])
+            out['gate_t'] = seg['gate_t']
             return self._augment_tgt(ctx, seg, live, out)
 
         k = min(self._t - seg['a'], seg['k_max'])
