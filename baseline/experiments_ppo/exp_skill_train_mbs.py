@@ -148,7 +148,7 @@ class SkillTrainMBS(BalancePure):
     _clip_aw_scale: float = 2.0
     # r_potential reward cap (phi ≤ this in the reward only; the φ²
     # actor-weight gates and eval fall metrics still use raw phi).
-    _PHI_CAP: float = 0.95
+    _PHI_CAP: float = 0.90
 
     # --- Rollout: short episodes → more episodes per update ---
     episodes_per_update: int = 1536
