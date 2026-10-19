@@ -94,17 +94,23 @@ ego 点但身体已垮"）。逐帧重评：掉出落地姿态即停发 bonus，
 跟随中状态崩坏→landed 掉 0、bonus 停发；指针被真实中间帧推到
 k_max 但末帧不达标→landed 恒 0（旧代码恒 1）。
 
-### P1-7 文档对打击目标与 extension-only 的描述不符实际
+### ~~P1-7~~ 打击目标机制不一致（train false vs warmup true）【已修复】
 
 - `skill_strike_env.yaml` 配 `strike_dyn_target: false`：正式
   strike episode 的目标字段是**静态 ego 指令**（land 点），不是
   文档写的"参考轨迹逐帧世界锚定重投影"。
 - 但 warmup 内部模拟器 `strike_dyn_target=True`——同一打击在
   warmup 与正式训练中**目标输入机制不同**。
-- "到达最大伸展后行为不评分"不准确：指针到末帧后每帧仍在评
-  末帧姿态匹配分 + hold bonus，实际存在"保持末帧姿态"的压力。
 
-需统一语义后同步代码与文档。
+**裁决**：统一开 `strike_dyn_target=true`（用户选定）——动态回放
+参考手轨迹携带相位信息，对单调进度跟踪是正向输入；且与 warmup
+sim、方案文档 §11 的描述一致。全部 5 个 skill 蓝图统一改 true
+（仅 strike env 实际受影响的——其它 env 的 schedule 无打击段，
+统一改是为消除潜在不一致）。
+
+注：末帧后仍评姿态匹配分 + hold bonus 是**有意语义**（extension-
+only 指 episode 只评到落地帧，落地后保持靠 hold bonus 体现），
+非缺陷；PLAN §7 已更新为完成判据描述（见 P1-6）。
 
 ## 二、待验证的设计假设
 

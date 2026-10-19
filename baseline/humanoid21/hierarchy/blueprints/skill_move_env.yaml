@@ -29,7 +29,7 @@ simulator:
     debug_torque: false
     initial_pose_a: "standing"
     initial_pose_b: "standing"
-    strike_dyn_target: false
+    strike_dyn_target: true        # obs target replays ref hand path (matches warmup sim)
 
 plugins:
   - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
