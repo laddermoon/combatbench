@@ -146,6 +146,9 @@ class SkillTrainMBS(BalancePure):
     r_hold_actor_weight: float = 3.0
     r_strike_actor_weight: float = 4.0
     _clip_aw_scale: float = 2.0
+    # r_potential reward cap (phi ≤ this in the reward only; the φ²
+    # actor-weight gates and eval fall metrics still use raw phi).
+    _PHI_CAP: float = 0.95
 
     # --- Rollout: short episodes → more episodes per update ---
     episodes_per_update: int = 1536
@@ -350,8 +353,14 @@ class SkillTrainMBS(BalancePure):
             win = np.ones(T, dtype=np.float32)
 
         channels: Dict[str, ChannelData] = {
+            # phi capped at 0.95: once "standing well enough" the last
+            # bit of uprightness stops paying — leaves room for a
+            # slightly-leaned moving/fighting posture instead of
+            # pushing the policy to ramrod-straight standing.
             "r_potential": ChannelData(
-                reward=(self.per_step_phi_coef * phi).astype(np.float32),
+                reward=(self.per_step_phi_coef
+                        * np.minimum(phi, self._PHI_CAP)
+                        ).astype(np.float32),
                 is_terminated=False,
                 actor_weight=(self.r_potential_actor_weight
                               * win).astype(np.float32),
