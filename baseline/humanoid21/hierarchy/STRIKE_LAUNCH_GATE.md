@@ -86,7 +86,9 @@
 - `exp_skill_gate_mbs.py`：`SkillTransMBS` 子类，build_jobs 给
   train+eval 全注入 gate spec；eval 增报 `{skill}_gate_t` /
   `{skill}_ungated`
-- **run**：`train_skill_gate_mbs_ppo_20261019_163335`（GPU3，
-  PID 76565），从 `skill_trans_s2b_u9860b` 最新 checkpoint 续训
+- **run**：`train_skill_gate_mbs_ppo_20261019_164055`（GPU3，
+  PID 765981），从 `hier_s2_balance_s42i_b/checkpoint_u01635.pt`
+  （S2 起点，与 repro/step_mbs 同血统）——首个 run
+  （163335，trans ckpt 起点）为错误起点，已停
 - 观察重点：`ungated_frac`（健康水位应 <20%）、`gate_t`（应 <5）、
   land_t 是否被预算挤压、以及泛化起手打击的"回架"动作出现与否
