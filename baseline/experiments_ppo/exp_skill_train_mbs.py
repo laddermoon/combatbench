@@ -182,6 +182,9 @@ class SkillTrainMBS(BalancePure):
         "turn": "skill_turn_env.yaml",
         "strike": "skill_strike_env.yaml",
         "idle": "skill_idle_env.yaml",
+        # Warmup-init variant of idle: same obs/reward plumbing, but a
+        # WarmupSteppingPlugin mid-skill start replaces the fallen init.
+        "idle_warm": "skill_idle_warm_env.yaml",
     }
 
     # ------------------------------------------------------------------

@@ -20,6 +20,7 @@ build_jobs：对每个 robot 独立采样一个**热身技能**和**热身时长
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Dict
 
 import numpy as np
@@ -43,6 +44,11 @@ class SkillTransMBS(SkillTrainMBS):
     max_updates: int = 20000
     # 热身技能候选 = 全技能；目标为打击时排除同名打击（相位冲突）
     warmup_exclude_same_strike: bool = True
+    # step/idle 初始条件按显式概率分两类：倒地恢复（RandomFallenState
+    # env）vs 其它状态起手（warmup env——技能中段或站立）。
+    # 倒地覆盖只存在于 idle episode，故用显式概率而非 warmup 是否
+    # 采中非空来划分（warmup 命中率 ~97%，会挤掉倒地样本）。
+    IDLE_FALLEN_PROB: float = 0.5
 
     def _sample_warmup(self, rng, target: str) -> Dict[str, Any]:
         """Per-robot warmup spec: {'skill','steps','schedule'} or None."""
@@ -60,18 +66,6 @@ class SkillTransMBS(SkillTrainMBS):
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True):
-        if not stochastic:
-            # Eval 维持父类原样（单技能、无热身），便于与上半阶段对比
-            return super().build_jobs(
-                policy_bp, base_seed, n_episodes,
-                update=update, stochastic=False)
-        from baseline.framework.rollout import Job, SamplingSpec
-        rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec(explore_factor=_balance_explore_factor)
-        fams = list(self.FAMILY_WEIGHTS)
-        probs = np.array([self.FAMILY_WEIGHTS[f] for f in fams])
-        probs = probs / probs.sum()
-
         env_cache: Dict[Any, Any] = {}
 
         def _env(fam: str, max_steps: int):
@@ -80,6 +74,41 @@ class SkillTransMBS(SkillTrainMBS):
                 env_cache[key] = self._fam_env_pb(fam).materialize(
                     max_steps=max_steps)
             return env_cache[key]
+
+        def _add_warmup(self_rng, skills: Dict[str, str]) -> Dict[str, Any]:
+            w: Dict[str, Any] = {}
+            for rid, st in skills.items():
+                spec = self._sample_warmup(self_rng, st)
+                if spec is not None:
+                    w[rid] = spec
+            return w
+
+        if not stochastic:
+            # Eval 与 train 同一分布：同样的 round-robin 技能对 +
+            # 同样的 warmup 采样（确定性 rng 派生自 base_seed）。
+            jobs = super().build_jobs(
+                policy_bp, base_seed, n_episodes,
+                update=update, stochastic=False)
+            rng = np.random.default_rng(base_seed + 0x9E3779B9)
+            for i, j in enumerate(jobs):
+                skills = j.episode_options.get("skills") or {}
+                fam = SKILLS[str(next(iter(skills.values())))]["fam"]
+                if fam == "idle" and rng.random() < self.IDLE_FALLEN_PROB:
+                    continue                # 倒地初始条件：无 warmup
+                warmup = _add_warmup(rng, skills)
+                if warmup:
+                    j.episode_options["warmup"] = warmup
+                if fam == "idle":
+                    n = max(_skill_len(s) for s in skills.values())
+                    jobs[i] = dataclasses.replace(
+                        j, env_bp=_env("idle_warm", n))
+            return jobs
+        from baseline.framework.rollout import Job, SamplingSpec
+        rng = np.random.default_rng(base_seed)
+        sampling = SamplingSpec(explore_factor=_balance_explore_factor)
+        fams = list(self.FAMILY_WEIGHTS)
+        probs = np.array([self.FAMILY_WEIGHTS[f] for f in fams])
+        probs = probs / probs.sum()
 
         jobs = []
         for i in range(n_episodes):
@@ -90,11 +119,12 @@ class SkillTransMBS(SkillTrainMBS):
             sa = str(rng.choice(ks, p=kw))
             sb = str(rng.choice(ks, p=kw))
             n = max(_skill_len(sa), _skill_len(sb))
-            warmup = {}
-            for rid, st in (("robot_a", sa), ("robot_b", sb)):
-                spec = self._sample_warmup(rng, st)
-                if spec is not None:
-                    warmup[rid] = spec
+            if fam == "idle" and rng.random() < self.IDLE_FALLEN_PROB:
+                env_fam, warmup = "idle", {}        # 倒地恢复初始条件
+            else:
+                warmup = _add_warmup(
+                    rng, {"robot_a": sa, "robot_b": sb})
+                env_fam = "idle_warm" if fam == "idle" else fam
             opts = {
                 "initial_distance": float(rng.uniform(
                     self.init_distance_min, self.init_distance_max)),
@@ -109,7 +139,8 @@ class SkillTransMBS(SkillTrainMBS):
                 opts["warmup"] = warmup
             jobs.append(Job(
                 policy_a_bp=policy_bp, policy_b_bp=policy_bp,
-                env_bp=_env(fam, n), seed=int(base_seed + i),
+                env_bp=_env(env_fam, n),
+                seed=int(base_seed + i),
                 episode_options=opts,
                 sampling_a=sampling, sampling_b=sampling,
                 stochastic=True,

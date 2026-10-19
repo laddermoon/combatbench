@@ -58,6 +58,31 @@ clip 本体 `clips/<clip_id>.npz`（humanoid21 重定向关节角+关键点，
 使用。warmup 让训练分布直接覆盖全部"技能→技能"衔接面；从 S2
 起步时先序技能只会踏步，coverage 随技能成长自动变真。
 
+**step/idle 的两类初始条件**：step episode 的初始条件按显式概率
+（`IDLE_FALLEN_PROB=0.5`）分两种——
+
+1. **随机倒地**：与 S2 相同的倒地起手，零指令要求"先恢复再踏步
+   并保持位置"；倒地覆盖只存在于 idle episode，必须保留显式概率，
+   否则会被 warmup 的高命中率（~97%）挤掉。
+2. **其它状态**：非倒地起手——技能中段 warmup 状态（"打拳打到
+   一半→原地踏步"等衔接面）或普通站立。两类各占一半。
+
+实现上用两套 env 区分（见 §11）：倒地 env 挂
+`RandomFallenStatePlugin`，warmup env 挂 `WarmupSteppingPlugin`，
+按 episode 二选一，互斥。
+
+**显式排除"同名打击→同名打击"**——这是有意设计，不是缺口：
+若 warmup 把机器人交到"同一招拳正打到一半"的状态，策略该学什么是
+歧义的——学"回到准备姿态重新出拳"与出拳中间状态冲突（出拳过程本
+来就经过中间态）；学"继续出拳"则当前 extension-only 奖励设计无法
+正确评价（进度指针已在半路，奖励语义失效）。因此训练排除该转移。
+**部署语义不同**：实际部署中遇到同名拳衔接，策略应继续把拳打完，
+而不是回到发力准备状态。
+
+**eval 与 train 同分布**：eval job 同样注入 warmup spec（确定性
+rng 采样），idle eval 同样按 0.5 概率分倒地/warmup 两类 env——
+评估的就是训练 rollout 的初始条件分布。
+
 ## 4. 奖励通道（7 条）
 
 | 通道 | 挂载范围 | 作用 |
@@ -185,6 +210,21 @@ MRO 合并），从 S2 u1635 起跑。
 - **部署等价物**：高层策略实时下发走 `set_motion` /
   `set_effector` / `clear_effector`——写进同一份 9 维指令契约；
   schedule 行是训练期的批量脚本形式，两者落同一 obs 字段。
+
+### 初始条件：双 env 划分
+
+step/idle 的两类初始条件由两套蓝图互斥实现，而不是单个 env 按
+option 开关插件：
+
+- `skill_idle_env.yaml`——倒地初始条件：`RandomFallenStatePlugin`
+  写倒地姿态，无 warmup 插件。
+- `skill_idle_warm_env.yaml`——其它状态：`WarmupSteppingPlugin`
+  技能中段起手（无 spec 的 robot 保持站立出生姿态），无倒地插件。
+
+`build_jobs` 按 `IDLE_FALLEN_PROB` 先决定本 episode 的初始条件
+类别，再选对应 env——两类从结构上互斥（倒地插件与 warmup 不写
+同一 episode），避免单 env 内插件执行顺序的隐式耦合。move/turn/
+strike 各只有 warmup env；倒地恢复的全部覆盖在 idle episode 中。
 
 ### 观测结构（66 维）
 

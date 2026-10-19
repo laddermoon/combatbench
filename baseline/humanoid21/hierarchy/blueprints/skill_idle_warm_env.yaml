@@ -1,0 +1,95 @@
+# Skill training — IDLE family env, warmup-init variant (66-dim).
+#
+# Second init kind for step/idle episodes: instead of the random
+# fallen state, the episode starts from a WarmupSteppingPlugin
+# mid-skill state (a truncated skill schedule run under the current
+# policy — move/turn/strike/step fragments, or plain stepping).
+# The command is the all-zero "in-place stepping" command.
+#
+# The two init kinds are mutually exclusive per episode and selected
+# in build_jobs: episodes with a warmup spec use THIS env; episodes
+# without one use skill_idle_env.yaml (fallen-init recovery).
+#
+# Reward channels (in exp_skill_train_mbs.py):
+#   r_potential / r_fall / r_drift_step / r_std_clip
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 80
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    strike_dyn_target: false
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
+    config:
+      target_robots: "both"
+      action_steps: 10
+      phy_steps_per_action: 25
+      body_dim: 57
+      cmd_dim: 9
+      sample_actions: true
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 5
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  move_track_a:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_a"
+  move_track_b:
+    cls: "baseline.humanoid21.hierarchy.move_track_observer:MoveTrackObserver"
+    config:
+      agent_id: "robot_b"

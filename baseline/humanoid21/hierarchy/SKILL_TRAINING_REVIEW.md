@@ -56,18 +56,25 @@ obs）；`move_track[t]` 是动作执行**后**的状态。用前者检步界、
 
 训练仍获得随机起手，但**不是文档宣称的分布**。
 
-### P1-5 warmup 覆盖比设计窄（step 缺口 + 同拳排除 + eval 无 warmup）
+### ~~P1-5~~ warmup 覆盖比设计窄【已修复】
 
-- `skill_idle_env.yaml` 无 `WarmupSteppingPlugin`（只有随机倒地
-  初始化）——"移动/转身/打击→原地踏步"衔接完全未覆盖，step
-  的 warmup 参数实际不生效。
-- 采样显式排除"同名打击→同名打击"——但连打同一拳恰是验证
-  "回架再出拳"重入性的关键场景。
-- eval 走父类无 warmup 路径（实测 96 个 eval job 全部无 warmup
-  spec）——`gate_t/ungated` 只在干净起手下测，不能证明泛化起手
-  已学会回架。
+- **step 缺口已修**：step/idle 初始条件分两类，双 env 互斥实现——
+  新增 `skill_idle_warm_env.yaml`（WarmupSteppingPlugin，无倒地
+  插件）与 `skill_idle_env.yaml`（RandomFallenStatePlugin，无
+  warmup）并存，`IDLE_FALLEN_PROB=0.5` 显式划分 episode。倒地
+  覆盖只存在于 idle episode，显式概率避免被 warmup ~97% 命中率
+  挤掉。
+- **同名打击排除更正为有意设计**（用户裁决，非 bug）：warmup 把
+  机器人交到"同招拳打到一半"的状态时，"回准备姿态再出拳"与出拳
+  中间态冲突、"继续出拳"则 extension-only 奖励失效——训练排除该
+  歧义转移。部署语义相反：应继续把拳打完。已记入方案文档 §3。
+- **eval 无 warmup 已修**：eval job 与 train 同分布——同样的
+  `_sample_warmup` 采样（确定性 rng，base_seed+offset 派生），
+  idle eval 同样按 0.5 分倒地/warmup env。验证 400 eval job：
+  warmup 覆盖、idle 双 env 分裂、同名排除全部符合。
 
-需补：step 环境的 warmup 插件、可选同拳重复、衔接评估矩阵。
+合成验证（400 job/train + 400 eval）：idle 分裂 ~50/50，
+env↔warmup 一致性 0 违例，同名打击转移 0 例。
 
 ### P1-6 `landed` 表示指针到末帧，不表示拳实际到位【高】
 
