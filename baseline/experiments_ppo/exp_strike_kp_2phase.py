@@ -415,8 +415,14 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
 
     def load_state(self, state: dict) -> None:
         super().load_state(state)
-        self._best_quality = float(state.get("best_quality", -1.0))
-        self._last_best = int(state.get("last_best", 0))
+        # Patience restarts on EVERY resume: a checkpoint saved under a
+        # different promotion criterion/semantics would otherwise carry
+        # a stale last_best and stop immediately (observed: resume at
+        # u8226 stopped at u8230).  Sentinel = "no best yet" — the first
+        # post-resume eval with falls<0.2 latches a real last_best, so
+        # early stop then counts a full patience window from it.
+        self._best_quality = -1.0
+        self._last_best = 10**9
 
 
 EXPERIMENT_CLASS = StrikeKp2Phase
