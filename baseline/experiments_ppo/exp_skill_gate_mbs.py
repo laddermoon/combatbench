@@ -34,7 +34,12 @@ class SkillGateMBS(SkillTransMBS):
 
     # Diagnostic-measured threshold (see STRIKE_LAUNCH_GATE.md §2):
     # clean stance ≈1.80, mid-motion starts ≈1.6 → θ=1.65 strict.
-    GATE_SPEC: Dict[str, float] = {"score": 1.65, "frames": 4}
+    # frames=0: gate against the clip's FIRST frame only (P2-1 — the
+    # [0,4] window admitted mid-motion frames, e.g. heavy frame 4 is
+    # already ~15° into the punch; gating at k=4 also skipped most of
+    # the wind-up).  Passing now requires the real ready pose and the
+    # progress pointer always restarts from 0.
+    GATE_SPEC: Dict[str, float] = {"score": 1.65, "frames": 0}
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True):
