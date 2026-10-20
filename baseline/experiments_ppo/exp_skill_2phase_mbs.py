@@ -43,6 +43,11 @@ class Skill2PhaseMBS(SkillFullMBS):
 
     TWO_PHASE_STRIKE: bool = True
 
+    # Fixed 5% gate boundary — the phase transition is the strict
+    # criterion from the start; the adaptive frac curriculum is
+    # disabled by collapsing its range to the terminal value.
+    _FRAC_LO = _FRAC_HI = 0.05
+
     _channel_names = tuple(
         c for c in SkillFullMBS._channel_names if c != "r_strike") + (
         "r_strike_p1_mse", "r_strike_p1_var",
