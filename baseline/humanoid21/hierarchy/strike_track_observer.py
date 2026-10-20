@@ -187,6 +187,36 @@ def punch_hand_name(ref: RefClip) -> str:
     return 'hand_left' if vl.max() > vr.max() else 'hand_right'
 
 
+_REAR_FOOT: Dict[str, str] = {}
+
+
+def rear_foot_name(ref: RefClip) -> str:
+    """The stance's rear (power) foot: the foot further BEHIND the
+    pelvis at reference frame 0 (min forward coordinate in the
+    clip-0 ego frame).  Near-square stances (jab, |Δex| < 5 cm)
+    fall back to the foot with less total travel over the clip —
+    the planted one.  Verified on all four strike clips:
+    rear = right for both originals, left for both mirrors."""
+    if ref.clip_id in _REAR_FOOT:
+        return _REAR_FOOT[ref.clip_id]
+    kn = ref.keypoint_names
+    pi = kn.index('pelvis')
+    yaw0 = _yaw_of(ref.root_quat[0])
+    c, s = np.cos(-yaw0), np.sin(-yaw0)
+    ex, travel = {}, {}
+    for f in ('foot_left', 'foot_right'):
+        rel = r0 = ref.keypoints[0, kn.index(f)] - ref.keypoints[0, pi]
+        ex[f] = c * r0[0] - s * r0[1]
+        travel[f] = float(np.linalg.norm(np.diff(
+            ref.keypoints[:, kn.index(f), :2], axis=0), axis=1).sum())
+    if abs(ex['foot_left'] - ex['foot_right']) >= 0.05:
+        rear = min(ex, key=ex.get)
+    else:
+        rear = min(travel, key=travel.get)
+    _REAR_FOOT[ref.clip_id] = rear
+    return rear
+
+
 def resolve_clip(eff_side: int, target_xyz,
                  clips_dir=SKILL_CLIPS_DIR) -> str:
     """side + nearest-landing → clip_id ("近→刺拳, 远→弓步" emerges from
@@ -245,7 +275,10 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'frame': -1.0, 'landed': 0.0, 'gate_qmax': 0.0,
                 'hand_ex': 0.0, 'hand_ey': 0.0, 'hand_ez': 0.0,
                 'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0,
-                'gated': 0.0, 'gate_t': -1.0}
+                'gated': 0.0, 'gate_t': -1.0,
+                'r_p1_mse': 0.0, 'r_p1_var': 0.0,
+                'r_p2_mse': 0.0, 'r_p2_var': 0.0, 'r_p2_foot': 0.0,
+                'foot_disp_m': 0.0}
 
     # ------------------------------------------------------------------
     # Episode setup — compile schedule rows, resolve clips
@@ -276,6 +309,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 row['clip'] = cid
                 row['ref'] = self._clip(cid)
                 row['hand'] = punch_hand_name(row['ref'])
+                row['rear'] = rear_foot_name(row['ref'])
+                row['foot_anchor'] = None
                 row['k_max'] = (clip_land_frame(cid, self._clips_dir)
                                 if self._ext_only else
                                 row['ref'].n_ctrl - 1)
@@ -342,13 +377,27 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 out['reward'] = float(np.mean(
                     1.0 / (1.0 + (q_err[_GATE_JOINT_IDX] / sig) ** 2))
                     - out['gate_qmax'])
+                # Two-phase channel fields (skill_2phase_mbs): phase-1
+                # potentials vs the ready pose (frame 0) — negative MSE
+                # and negative variance of the per-joint squared
+                # errors over the non-ankle gate joints.  Minimizing
+                # them raises the reward; the var term penalizes a
+                # single large outlier joint.
+                e0 = np.abs(
+                    np.asarray(live['core']['joint_pos_norm'],
+                               dtype=np.float64)
+                    - ref.q_norm[0])[_GATE_JOINT_IDX] ** 2
+                out['r_p1_mse'] = -float(np.mean(e0))
+                out['r_p1_var'] = -float(np.var(e0))
+                out['frame'] = float(k)
+                out['phase'] = 0.0
+                # Emit the PRE-latch gate flag: the boundary step still
+                # belongs to phase 1, so its AW mask must see gated=0.
+                out['gated'] = float(seg['gated'])
                 if out['gate_qmax'] <= 2.0 * frac:
                     seg['gated'] = True
                     seg['gate_t'] = float(self._t - seg['a'])
                     seg['k_ptr'] = k
-                out['frame'] = float(k)
-                out['phase'] = 0.0
-                out['gated'] = float(seg['gated'])
                 out['gate_t'] = seg['gate_t']
                 return self._augment_tgt(ctx, seg, live, out)
             # Monotone progress tracking: advance the pointer to the
@@ -379,6 +428,26 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 if landed:
                     out['reward'] += W_HOLD
                     out['landed'] = 1.0
+            # Two-phase channel fields (skill_2phase_mbs): phase-2
+            # potentials vs the LANDING frame (k_max — "出完拳"),
+            # same −MSE / −var form as phase 1, plus the power-foot
+            # stationarity penalty: the rear (power) foot is anchored
+            # in the world at the first post-gate step and any
+            # displacement from it is penalized (clamped at 0.5 m).
+            el = np.abs(
+                np.asarray(live['core']['joint_pos_norm'],
+                           dtype=np.float64)
+                - ref.q_norm[seg['k_max']])[_GATE_JOINT_IDX] ** 2
+            out['r_p2_mse'] = -float(np.mean(el))
+            out['r_p2_var'] = -float(np.var(el))
+            rear = seg.get('rear')
+            if rear in live['p_self']:
+                if seg['foot_anchor'] is None:
+                    seg['foot_anchor'] = live['p_self'][rear].copy()
+                disp = float(np.linalg.norm(
+                    live['p_self'][rear] - seg['foot_anchor']))
+                out['foot_disp_m'] = disp
+                out['r_p2_foot'] = -min(disp, 0.5)
             out['frame'] = float(k)
             out['phase'] = k / max(1, seg['k_max'])
             out['gated'] = float(seg['gated'])

@@ -145,6 +145,17 @@ class SkillTrainMBS(BalancePure):
     r_turn_actor_weight: float = 3.0
     r_hold_actor_weight: float = 3.0
     r_strike_actor_weight: float = 4.0
+    # Two-phase strike channels (skill_2phase_mbs): phase-1 potentials
+    # to the ready pose (frame 0), phase-2 potentials to the landing
+    # frame plus a power-foot stationarity penalty.  Each channel's
+    # actor weight is masked to its own phase via the observer's
+    # `gated` flag — the phases learn their objectives separately.
+    TWO_PHASE_STRIKE: bool = False
+    r_strike_p1_mse_actor_weight: float = 4.0
+    r_strike_p1_var_actor_weight: float = 4.0
+    r_strike_p2_mse_actor_weight: float = 4.0
+    r_strike_p2_var_actor_weight: float = 4.0
+    r_strike_p2_foot_actor_weight: float = 8.0
     _clip_aw_scale: float = 2.0
     # r_potential reward cap (phi ≤ this in the reward only; the φ²
     # actor-weight gates and eval fall metrics still use raw phi).
@@ -444,14 +455,40 @@ class SkillTrainMBS(BalancePure):
                         if rew is not None else np.zeros(T, np.float32))
             in_strike = (np.asarray(ins[:T], dtype=np.float32)
                          if ins is not None else np.zeros(T, np.float32))
-            channels["r_strike"] = ChannelData(
-                reward=r_strike, is_terminated=False,
-                # No phi**2 gate: committing the CoM (leaning/lunging)
-                # must not suppress the strike gradient — full weight
-                # inside the scored window.
-                actor_weight=(self.r_strike_actor_weight
-                              * in_strike).astype(np.float32),
-            )
+            if not self.TWO_PHASE_STRIKE:
+                channels["r_strike"] = ChannelData(
+                    reward=r_strike, is_terminated=False,
+                    # No phi**2 gate: committing the CoM (leaning/lunging)
+                    # must not suppress the strike gradient — full weight
+                    # inside the scored window.
+                    actor_weight=(self.r_strike_actor_weight
+                                  * in_strike).astype(np.float32),
+                )
+            else:
+                gat = extract_per_step_field(oo, sk, "gated", T_full)
+                gated = (np.asarray(gat[:T], dtype=np.float32)
+                         if gat is not None else np.zeros(T, np.float32))
+                p1m = in_strike * (1.0 - gated)
+                p2m = in_strike * gated
+                for nm, fld, aw, m in (
+                        ("r_strike_p1_mse", "r_p1_mse",
+                         self.r_strike_p1_mse_actor_weight, p1m),
+                        ("r_strike_p1_var", "r_p1_var",
+                         self.r_strike_p1_var_actor_weight, p1m),
+                        ("r_strike_p2_mse", "r_p2_mse",
+                         self.r_strike_p2_mse_actor_weight, p2m),
+                        ("r_strike_p2_var", "r_p2_var",
+                         self.r_strike_p2_var_actor_weight, p2m),
+                        ("r_strike_p2_foot", "r_p2_foot",
+                         self.r_strike_p2_foot_actor_weight, p2m)):
+                    arr = extract_per_step_field(oo, sk, fld, T_full)
+                    rv = (np.asarray(arr[:T], dtype=np.float32)
+                          if arr is not None
+                          else np.zeros(T, np.float32))
+                    channels[nm] = ChannelData(
+                        reward=rv, is_terminated=False,
+                        actor_weight=(aw * m).astype(np.float32),
+                    )
 
         if fam == "idle":
             ck = self._CLIP_OBS[agent_id]
