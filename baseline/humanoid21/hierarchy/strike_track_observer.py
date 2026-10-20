@@ -148,6 +148,12 @@ def _clip_meta(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR
 
 _LAND_FRAME: Dict[str, int] = {}
 
+# Launch-gate joint indices: every controlled joint except the ankles
+# (ankle angles are excluded — foot pitch/roll adapt freely during
+# the ready-stance match).
+_GATE_JOINT_IDX = [i for i, n in enumerate(CONTROLLED_JOINTS)
+                   if 'ankle' not in n]
+
 
 def clip_land_frame(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR) -> int:
     """Frame index of the clip's peak hand extension — the reference
@@ -222,7 +228,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'hand_err_m': 0.0, 'kp_err_m': 0.0, 'kp_err_rel_m': 0.0,
                 'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
-                'frame': -1.0, 'landed': 0.0,
+                'frame': -1.0, 'landed': 0.0, 'gate_qmax': 0.0,
                 'hand_ex': 0.0, 'hand_ey': 0.0, 'hand_ez': 0.0,
                 'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0,
                 'gated': 0.0, 'gate_t': -1.0}
@@ -285,14 +291,24 @@ class StrikeTrackObserver(BaseObserverPlugin):
             # dense shaping toward the ready pose.  in_strike stays 1
             # so r_strike actor weight flows during the approach.
             if self._gate is not None and not seg['gated']:
+                # Gate verdict — per-joint pose only (P2-1): every
+                # non-ankle controlled joint must be within `frac` of
+                # its FULL range vs the gate frame (composite score is
+                # guidance, not the verdict).  joint_pos_norm is
+                # (pos − mid) / half_range, so "frac of full range" is
+                # 2·frac in normalized units.
                 kf = int(self._gate.get('frames', 4))
-                th = float(self._gate.get('score', 0.0))
+                frac = float(self._gate.get('frac', 0.05))
                 hi_g = min(kf, seg['k_max'])
                 k, out = max(
                     ((c, self._frame_score(live, seg, ref, c))
                      for c in range(0, hi_g + 1)),
                     key=lambda p: p[1]['reward'])
-                if out['reward'] >= th:
+                q_err = np.abs(
+                    np.asarray(live['core']['joint_pos_norm'],
+                               dtype=np.float64) - ref.q_norm[k])
+                out['gate_qmax'] = float(q_err[_GATE_JOINT_IDX].max())
+                if out['gate_qmax'] <= 2.0 * frac:
                     seg['gated'] = True
                     seg['gate_t'] = float(self._t - seg['a'])
                     seg['k_ptr'] = k

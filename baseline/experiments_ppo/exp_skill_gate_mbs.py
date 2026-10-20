@@ -32,14 +32,11 @@ class SkillGateMBS(SkillTransMBS):
 
     name = "skill_gate_mbs"
 
-    # Diagnostic-measured threshold (see STRIKE_LAUNCH_GATE.md §2):
-    # clean stance ≈1.80, mid-motion starts ≈1.6 → θ=1.65 strict.
-    # frames=0: gate against the clip's FIRST frame only (P2-1 — the
-    # [0,4] window admitted mid-motion frames, e.g. heavy frame 4 is
-    # already ~15° into the punch; gating at k=4 also skipped most of
-    # the wind-up).  Passing now requires the real ready pose and the
-    # progress pointer always restarts from 0.
-    GATE_SPEC: Dict[str, float] = {"score": 1.65, "frames": 0}
+    # Launch gate (P2-1 裁决): 只匹配 clip 第 0 帧；判据改为纯姿态—
+    # —所有受控关节(踝关节除外)与参考帧的误差 < 各自全量程的 5%。
+    # 复合分保留为过门前的稠密 shaping，不再作门槛（权重和会掩盖
+    # 关键关节偏差）。
+    GATE_SPEC: Dict[str, float] = {"frames": 0, "frac": 0.05}
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True):
@@ -67,12 +64,21 @@ class SkillGateMBS(SkillTransMBS):
                     ep.observer_outputs, sk, "gated", T)
                 gt = extract_per_step_field(
                     ep.observer_outputs, sk, "gate_t", T)
+                gq = extract_per_step_field(
+                    ep.observer_outputs, sk, "gate_qmax", T)
                 m = per_skill.setdefault(
-                    skill, {"gate_t": [], "ungated": []})
+                    skill, {"gate_t": [], "ungated": [],
+                            "gate_qmax": []})
                 if g is None:
                     continue
                 gated = bool(np.asarray(g).max() > 0.5)
                 m["ungated"].append(float(not gated))
+                if gq is not None:
+                    vals = np.asarray(gq)
+                    vals = vals[vals > 0]     # 0 = 非门控期帧
+                    if vals.size:
+                        # 最接近过门的一次：max 关节误差的 episode 最小值
+                        m["gate_qmax"].append(float(vals.min()))
                 if gated and gt is not None:
                     vals = np.asarray(gt)
                     vals = vals[vals >= 0]
