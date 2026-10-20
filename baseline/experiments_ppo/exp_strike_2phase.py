@@ -2,22 +2,20 @@
 
 Inherits CombatExperimentPPOBase ONLY (no skill_* chain).  Every
 episode is a single strike command on the strike_2phase_env blueprint
-(mid-gait warmup init → one strike segment).
+(random skill warmup → one 30-step strike segment).
 
-Scheme (SKILL_TRAINING_PLAN.md §7):
+Scheme (STRIKE_2PHASE_PLAN.md):
 
   Phase 1  — approach: reach the ready pose = clip frame 0 anchored to
              the robot's current xy/yaw.  Channels: −MSE and −variance
              of the per-joint squared errors over the 17 non-ankle
              controlled joints (normalized units).
-  Boundary — the launch gate: every non-ankle joint within 5% of its
-             full range vs frame 0 (|q_err| < 0.10), FIXED — no
-             curriculum.  The first post-gate step becomes a
-             Trajectory boundary, so GAE is computed per phase.
+  Boundary — first step within 5% of frame 0; phase-1 MSE gets +1
+             and its trajectory ends at this step (no curriculum).
   Phase 2  — execution: same potentials vs the LANDING frame
              (clip_land_frame), plus −rear-foot world displacement
-             (anchored at the gate-pass frame; the power foot must not
-             move while it drives the punch).
+             (anchored at the gate-pass frame). First step within 5%
+             of landing gets +1 on phase-2 MSE; later steps are ignored.
 
 Balance rail: a small dense r_potential (0.01·min(phi, 0.9)) rides every
 trajectory — while phi ≥ 0.9 it is a constant bonus that does not shape
@@ -37,26 +35,21 @@ import numpy as np
 from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory)
 from baseline.framework.rollout import extract_per_step_field
+from baseline.humanoid21.hierarchy.command_simulator import V_MAX, W_MAX
 
 from .base import CombatExperimentPPOBase
 
 # ---------------------------------------------------------------------
 # Strike skills — the whole experiment is these four commands.
 # ---------------------------------------------------------------------
-_STRIKE_MARGIN = 13
-_HEAVY_LEAD = 6
+_STRIKE_STEPS = 30
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
 _HEAVY_LAND = (0.622, -0.213, 0.413)   # cmu_144_20_m_seg01 landing
-_JAB_KLAND = 11
-_HEAVY_KLAND = 6
-
 SKILLS: Dict[str, Dict[str, Any]] = {
-    "jab_l":   dict(side=+1, land=_JAB_LAND,   n=_JAB_KLAND + _STRIKE_MARGIN),
-    "jab_r":   dict(side=-1, land=_JAB_LAND,   n=_JAB_KLAND + _STRIKE_MARGIN),
-    "heavy_l": dict(side=+1, land=_HEAVY_LAND, n=_HEAVY_KLAND + _HEAVY_LEAD
-                    + _STRIKE_MARGIN),
-    "heavy_r": dict(side=-1, land=_HEAVY_LAND, n=_HEAVY_KLAND + _HEAVY_LEAD
-                    + _STRIKE_MARGIN),
+    "jab_l":   dict(side=+1, land=_JAB_LAND),
+    "jab_r":   dict(side=-1, land=_JAB_LAND),
+    "heavy_l": dict(side=+1, land=_HEAVY_LAND),
+    "heavy_r": dict(side=-1, land=_HEAVY_LAND),
 }
 
 
@@ -69,6 +62,28 @@ def _strike_row(side: int, land: Tuple[float, float, float],
 
 _P1 = ("r_strike_p1_mse", "r_strike_p1_var")
 _P2 = ("r_strike_p2_mse", "r_strike_p2_var", "r_strike_p2_foot")
+_WARMUP_SKILLS = (
+    "move_fwd", "move_back", "move_left", "move_right",
+    "turn_left", "turn_right", "step", *SKILLS,
+)
+
+
+def _warmup_row(skill: str) -> list:
+    if skill in SKILLS:
+        s = SKILLS[skill]
+        return _strike_row(s["side"], s["land"], _STRIKE_STEPS)
+    moves = {
+        "move_fwd": (V_MAX, 0.0), "move_back": (-V_MAX, 0.0),
+        "move_left": (0.0, V_MAX), "move_right": (0.0, -V_MAX),
+    }
+    if skill in moves:
+        return [30, *moves[skill], 0.0]
+    if skill in ("turn_left", "turn_right"):
+        return [30, 0.0, 0.0,
+                W_MAX if skill == "turn_left" else -W_MAX]
+    if skill == "step":
+        return [30, 0.0, 0.0, 0.0]
+    raise ValueError(f"Unknown warmup skill: {skill}")
 
 
 class Strike2Phase(CombatExperimentPPOBase):
@@ -111,7 +126,7 @@ class Strike2Phase(CombatExperimentPPOBase):
     # --- Rollout schedule ---
     agent_used = "both"
     episodes_per_update: int = 1536
-    max_updates: int = 5000
+    max_updates: int = 12000
     eval_interval: int = 5
     eval_episodes: int = 64
     video_eval_interval: int = 5
@@ -168,12 +183,13 @@ class Strike2Phase(CombatExperimentPPOBase):
         weights = np.array([self.SKILL_SAMPLE_W.get(s, 1.0)
                             for s in skills])
         weights = weights / weights.sum()
-        env_cache: Dict[int, Any] = {}
+        env_bp = self._env_pb().materialize(max_steps=_STRIKE_STEPS)
 
-        def _env(n: int):
-            if n not in env_cache:
-                env_cache[n] = self._env_pb().materialize(max_steps=n)
-            return env_cache[n]
+        def _warmup(target: str) -> Dict[str, Any]:
+            skill = str(rng.choice(
+                [s for s in _WARMUP_SKILLS if s != target]))
+            return {"skill": skill, "steps": int(rng.integers(0, 21)),
+                    "schedule": [_warmup_row(skill)]}
 
         def _opts(sa: str, sb: str) -> Dict[str, Any]:
             s_a, s_b = SKILLS[sa], SKILLS[sb]
@@ -182,10 +198,12 @@ class Strike2Phase(CombatExperimentPPOBase):
                 "skills": {"robot_a": sa, "robot_b": sb},
                 "move_schedule": {
                     "robot_a": [_strike_row(s_a["side"], s_a["land"],
-                                            s_a["n"])],
+                                            _STRIKE_STEPS)],
                     "robot_b": [_strike_row(s_b["side"], s_b["land"],
-                                            s_b["n"])],
+                                            _STRIKE_STEPS)],
                 },
+                "warmup": {"robot_a": _warmup(sa),
+                           "robot_b": _warmup(sb)},
                 "launch_gate": dict(self.GATE_SPEC),
                 "warmup_policy_cls": policy_bp.cls,
             }
@@ -197,10 +215,9 @@ class Strike2Phase(CombatExperimentPPOBase):
                 sb = str(rng.choice(skills, p=weights))
             else:
                 sa, sb = skills[i % 4], skills[(i + 2) % 4]
-            n = max(SKILLS[sa]["n"], SKILLS[sb]["n"])
             jobs.append(Job(
                 policy_a_bp=policy_bp, policy_b_bp=policy_bp,
-                env_bp=_env(n), seed=int(base_seed + i),
+                env_bp=env_bp, seed=int(base_seed + i),
                 episode_options=_opts(sa, sb),
                 sampling_a=sampling, sampling_b=sampling,
                 stochastic=stochastic,
@@ -243,6 +260,18 @@ class Strike2Phase(CombatExperimentPPOBase):
         phi = np.clip(_f(phi_key, "potential"), 0.0, 1.0)
         in_strike = _f(strike_key, "in_strike")
         gated = _f(strike_key, "gated")
+        gate_qmax = _f(strike_key, "gate_qmax", np.inf)
+        land_qmax = _f(strike_key, "land_qmax", np.inf)
+        threshold = 2.0 * self.GATE_SPEC["frac"]
+        ready = np.flatnonzero((in_strike > 0.5) &
+                               (gated < 0.5) &
+                               (gate_qmax <= threshold))
+        gate_end = int(ready[0]) + 1 if ready.size else None
+        landing = np.flatnonzero((in_strike > 0.5) &
+                                 (gated > 0.5) &
+                                 (land_qmax <= threshold))
+        land_end = int(landing[0]) + 1 if gate_end is not None \
+            and landing.size else None
 
         channels: Dict[str, ChannelData] = {
             "r_potential": ChannelData(
@@ -265,37 +294,39 @@ class Strike2Phase(CombatExperimentPPOBase):
             channels[nm] = ChannelData(
                 reward=_f(strike_key, fld),
                 is_terminated=False,
-                actor_weight=(aw * in_strike).astype(np.float32))
+                actor_weight=float(aw))
 
-        g = int(np.argmax(gated > 0.5)) if bool((gated > 0.5).any()) \
-            else None
-
-        def _piece(a: int, b: int, last_ob, drop, term_p1: bool):
+        def _piece(a: int, b: int, drop, success: bool):
             sub = {}
             for nm, ch in channels.items():
                 if nm in drop:
                     continue
-                w = ch.actor_weight
+                reward = ch.reward[a:b].copy()
+                if success and nm == ("r_strike_p1_mse" if a == 0
+                                      else "r_strike_p2_mse"):
+                    reward[-1] += 1.0
                 sub[nm] = ChannelData(
-                    reward=ch.reward[a:b],
-                    is_terminated=(ch.is_terminated
-                                   or (term_p1 and nm in _P1)),
-                    actor_weight=(w[a:b] if isinstance(w, np.ndarray)
-                                  else w))
+                    reward=reward,
+                    is_terminated=(success and (nm != "r_potential"
+                                   or a > 0)),
+                    actor_weight=ch.actor_weight)
             sctx = self.extract_sampling_ctx(ep, aid, T)
             if sctx is not None:
                 sctx = {k: v[a:b] for k, v in sctx.items()}
+            last_ob = obs[b] if b < T else fin
             return Trajectory(obs=obs[a:b], actions=acts[a:b],
                               last_obs=np.asarray(last_ob,
                                                   dtype=np.float32),
                               channels=sub, importance=1.0,
                               sampling_ctx=sctx)
 
-        if g is not None and 0 < g < T:
-            return [_piece(0, g, obs[g], _P2, True),
-                    _piece(g, T, fin, _P1, False)]
-        drop = _P2 if g is None else _P1
-        return [_piece(0, T, fin, drop, False)]
+        if gate_end is None:
+            return [_piece(0, T, _P2, False)]
+        trajs = [_piece(0, gate_end, _P2, True)]
+        if gate_end < T:
+            trajs.append(_piece(gate_end, land_end or T, _P1,
+                                land_end is not None))
+        return trajs
 
     # ------------------------------------------------------------------
     # Eval: per-skill gate/landing/foot diagnostics + best tracking
@@ -324,6 +355,7 @@ class Strike2Phase(CombatExperimentPPOBase):
                 m = per_skill.setdefault(
                     skill, {"gate_qmax": [], "ungated": [],
                             "gate_t": [], "land_t": [], "landed": [],
+                            "land_qmax": [],
                             "hand": [], "foot": []})
 
                 def _grab(field, dst, agg_fn):
@@ -345,7 +377,8 @@ class Strike2Phase(CombatExperimentPPOBase):
                 g = extract_per_step_field(
                     oo, strike_key, "gated", T)
                 if g is not None:
-                    gated_ep = bool(np.asarray(g[:T]).max() > 0.5)
+                    g_arr = np.asarray(g[:T])
+                    gated_ep = bool(g_arr.max() > 0.5)
                     m["ungated"].append(float(not gated_ep))
                     if gated_ep:
                         _grab("gate_t", "gate_t",
@@ -354,7 +387,15 @@ class Strike2Phase(CombatExperimentPPOBase):
                         _grab("foot", "foot",
                               lambda v: v[v > 0].max()
                               if (v > 0).any() else None)
-                        _grab("landed", "landed", lambda v: v.max())
+                        lq = extract_per_step_field(
+                            oo, strike_key, "land_qmax", T)
+                        if lq is not None:
+                            v = np.asarray(lq[:T], dtype=np.float32)
+                            v = v[g_arr > 0.5]
+                            if v.size:
+                                m["land_qmax"].append(float(v.min()))
+                                m["landed"].append(float(
+                                    (v <= 2.0 * self.GATE_SPEC["frac"]).any()))
                 _grab("frame", "land_t",
                       lambda v: float(v.max()))
                 _grab("hand_err_m", "hand", lambda v: float(v[-1])

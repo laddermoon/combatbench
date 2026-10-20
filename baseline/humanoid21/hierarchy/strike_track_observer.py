@@ -217,6 +217,17 @@ def rear_foot_name(ref: RefClip) -> str:
     return rear
 
 
+def strike_power_foot(clip_id: str) -> str:
+    """Heavy uses the punching-side rear foot; jab uses the opposite foot."""
+    sides = {
+        'hdm05_3146_88_2895_127': 'foot_right',
+        'hdm05_3146_88_2895_127_m': 'foot_left',
+        'cmu_144_20_seg01': 'foot_right',
+        'cmu_144_20_m_seg01': 'foot_left',
+    }
+    return sides[clip_id]
+
+
 def resolve_clip(eff_side: int, target_xyz,
                  clips_dir=SKILL_CLIPS_DIR) -> str:
     """side + nearest-landing → clip_id ("近→刺拳, 远→弓步" emerges from
@@ -239,9 +250,11 @@ class StrikeTrackObserver(BaseObserverPlugin):
     def __init__(self, agent_id: str = 'robot_a',
                  clips_dir: str = str(SKILL_CLIPS_DIR),
                  ext_only: bool = False,
-                 lookahead: int = 2) -> None:
+                 lookahead: int = 2,
+                 rule_power_foot: bool = False) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
+        self._rule_power_foot = rule_power_foot
         # ext_only (skill-training extension phase): monotone progress
         # tracking — see module docstring.  Default False keeps the
         # strict-clock full-clip tracking of the older experiments.
@@ -273,6 +286,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 'root_dxy_m': 0.0, 'root_dyaw_deg': 0.0,
                 'q_rmse_deg': 0.0, 'in_strike': 0.0, 'phase': -1.0,
                 'frame': -1.0, 'landed': 0.0, 'gate_qmax': 0.0,
+                'land_qmax': 0.0,
                 'hand_ex': 0.0, 'hand_ey': 0.0, 'hand_ez': 0.0,
                 'tgt_ex': 0.0, 'tgt_ey': 0.0, 'tgt_ez': 0.0,
                 'gated': 0.0, 'gate_t': -1.0,
@@ -309,7 +323,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 row['clip'] = cid
                 row['ref'] = self._clip(cid)
                 row['hand'] = punch_hand_name(row['ref'])
-                row['rear'] = rear_foot_name(row['ref'])
+                row['rear'] = (strike_power_foot(cid) if self._rule_power_foot
+                               else rear_foot_name(row['ref']))
                 row['foot_anchor'] = None
                 row['k_max'] = (clip_land_frame(cid, self._clips_dir)
                                 if self._ext_only else
@@ -445,6 +460,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 np.asarray(live['core']['joint_pos_norm'],
                            dtype=np.float64)
                 - ref.q_norm[seg['k_max']])[_GATE_JOINT_IDX] ** 2
+            out['land_qmax'] = float(np.sqrt(el.max()))
             out['r_p2_mse'] = -float(np.mean(el))
             out['r_p2_var'] = -float(np.var(el))
             rear = seg.get('rear')
@@ -619,7 +635,9 @@ class StrikeTrackObserver(BaseObserverPlugin):
         return dict(self._output)
 
     def to_blueprint(self) -> Dict[str, Any]:
-        return {'agent_id': self.agent_id}
+        return {'agent_id': self.agent_id, 'clips_dir': str(self._clips_dir),
+                'ext_only': self._ext_only, 'lookahead': self._la,
+                'rule_power_foot': self._rule_power_foot}
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> 'StrikeTrackObserver':

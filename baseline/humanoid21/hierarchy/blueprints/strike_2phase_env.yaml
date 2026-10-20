@@ -1,7 +1,7 @@
 # Strike-only two-phase env (66-dim) — for exp_strike_2phase.
 #
 # Every episode is a single strike segment: WarmupSteppingPlugin
-# mid-gait init (pose diversity for phase-1 approach), then one strike
+# random-skill init (0-20 steps), then one 30-step strike
 # command.  Minimal observer set: standing_balance for the phi rails,
 # strike_track (ext_only) for everything else — gate flag, phase
 # potentials (r_p1_*/r_p2_*), and metrics.
@@ -11,7 +11,7 @@ parameters:
     default: 2.0
     description: "Spawn distance between robots (m)."
   max_steps:
-    default: 40
+    default: 30
     description: "Max action steps."
 
 runtime:
@@ -33,7 +33,7 @@ plugins:
   - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
     config:
       target_robots: "both"
-      action_steps: 10
+      action_steps: 0
       phy_steps_per_action: 25
       body_dim: 57
       cmd_dim: 9
@@ -55,9 +55,11 @@ observer_plugins:
       agent_id: "robot_a"
       ext_only: true
       lookahead: 2
+      rule_power_foot: true
   strike_track_b:
     cls: "baseline.humanoid21.hierarchy.strike_track_observer:StrikeTrackObserver"
     config:
       agent_id: "robot_b"
       ext_only: true
       lookahead: 2
+      rule_power_foot: true
