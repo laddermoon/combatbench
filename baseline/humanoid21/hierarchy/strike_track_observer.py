@@ -84,6 +84,12 @@ _ARM_JOINTS = {
 # the landing frame — makes earlier arrival strictly better (speed =
 # time-at-target).
 W_HOLD = 0.25
+# Per-step progress price on the monotone pointer (post-gate only):
+# pays W_PROG·(k/k_max) each step, so reaching the landing frame is
+# worth ~0.4/step on top of the match score — makes advancing the
+# pointer a first-class objective instead of an incidental of match
+# ordering.  Monotone pointer ⇒ no exploit loop.
+W_PROG = 0.4
 # Completion criterion for `landed` — the progress pointer reaching
 # k_max is only progress, not success: "best match among candidates"
 # stays meaningful even when every candidate matches badly.  Landing
@@ -346,13 +352,22 @@ class StrikeTrackObserver(BaseObserverPlugin):
                  for c in range(lo, hi + 1)),
                 key=lambda p: p[1]['reward'])
             seg['k_ptr'] = k
+            # Direct progress price (P2-2): matching alone lets the
+            # pointer stall at low frames — "stay near the ready pose"
+            # earned ≈ as much per step as punching through, so the
+            # strike habit had no reason to advance (observed: jab
+            # pointer parked at k=3/11, land_t pinned at ep end).
+            # W_PROG·(k/k_max) makes each advanced frame pay for
+            # itself; monotone pointer ⇒ never refunded.
+            comp = out['reward']   # pure composite for the landed check
+            out['reward'] += W_PROG * (k / max(1, seg['k_max']))
             if k >= seg['k_max']:
                 # Pointer at the landing frame = progress, not success.
                 # `landed` requires the live state to actually match
                 # that frame; re-evaluated per step so the hold bonus
                 # tracks time-at-target, not pointer position.
                 landed = (out['hand_err_m'] <= LAND_HAND_ERR_M
-                          and out['reward'] >= LAND_MIN_SCORE)
+                          and comp >= LAND_MIN_SCORE)
                 if landed:
                     out['reward'] += W_HOLD
                     out['landed'] = 1.0
