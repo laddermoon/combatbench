@@ -127,3 +127,9 @@ GAE 分别按两条轨迹与各自 critic 计算；每段只挂所属阶段
   `skill_2phase_mbs` u07200 恢复，**不作为本方案起点**。
 - 本版从 `train_skill_full_mbs_ppo_20261020_104315` 的最后
   checkpoint `u06685` 起手；新打击 critic 冷启动。
+- `train_strike_2phase_ppo_20261020_154336` 首次以默认 confidence
+  启动：首个 update 的 p1 critic EV 为负、confidence=0，导致
+  p1 虽有数据且 AW=4，却不参与 actor 更新；已停。
+- 有效 run：`train_strike_2phase_ppo_20261020_154404` 从相同
+  u06685 起手，附加 `--no-confidence`，避免冷启动 critic
+  关闭打击通道的 actor 梯度；仍需监测严格 5% 过门率和 p2 数据。
