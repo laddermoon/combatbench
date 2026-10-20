@@ -135,8 +135,10 @@ only 指 episode 只评到落地帧，落地后保持靠 hold bonus 体现），
    错位（用户裁决）。新增 eval 指标 `{skill}_gate_qmax`（episode
    最小 max-关节误差，阈值 0.10）监控过门余量。
 
-遗留观察项：post-gate 进度跟踪的 `_frame_score` 仍含 vel 项——
-同一语义质疑是否适用段 B 待用户另行裁决。
+3. **vel 项同步弃用于段 B**（用户裁决）：`ext_only` 模式的
+   `_frame_score` 中 vel 权重置 0——"匹配 clip 速度"与"越快越好"
+   语义相悖；速度压力由指针机制与 hold bonus 承载。r_vel 保留为
+   诊断字段；非 ext_only（s4 严格时钟跟踪）不受影响。
 
 ### P2-2 对齐段奖励可能鼓励"停在准备姿态不出拳"
 

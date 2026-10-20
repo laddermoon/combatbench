@@ -490,7 +490,12 @@ class StrikeTrackObserver(BaseObserverPlugin):
         r_root = 0.5 * float(np.exp(-3.0 * dxy ** 2)) \
             + 0.5 * float(np.exp(-1.0 * dyaw ** 2))
 
-        reward = (W_POSE * r_pose + W_VEL * r_vel
+        # ext_only drops the velocity term entirely (P2-1 后续裁决):
+        # "越快越好"的语义下奖励匹配 clip 速度是反向的——指针机制与
+        # hold bonus 负责速度压力，速度项只会在"想快"时拖后腿。
+        # r_vel 仍输出为诊断。非 ext_only（严格时钟跟踪）保留。
+        w_vel = 0.0 if self._ext_only else W_VEL
+        reward = (W_POSE * r_pose + w_vel * r_vel
                   + W_KP * r_kp + W_HEIGHT * r_height + W_ROOT * r_root
                   + W_HAND * r_hand + W_ARM * r_arm)
         return {
