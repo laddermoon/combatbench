@@ -300,15 +300,19 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 # Dense shaping uses the SAME semantics as the verdict —
                 # per-joint position error only (no vel/kp/hand/…).
                 # Lorentzian kernel 1/(1+(q_err/σ)²) with σ = 2·frac:
-                # score 0.5 at the verdict boundary, and — critically —
-                # FAT TAILS.  The verdict is a max-joint criterion, so
-                # the worst joint is exactly the one that needs the
-                # most gradient; a Gaussian exp(−(x/σ)²) is e^−25 at
-                # x=0.5 and gives the blocking joint ~zero pull (the
-                # needle-in-haystack failure again).  The 1/(1+x²)
-                # kernel decays like x⁻², keeping a real gradient at
-                # the errors the policy actually starts from
-                # (~0.5–0.9 normalized).
+                # score 0.5 at the verdict boundary, fat tails — a
+                # Gaussian exp(−(x/σ)²) is e^−25 at x=0.5 and gives
+                # ~zero pull at the errors the policy starts from.
+                #
+                # PLUS a −qmax term: the verdict is a max-joint
+                # criterion, so the worst joint is the bottleneck —
+                # but a pure mean dilutes it (fixing a 0.9→0.7 joint
+                # earns ~1/20 of polishing a 0.3→0.2 joint; observed:
+                # mean rising 0.21→0.33 while gate_qmax stayed flat).
+                # −qmax puts constant unit gradient on the bottleneck
+                # joint (whichever it is this step), while the mean
+                # keeps the other joints honest (prevents
+                # whack-a-mole drift).  Peel the worst, hold the rest.
                 kf = int(self._gate.get('frames', 4))
                 frac = float(self._gate.get('frac', 0.05))
                 hi_g = min(kf, seg['k_max'])
@@ -322,7 +326,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                 sig = 2.0 * frac
                 out['gate_qmax'] = float(q_err[_GATE_JOINT_IDX].max())
                 out['reward'] = float(np.mean(
-                    1.0 / (1.0 + (q_err[_GATE_JOINT_IDX] / sig) ** 2)))
+                    1.0 / (1.0 + (q_err[_GATE_JOINT_IDX] / sig) ** 2))
+                    - out['gate_qmax'])
                 if out['gate_qmax'] <= 2.0 * frac:
                     seg['gated'] = True
                     seg['gate_t'] = float(self._t - seg['a'])
