@@ -293,10 +293,20 @@ class StrikeTrackObserver(BaseObserverPlugin):
             if self._gate is not None and not seg['gated']:
                 # Gate verdict — per-joint pose only (P2-1): every
                 # non-ankle controlled joint must be within `frac` of
-                # its FULL range vs the gate frame (composite score is
-                # guidance, not the verdict).  joint_pos_norm is
+                # its FULL range vs the gate frame.  joint_pos_norm is
                 # (pos − mid) / half_range, so "frac of full range" is
                 # 2·frac in normalized units.
+                #
+                # Dense shaping uses the SAME semantics as the verdict —
+                # per-joint position error only (no vel/kp/hand/…):
+                # per-joint score exp(−(q_err/σ)²) with σ = 2·frac puts
+                # e^−1 at the verdict boundary, so crossing joints
+                # keep being pulled toward exact match and every joint
+                # carries its own gradient.  The composite score is
+                # kept only as a diagnostic — its vel term in
+                # particular is semantically wrong here (we want the
+                # fastest return to the ready pose, not clip-speed
+                # matching).
                 kf = int(self._gate.get('frames', 4))
                 frac = float(self._gate.get('frac', 0.05))
                 hi_g = min(kf, seg['k_max'])
@@ -308,6 +318,8 @@ class StrikeTrackObserver(BaseObserverPlugin):
                     np.asarray(live['core']['joint_pos_norm'],
                                dtype=np.float64) - ref.q_norm[k])
                 out['gate_qmax'] = float(q_err[_GATE_JOINT_IDX].max())
+                out['reward'] = float(np.mean(np.exp(
+                    -(q_err[_GATE_JOINT_IDX] / (2.0 * frac)) ** 2)))
                 if out['gate_qmax'] <= 2.0 * frac:
                     seg['gated'] = True
                     seg['gate_t'] = float(self._t - seg['a'])
