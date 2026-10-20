@@ -300,3 +300,27 @@ GPU1）：从 `train_skill_full_mbs_ppo_20261020_104315` 的
 首 eval（u6690，64 ep 确定性）：p1 最差关键点最小误差
 jab_l 0.196 / jab_r 0.161 / heavy_l 0.339 / heavy_r 0.270 m
 （容差 3-5cm），p1 成功 0%，falls=0，quality=0.396。
+
+## 11. 变体：strike_kp_solo（单技能·从零）
+
+动机：S2→SF 谱系把"原地踏步"强先验烧进了策略，对需要蹬转发力的
+打击是干扰（heavy_r 的瓶颈恰在后腿链）；与其消除先验不如从零训。
+实现：`exp_strike_kp_solo.py`（仅继承 `CombatExperimentPPOBase`）。
+
+与 strike_kp_2phase 的差异：
+
+- **单技能**：`TARGET_SKILL="jab_r"`，两台机器人都训练它。
+- **从零初始化**：不 resume；actor 由 `init_policy_mbs_66d.yaml`
+  全新初始化（同时丢掉了站立先验——`r_potential` 是唯一站立教师）。
+- **Warmup 冻结**：`warmup_policy_cls` 固定指向
+  `train_skill_full_mbs_ppo_20261020_104315/policy_exports/u06689`
+  （该 run 的最后一次导出），不再跟随训练导出；warmup 技能集 =
+  7 个非打击技能（4 移动 + 2 转身 + step），步数 [0,30]。
+- **平衡门控**：`r_potential` AW 1→4；`r_kp_p1/p2` 的逐帧 AW =
+  `4·phi²`（`ChannelData.actor_weight` 支持 (T,) 数组，框架逐帧
+  L1 归一化）——失衡帧的 strike 梯度趋零，先站稳再学打击。
+- 其余完全复用：66D obs / 21D action / 9D 命令、observer、判据
+  （mean<0.05 且 max<0.10）、轨迹切分/+1/终止、ef=0.5。
+
+风险：从零策略起初站不稳，`falls` 高、`new_best` 被 `falls<0.2`
+挡住属预期；若 r_kp_p1 均值长期不降说明 r_potential 不足以教站立。
