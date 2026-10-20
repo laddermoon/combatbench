@@ -54,11 +54,16 @@ videos/<variant>/<skill>.mp4        _src.npz 的三视图骨架视频（矢状/
 训练中由 `strike_track_observer.py` 经 `_CLIP_MAP` 按 `(eff_side, is_near)`
 解析到 clip_id，`RefClip(clip_id, clips_dir)` 加载 `.npz`；clip 第 0 帧
 是发力准备姿态（launch gate 判据帧），`clip_land_frame` 给出落地帧。
-权威 clip 目录是 `/data1/dev/combatbench_mocap/clips`，本目录是四个
-打击段的副本备份。
 
-当前训练是 extension-only：进度指针只评到落地帧，等价于 `extend/`
-档的语义；`retract/` 档为将来"打完收回"评价预留数据。
+**本目录是技能实验（skill_*）打击参考的 Single Source Of Truth**：
+`strike_track_observer.py` 的 `SKILL_CLIPS_DIR` 常量与
+`command_simulator._ref_clip` 均指向 `clips/full/`（与外部 mocap 库
+`/data1/dev/combatbench_mocap/clips` 中同名文件字节一致，不再依赖该
+路径）。切 clip 用 `RefClip(clip_id, clips/<variant>/)` 即可。
+
+当前训练是 extension-only：加载 `full/` 完整段，进度指针只评到落地
+帧，等价于 `extend/` 档的语义；`retract/` 档为将来"打完收回"评价
+预留数据。
 
 视频复现命令：
 

@@ -49,9 +49,17 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from pathlib import Path
+
 from envs.framework.observer_plugin import BaseObserverPlugin
 from mocap.humanoid21.robot_kin import CONTROLLED_JOINTS, joint_limits
-from mocap.humanoid21.tracking.ref_data import RefClip, DEFAULT_CLIPS_DIR
+from mocap.humanoid21.tracking.ref_data import RefClip
+
+# Single source of truth for skill-strike reference clips: in-repo
+# copy under hierarchy/assets/clips/full (byte-identical to the
+# external mocap library; extend/retract are derived views).
+SKILL_CLIPS_DIR = (Path(__file__).resolve().parents[3]
+                   / 'baseline/humanoid21/hierarchy/assets/clips/full')
 
 KP_SUBSET = ('torso', 'head', 'foot_left', 'foot_right',
              'hand_left', 'hand_right')
@@ -124,7 +132,7 @@ def _yaw_of(quat_wxyz: np.ndarray) -> float:
     return float(r.as_euler('xyz')[2])
 
 
-def _clip_meta(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR
+def _clip_meta(clip_id: str, clips_dir=SKILL_CLIPS_DIR
                ) -> Tuple[np.ndarray, int]:
     """(landing_xyz_ego, n_ctrl).  Landing = punching-hand keypoint at its
     max pelvis-relative forward extension, expressed in the reference's
@@ -161,7 +169,7 @@ _GATE_JOINT_IDX = [i for i, n in enumerate(CONTROLLED_JOINTS)
                    if 'ankle' not in n]
 
 
-def clip_land_frame(clip_id: str, clips_dir=DEFAULT_CLIPS_DIR) -> int:
+def clip_land_frame(clip_id: str, clips_dir=SKILL_CLIPS_DIR) -> int:
     """Frame index of the clip's peak hand extension — the reference
     frame the strike is held at in ``ext_only`` tracking mode."""
     if clip_id not in _LAND_FRAME:
@@ -180,7 +188,7 @@ def punch_hand_name(ref: RefClip) -> str:
 
 
 def resolve_clip(eff_side: int, target_xyz,
-                 clips_dir=DEFAULT_CLIPS_DIR) -> str:
+                 clips_dir=SKILL_CLIPS_DIR) -> str:
     """side + nearest-landing → clip_id ("近→刺拳, 远→弓步" emerges from
     the landing geometry: jab lands ~(0.44,±0.39,0.50), lunge
     ~(0.62,∓0.21,0.41) — 0.63 m apart in ego space)."""
@@ -199,7 +207,7 @@ class StrikeTrackObserver(BaseObserverPlugin):
     """Per-step strike tracking reward for one agent."""
 
     def __init__(self, agent_id: str = 'robot_a',
-                 clips_dir: str = str(DEFAULT_CLIPS_DIR),
+                 clips_dir: str = str(SKILL_CLIPS_DIR),
                  ext_only: bool = False,
                  lookahead: int = 2) -> None:
         self.agent_id = str(agent_id)

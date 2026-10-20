@@ -87,9 +87,10 @@ _REF_CACHE: Dict[str, Any] = {}
 
 def _ref_clip(clip_id: str):
     if clip_id not in _REF_CACHE:
-        from mocap.humanoid21.tracking.ref_data import (
-            RefClip, DEFAULT_CLIPS_DIR)
-        _REF_CACHE[clip_id] = RefClip(clip_id, DEFAULT_CLIPS_DIR)
+        from mocap.humanoid21.tracking.ref_data import RefClip
+        from baseline.humanoid21.hierarchy.strike_track_observer import (
+            SKILL_CLIPS_DIR)
+        _REF_CACHE[clip_id] = RefClip(clip_id, SKILL_CLIPS_DIR)
     return _REF_CACHE[clip_id]
 
 
