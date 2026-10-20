@@ -117,6 +117,11 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
     eval_episodes: int = 64
     video_eval_interval: int = 5
 
+    # --- Exploration: per-frame explore_factor on stochastic rollout
+    # (SamplingSpec → sampling_ctx; additive on the pre-sigmoid std
+    # input, range [-1,1]; eval path is deterministic and unaffected).
+    explore_factor: float = 0.5
+
     # --- PPO tuning (same recipe as skill experiments) ---
     learning_rate: float = 3e-5
     critic_learning_rate: float = 3e-4
@@ -164,7 +169,7 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
                    stochastic=True):
         from baseline.framework.rollout import Job, SamplingSpec
         rng = np.random.default_rng(base_seed)
-        sampling = SamplingSpec()
+        sampling = SamplingSpec(explore_factor=self.explore_factor)
         skills = list(SKILLS)
         weights = np.array([self.SKILL_SAMPLE_W.get(s, 1.0)
                             for s in skills])
