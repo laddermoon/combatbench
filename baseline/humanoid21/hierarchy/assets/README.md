@@ -12,6 +12,8 @@
 | heavy_r 右重拳 | `cmu_144_20_seg01` | CMU mocap 144-20 的打击段切割 |
 
 `_m` 镜像变体由同一数据经左右对称变换生成，用于对侧技能。
+**原始侧**：jab 源数据是左刺拳（jab_r 为镜像）；heavy 源数据是
+右弓步冲拳（heavy_l 为镜像）。
 
 ## 三种切法（full / extend / retract）
 
