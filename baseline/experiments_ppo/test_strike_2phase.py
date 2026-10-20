@@ -23,6 +23,9 @@ def _episode(gate=None, land=None, n=8):
     strike = {
         "in_strike": np.ones(n), "gated": gated,
         "gate_qmax": q0, "land_qmax": ql,
+        "gate_t": np.where(np.arange(n) >= gate, gate, -1)
+        if gate is not None else np.full(n, -1),
+        "foot_disp_m": 0.03 * gated,
         "r_p1_mse": -0.3 * np.ones(n),
         "r_p1_var": -0.1 * np.ones(n),
         "r_p2_mse": -0.4 * np.ones(n),
@@ -37,6 +40,7 @@ def _episode(gate=None, land=None, n=8):
         observer_outputs={"strike_track_a": strike,
                           "standing_balance_a": {"potential": np.ones(n)}},
         sampling_contexts={},
+        episode_options={"skills": {"robot_a": "jab_l"}},
     )
 
 
@@ -54,8 +58,9 @@ def test_trajectory_boundaries_and_terminal_rewards(gate, land, lengths):
         "r_potential", "r_strike_p1_mse", "r_strike_p1_var"}
     assert trajs[0].channels["r_strike_p1_mse"].reward[-1] == pytest.approx(
         0.7 if gate is not None else -0.3)
-    assert trajs[0].channels["r_strike_p1_mse"].is_terminated == (
-        gate is not None)
+    assert trajs[0].channels["r_strike_p1_mse"].is_terminated
+    assert trajs[0].channels["r_potential"].is_terminated == (
+        gate is None or gate == 7)
     if gate is not None and gate < 7:
         assert set(trajs[1].channels) == {
             "r_potential", "r_strike_p2_mse", "r_strike_p2_var",
@@ -63,10 +68,8 @@ def test_trajectory_boundaries_and_terminal_rewards(gate, land, lengths):
         assert np.array_equal(trajs[0].last_obs, trajs[1].obs[0])
         assert trajs[1].channels["r_strike_p2_mse"].reward[-1] == \
             pytest.approx(0.6 if land is not None else -0.4)
-        assert trajs[1].channels["r_strike_p2_mse"].is_terminated == (
-            land is not None)
-        assert trajs[1].channels["r_potential"].is_terminated == (
-            land is not None)
+        assert trajs[1].channels["r_strike_p2_mse"].is_terminated
+        assert trajs[1].channels["r_potential"].is_terminated
 
 
 def test_warmup_jobs_and_power_foot():
@@ -93,3 +96,14 @@ def test_warmup_jobs_and_power_foot():
     assert strike_power_foot("hdm05_3146_88_2895_127") == "foot_right"
     assert strike_power_foot("hdm05_3146_88_2895_127_m") == "foot_left"
     assert set(SKILLS) == {"jab_l", "jab_r", "heavy_l", "heavy_r"}
+
+
+def test_eval_gate_on_last_frame_and_foot_field():
+    exp = Strike2Phase()
+    last = _episode(gate=7)
+    last.observer_outputs["strike_track_a"]["gate_qmax"][7] = 0
+    info = exp.on_eval([last], update=1)["info"]
+    assert info["jab_l_ungated"] == 0
+    assert info["jab_l_gate_qmax"] == 0
+    info = exp.on_eval([_episode(gate=2)], update=2)["info"]
+    assert info["jab_l_foot"] == pytest.approx(0.03)

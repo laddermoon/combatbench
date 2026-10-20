@@ -307,8 +307,11 @@ class Strike2Phase(CombatExperimentPPOBase):
                     reward[-1] += 1.0
                 sub[nm] = ChannelData(
                     reward=reward,
-                    is_terminated=(success and (nm != "r_potential"
-                                   or a > 0)),
+                    # Each strike phase is a finite task: reaching its
+                    # target OR exhausting the 30-step budget ends it.
+                    # Only the shared balance channel continues across
+                    # an internal phase-1 -> phase-2 boundary.
+                    is_terminated=(nm != "r_potential" or a > 0 or b == T),
                     actor_weight=ch.actor_weight)
             sctx = self.extract_sampling_ctx(ep, aid, T)
             if sctx is not None:
@@ -371,7 +374,16 @@ class Strike2Phase(CombatExperimentPPOBase):
                 gq = extract_per_step_field(
                     oo, strike_key, "gate_qmax", T)
                 if gq is not None:
-                    v = np.asarray(gq[:T]); v = v[v > 0]
+                    v = np.asarray(gq[:T])
+                    gate_flags = extract_per_step_field(
+                        oo, strike_key, "gated", T)
+                    active = extract_per_step_field(
+                        oo, strike_key, "in_strike", T)
+                    if gate_flags is not None and active is not None:
+                        v = v[(np.asarray(gate_flags[:T]) < 0.5)
+                              & (np.asarray(active[:T]) > 0.5)]
+                    else:
+                        v = v[v > 0]
                     if v.size:
                         m["gate_qmax"].append(float(v.min()))
                 g = extract_per_step_field(
@@ -379,12 +391,19 @@ class Strike2Phase(CombatExperimentPPOBase):
                 if g is not None:
                     g_arr = np.asarray(g[:T])
                     gated_ep = bool(g_arr.max() > 0.5)
+                    # The successful gate frame still emits gated=0;
+                    # gate_t is latched on that frame, including T-1.
+                    gt = extract_per_step_field(
+                        oo, strike_key, "gate_t", T)
+                    if gt is not None:
+                        gated_ep = gated_ep or bool(
+                            (np.asarray(gt[:T]) >= 0).any())
                     m["ungated"].append(float(not gated_ep))
                     if gated_ep:
                         _grab("gate_t", "gate_t",
                               lambda v: v[v >= 0].min()
                               if (v >= 0).any() else None)
-                        _grab("foot", "foot",
+                        _grab("foot_disp_m", "foot",
                               lambda v: v[v > 0].max()
                               if (v > 0).any() else None)
                         lq = extract_per_step_field(

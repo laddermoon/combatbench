@@ -86,9 +86,13 @@ rollout 后，按每步去踝姿态最大归一化误差寻找首次达标帧，
   到达 landing 时通道终止（不 bootstrap），`l` 后的帧丢弃。
 - **未过门**：只保留整段 p1（无成功奖励）；已过门但未到达
   landing：p2 截至 episode 末尾，无成功奖励。
+  两种失败都耗尽固定 30 步任务预算，相关通道 `is_terminated=True`，
+  尾值为 0。不能把失败 episode 当无限继续的任务做 bootstrap。
 
 GAE 分别按两条轨迹与各自 critic 计算；每段只挂所属阶段
 的打击通道，**没有“另一个阶段 AW=0”的通道**。
+
+实现审计与失败终止修正的证据见 `STRIKE_2PHASE_AUDIT.md`。
 
 ## 6. Job 构造与采样
 
