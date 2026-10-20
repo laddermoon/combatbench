@@ -3,9 +3,10 @@
 SKILL_TRAINING_PLAN.md §7.  The strike segment is split at the
 launch gate (boundary unchanged: every non-ankle controlled joint
 within 5% of full range vs clip frame 0).  Each phase gets its own
-potential-form channels, actor-weight-masked to its own steps via
-the observer's per-step `gated` flag — the phases learn their
-objectives separately:
+potential-form channels, and the trajectory is CUT at the gate
+boundary — the first post-gate step starts a new Trajectory, so
+GAE is computed per phase and the phases learn their objectives
+separately:
 
   Phase 1 (approach → ready pose @ frame 0):
     r_strike_p1_mse  −MSE of non-ankle joint errors vs frame 0

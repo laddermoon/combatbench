@@ -167,7 +167,7 @@ actor_weight = 0——允许重心全情投入（弓步前倾甚至扑倒），"
 | `r_strike_p1_var` | −var(e_j²)：逐关节平方误差的方差——防止单个关节误差过大被均值摊薄 | 一 |
 | `r_strike_p2_mse` | 同上，目标改为**落地帧 k_max**（"出完拳"） | 二 |
 | `r_strike_p2_var` | 同上，目标改为落地帧 | 二 |
-| `r_strike_p2_foot` | −min(‖Δp_foot‖, 0.5m)：后脚世界系位移罚，锚定于过门瞬间的后脚位置 | 二 |
+| `r_strike_p2_foot` | −min(‖Δp_foot‖, 0.5m)：后脚世界系 3D 位移罚，锚定于**过门那一帧**的后脚位置（非过门后首步） | 二 |
 
 **后脚（发力脚）判定**：clip 帧 0 骨盆 ego 系下前向坐标较小的脚
 （前后差 <5cm 的近似平行站姿——jab——退化为全 clip 总位移较小的
@@ -175,10 +175,15 @@ actor_weight = 0——允许重心全情投入（弓步前倾甚至扑倒），"
 镜像 rear=左脚。脚位移用世界系 3D（抬脚/滑步都算动，原地旋转枢
 轴下脚原点近似不动，允许蹬转）。
 
-**AW 按阶段切分（rollout 后逐帧掩码）**：observer 每步发射 `gated`
-标志；阶段一通道 AW = w·in_strike·(1−gated)，阶段二通道 AW =
-w·in_strike·gated——各学各的目标，互不拿对方的梯度。过门当步仍
-计阶段一（gated 标志在 latch 前发射）。
+**按阶段拆成不同 Trajectory（rollout 后切分）**：observer 每步发射
+`gated` 标志；过门后的第一步成为**轨迹边界**——阶段一 `[0,g)` 与
+阶段二 `[g,T)` 各成一条 Trajectory，GAE 按轨迹计算，天然互不透
+传。阶段一通道只挂在轨迹一上且 `is_terminated=True`（回报在边界
+截断，不向阶段二状态 bootstrap——那些状态 phase-1 critic 从未见
+过）；阶段二通道只挂在轨迹二。r_potential/r_fall 等常驻通道两条
+轨迹都有，轨迹一末端正常 bootstrap `V(obs[g])`。从未过门的
+episode 不拆分、只挂阶段一通道。过门当步仍计阶段一（gated 标志
+在 latch 前发射）。
 
 **与旧复合分方案的关系**：`_frame_score` 复合分、单调进度指针、
 W_PROG/W_HOLD 全部保留为**指标/旧实验兼容**（frame/land_t/landed/

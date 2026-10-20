@@ -388,6 +388,7 @@ class SkillTrainMBS(BalancePure):
         }
 
         kin = self._kin(episode, agent_id, T_full)
+        strike_g = None   # first post-gate step (two-phase strikes)
 
         if kin is not None and fam in ("move", "turn", "idle"):
             xy, yaw, _h = kin
@@ -465,29 +466,34 @@ class SkillTrainMBS(BalancePure):
                                   * in_strike).astype(np.float32),
                 )
             else:
+                # Two-phase split: the first post-gate step becomes a
+                # TRAJECTORY boundary (see the split below), so GAE is
+                # computed per phase — each phase's critic never
+                # bootstraps across the gate.  AW needs only in_strike
+                # here; the phase separation is structural.
                 gat = extract_per_step_field(oo, sk, "gated", T_full)
                 gated = (np.asarray(gat[:T], dtype=np.float32)
                          if gat is not None else np.zeros(T, np.float32))
-                p1m = in_strike * (1.0 - gated)
-                p2m = in_strike * gated
-                for nm, fld, aw, m in (
+                strike_g = (int(np.argmax(gated > 0.5))
+                            if bool((gated > 0.5).any()) else None)
+                for nm, fld, aw in (
                         ("r_strike_p1_mse", "r_p1_mse",
-                         self.r_strike_p1_mse_actor_weight, p1m),
+                         self.r_strike_p1_mse_actor_weight),
                         ("r_strike_p1_var", "r_p1_var",
-                         self.r_strike_p1_var_actor_weight, p1m),
+                         self.r_strike_p1_var_actor_weight),
                         ("r_strike_p2_mse", "r_p2_mse",
-                         self.r_strike_p2_mse_actor_weight, p2m),
+                         self.r_strike_p2_mse_actor_weight),
                         ("r_strike_p2_var", "r_p2_var",
-                         self.r_strike_p2_var_actor_weight, p2m),
+                         self.r_strike_p2_var_actor_weight),
                         ("r_strike_p2_foot", "r_p2_foot",
-                         self.r_strike_p2_foot_actor_weight, p2m)):
+                         self.r_strike_p2_foot_actor_weight)):
                     arr = extract_per_step_field(oo, sk, fld, T_full)
                     rv = (np.asarray(arr[:T], dtype=np.float32)
                           if arr is not None
                           else np.zeros(T, np.float32))
                     channels[nm] = ChannelData(
                         reward=rv, is_terminated=False,
-                        actor_weight=(aw * m).astype(np.float32),
+                        actor_weight=(aw * in_strike).astype(np.float32),
                     )
 
         if fam == "idle":
@@ -508,6 +514,59 @@ class SkillTrainMBS(BalancePure):
                 actor_weight=(self._clip_aw_scale
                               * phi ** 2).astype(np.float32),
             )
+
+        # Two-phase strikes: cut the trajectory at the gate boundary.
+        # GAE is per-trajectory, so each phase gets its own return —
+        # phase-1 channels are terminated at the boundary (no
+        # bootstrap into a phase-2 state their critic never saw) and
+        # absent from phase-2 trajectories (and vice versa).
+        if strike_g is not None and 0 < strike_g < T:
+            _P1 = ("r_strike_p1_mse", "r_strike_p1_var")
+            _P2 = ("r_strike_p2_mse", "r_strike_p2_var",
+                   "r_strike_p2_foot")
+
+            def _piece(a, b, last_ob, drop, term_p1):
+                sub = {}
+                for nm, ch in channels.items():
+                    if nm in drop:
+                        continue
+                    aw = ch.actor_weight
+                    sub[nm] = ChannelData(
+                        reward=ch.reward[a:b],
+                        is_terminated=(ch.is_terminated
+                                       or (term_p1 and nm in _P1)),
+                        actor_weight=(
+                            aw[a:b] if isinstance(aw, np.ndarray)
+                            else aw),
+                    )
+                sctx = self.extract_sampling_ctx(episode, agent_id, T)
+                if sctx is not None:
+                    sctx = {k: v[a:b] for k, v in sctx.items()}
+                return Trajectory(
+                    obs=obs_all[a:b],
+                    actions=acts_all[a:b],
+                    last_obs=np.asarray(last_ob, dtype=np.float32),
+                    channels=sub,
+                    importance=1.0,
+                    sampling_ctx=sctx,
+                )
+
+            return [_piece(0, strike_g, obs_all[strike_g], _P2, True),
+                    _piece(strike_g, T, fin_obs, _P1, False)]
+
+        if self.TWO_PHASE_STRIKE and fam == "strike":
+            # Unsplit fallback: attach only the phase that actually
+            # occurred — never-gated episodes carry no phase-2
+            # channels (avoids dead channels with nonzero AW).
+            if strike_g is None:
+                drop = {"r_strike_p2_mse", "r_strike_p2_var",
+                        "r_strike_p2_foot"}
+            elif strike_g == 0:
+                drop = {"r_strike_p1_mse", "r_strike_p1_var"}
+            else:
+                drop = set()
+            for nm in drop:
+                channels.pop(nm, None)
 
         return [Trajectory(
             obs=obs_all[:T],

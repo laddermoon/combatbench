@@ -398,6 +398,13 @@ class StrikeTrackObserver(BaseObserverPlugin):
                     seg['gated'] = True
                     seg['gate_t'] = float(self._t - seg['a'])
                     seg['k_ptr'] = k
+                    # Anchor the rear (power) foot at the gate-pass
+                    # frame itself — phase-2 displacement is measured
+                    # from the ready pose, not from one step later.
+                    rear = seg.get('rear')
+                    if rear in live['p_self']:
+                        seg['foot_anchor'] = \
+                            live['p_self'][rear].copy()
                 out['gate_t'] = seg['gate_t']
                 return self._augment_tgt(ctx, seg, live, out)
             # Monotone progress tracking: advance the pointer to the
