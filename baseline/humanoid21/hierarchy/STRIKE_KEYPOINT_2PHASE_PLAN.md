@@ -270,3 +270,32 @@ p2 条件成功率（分母为进入 p2 的尝试）、两个阶段耗时、
 
 本版验证的是“从不同起手姿态到准备，再到出拳终态”。
 仅凭端点到达和后脚点位稳定，不能宣称已学到参考中间路径或发力质量。
+
+## 10. 实现与运行记录
+
+实现文件（commit `f4f37cc4`）：
+
+- `baseline/humanoid21/hierarchy/kp_kin.py`——15 关键点解析 FK
+  （复用 `robot_kin.fk_positions`，已验证 vs `mj_forward`/`xanchor`
+  误差 <1e-8）、地面校准、T1/T2 目标构建、容差与 `POWER_FOOT`
+  规则表。
+- `baseline/humanoid21/hierarchy/keypoint_track_observer.py`——
+  每步发射 `reward`(=-L_kp)、`phase`、`p1_done`、`p2_done`、
+  `kp_rms`、`kp_max_err_m`、`foot_disp_m`、`hand_err_m`；
+  首个段内 step 惰性锚定（与 StrikeTrackObserver 同惯例）。
+- `blueprints/strike_kp_env.yaml`——CommandSimulator v2 +
+  `strike_dyn_target` 不变，observer 换成 `kp_track_a/b`。
+- `baseline/experiments_ppo/exp_strike_kp_2phase.py`——仅继承
+  `CombatExperimentPPOBase`；通道 `r_potential`(AW1) /
+  `r_kp_p1`(AW4) / `r_kp_p2`(AW4)；轨迹按 `p1_done`/`p2_done`
+  首个 True 帧切分、成功帧 +1、任务通道终止。
+- `test_strike_kp_2phase.py`——8 个回归测试（切分/终止/+1、
+  warmup 约束、FK vs mj_forward、地面校准、T2 后脚锚定、
+  observer 端到端）。
+
+Run `train_strike_kp_2phase_ppo_20261020_181834`（PID 3445412，
+GPU1）：从 `train_skill_full_mbs_ppo_20261020_104315` 的
+`checkpoint_u06685.pt` 恢复 + `--no-confidence`。
+首 eval（u6690，64 ep 确定性）：p1 最差关键点最小误差
+jab_l 0.196 / jab_r 0.161 / heavy_l 0.339 / heavy_r 0.270 m
+（容差 3-5cm），p1 成功 0%，falls=0，quality=0.396。
