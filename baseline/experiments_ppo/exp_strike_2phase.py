@@ -19,11 +19,12 @@ Scheme (SKILL_TRAINING_PLAN.md §7):
              (anchored at the gate-pass frame; the power foot must not
              move while it drives the punch).
 
-Balance rails: r_potential / r_fall ride every trajectory so falls are
-still bad episodes, but their actor weight is low — the strike
-potentials already demand an upright ready/landing pose.
+Balance rail: a small dense r_potential (0.01·min(phi, 0.9)) rides every
+trajectory — while phi ≥ 0.9 it is a constant bonus that does not shape
+the strike action, and it only pulls the policy back when balance
+degrades.
 
-Channels: r_potential, r_fall, r_strike_p1_mse, r_strike_p1_var,
+Channels: r_potential, r_strike_p1_mse, r_strike_p1_var,
           r_strike_p2_mse, r_strike_p2_var, r_strike_p2_foot.
 """
 from __future__ import annotations
@@ -36,8 +37,6 @@ import numpy as np
 from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory)
 from baseline.framework.rollout import extract_per_step_field
-from baseline.humanoid21.end2end.stepping_state_machine import (
-    fall_onset_mask)
 
 from .base import CombatExperimentPPOBase
 
@@ -84,7 +83,7 @@ class Strike2Phase(CombatExperimentPPOBase):
 
     # --- Reward channels ---
     _channel_names = (
-        "r_potential", "r_fall",
+        "r_potential",
         "r_strike_p1_mse", "r_strike_p1_var",
         "r_strike_p2_mse", "r_strike_p2_var", "r_strike_p2_foot",
     )
@@ -93,9 +92,7 @@ class Strike2Phase(CombatExperimentPPOBase):
 
     # --- Reward constants ---
     per_step_phi_coef: float = 0.01
-    fall_penalty: float = 0.2
     r_potential_actor_weight: float = 1.0
-    r_fall_actor_weight: float = 1.0
     r_strike_p1_mse_actor_weight: float = 4.0
     r_strike_p1_var_actor_weight: float = 4.0
     r_strike_p2_mse_actor_weight: float = 4.0
@@ -253,11 +250,6 @@ class Strike2Phase(CombatExperimentPPOBase):
                         * np.minimum(phi, self._PHI_CAP)),
                 is_terminated=False,
                 actor_weight=float(self.r_potential_actor_weight)),
-            "r_fall": ChannelData(
-                reward=(-self.fall_penalty
-                        * fall_onset_mask(phi).astype(np.float32)),
-                is_terminated=False,
-                actor_weight=float(self.r_fall_actor_weight)),
         }
         for nm, fld, aw in (
                 ("r_strike_p1_mse", "r_p1_mse",
