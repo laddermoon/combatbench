@@ -67,8 +67,12 @@ _JNT_BODY = {jn: b for b, (_, joints) in BODY_TREE.items() for jn in joints}
 
 FOOT_SOLE_R = 0.027          # foot capsule radius (m), from the XML
 
-# Per-point success tolerance (plan §5): end-effectors (hands/feet)
-# 3 cm, everything else 5 cm.  All 15 points must pass simultaneously.
+# Success criterion (user revision): mean per-point error < 0.05 m AND
+# worst point < 0.10 m — a mean+max pair, not per-point tolerances.
+PASS_MEAN_M = 0.05
+PASS_MAX_M = 0.10
+
+# Kept for diagnostics/visualisation only — NOT the gate.
 TOL_M: Dict[str, float] = {
     n: (0.03 if n.startswith(("hand", "foot")) else 0.05)
     for n in KP_NAMES}
@@ -186,7 +190,8 @@ def kp_loss(errs: np.ndarray) -> float:
     return float(np.sum(W_KP * errs * errs) / np.sum(W_KP))
 
 
-def kp_pass(errs: np.ndarray) -> bool:
-    """Success verdict: every point within its tolerance."""
-    return bool(np.all(errs <= np.array(
-        [TOL_M[n] for n in KP_NAMES], dtype=np.float64)))
+def kp_pass(errs: np.ndarray, mean_m: float = PASS_MEAN_M,
+            max_m: float = PASS_MAX_M) -> bool:
+    """Success verdict: mean error < mean_m AND worst point < max_m."""
+    e = np.asarray(errs, dtype=np.float64)
+    return bool(e.mean() < mean_m and e.max() < max_m)

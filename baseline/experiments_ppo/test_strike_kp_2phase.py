@@ -146,6 +146,18 @@ def test_ground_align_and_p2_rear_anchor():
     assert np.allclose(t2 - base, actual - base[rear_idx])
 
 
+def test_pass_criterion_mean_and_max():
+    """晋级判据: mean<0.05 AND max<0.10 (not per-point tolerances)."""
+    ok = np.full(15, 0.04)
+    assert kp_kin.kp_pass(ok)
+    one_bad = ok.copy(); one_bad[3] = 0.09
+    assert kp_kin.kp_pass(one_bad)          # max 0.09 < 0.10
+    too_far = ok.copy(); too_far[3] = 0.11
+    assert not kp_kin.kp_pass(too_far)      # max fails
+    mean_bad = np.full(15, 0.055); mean_bad[0] = 0.0
+    assert not kp_kin.kp_pass(mean_bad)     # mean fails
+
+
 def test_observer_targets_and_success():
     """Observer end-to-end on a fake ctx: T1 anchored at first step,
     p1_done fires when live==target, T2 keeps the rear foot fixed."""

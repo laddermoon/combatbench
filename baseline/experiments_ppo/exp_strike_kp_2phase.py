@@ -327,6 +327,7 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
                     skill, {"p1": [], "p2": [], "p2_uncond": [],
                             "p1_t": [], "p2_t": [],
                             "p1_max": [], "p2_max": [],
+                            "p1_mean": [], "p2_mean": [],
                             "foot": [], "hand": []})
 
                 def _arr(field):
@@ -337,6 +338,7 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
 
                 phase = _arr("phase")
                 mx = _arr("kp_max_err_m")
+                mn = _arr("kp_mean_err_m")
                 p1f = _arr("p1_done")
                 p2f = _arr("p2_done")
                 if phase is None or mx is None or p1f is None:
@@ -348,6 +350,8 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
                 m["p1"].append(float(p1_ok))
                 if p1_mask.any():
                     m["p1_max"].append(float(mx[p1_mask].min()))
+                    if mn is not None:
+                        m["p1_mean"].append(float(mn[p1_mask].min()))
                     m["p1_t"].append(float(
                         np.flatnonzero(p1f > 0.5)[0])
                         if p1_ok else float(T))
@@ -356,6 +360,8 @@ class StrikeKp2Phase(CombatExperimentPPOBase):
                     m["p2_uncond"].append(float(p2_ok))
                     if p2_mask.any():
                         m["p2_max"].append(float(mx[p2_mask].min()))
+                        if mn is not None:
+                            m["p2_mean"].append(float(mn[p2_mask].min()))
                         t2 = np.flatnonzero(p2f > 0.5)
                         m["p2_t"].append(
                             float(t2[0]) if t2.size else float(T))

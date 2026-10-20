@@ -7,8 +7,8 @@ targets built from the resolved clip:
 
   phase 1 (ready)   — T1: clip frame-0 keypoints, ground-aligned and
       anchored to the robot's xy/yaw at the strike's first step.
-      Success: all 15 keypoints within their tolerances
-      (hands/feet 3 cm, rest 5 cm).  On that frame T2 is built.
+      Success: mean keypoint error < 0.05 m AND worst point < 0.10 m.
+      On that frame T2 is built.
   phase 2 (landing) — T2: clip landing-frame keypoints under the same
       anchor, rigidly translated so the power-foot keypoint equals the
       robot's actual power-foot position on the success frame.  The
@@ -16,9 +16,9 @@ targets built from the resolved clip:
 
 Per-step output fields: ``reward`` (current phase −L_kp), ``phase``
 (1/2, the phase the frame was scored under), ``p1_done``/``p2_done``
-(1.0 on the achieving frame), ``kp_rms``, ``kp_max_err_m``,
-``foot_disp_m`` (power foot vs its anchored target, diagnostic),
-``hand_err_m`` (punching hand), ``in_strike``.
+(1.0 on the achieving frame), ``kp_rms``, ``kp_mean_err_m``,
+``kp_max_err_m``, ``foot_disp_m`` (power foot vs its anchored target,
+diagnostic), ``hand_err_m`` (punching hand), ``in_strike``.
 """
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ import numpy as np
 from envs.framework.observer_plugin import BaseObserverPlugin
 from mocap.humanoid21.tracking.ref_data import RefClip
 
-from .kp_kin import (KP_IDX, KP_NAMES, N_KP, POWER_FOOT, TOL_M,
-                     anchored, build_p2_target, ground_align,
+from .kp_kin import (KP_IDX, KP_NAMES, N_KP, PASS_MAX_M, PASS_MEAN_M,
+                     POWER_FOOT, anchored, build_p2_target, ground_align,
                      kp_errors, kp_loss, kp_pass, live_keypoints,
                      ref_keypoints, yaw_of)
 from .strike_track_observer import (
@@ -43,13 +43,12 @@ class KeypointTrackObserver(BaseObserverPlugin):
 
     def __init__(self, agent_id: str = 'robot_a',
                  clips_dir: str = str(SKILL_CLIPS_DIR),
-                 tol_ee_m: float = 0.03,
-                 tol_mid_m: float = 0.05) -> None:
+                 pass_mean_m: float = PASS_MEAN_M,
+                 pass_max_m: float = PASS_MAX_M) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
-        self._tol = np.array(
-            [tol_ee_m if n.startswith(("hand", "foot")) else tol_mid_m
-             for n in KP_NAMES], dtype=np.float64)
+        self._pass_mean = float(pass_mean_m)
+        self._pass_max = float(pass_max_m)
         self._clips: Dict[str, RefClip] = {}
         self._segments: List[Dict[str, Any]] = []
         self._t = -1
@@ -65,7 +64,8 @@ class KeypointTrackObserver(BaseObserverPlugin):
     def _zero() -> Dict[str, float]:
         return {'reward': 0.0, 'phase': 0.0,
                 'p1_done': 0.0, 'p2_done': 0.0,
-                'kp_rms': 0.0, 'kp_max_err_m': 0.0,
+                'kp_rms': 0.0, 'kp_mean_err_m': 0.0,
+                'kp_max_err_m': 0.0,
                 'foot_disp_m': 0.0, 'hand_err_m': 0.0,
                 'in_strike': 0.0}
 
@@ -135,7 +135,7 @@ class KeypointTrackObserver(BaseObserverPlugin):
         if seg['phase'] == 1:
             errs = kp_errors(live, seg['T1'])
             out['phase'] = 1.0
-            if np.all(errs <= self._tol):
+            if kp_pass(errs, self._pass_mean, self._pass_max):
                 out['p1_done'] = 1.0
                 seg['phase'] = 2
                 # T2: landing pose rigidly translated so the power-foot
@@ -151,11 +151,12 @@ class KeypointTrackObserver(BaseObserverPlugin):
             out['foot_disp_m'] = float(
                 np.linalg.norm(live[seg['rear_idx']]
                                - seg['rear_anchor']))
-            if np.all(errs <= self._tol):
+            if kp_pass(errs, self._pass_mean, self._pass_max):
                 out['p2_done'] = 1.0
 
         out['reward'] = -kp_loss(errs)
         out['kp_rms'] = float(np.sqrt(np.mean(errs * errs)))
+        out['kp_mean_err_m'] = float(errs.mean())
         out['kp_max_err_m'] = float(errs.max())
         out['hand_err_m'] = float(errs[seg['hand_idx']])
         return out
