@@ -41,6 +41,7 @@ CMU_LEG_UNITS = 6.75
 # lfoot/rfoot 是贴地脚跟标记；踝目标抬到标记上方（踝高 ~10cm =
 # 0.85 cmu 等效单位——此处 pts 已被 k 缩放，单位与 cmu 等效）
 ANKLE_UP_UNITS = 0.85
+SRC_FPS = 120.0      # hdm05 marker frame rate
 
 # lhumerus/rhumerus 是三角肌中点标记（肩关节的下外侧）：手-肩目标向量
 # 系统性偏高。真肩 ≈ 标记沿 clavicle 方向回移 30%
@@ -171,8 +172,12 @@ def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
             j, d, F = mirror_frame(j, d, F)
         return j, d, F
 
+    src_feet = {n: np.zeros((T, 3)) for n in
+                ("lfoot", "ltoes", "rfoot", "rtoes")}
     for t in range(T):
         j, d, F = _inputs(t)
+        src_feet["lfoot"][t] = j["lfoot"]; src_feet["rfoot"][t] = j["rfoot"]
+        src_feet["ltoes"][t] = d["ltoes"]; src_feet["rtoes"][t] = d["rtoes"]
         r = rt.retarget_frame(j, d, F)
         rpos[t] = r.root_pos; rquat[t] = r.root_quat_wxyz
         for i, n in enumerate(CONTROLLED_JOINTS):
@@ -199,14 +204,17 @@ def retarget_hdm05_segment(seg: HdmSegment, mirror: bool = False,
             for kk in res_keys:
                 resid[kk][t] = r.residuals[kk]
 
-    # 落地：统一 z 平移使最低脚掌 ~0
-    sole_min = np.inf
-    for t in range(0, T, 4):
-        qvec = rt.fk.qvec(rpos[t], rquat[t],
-                          dict(zip(CONTROLLED_JOINTS, qang[t])))
-        pos, _ = rt.fk.forward(qvec)
-        sole = min(pos["foot_left"][2], pos["foot_right"][2]) - 0.027
-        sole_min = min(sole_min, sole)
-    rpos[:, 2] -= sole_min - 0.005
-    return {"root_pos": rpos, "root_quat": rquat, "joint_angles": qang,
-            "residuals": resid, "hdm05_scale_factor": k}
+    # 接触感知落地：真实脚底胶囊最低点（含脚姿态）逐帧锚定 +
+    # 其余接触脚 IK 贴地修复
+    from .export_library import _contacts
+    from .grounding import ground_pass
+    swz = np.array([0, 2, 1])     # hdm05 coords y-up -> height at [:,2]
+    contacts = np.stack([
+        _contacts(src_feet["lfoot"][:, swz], src_feet["ltoes"][:, swz],
+                  1.0 / SRC_FPS),
+        _contacts(src_feet["rfoot"][:, swz], src_feet["rtoes"][:, swz],
+                  1.0 / SRC_FPS)], 1)
+    out = ground_pass(rt.fk, qang, rpos, rquat, contacts=contacts)
+    return {"root_pos": out["root_pos"], "root_quat": rquat,
+            "joint_angles": out["joint_angles"], "residuals": resid,
+            "hdm05_scale_factor": k, "ground_report": out["report"]}
