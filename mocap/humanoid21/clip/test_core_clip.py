@@ -114,6 +114,30 @@ def test_norm_params_match_sim():
     sim.close()
 
 
+def test_ground_check_and_fix():
+    """Sink a converted clip by 5cm: checker must flag it, fixer must cure it."""
+    from envs.humanoid21.simulator import Humanoid21Simulator
+    from mocap.humanoid21.clip.check import ground_report
+    from mocap.humanoid21.clip.fix import fix_ground_penetration
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref)
+    clip.states["root_pos"][:, 2] -= 0.05   # artificial sink
+    sim = Humanoid21Simulator()
+    rep = ground_report(clip, sim=sim)
+    assert rep.max_penetration > 0.04
+    assert len(rep.bad_frames) == clip.T
+    fixed = fix_ground_penetration(clip, sim=sim)
+    rep2 = ground_report(fixed, sim=sim)
+    assert rep2.max_penetration <= 0.0025
+    # only root z changed; joints/vel untouched
+    for f in ("joint_pos_norm", "joint_vel_norm",
+              "root_vel_local", "root_angular_vel_local"):
+        assert np.allclose(fixed.states[f], clip.states[f])
+    assert fixed.meta["source"]["type"] == "fix_ground_penetration"
+    sim.close()
+
+
 def test_recorder_replay_consistency():
     """Record states from a sim, write them back, verify round-trip."""
     from envs.humanoid21.simulator import Humanoid21Simulator

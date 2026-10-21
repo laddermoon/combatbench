@@ -99,3 +99,9 @@ action；转换自 RefClip 时是该帧参考关节角的归一化 PD 目标。
 - `convert.refclip_to_coreclip(ref, start, end)` —— 现有 mocap → CoreClip。
 - `CoreClipRecorder.record_sim(sim, action)` —— 运行中录制。
 - `python -m mocap.humanoid21.clip.play --clip x.npz --out x.mp4` —— MP4。
+- `python -m mocap.humanoid21.clip.check --clip x.npz` —— 脚部触地
+  穿透报告（每帧最低脚点 + solver 接触穿透对照）。
+- `python -m mocap.humanoid21.clip.fix --clip x.npz` —— root-lift
+  自动修复穿透（`--mode lowest|constant`），修复结果带
+  `source.type="fix_ground_penetration"` 溯源；仅抬 root_z，
+  不改关节/速度，脚部仍可能虚浮（源数据腿不一致时需 IK 修复）。
