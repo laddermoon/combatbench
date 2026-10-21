@@ -1,0 +1,61 @@
+# Single-phase keypoint landing env (66-dim) — for exp_strike_kp_land.
+#
+# Same simulator/observation contract as strike_kp_env (CommandSimulator
+# v2, 57 body + 9 cmd dims, strike_dyn_target replay).  The keypoint
+# observer runs in land_only mode: the ready-pose phase is skipped and
+# every frame is scored against the landing-pose target (power foot
+# pinned at its actual position on the first step).
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 60
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    strike_dyn_target: true        # obs target replays ref hand path
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.warmup_stepping:WarmupSteppingPlugin"
+    config:
+      target_robots: "both"
+      action_steps: 0
+      phy_steps_per_action: 25
+      body_dim: 57
+      cmd_dim: 9
+      sample_actions: true
+
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  kp_track_a:
+    cls: "baseline.humanoid21.hierarchy.keypoint_track_observer:KeypointTrackObserver"
+    config:
+      agent_id: "robot_a"
+      land_only: true
+  kp_track_b:
+    cls: "baseline.humanoid21.hierarchy.keypoint_track_observer:KeypointTrackObserver"
+    config:
+      agent_id: "robot_b"
+      land_only: true

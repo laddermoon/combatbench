@@ -44,11 +44,16 @@ class KeypointTrackObserver(BaseObserverPlugin):
     def __init__(self, agent_id: str = 'robot_a',
                  clips_dir: str = str(SKILL_CLIPS_DIR),
                  pass_mean_m: float = PASS_MEAN_M,
-                 pass_max_m: float = PASS_MAX_M) -> None:
+                 pass_max_m: float = PASS_MAX_M,
+                 land_only: bool = False) -> None:
         self.agent_id = str(agent_id)
         self._clips_dir = clips_dir
         self._pass_mean = float(pass_mean_m)
         self._pass_max = float(pass_max_m)
+        # land_only=True: skip the frame-0 (ready) phase entirely —
+        # the episode target is T2 from the start, with the power-foot
+        # keypoint anchored to its actual position on the first step.
+        self._land_only = bool(land_only)
         self._clips: Dict[str, RefClip] = {}
         self._segments: List[Dict[str, Any]] = []
         self._t = -1
@@ -82,7 +87,8 @@ class KeypointTrackObserver(BaseObserverPlugin):
         for seg in sched:
             n = int(seg[0])
             row: Dict[str, Any] = dict(a=t, b=t + n, ref=None,
-                                       phase=1, T1=None, T2=None)
+                                       phase=1, T1=None, T2=None,
+                                       anchor=None)
             if len(seg) > 6 and int(round(seg[5])) == +1:
                 side = int(round(seg[6]))
                 cid = clip_ov or resolve_clip(
@@ -125,12 +131,22 @@ class KeypointTrackObserver(BaseObserverPlugin):
         root_rot = np.asarray(core['root_rot'], dtype=np.float64)
 
         # Lazy anchor on the first step inside the segment (same
-        # convention as StrikeTrackObserver): T1 is frozen here.
-        if seg['T1'] is None:
+        # convention as StrikeTrackObserver): phase targets freeze here.
+        if seg['anchor'] is None:
             yaw = yaw_of(root_rot)
             seg['anchor'] = dict(xy=root_pos[:2].copy(), yaw=yaw)
-            seg['T1'] = anchored(seg['pts0'], seg['ref_xy0'],
-                                 seg['ref_yaw0'], root_pos[:2], yaw)
+            if self._land_only:
+                # Straight to the landing target: power-foot keypoint
+                # pinned to its actual position on this step.
+                seg['phase'] = 2
+                seg['T2'] = build_p2_target(
+                    seg['ptsL'], seg['ref_xy0'], seg['ref_yaw0'],
+                    root_pos[:2], yaw, seg['rear_idx'],
+                    live[seg['rear_idx']])
+                seg['rear_anchor'] = live[seg['rear_idx']].copy()
+            else:
+                seg['T1'] = anchored(seg['pts0'], seg['ref_xy0'],
+                                     seg['ref_yaw0'], root_pos[:2], yaw)
 
         if seg['phase'] == 1:
             errs = kp_errors(live, seg['T1'])
