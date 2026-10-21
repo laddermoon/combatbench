@@ -315,7 +315,7 @@ jab_l 0.196 / jab_r 0.161 / heavy_l 0.339 / heavy_r 0.270 m
 - **Warmup 冻结**：`warmup_policy_cls` 固定指向
   `train_skill_full_mbs_ppo_20261020_104315/policy_exports/u06689`
   （该 run 的最后一次导出），不再跟随训练导出；warmup 技能集 =
-  7 个非打击技能（4 移动 + 2 转身 + step），步数 [0,30]。
+  7 个非打击技能（4 移动 + 2 转身 + step），步数 [0,30]；打击预算后改为 60 步（u3650 起续训，给 p2 留窗口）。
 - **平衡门控**：`r_potential` AW 1→4；`r_kp_p1/p2` 的逐帧 AW =
   `4·phi²`（`ChannelData.actor_weight` 支持 (T,) 数组，框架逐帧
   L1 归一化）——失衡帧的 strike 梯度趋零，先站稳再学打击。

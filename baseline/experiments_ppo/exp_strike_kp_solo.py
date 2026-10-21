@@ -41,7 +41,7 @@ from .base import CombatExperimentPPOBase
 # ---------------------------------------------------------------------
 # Single target skill — the whole experiment is this one command.
 # ---------------------------------------------------------------------
-_STRIKE_STEPS = 30
+_STRIKE_STEPS = 60
 _JAB_LAND = (0.438, 0.391, 0.498)      # hdm05_3146_88_2895_127 landing
 _HEAVY_LAND = (0.622, -0.213, 0.413)   # cmu_144_20_m_seg01 landing
 SKILLS: Dict[str, Dict[str, Any]] = {
@@ -182,7 +182,7 @@ class StrikeKpSolo(CombatExperimentPPOBase):
 
     # ------------------------------------------------------------------
     # Jobs: non-strike warmup (0-30 steps, frozen SF policy) + the
-    # single 30-step target strike on both robots.
+    # single _STRIKE_STEPS-step target strike on both robots.
     # ------------------------------------------------------------------
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,

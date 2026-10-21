@@ -107,7 +107,7 @@ def test_warmup_jobs_single_skill_frozen_policy():
             assert w["skill"] in _WARMUP_SKILLS
             assert w["skill"] not in SKILLS       # no strike warmup
             assert 0 <= w["steps"] <= _WARMUP_MAX_STEPS
-            assert opts["move_schedule"][rid][0][0] == 30
+            assert opts["move_schedule"][rid][0][0] == _STRIKE_STEPS
             steps.add(w["steps"])
     assert 0 in steps and _WARMUP_MAX_STEPS in steps
     assert set(_WARMUP_SKILLS) == {
