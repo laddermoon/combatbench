@@ -86,22 +86,43 @@ action；转换自 RefClip 时是该帧参考关节角的归一化 PD 目标。
 
 ## 6. 回放语义（重要）
 
-`play.py` 是**运动学回放**：逐帧 `set_core_state` 覆写状态后渲染。
+`play` 是**运动学回放**：逐帧 `set_core_state` 覆写状态后渲染。
 它展示记录下来的运动外观，**不代表该运动可被机器人通过
-动作指令执行**。可执行性验证（动作求解、负载评估）属于第二阶段，
-不在本格式语义范围内。
+动作指令执行**。可执行性验证见 `check` 的 `ref_action` 回放节。
 
-## 7. 工具 API
+## 7. 统一 CLI
+
+所有 clip 操作经单一入口（`clip/cli.py` + `clip/__main__.py`）：
+
+```
+PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
+  check    --clip x.npz [--only basic,velocity,actuator,ref_action]
+           [--robot robot_a] [--json out.json]
+  play     --clip x.npz --out x.mp4 [--fps 20 --slow 2 --burn-frame]
+  fix      --clip x.npz [--mode lowest|constant --margin .002]
+  convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
+  info     --clip x.npz
+```
+
+`check` 四节（`--only` 可选子集），每节输出
+`PASS/WARN/FAIL/SKIP` + findings + metrics + 修复建议命令：
+
+| 节 | 内容 |
+|---|---|
+| `basic` | 格式校验；脚部穿地（胶囊最低点 + solver 穿透）；全身 geom 穿地；同机器人自碰撞；非脚 geom 触地；躯干倾倒 |
+| `velocity` | 记录速度 vs 20Hz 位置差分反推速度（关节 norm、root 线/角速度）；**加速度接缝**（逐帧独立编辑检测）；首尾帧速度信息性报告。注：120Hz 源下采样 clip 的记录速度携带真实高频信息，残差属混叠而非错误——硬错误仅"记录速度与位置趋势反向" |
+| `actuator` | `mj_rne` 逆动力学需求筛查（忽略接触，支撑腿为上界）；逐关节力矩利用率 vs `gear×ctrlrange`；反推 PD 指令是否越界 [-1,1]。**仅筛查，非可执行性证明** |
+| `ref_action` | 独立节：把记录的 action 序列顺向灌入物理回放（逐 50ms），对比下一帧目标状态；报告跟踪误差、发散帧、跌倒帧。无 `ref_action` 时报 SKIP。**这是唯一的真可执行性测试** |
+
+## 8. 工具 API
 
 - `CoreClip.load/save`、`clip.state(k)`（CoreState dict）、
   `clip.state_at(t)`（lerp + slerp 连续采样）、`clip.slice(k0,k1)`、
   `CoreClip.from_states(list_of_core_states)`。
 - `convert.refclip_to_coreclip(ref, start, end)` —— 现有 mocap → CoreClip。
 - `CoreClipRecorder.record_sim(sim, action)` —— 运行中录制。
-- `python -m mocap.humanoid21.clip.play --clip x.npz --out x.mp4` —— MP4。
-- `python -m mocap.humanoid21.clip.check --clip x.npz` —— 脚部触地
-  穿透报告（每帧最低脚点 + solver 接触穿透对照）。
-- `python -m mocap.humanoid21.clip.fix --clip x.npz` —— root-lift
-  自动修复穿透（`--mode lowest|constant`），修复结果带
-  `source.type="fix_ground_penetration"` 溯源；仅抬 root_z，
-  不改关节/速度，脚部仍可能虚浮（源数据腿不一致时需 IK 修复）。
+- `checks.run_checks(clip)` —— 程序化检查入口（返回 `SectionResult` dict）。
+- `fix.fix_ground_penetration(clip)` —— root-lift 穿透修复，
+  修复结果带 `source.type="fix_ground_penetration"` 溯源；仅抬
+  root_z，不改关节/速度，脚部仍可能虚浮（源数据腿不一致时需
+  IK 修复）。

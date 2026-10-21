@@ -7,13 +7,12 @@ can actually produce this motion with actions is a separate question
 (Phase-2 verification work).
 
 Usage:
-    PYTHONPATH=. python3 -m mocap.humanoid21.clip.play \
+    PYTHONPATH=. python3 -m mocap.humanoid21.clip play \
         --clip <id>.npz --out /data1/dev/replay/x.mp4 [--fps 20]
         [--slow 4] [--burn-frame] [--distance 6.0]
 """
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -93,26 +92,3 @@ def render(clip: CoreClip, out, fps: float = CONTROL_FPS,
     return Path(out)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="CoreClip kinematic replay -> mp4")
-    ap.add_argument("--clip", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--fps", type=float, default=CONTROL_FPS)
-    ap.add_argument("--slow", type=float, default=1.0,
-                    help="slow-motion divisor (4 = quarter speed)")
-    ap.add_argument("--burn-frame", action="store_true")
-    ap.add_argument("--distance", type=float, default=6.0)
-    ap.add_argument("--robot", default="robot_a",
-                    choices=("robot_a", "robot_b"))
-    args = ap.parse_args()
-
-    clip = CoreClip.load(args.clip)
-    print(f"[play] {clip} — kinematic replay "
-          f"(state-overwrite, NOT a physical-execution check)")
-    render(clip, args.out, fps=args.fps, slow=args.slow,
-           burn_frame=args.burn_frame, distance=args.distance,
-           robot=args.robot)
-
-
-if __name__ == "__main__":
-    main()

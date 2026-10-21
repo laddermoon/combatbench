@@ -7,12 +7,10 @@ optionally, solver-level contact penetration vs the ground plane).
 This is a GEOMETRIC check on recorded states — it says nothing about
 whether the motion is dynamically executable.
 
-Usage:
-    PYTHONPATH=. python3 -m mocap.humanoid21.clip.check --clip x.npz
+Used by the unified CLI: `python3 -m mocap.humanoid21.clip check`.
 """
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -123,24 +121,3 @@ def ground_report(clip: CoreClip, robot: str = "robot_a",
                         np.clip(-min_z, 0, None), cpen, per_geom)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="CoreClip foot ground-penetration report")
-    ap.add_argument("--clip", required=True)
-    ap.add_argument("--robot", default="robot_a")
-    ap.add_argument("--verbose", action="store_true",
-                    help="print per-frame foot heights")
-    args = ap.parse_args()
-    clip = CoreClip.load(args.clip)
-    rep = ground_report(clip, args.robot)
-    print(rep.summary())
-    if args.verbose:
-        for k in range(clip.T):
-            detail = "  ".join(
-                f"{n.split('_a')[0].split('_b')[0]}={rep.per_geom[n][k]:+.3f}"
-                for n in rep.per_geom)
-            print(f"  k={k:3d}  {detail}")
-
-
-if __name__ == "__main__":
-    main()

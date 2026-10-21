@@ -158,3 +158,58 @@ def test_recorder_replay_consistency():
         for f in CORE_FIELDS:
             assert np.allclose(got[f], clip.states[f][k], atol=1e-6)
     sim.close()
+
+
+def test_check_velocity_detects_seam():
+    """A clip with a hand-edited pose jump must be flagged by the
+    velocity section (sign disagreement and/or accel seam)."""
+    from mocap.humanoid21.clip.checks import check_velocity
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref)
+    T = clip.T
+    # introduce a per-frame independent edit: jump joint 5 at k=5 only
+    clip.states["joint_pos_norm"][5, 5] = np.clip(
+        clip.states["joint_pos_norm"][5, 5] + 0.6, -1, 1)
+    r = check_velocity(clip)
+    assert r.status in ("WARN", "FAIL")
+    seams = r.metrics["accel_seam_frames"]
+    assert any(abs(k - 5) <= 1 for k in seams) or \
+        r.metrics["vel_sign_disagreements"] > 0 or \
+        r.metrics["joint_vel_res_max"] > 0.8
+
+
+def test_check_actuator_screen_fields():
+    """Actuator screen returns finite utilization metrics."""
+    from envs.humanoid21.simulator import Humanoid21Simulator
+    from mocap.humanoid21.clip.checks import check_actuator
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref, start=2, end=8)
+    sim = Humanoid21Simulator()
+    r = check_actuator(clip, "robot_a", sim)
+    sim.close()
+    m = r.metrics
+    assert "joint_util_max_pct" in m
+    assert all(np.isfinite(v) for v in m["joint_util_max_pct"].values())
+    assert m["root_wrench_force_max"] >= 0
+
+
+def test_check_ref_action_replay():
+    """ref_action replay produces tracking metrics; a garbage action
+    sequence must fail."""
+    from envs.humanoid21.simulator import Humanoid21Simulator
+    from mocap.humanoid21.clip.checks import check_ref_action
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref, start=2, end=8)
+    sim = Humanoid21Simulator()
+    r = check_ref_action(clip, "robot_a", sim)
+    assert r.status in ("PASS", "WARN", "FAIL")
+    assert np.isfinite(r.metrics["joint_err_mean_max"])
+    # garbage actions -> should diverge or fall
+    clip2 = refclip_to_coreclip(ref, start=2, end=8)
+    clip2.ref_action[:] = 1.0
+    r2 = check_ref_action(clip2, "robot_a", sim)
+    assert r2.status == "FAIL"
+    sim.close()

@@ -14,13 +14,12 @@ LIMITS of this repair (documented in the output meta):
   * Nothing here proves dynamic executability — the fixed clip is
     still only a kinematic reference.
 
-Usage:
-    PYTHONPATH=. python3 -m mocap.humanoid21.clip.fix \
+Usage (unified CLI):
+    PYTHONPATH=. python3 -m mocap.humanoid21.clip fix \
         --clip x.npz [--out x_fixed.npz] [--mode lowest|constant]
 """
 from __future__ import annotations
 
-import argparse
 from typing import Optional
 
 import numpy as np
@@ -78,29 +77,3 @@ def fix_ground_penetration(clip: CoreClip, robot: str = "robot_a",
                     else clip.ref_action.copy())
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Lift clip root so feet do not sink below ground")
-    ap.add_argument("--clip", required=True)
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--robot", default="robot_a")
-    ap.add_argument("--mode", default="lowest",
-                    choices=("lowest", "constant"))
-    ap.add_argument("--margin", type=float, default=0.002,
-                    help="target lowest-foot height above ground (m)")
-    ap.add_argument("--smooth", type=int, default=3)
-    args = ap.parse_args()
-
-    clip = CoreClip.load(args.clip)
-    fixed = fix_ground_penetration(clip, robot=args.robot,
-                                   mode=args.mode, margin=args.margin,
-                                   smooth=args.smooth)
-    rep = ground_report(fixed, robot=args.robot)
-    print(rep.summary())
-    out = args.out or str(args.clip).replace(".npz", "_groundfix.npz")
-    fixed.save(out)
-    print(f"[fix] saved {out}")
-
-
-if __name__ == "__main__":
-    main()
