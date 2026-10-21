@@ -25,7 +25,7 @@ from typing import Optional
 import numpy as np
 
 from .check import ground_report
-from .core_clip import CORE_FIELDS, CoreClip
+from .core_clip import CORE_FIELDS, CoreClip, record_lineage
 
 
 def _smooth(x: np.ndarray, w: int) -> np.ndarray:
@@ -72,6 +72,9 @@ def fix_ground_penetration(clip: CoreClip, robot: str = "robot_a",
                 "still float if source legs are inconsistent; "
                 "root_vel_local.z unchanged",
     }
+    meta = record_lineage(meta, "fix_ground", parent=clip.clip_id,
+                          mode=mode, margin_m=margin,
+                          max_offset_m=float(offsets.max()))
     return CoreClip(states, meta,
                     None if clip.ref_action is None
                     else clip.ref_action.copy())

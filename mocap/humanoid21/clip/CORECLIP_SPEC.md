@@ -55,10 +55,20 @@ meta 中只记 `joint_space="humanoid21"` 标识。
     "ctrl_range": [0, 61],
     "agent_id": "robot_a"               // rollout 时
   },
+  "lineage": [                          // 血缘链（可选，追加式）
+    {"op": "convert", "parent": "cmu_144_20_seg01",
+     "params": {...}, "ts": "iso8601"},
+    {"op": "rederive_vel", "parent": "jab_r_core", "params": {...}}
+    // op: convert | slice | fix_ground | rederive_vel | record | edit
+  ],
   "ref_action_semantics": "pd_target_norm",  // 有 ref_action 时必填
   "notes": "free text"
 }
 ```
+
+`source` 记录最近一次直接来源；`lineage` 是完整血缘链——
+每个派生操作（convert/slice/fix/rederive_vel/record/edit）经由
+`record_lineage()` 追加一跳，携带 op、parent、params、时间戳。
 
 **`ref_action` 因果语义**：`ref_action[k]` 是在状态 k 发出的指令，
 目标是产生状态 k+1。录制自策略 rollout 时是当时实际发出的
@@ -100,6 +110,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
            [--robot robot_a] [--json out.json]
   play     --clip x.npz --out x.mp4 [--fps 20 --slow 2 --burn-frame]
   fix      --clip x.npz [--mode lowest|constant --margin .002]
+  rederive-vel --clip x.npz [--out y.npz --zero-endpoints]
   convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
   info     --clip x.npz
 ```

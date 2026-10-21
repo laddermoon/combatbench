@@ -213,3 +213,33 @@ def test_check_ref_action_replay():
     r2 = check_ref_action(clip2, "robot_a", sim)
     assert r2.status == "FAIL"
     sim.close()
+
+
+def test_rederive_vel_and_lineage():
+    """rederive-vel makes interior velocities exactly consistent with
+    poses, keeps endpoints, and records lineage."""
+    from mocap.humanoid21.clip.checks import check_velocity
+    from mocap.humanoid21.clip.rederive import rederive_velocities
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref)
+    new = rederive_velocities(clip)
+    assert new.meta["source"]["type"] == "rederive_vel"
+    assert new.meta["lineage"][-1]["op"] == "rederive_vel"
+    assert new.meta["lineage"][-1]["parent"] == clip.clip_id
+    # parent chain: convert hop present too
+    assert any(h["op"] == "convert" for h in new.meta["lineage"])
+    # endpoints unchanged
+    assert np.allclose(new.states["joint_vel_norm"][0],
+                       clip.states["joint_vel_norm"][0])
+    # interior residual ~0
+    r = check_velocity(new)
+    assert r.metrics["joint_vel_res_max"] < 1e-4
+    assert r.metrics["vel_sign_disagreements"] == 0
+    # poses untouched
+    assert np.allclose(new.states["joint_pos_norm"],
+                       clip.states["joint_pos_norm"])
+
+    new0 = rederive_velocities(clip, zero_endpoints=True)
+    assert np.allclose(new0.states["joint_vel_norm"][0], 0)
+    assert np.allclose(new0.states["root_vel_local"][-1], 0)

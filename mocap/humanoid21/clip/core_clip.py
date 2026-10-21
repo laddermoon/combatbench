@@ -10,6 +10,7 @@ Format and semantics: CORECLIP_SPEC.md.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -33,6 +34,24 @@ FIELD_DIMS = {"root_pos": 3, "root_rot": 4,
               "joint_pos_norm": 21, "joint_vel_norm": 21}
 
 META_REQUIRED = ("spec_version", "clip_id")
+
+
+def record_lineage(meta: Dict[str, Any], op: str,
+                   parent: Optional[str] = None,
+                   **params) -> Dict[str, Any]:
+    """Append a provenance hop to meta['lineage'] (append-only list).
+
+    Every derived clip records who it came from and how:
+        {"op": "convert|slice|fix_ground|rederive_vel|record|edit",
+         "parent": <parent clip_id or external source id>,
+         "params": {...}, "ts": iso timestamp}
+    """
+    m = dict(meta)
+    lin = list(m.get("lineage") or [])
+    lin.append({"op": op, "parent": parent, "params": params,
+                "ts": datetime.now().isoformat(timespec="seconds")})
+    m["lineage"] = lin
+    return m
 
 # Validation tolerances
 _QUAT_TOL = 1e-3
@@ -116,6 +135,8 @@ class CoreClip:
         meta["clip_id"] = clip_id or f"{self.clip_id}_s{k0}_{k1}"
         meta["source"] = {"type": "slice", "parent": self.clip_id,
                           "frames": [k0, k1]}
+        meta = record_lineage(meta, "slice", parent=self.clip_id,
+                              frames=[k0, k1])
         ra = None if self.ref_action is None \
             else self.ref_action[k0:k1]
         return CoreClip(states, meta, ra)

@@ -59,6 +59,21 @@ def _cmd_fix(args) -> int:
     return 0
 
 
+def _cmd_rederive_vel(args) -> int:
+    from .rederive import rederive_velocities
+    clip = CoreClip.load(args.clip)
+    out = args.out or str(args.clip).replace(".npz", "_vel.npz")
+    if Path(out).resolve() == Path(args.clip).resolve():
+        print("[rederive-vel] refused: --out must differ from input",
+              file=sys.stderr)
+        return 2
+    new = rederive_velocities(clip, zero_endpoints=args.zero_endpoints)
+    new.save(out)
+    print(f"[rederive-vel] {clip.clip_id} -> {new.clip_id}; "
+          f"endpoints {'zeroed' if args.zero_endpoints else 'kept'}")
+    return 0
+
+
 def _cmd_convert(args) -> int:
     from .convert import refclip_to_coreclip
     from mocap.humanoid21.tracking.ref_data import RefClip
@@ -114,6 +129,15 @@ def main(argv=None) -> int:
     p.add_argument("--margin", type=float, default=0.002)
     p.add_argument("--smooth", type=int, default=3)
     p.set_defaults(fn=_cmd_fix)
+
+    p = sub.add_parser("rederive-vel",
+                       help="recompute velocities from pose trajectory")
+    p.add_argument("--clip", required=True)
+    p.add_argument("--out", default=None)
+    p.add_argument("--zero-endpoints", action="store_true",
+                   help="zero first/last frame velocities "
+                        "(default keeps recorded values)")
+    p.set_defaults(fn=_cmd_rederive_vel)
 
     p = sub.add_parser("convert", help="RefClip npz -> CoreClip")
     p.add_argument("--ref-id", required=True)

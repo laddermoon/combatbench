@@ -17,6 +17,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <command> [args]
 | `check` | **统一检查**：basic / velocity / actuator / ref_action |
 | `play` | 运动学回放渲染 MP4（状态覆写，非物理执行） |
 | `fix` | root-lift 穿地自动修复 |
+| `rederive-vel` | 从姿态轨迹重算速度场 |
 | `convert` | 既有 retarget RefClip npz → CoreClip |
 
 ---
@@ -110,7 +111,24 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip fix --clip x.npz \
   相同路径会被拒绝（退出码 2）
 - 只改 `root_pos.z`；meta 记录 `fix_ground_penetration` 溯源
 - **局限**：治"沉"不治"浮"——源数据双脚不共面时另一只脚仍虚浮；
-  `root_vel_local.z` 不更新
+  `root_vel_local.z` 不更新（修完后可用 `rederive-vel` 补速度一致性）
+
+## `rederive-vel` —— 从姿态重算速度
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip rederive-vel \
+    --clip x.npz [--out x_vel.npz] [--zero-endpoints]
+```
+
+- 姿态为第一性：内部帧用中心差分从姿态轨迹重算
+  `joint_vel_norm` / `root_vel_local` / `root_angular_vel_local`，
+  保证记录速度与存储姿态严格一致（`check` velocity 节归零）
+- **首尾帧默认保留记录值**（携带 clip 衔接语义）；
+  `--zero-endpoints` 强制清零（"从静止到静止"片段）
+- 绝不原地覆盖；默认输出 `<name>_vel.npz`
+- **注意**：refclip 转换 clip 的记录速度来自 120Hz 源，比 20Hz
+  差分更精确——对未编辑过的转换 clip 做重导出是降级而非修复；
+  适用场景是姿态被修改后（groundfix、手工编辑）
 
 ## `convert` —— retarget clip 转换
 
@@ -123,10 +141,25 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip convert \
 
 ---
 
+## 血缘（lineage）
+
+每个派生 clip 的 `meta["lineage"]` 是按序追加的溯源记录：
+
+```json
+"lineage": [
+  {"op": "convert", "parent": "cmu_144_20_seg01", ...},
+  {"op": "fix_ground", "parent": "...", "params": {...}, "ts": "..."},
+  {"op": "rederive_vel", "parent": "...", "params": {...}, "ts": "..."}
+]
+```
+
+`convert` / `slice` / `fix` / `rederive-vel` / `record` 都会自动追加。
+`meta["source"]` 保留最近一次的直接来源；`lineage` 是完整链。
+
 ## 已知边界
 
-- 修复命令目前只有 `fix`（root-lift）；`check` 建议里的
-  `clip rederive-vel`（速度重生成）**尚未实现**，属下一阶段。
+- 修复命令：`fix`（root-lift 穿地）、`rederive-vel`（速度重算）。
+  其余修复项（IK 姿态、时序平滑）未实现。
 - `basic` 检查运行仿真状态设置但不做物理步进，无需 EGL；
   `play` 需要 EGL。
 - 检查只读，不修改输入 clip。

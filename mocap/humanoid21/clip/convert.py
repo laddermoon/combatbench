@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 from scipy.spatial.transform import Rotation as _R
 
-from .core_clip import CoreClip, SPEC_VERSION
+from .core_clip import CoreClip, SPEC_VERSION, record_lineage
 
 
 def _w_to_local(q_wxyz: np.ndarray, v_world: np.ndarray) -> np.ndarray:
@@ -81,6 +81,8 @@ def refclip_to_coreclip(ref, clip_id: Optional[str] = None,
     }
     if meta_extra:
         meta.update(meta_extra)
+    meta = record_lineage(meta, "convert", parent=ref.clip_id,
+                          ctrl_range=[k0, k1])
     ra = qn.astype(np.float32) if with_ref_action else None
     if ra is not None:
         meta["ref_action_semantics"] = "pd_target_norm"

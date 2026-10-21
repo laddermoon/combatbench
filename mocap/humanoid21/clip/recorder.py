@@ -60,6 +60,8 @@ class CoreClipRecorder:
         meta.update(self._meta_extra)
         if meta_extra:
             meta.update(meta_extra)
+        from .core_clip import record_lineage
+        meta = record_lineage(meta, "record", parent=self.agent_id)
         ra = None
         if with_actions and self._actions:
             if len(self._actions) != len(self._states):

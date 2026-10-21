@@ -228,6 +228,9 @@ def check_velocity(clip: CoreClip) -> SectionResult:
     ra_res = np.linalg.norm(ra_impl - ra[1:-1], axis=1)
 
     # acceleration seams (joint velocity jumps)
+    # TODO: add a dedicated pose-smoothness metric — jerk outliers on
+    # joint_pos itself (independent of recorded velocity) would catch
+    # noisy poses before rederive-vel amplifies them.
     ja = (jv[1:] - jv[:-1]) / DT                 # (T-1,21)
     ja_mag = np.abs(ja).max(axis=1)
     p95 = np.percentile(ja_mag, 95)
@@ -264,7 +267,8 @@ def check_velocity(clip: CoreClip) -> SectionResult:
               f"{sign_dis} (frame,joint) slots have recorded velocity "
               f"opposing the position trajectory (worst k={jmax_k} "
               f"{jn})", jmax_k,
-              fix="clip rederive-vel (not yet implemented)")
+              fix="clip rederive-vel --clip <file> "
+                  "--out <file>_vel.npz")
     elif jv_res.max() > 0.8:
         r.add("WARN",
               f"joint velocity residual {jv_res.max():.2f} norm/s at "
