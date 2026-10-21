@@ -101,6 +101,42 @@ def _cmd_rederive_action(args) -> int:
     return 0
 
 
+def _cmd_reclip(args) -> int:
+    from .reclip import (guide_from_clip, interp_guide, reclip)
+    from .rederive_action import DEFAULT_WEIGHTS
+    start_clip = CoreClip.load(args.start)
+    start = start_clip.state(args.start_frame)
+    if args.via:
+        via = CoreClip.load(args.via)
+        guide = guide_from_clip(via)
+    else:
+        if not args.end:
+            print("[reclip] --end required unless --via is given",
+                  file=sys.stderr)
+            return 2
+        end_clip = CoreClip.load(args.end)
+        k = args.end_frame if args.end_frame >= 0 else end_clip.T - 1
+        guide = interp_guide(start, end_clip.state(k), args.T)
+    weights = dict(DEFAULT_WEIGHTS)
+    if args.weights:
+        for kv in args.weights.split(","):
+            k, v = kv.split("=")
+            weights[k.strip()] = float(v)
+    out = args.out or f"{start_clip.clip_id}_reclip.npz"
+    new = reclip(start, guide, robot=args.robot, weights=weights,
+                 settle=args.settle, tol_final=args.tol_final,
+                 n_samples=args.n_samples, n_iters=args.n_iters,
+                 seed=args.seed,
+                 clip_id=args.clip_id or
+                 f"{start_clip.clip_id}_reclip")
+    new.save(out)
+    m = new.meta["reclip"]
+    print(f"[reclip] T={new.T} (guide {m['T_guide']} + settle "
+          f"{m['settle_used']})  final_D={m['final_distance']:.3f}  "
+          f"-> {out}")
+    return 0
+
+
 def _cmd_convert(args) -> int:
     from .convert import refclip_to_coreclip
     from mocap.humanoid21.tracking.ref_data import RefClip
@@ -179,6 +215,29 @@ def main(argv=None) -> int:
     p.add_argument("--n-iters", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(fn=_cmd_rederive_action)
+
+    p = sub.add_parser("reclip",
+                       help="synthesize executable clip start->end")
+    p.add_argument("--start", required=True,
+                   help="npz whose frame supplies the start pose")
+    p.add_argument("--start-frame", type=int, default=0)
+    p.add_argument("--end", default=None,
+                   help="npz whose frame supplies the end pose "
+                        "(required unless --via)")
+    p.add_argument("--end-frame", type=int, default=-1)
+    p.add_argument("--via", default=None,
+                   help="guide-rail clip npz (its T defines transit)")
+    p.add_argument("--T", type=int, default=40)
+    p.add_argument("--settle", type=int, default=0)
+    p.add_argument("--tol-final", type=float, default=0.1)
+    p.add_argument("--weights", default=None)
+    p.add_argument("--n-samples", type=int, default=64)
+    p.add_argument("--n-iters", type=int, default=4)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--robot", default="robot_a")
+    p.add_argument("--out", default=None)
+    p.add_argument("--clip-id", default=None)
+    p.set_defaults(fn=_cmd_reclip)
 
     p = sub.add_parser("convert", help="RefClip npz -> CoreClip")
     p.add_argument("--ref-id", required=True)

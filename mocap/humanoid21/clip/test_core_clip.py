@@ -272,3 +272,28 @@ def test_frame_distance_and_rederive_action():
     # states untouched
     for f in CORE_FIELDS:
         assert np.allclose(new.states[f], clip.states[f])
+
+
+def test_reclip_executable_by_construction():
+    """reclip: states are simulated landings -> ref_action replay
+    must reproduce them (small CEM budget for speed)."""
+    from mocap.humanoid21.clip.reclip import interp_guide, reclip
+    from mocap.humanoid21.clip.checks import check_ref_action
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    from envs.humanoid21.simulator import Humanoid21Simulator
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref)
+    start = clip.state(2)
+    end = clip.state(6)
+    sim = Humanoid21Simulator()
+    new = reclip(start, interp_guide(start, end, 5), sim=sim,
+                 n_samples=16, n_iters=2, seed=0,
+                 clip_id="t_reclip")
+    assert new.T == 5
+    assert new.meta["ref_action_semantics"] == "executed_pd_target"
+    # executable by construction: replay error must be ~0
+    r = check_ref_action(new, "robot_a", sim)
+    assert r.metrics["joint_err_mean_max"] < 0.05
+    # velocities are measured, finite
+    assert np.isfinite(new.states["joint_vel_norm"]).all()
+    sim.close()

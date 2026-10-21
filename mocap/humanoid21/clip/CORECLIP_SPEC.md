@@ -116,6 +116,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
   fix      --clip x.npz [--mode lowest|constant --margin .002]
   rederive-vel --clip x.npz [--out y.npz --zero-endpoints]
   rederive-action --clip x.npz [--out y.npz --weights ... --tol-solved .05]
+  reclip   --start s.npz [--end e.npz|--via g.npz] --out r.npz [--T --settle]
   convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
   info     --clip x.npz
 ```

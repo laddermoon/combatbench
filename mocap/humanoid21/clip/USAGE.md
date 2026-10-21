@@ -152,6 +152,29 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip rederive-action \
   回放节验证）；实测 jab：CEM 解的回放误差 0.17 < 转换值 0.26
 - 绝不原地覆盖；约 15s / 22 帧 clip
 
+## `reclip` —— 端到端可执行 clip 合成
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
+    --start s.npz [--start-frame 0] \
+    --end e.npz [--end-frame -1] [--T 40] \
+    [--via guide.npz] [--settle 20 --tol-final 0.1] \
+    --out r.npz
+```
+
+- **导轨**：`--end` + `--T` 做姿态线性插值（slerp/lerp）；
+  `--via` 直接用已有 clip 的姿态序列当导轨（重规范化坏 clip）
+- **存的是仿真落点**：每帧 CEM 求 action → 执行 → 实际落点存入
+  clip → `sim(clip[k], ref_action[k]) == clip[k+1]` 由构造成立，
+  回放误差恒为 0；速度/接触是真实测量值
+- `--settle`：导轨走完后继续朝终态求解直到 `final_D < tol`
+- **适用边界（重要）**：短过渡（出拳/收拳/回防，~1-2s）。
+  **要求起止姿态本身可被 PD 动作保持**——retarget clip 的站姿
+  实测在物理下不可保持（持续下沉），reclip 会产出可执行 clip
+  但轨迹偏离导轨；先修姿态平衡再用
+- meta `reclip` 记录 per_frame_target_D、final_distance、
+  settle_used；导轨存不进 clip，用 `--via` 的 clip 自行保留
+
 ## `convert` —— retarget clip 转换
 
 ```bash
