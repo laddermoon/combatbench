@@ -159,21 +159,31 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
     --start s.npz [--start-frame 0] \
     --end e.npz [--end-frame -1] [--T 40] \
     [--via guide.npz] [--settle 20 --tol-final 0.1] \
+    [--method sweep|greedy|mpc] [--sweeps 3 --sigma0 0.15] \
     --out r.npz
 ```
 
 - **导轨**：`--end` + `--T` 做姿态线性插值（slerp/lerp）；
-  `--via` 直接用已有 clip 的姿态序列当导轨（重规范化坏 clip）
-- **存的是仿真落点**：每帧 CEM 求 action → 执行 → 实际落点存入
+  `--via` 直接用已有 clip 的姿态序列当导轨（重规范化坏 clip），
+  且其 `ref_action` 自动用作动作序列热启动
+- **存的是仿真落点**：执行求解出的 action，实际落点存入
   clip → `sim(clip[k], ref_action[k]) == clip[k+1]` 由构造成立，
   回放误差恒为 0；速度/接触是真实测量值
+- **method（关键）**：
+  - `sweep`（默认，推荐）：迭代射击——每个动作按"执行它之后沿
+    当前序列走完整条轨迹的总误差"评分（后缀评分），保留序列
+    整体的动态稳定结构。实测 4 条 extend 打击 clip 全部成功
+    （final_D 0.36-0.44，root_z 误差 <1cm，无摔倒）
+  - `greedy`：逐帧最近——短视，动态动作上会发散（jab 曾漂到
+    final_D 4+），仅适用近似准静态过渡
+  - `mpc`：h 步前瞻——理论更强，但序列维度上样本稀疏，实测
+    不如 sweep
 - `--settle`：导轨走完后继续朝终态求解直到 `final_D < tol`
-- **适用边界（重要）**：短过渡（出拳/收拳/回防，~1-2s）。
-  **要求起止姿态本身可被 PD 动作保持**——retarget clip 的站姿
-  实测在物理下不可保持（持续下沉），reclip 会产出可执行 clip
-  但轨迹偏离导轨；先修姿态平衡再用
+- **适用边界**：短过渡（出拳/收拳/回防，~1-3s）。仍要求动作
+  在动力学下大体可达——若导轨本身需超容量力矩，sweep 也只能
+  逼近，如实报 per-frame D
 - meta `reclip` 记录 per_frame_target_D、final_distance、
-  settle_used；导轨存不进 clip，用 `--via` 的 clip 自行保留
+  method/权重/参数
 
 ## `convert` —— retarget clip 转换
 

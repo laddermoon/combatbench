@@ -102,13 +102,15 @@ def _cmd_rederive_action(args) -> int:
 
 
 def _cmd_reclip(args) -> int:
-    from .reclip import (guide_from_clip, interp_guide, reclip)
-    from .rederive_action import DEFAULT_WEIGHTS
+    from .reclip import (RECLIP_WEIGHTS, guide_from_clip,
+                         interp_guide, reclip)
     start_clip = CoreClip.load(args.start)
     start = start_clip.state(args.start_frame)
+    guide_actions = None
     if args.via:
         via = CoreClip.load(args.via)
         guide = guide_from_clip(via)
+        guide_actions = via.ref_action
     else:
         if not args.end:
             print("[reclip] --end required unless --via is given",
@@ -117,23 +119,45 @@ def _cmd_reclip(args) -> int:
         end_clip = CoreClip.load(args.end)
         k = args.end_frame if args.end_frame >= 0 else end_clip.T - 1
         guide = interp_guide(start, end_clip.state(k), args.T)
-    weights = dict(DEFAULT_WEIGHTS)
+    weights = dict(RECLIP_WEIGHTS)
     if args.weights:
         for kv in args.weights.split(","):
             k, v = kv.split("=")
             weights[k.strip()] = float(v)
     out = args.out or f"{start_clip.clip_id}_reclip.npz"
-    new = reclip(start, guide, robot=args.robot, weights=weights,
-                 settle=args.settle, tol_final=args.tol_final,
-                 n_samples=args.n_samples, n_iters=args.n_iters,
-                 seed=args.seed,
-                 clip_id=args.clip_id or
-                 f"{start_clip.clip_id}_reclip")
+    if args.method == "sweep":
+        from .reclip import reclip_sweep
+        if guide_actions is not None:
+            init_a = guide_actions
+        else:
+            init_a = np.stack(
+                [g["joint_pos_norm"] for g in guide[1:]])
+        new = reclip_sweep(
+            start, guide, init_a, robot=args.robot,
+            weights=weights if args.weights else None,
+            sweeps=args.sweeps, n_samples=args.n_samples,
+            n_iters=args.n_iters, sigma0=args.sigma0,
+            seed=args.seed,
+            clip_id=args.clip_id or f"{start_clip.clip_id}_reclip")
+    else:
+        horizon = args.horizon
+        if args.method == "mpc" and horizon == 1:
+            horizon = 4
+        new = reclip(start, guide, robot=args.robot,
+                     weights=weights if args.weights else None,
+                     settle=args.settle, tol_final=args.tol_final,
+                     n_samples=args.n_samples, n_iters=args.n_iters,
+                     horizon=horizon, disc=args.disc,
+                     guide_actions=guide_actions,
+                     seed=args.seed,
+                     clip_id=args.clip_id or
+                     f"{start_clip.clip_id}_reclip")
     new.save(out)
     m = new.meta["reclip"]
-    print(f"[reclip] T={new.T} (guide {m['T_guide']} + settle "
-          f"{m['settle_used']})  final_D={m['final_distance']:.3f}  "
-          f"-> {out}")
+    extra = (f"settle {m['settle_used']}"
+             if "settle_used" in m else f"sweeps {m['sweeps']}")
+    print(f"[reclip:{m.get('method','greedy')}] T={new.T} "
+          f"({extra})  final_D={m['final_distance']:.3f}  -> {out}")
     return 0
 
 
@@ -233,6 +257,16 @@ def main(argv=None) -> int:
     p.add_argument("--weights", default=None)
     p.add_argument("--n-samples", type=int, default=64)
     p.add_argument("--n-iters", type=int, default=4)
+    p.add_argument("--method", default="sweep",
+                   choices=("greedy", "mpc", "sweep"),
+                   help="sweep = iterated-shooting suffix-optimal "
+                        "refinement (recommended)")
+    p.add_argument("--horizon", type=int, default=1,
+                   help="MPC receding horizon in control frames "
+                        "(1 = greedy per-frame)")
+    p.add_argument("--disc", type=float, default=0.9)
+    p.add_argument("--sweeps", type=int, default=3)
+    p.add_argument("--sigma0", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--robot", default="robot_a")
     p.add_argument("--out", default=None)

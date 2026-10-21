@@ -31,6 +31,8 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "rv": 0.2,    # |root_vel_local diff| / 2 (m/s)
     "ra": 0.1,    # |root_angvel_local diff| / 5 (rad/s)
     "reg": 0.02,  # mean(a^2) — prefer low-effort among near-ties
+    "fall": 0.0,  # penalty max(0, 1.0 - root_z): discourage sinking
+                  # (opt-in; reclip enables it)
 }
 TOL_SOLVED = 0.05
 TOL_APPROX = 0.2
@@ -64,8 +66,9 @@ def frame_distance(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray],
                                    - b["root_angular_vel_local"]) / 5.0),
         "reg": float(np.mean(np.square(action)))
         if action is not None else 0.0,
+        "fall": float(max(0.0, 1.0 - a["root_pos"][2])),
     }
-    total = sum(w[k] * comp[k] for k in comp)
+    total = sum(w.get(k, 0.0) * comp[k] for k in comp)
     return {"total": float(total), "components": comp}
 
 
@@ -122,6 +125,83 @@ def solve_frame_action(sim, robot: str,
 
     best["detail"] = eval_a(best["a"])
     best["D"] = best["detail"]["total"]
+    return best
+
+
+def solve_action_window(sim, robot: str,
+                        state_k: Dict[str, np.ndarray],
+                        targets: List[Dict[str, np.ndarray]],
+                        other_state: Optional[Dict[str, np.ndarray]],
+                        weights: Optional[Dict[str, float]] = None,
+                        init_seq: Optional[np.ndarray] = None,
+                        n_samples: int = 64, n_elite: int = 16,
+                        n_iters: int = 4, sigma0: float = 0.3,
+                        seed: int = 0,
+                        disc: float = 0.9) -> Dict[str, Any]:
+    """Receding-horizon CEM: optimize an action SEQUENCE
+    ``(horizon, 21)`` over h steps, minimizing discounted
+    ``Σ disc^t · D(state_t, target_t)``.  Returns best sequence and
+    the first-step detail.  Used by reclip's MPC mode.
+    """
+    rng = np.random.default_rng(seed)
+    other = "robot_b" if robot == "robot_a" else "robot_a"
+    zero_other = np.zeros(21, np.float32)
+    h = len(targets)
+    disc_w = np.power(disc, np.arange(h))
+
+    if init_seq is not None:
+        mu = np.asarray(init_seq, np.float64).copy()
+    else:
+        mu = np.stack([np.asarray(t["joint_pos_norm"], np.float64)
+                       for t in targets])
+    mu = np.clip(mu, -1.0, 1.0)
+    sigma = np.full((h, 21), sigma0)
+    best = {"seq": mu.copy(), "score": np.inf}
+
+    def eval_seq(seq):
+        st = {robot: state_k}
+        if other_state is not None:
+            st[other] = other_state
+        sim.set_core_state(st)
+        tot = 0.0
+        for t in range(h):
+            sim.set_action({robot: seq[t].astype(np.float32),
+                            other: zero_other})
+            for _ in range(25):
+                sim.physical_step()
+            got = sim.get_core_state()[robot]
+            tot += disc_w[t] * frame_distance(
+                got, targets[t], action=seq[t], weights=weights
+            )["total"]
+        return tot
+
+    for it in range(n_iters):
+        cand = np.clip(rng.normal(mu, sigma, (n_samples, h, 21)),
+                       -1.0, 1.0)
+        if it == 0 and init_seq is not None:
+            cand[0] = np.clip(init_seq, -1, 1)
+        scores = np.array([eval_seq(c) for c in cand])
+        elite = cand[np.argsort(scores)[:n_elite]]
+        mu = elite.mean(axis=0)
+        sigma = np.maximum(elite.std(axis=0), 0.05)
+        bi = int(np.argmin(scores))
+        if scores[bi] < best["score"]:
+            best = {"seq": cand[bi].copy(),
+                    "score": float(scores[bi])}
+
+    # detail of the first action's landing
+    st = {robot: state_k}
+    if other_state is not None:
+        st[other] = other_state
+    sim.set_core_state(st)
+    sim.set_action({robot: best["seq"][0].astype(np.float32),
+                    other: zero_other})
+    for _ in range(25):
+        sim.physical_step()
+    got = sim.get_core_state()[robot]
+    best["detail"] = frame_distance(got, targets[0],
+                                    action=best["seq"][0],
+                                    weights=weights)
     return best
 
 
