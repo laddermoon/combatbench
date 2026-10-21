@@ -67,7 +67,6 @@ W_SMOOTH = 0.15      # temporal prior: penalize per-frame joint deviation (rad)
 DQ_MAX = 0.35        # rad/frame slew limit at 120 Hz (~2400 deg/s): above any
                      # real joint speed; prevents IK basin flips from creating
                      # physically impossible discontinuities
-SRC_FPS = 120.0      # AMC source frame rate
 
 
 def _unit(v):
@@ -326,16 +325,10 @@ def retarget_clip(asf_path: str, amc_path: str,
     res_keys = ["leg_left", "leg_right", "ankle_left", "ankle_right",
                 "arm_left", "arm_right"]
     resid = {k: np.zeros(T) for k in res_keys}
-    # source ankle/toe tracks (post-mirror => robot frame; cmu coords
-    # are y-up so height = axis 1) for contact-aware grounding
-    src_feet = {n: np.zeros((T, 3)) for n in
-                ("lfoot", "ltoes", "rfoot", "rtoes")}
     for t, fr in enumerate(frames):
         j, d, F = fk_frame(skel, fr)
         if mirror:
             j, d, F = mirror_frame(j, d, F)
-        src_feet["lfoot"][t] = j["lfoot"]; src_feet["rfoot"][t] = j["rfoot"]
-        src_feet["ltoes"][t] = d["ltoes"]; src_feet["rtoes"][t] = d["rtoes"]
         r = rt.retarget_frame(j, d, F)
         rpos[t] = r.root_pos
         rquat[t] = r.root_quat_wxyz
@@ -370,22 +363,16 @@ def retarget_clip(asf_path: str, amc_path: str,
             for k in res_keys:
                 resid[k][t] = r.residuals[k]
 
-    # contact-aware grounding (true capsule sole incl. foot orientation,
-    # per-frame anchor lift + IK plant for the other contact foot)
-    from .export_library import _contacts
-    from .grounding import ground_pass
-    dt = 1.0 / SRC_FPS
-    # cmu coords are y-up; _contacts reads height at [:,2], so permute
-    # y into slot 2 (norm/speed unaffected by axis order).
-    swz = np.array([0, 2, 1])
-    contacts = np.stack([
-        _contacts(src_feet["lfoot"][:, swz], src_feet["ltoes"][:, swz], dt),
-        _contacts(src_feet["rfoot"][:, swz], src_feet["rtoes"][:, swz], dt)],
-        1)
-    out = ground_pass(rt.fk, qang, rpos, rquat, contacts=contacts)
-    return {"root_pos": out["root_pos"], "root_quat": rquat,
-            "joint_angles": out["joint_angles"], "residuals": resid,
-            "ground_report": out["report"]}
+    # grounding: uniform z shift so min sole ~ 0
+    sole_min = np.inf
+    for t in range(0, T, 4):
+        qvec = rt.fk.qvec(rpos[t], rquat[t], dict(zip(CONTROLLED_JOINTS, qang[t])))
+        pos, _ = rt.fk.forward(qvec)
+        sole = min(pos["foot_left"][2], pos["foot_right"][2]) - 0.027
+        sole_min = min(sole_min, sole)
+    rpos[:, 2] -= sole_min - 0.005
+    return {"root_pos": rpos, "root_quat": rquat, "joint_angles": qang,
+            "residuals": resid}
 
 
 if __name__ == "__main__":
