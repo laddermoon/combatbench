@@ -18,6 +18,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <command> [args]
 | `play` | 运动学回放渲染 MP4（状态覆写，非物理执行） |
 | `fix` | root-lift 穿地自动修复 |
 | `rederive-vel` | 从姿态轨迹重算速度场 |
+| `rederive-action` | 逐帧 CEM 求解最优近似 ref_action |
 | `convert` | 既有 retarget RefClip npz → CoreClip |
 
 ---
@@ -129,6 +130,27 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip rederive-vel \
 - **注意**：refclip 转换 clip 的记录速度来自 120Hz 源，比 20Hz
   差分更精确——对未编辑过的转换 clip 做重导出是降级而非修复；
   适用场景是姿态被修改后（groundfix、手工编辑）
+
+## `rederive-action` —— 最优近似 ref_action 求解
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip rederive-action \
+    --clip x.npz [--out x_act.npz] \
+    [--weights jp=1.0,jv=0.05,rp=1.0,rq=0.5,rv=0.2,ra=0.1,reg=0.02] \
+    [--tol-solved 0.05 --tol-approx 0.2] [--n-samples 64 --n-iters 4]
+```
+
+- **ref_action 语义不变**：只是参考，不保证到达下一状态
+- 逐帧从精确状态 k 出发，CEM 采样 action，仿真 25 步，选使
+  加权距离 `D` 最小的指令
+- `D` 分量：关节位姿(主)、关节速度、根位置/朝向/速度、
+  动作正则项（等效解中选低耗力的）
+- 输出 meta `ref_action_solver` 记录逐帧 D 和评级：
+  `solved`(D<0.05) / `approx`(<0.2) / `unsolved`——
+  **unsolved 帧说明该转移在此动力学下不可达，是数据事实**
+- 逐帧 teleport 求解，不保证序列级跟踪（由 `check ref_action`
+  回放节验证）；实测 jab：CEM 解的回放误差 0.17 < 转换值 0.26
+- 绝不原地覆盖；约 15s / 22 帧 clip
 
 ## `convert` —— retarget clip 转换
 

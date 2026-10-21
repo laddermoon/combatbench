@@ -74,6 +74,33 @@ def _cmd_rederive_vel(args) -> int:
     return 0
 
 
+def _cmd_rederive_action(args) -> int:
+    from .rederive_action import rederive_actions, DEFAULT_WEIGHTS
+    clip = CoreClip.load(args.clip)
+    out = args.out or str(args.clip).replace(".npz", "_act.npz")
+    if Path(out).resolve() == Path(args.clip).resolve():
+        print("[rederive-action] refused: --out must differ from input",
+              file=sys.stderr)
+        return 2
+    weights = dict(DEFAULT_WEIGHTS)
+    if args.weights:
+        for kv in args.weights.split(","):
+            k, v = kv.split("=")
+            weights[k.strip()] = float(v)
+    new = rederive_actions(
+        clip, robot=args.robot, weights=weights,
+        tol_solved=args.tol_solved, tol_approx=args.tol_approx,
+        n_samples=args.n_samples, n_iters=args.n_iters,
+        seed=args.seed)
+    new.save(out)
+    sv = new.meta["ref_action_solver"]
+    n_sol = sum(g == "solved" for g in sv["per_frame_grade"])
+    print(f"[rederive-action] {clip.clip_id} -> {new.clip_id}: "
+          f"{n_sol}/{new.T} solved, "
+          f"unsolved={sv['unsolved_frames']}")
+    return 0
+
+
 def _cmd_convert(args) -> int:
     from .convert import refclip_to_coreclip
     from mocap.humanoid21.tracking.ref_data import RefClip
@@ -138,6 +165,20 @@ def main(argv=None) -> int:
                    help="zero first/last frame velocities "
                         "(default keeps recorded values)")
     p.set_defaults(fn=_cmd_rederive_vel)
+
+    p = sub.add_parser("rederive-action",
+                       help="best-effort per-frame action solve (CEM)")
+    p.add_argument("--clip", required=True)
+    p.add_argument("--out", default=None)
+    p.add_argument("--robot", default="robot_a")
+    p.add_argument("--weights", default=None,
+                   help="override e.g. jp=1.0,rp=1.0 (csv)")
+    p.add_argument("--tol-solved", type=float, default=0.05)
+    p.add_argument("--tol-approx", type=float, default=0.2)
+    p.add_argument("--n-samples", type=int, default=64)
+    p.add_argument("--n-iters", type=int, default=4)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(fn=_cmd_rederive_action)
 
     p = sub.add_parser("convert", help="RefClip npz -> CoreClip")
     p.add_argument("--ref-id", required=True)

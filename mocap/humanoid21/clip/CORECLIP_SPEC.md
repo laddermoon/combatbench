@@ -62,6 +62,10 @@ meta 中只记 `joint_space="humanoid21"` 标识。
     // op: convert | slice | fix_ground | rederive_vel | record | edit
   ],
   "ref_action_semantics": "pd_target_norm",  // 有 ref_action 时必填
+                                             // 或 "best_effort_pd_target"
+                                             //（solver 求解，见 ref_action_solver）
+  "ref_action_solver": {...},           // rederive-action 产物：
+                                        // 权重、逐帧 D、评级、unsolved
   "notes": "free text"
 }
 ```
@@ -111,6 +115,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
   play     --clip x.npz --out x.mp4 [--fps 20 --slow 2 --burn-frame]
   fix      --clip x.npz [--mode lowest|constant --margin .002]
   rederive-vel --clip x.npz [--out y.npz --zero-endpoints]
+  rederive-action --clip x.npz [--out y.npz --weights ... --tol-solved .05]
   convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
   info     --clip x.npz
 ```

@@ -428,15 +428,19 @@ def check_ref_action(clip: CoreClip, robot: str, sim) -> SectionResult:
     }
     if fall_k is not None:
         r.add("FAIL", f"replay falls at k={fall_k}", fall_k,
-              fix="ref_action not executable as recorded — "
-                  "re-derive or re-solve")
+              fix="clip rederive-action --clip <file> "
+                  "--out <file>_act.npz")
     elif diverge_k is not None:
         r.add("FAIL",
               f"replay diverges at k={diverge_k} "
-              f"(joint err {jerr[diverge_k]:.2f})", diverge_k)
+              f"(joint err {jerr[diverge_k]:.2f})", diverge_k,
+              fix="clip rederive-action --clip <file> "
+                  "--out <file>_act.npz")
     elif jerr.max() > 0.1:
         r.add("WARN", f"replay tracking err max {jerr.max():.2f} norm",
-              int(np.argmax(jerr)))
+              int(np.argmax(jerr)),
+              fix="clip rederive-action --clip <file> "
+                  "--out <file>_act.npz")
     else:
         r.add("INFO", f"replay tracks clip (max joint err "
                       f"{jerr.max():.3f} norm)")

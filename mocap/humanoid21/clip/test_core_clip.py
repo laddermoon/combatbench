@@ -243,3 +243,32 @@ def test_rederive_vel_and_lineage():
     new0 = rederive_velocities(clip, zero_endpoints=True)
     assert np.allclose(new0.states["joint_vel_norm"][0], 0)
     assert np.allclose(new0.states["root_vel_local"][-1], 0)
+
+
+def test_frame_distance_and_rederive_action():
+    """frame_distance components; rederive_actions produces valid
+    actions + solver meta; small CEM budget for speed."""
+    from mocap.humanoid21.clip.rederive_action import (
+        frame_distance, rederive_actions)
+    from mocap.humanoid21.tracking.ref_data import RefClip
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    clip = refclip_to_coreclip(ref, start=2, end=5)
+    s = clip.state(0)
+    d0 = frame_distance(s, s)
+    assert d0["total"] == pytest.approx(0.0)
+    s2 = dict(s); s2["joint_pos_norm"] = s["joint_pos_norm"] + 0.5
+    d1 = frame_distance(s2, s)
+    assert d1["components"]["jp"] == pytest.approx(0.5)
+    assert d1["total"] == pytest.approx(0.5 * 1.0)
+
+    new = rederive_actions(clip, n_samples=16, n_iters=2, seed=0)
+    assert new.ref_action.shape == (new.T, 21)
+    assert np.abs(new.ref_action).max() <= 1.0
+    sv = new.meta["ref_action_solver"]
+    assert len(sv["per_frame_D"]) == new.T
+    assert all(np.isfinite(d) for d in sv["per_frame_D"])
+    assert new.meta["ref_action_semantics"] == "best_effort_pd_target"
+    assert new.meta["lineage"][-1]["op"] == "rederive_action"
+    # states untouched
+    for f in CORE_FIELDS:
+        assert np.allclose(new.states[f], clip.states[f])
