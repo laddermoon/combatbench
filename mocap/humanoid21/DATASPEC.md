@@ -113,3 +113,12 @@ z 向上、米、弧度、四元数 wxyz——转换在导入时完成，不在�
 - 训练/验证划分按**源 clip 或 subject** 进行，禁止按帧切；镜像增强不计独立片段。
 - 若片段含控制 action（暂不应有），须在 `adaptation.controller` 记录控制器、
   频率、模型版本；action 与参考关节角不得混用同一字段。
+
+## 7. 相关格式
+
+- **CoreClip**（`clip/CORECLIP_SPEC.md`）：绑定 Humanoid21 仿真器的
+  20Hz 动作记录格式，字段与 `get_core_state`/`set_core_state`
+  一一对应（机体系速度、归一化关节、可选 `ref_action`）。
+  本文档的 retarget npz 是**重定向中间产物**（120Hz、世界系速度、
+  弧度关节），两者约定不同、不可混用；
+  经 `clip/convert.refclip_to_coreclip` 单向转换。
