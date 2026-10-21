@@ -106,6 +106,8 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip fix --clip x.npz \
 
 - `lowest`（默认）：逐帧抬 root_z 使最低脚点 = margin
 - `constant`：整条 clip 统一抬最大穿透量
+- **绝不原地覆盖**：默认输出 `<name>_groundfix.npz`；`--out` 与输入
+  相同路径会被拒绝（退出码 2）
 - 只改 `root_pos.z`；meta 记录 `fix_ground_penetration` 溯源
 - **局限**：治"沉"不治"浮"——源数据双脚不共面时另一只脚仍虚浮；
   `root_vel_local.z` 不更新

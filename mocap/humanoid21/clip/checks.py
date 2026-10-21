@@ -164,7 +164,9 @@ def check_basic(clip: CoreClip, robot: str, sim) -> SectionResult:
     if pen.max() > 0.002:
         r.add("FAIL",
               f"foot penetration max {pen.max() * 100:.1f}cm",
-              worst, fix=f"clip fix --clip <file> --mode lowest")
+              worst,
+              fix="clip fix --clip <file> --out <file>_groundfix.npz "
+                  "--mode lowest")
     if other_pen.max() > 0.002:
         r.add("FAIL",
               f"non-foot geom penetrates ground "

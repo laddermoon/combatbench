@@ -50,6 +50,10 @@ def _cmd_fix(args) -> int:
     rep = ground_report(fixed, robot=args.robot)
     print(rep.summary())
     out = args.out or str(args.clip).replace(".npz", "_groundfix.npz")
+    if Path(out).resolve() == Path(args.clip).resolve():
+        print("[fix] refused: --out must differ from input "
+              "(never repair in place)", file=sys.stderr)
+        return 2
     fixed.save(out)
     print(f"[fix] saved {out}")
     return 0
