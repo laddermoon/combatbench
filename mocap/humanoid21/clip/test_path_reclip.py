@@ -103,3 +103,27 @@ def test_cli_via_legacy_sweep_still_available(tmp_path):
     out = CoreClip.load(out_p)
     assert out.T == src.T
     assert out.meta["reclip"]["method"] == "sweep"
+
+
+def test_cli_clip_pass_all_and_budget_search(tmp_path):
+    """--clip --path all supports pass; budget search reports attempts."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "src.npz"
+    out_p = tmp_path / "pass_all.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--clip", str(src_p), "--objective", "pass",
+        "--path", "all", "--out", str(out_p),
+        "--budget-search", "2,4", "--ds-max", "1.0",
+        "--n-samples", "4", "--n-iters", "1", "--sweeps", "1",
+        "--seeds", "0"])
+    assert rc == 0
+    out = CoreClip.load(out_p)
+    meta = out.meta["reclip"]
+    assert meta["objective"] == "pass"
+    assert meta["path"]["mode"] == "all"
+    assert meta["solver"]["method"] == "path_sweep"
+    assert [a["budget_frames"] for a in meta["time_search"]] == [2, 4]
+    assert meta["replay_error"]["root_rot_err_max"] < 1e-5

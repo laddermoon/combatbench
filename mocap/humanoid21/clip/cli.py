@@ -15,7 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .core_clip import CONTROL_FPS, CoreClip
+from .core_clip import CONTROL_DT, CONTROL_FPS, CoreClip
 
 
 def _cmd_check(args) -> int:
@@ -104,20 +104,31 @@ def _cmd_rederive_action(args) -> int:
 def _cmd_reclip(args) -> int:
     from .reclip import (RECLIP_WEIGHTS, guide_from_clip,
                          interp_guide, reclip)
-    start_clip = CoreClip.load(args.start)
+    source_clip = CoreClip.load(args.clip) if args.clip else None
+    if args.start:
+        start_clip = CoreClip.load(args.start)
+    elif source_clip is not None:
+        start_clip = source_clip
+    else:
+        print("[reclip] either --clip or --start is required",
+              file=sys.stderr)
+        return 2
     start = start_clip.state(args.start_frame)
     via = CoreClip.load(args.via) if args.via else None
     end_clip = None
     if via is None:
-        if not args.end:
-            print("[reclip] --end required unless --via is given",
-                  file=sys.stderr)
-            return 2
-        end_clip = CoreClip.load(args.end)
+        if source_clip is not None:
+            end_clip = source_clip
+        else:
+            if not args.end:
+                print("[reclip] --end required unless --via or --clip "
+                      "is given", file=sys.stderr)
+                return 2
+            end_clip = CoreClip.load(args.end)
 
     out = args.out or f"{start_clip.clip_id}_reclip.npz"
     out_path = Path(out).resolve()
-    inputs = [args.start, args.via, args.end]
+    inputs = [args.clip, args.start, args.via, args.end]
     if any(p and Path(p).resolve() == out_path for p in inputs):
         print("[reclip] refused: --out must differ from every input clip",
               file=sys.stderr)
@@ -125,7 +136,8 @@ def _cmd_reclip(args) -> int:
 
     if args.method == "path-sweep":
         from .objective_evaluator import ReclipObjectiveConfig
-        from .path_reclip import reclip_path_sweep
+        from .path_reclip import (reclip_path_sweep,
+                                  reclip_time_search)
         from .target_path import TargetPath
 
         pose_weights = None
@@ -137,24 +149,46 @@ def _cmd_reclip(args) -> int:
                     pose_weights[k.strip()] = float(v)
         if via is not None:
             path_mode = args.path or "all"
-            kind = args.objective or "track"
-            if kind == "track" and path_mode != "all":
-                print("[reclip] track requires --path all", file=sys.stderr)
-                return 2
-            path = TargetPath.from_clip(
-                via, path_mode, s_ext=args.s_ext,
-                pose_weights=pose_weights)
-            init_a = via.ref_action
-            budget = (args.budget_frames if args.budget_frames is not None
-                      else via.T - 1)
+            path_src = via
+        elif source_clip is not None:
+            path_mode = args.path or ("all" if args.objective == "track"
+                                      else "endpoints")
+            path_src = source_clip
         else:
             path_mode = args.path or "endpoints"
-            kind = args.objective or "pass"
-            if path_mode != "endpoints":
-                print("[reclip] start/end legacy inputs support only "
-                      "--path endpoints; use --via for --path all",
-                      file=sys.stderr)
-                return 2
+            path_src = None
+        kind = args.objective or ("track" if via is not None or
+                                  path_mode == "all" else "pass")
+        if kind == "track" and path_mode != "all":
+            print("[reclip] track requires --path all", file=sys.stderr)
+            return 2
+        if path_mode == "all" and path_src is None:
+            print("[reclip] --path all requires --clip or --via",
+                  file=sys.stderr)
+            return 2
+
+        if path_src is not None:
+            if path_src is source_clip:
+                path = TargetPath.from_clip(
+                    path_src, path_mode,
+                    start_frame=args.start_frame,
+                    end_frame=args.end_frame,
+                    s_ext=args.s_ext, pose_weights=pose_weights)
+            else:
+                path = TargetPath.from_clip(
+                    path_src, path_mode, s_ext=args.s_ext,
+                    pose_weights=pose_weights)
+            if path_mode == "all" and path_src.ref_action is not None:
+                if path_src is source_clip:
+                    end_i = (args.end_frame if args.end_frame >= 0
+                             else path_src.T - 1)
+                    init_a = path_src.ref_action[
+                        args.start_frame:end_i]
+                else:
+                    init_a = path_src.ref_action
+            else:
+                init_a = None
+        else:
             end_i = (args.end_frame if args.end_frame >= 0
                      else end_clip.T - 1)
             path = TargetPath.from_pose_pair(
@@ -162,19 +196,57 @@ def _cmd_reclip(args) -> int:
                 source_clip_id=f"{start_clip.clip_id}->{end_clip.clip_id}",
                 s_ext=args.s_ext, pose_weights=pose_weights)
             init_a = None
-            budget = (args.budget_frames if args.budget_frames is not None
-                      else args.T - 1)
+
+        search_budgets = None
+        if args.budget_search:
+            try:
+                search_budgets = [int(x) for x in
+                                  args.budget_search.split(",") if x]
+            except ValueError:
+                print("[reclip] --budget-search must be a CSV of ints",
+                      file=sys.stderr)
+                return 2
+            if kind == "track":
+                print("[reclip] --budget-search is incompatible with "
+                      "track", file=sys.stderr)
+                return 2
+        if args.budget_frames is not None:
+            budget = args.budget_frames
+        elif args.time_budget is not None:
+            budget = int(round(args.time_budget / CONTROL_DT))
+        elif search_budgets:
+            budget = min(search_budgets)
+        elif kind == "track" or path_mode == "all":
+            budget = len(path.knot_s) - 1
+        else:
+            budget = args.T - 1
+        seeds = ([int(x) for x in args.seeds.split(",")]
+                 if args.seeds else [args.seed])
         try:
             objective = ReclipObjectiveConfig(
                 kind=kind, time_budget_frames=budget,
                 ds_max=args.ds_max)
-            res = reclip_path_sweep(
-                start, path, objective, init_actions=init_a,
-                budget_frames=budget, robot=args.robot,
-                sweeps=args.sweeps, n_samples=args.n_samples,
-                n_iters=args.n_iters, sigma0=args.sigma0,
-                seed=args.seed, post_frames=args.post_frames,
-                clip_id=args.clip_id or f"{start_clip.clip_id}_reclip")
+            if search_budgets:
+                ts = reclip_time_search(
+                    start, path, objective, search_budgets,
+                    init_actions=init_a, seeds=seeds,
+                    robot=args.robot, sweeps=args.sweeps,
+                    n_samples=args.n_samples, n_iters=args.n_iters,
+                    sigma0=args.sigma0,
+                    post_frames=args.post_frames,
+                    clip_id=args.clip_id or
+                    f"{start_clip.clip_id}_reclip")
+                res = ts.best
+                res.clip.meta["reclip"]["time_search"] = ts.attempts
+            else:
+                res = reclip_path_sweep(
+                    start, path, objective, init_actions=init_a,
+                    budget_frames=budget, robot=args.robot,
+                    sweeps=args.sweeps, n_samples=args.n_samples,
+                    n_iters=args.n_iters, sigma0=args.sigma0,
+                    seed=seeds[0], post_frames=args.post_frames,
+                    clip_id=args.clip_id or
+                    f"{start_clip.clip_id}_reclip")
         except NotImplementedError as exc:
             print(f"[reclip] {exc}", file=sys.stderr)
             return 2
@@ -319,7 +391,10 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("reclip",
                        help="synthesize executable clip start->end")
-    p.add_argument("--start", required=True,
+    p.add_argument("--clip", default=None,
+                   help="single source npz for --start-frame/--end-frame "
+                        "and --path all")
+    p.add_argument("--start", default=None,
                    help="npz whose frame supplies the start pose")
     p.add_argument("--start-frame", type=int, default=0)
     p.add_argument("--end", default=None,
@@ -351,6 +426,12 @@ def main(argv=None) -> int:
                    help="TargetPath construction mode")
     p.add_argument("--budget-frames", type=int, default=None,
                    help="control-frame action budget for path-sweep")
+    p.add_argument("--time-budget", type=float, default=None,
+                   help="action budget in seconds (converted to 20Hz frames)")
+    p.add_argument("--budget-search", default=None,
+                   help="CSV of control-frame budgets, e.g. 8,10,12")
+    p.add_argument("--seeds", default=None,
+                   help="CSV of CEM seeds (default: --seed)")
     p.add_argument("--ds-max", type=float, default=0.2,
                    help="per-frame local progress search window")
     p.add_argument("--s-ext", type=float, default=0.1,

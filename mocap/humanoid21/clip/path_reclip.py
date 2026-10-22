@@ -31,9 +31,16 @@ class PathRollout:
 class ReclipSolveResult:
     clip: CoreClip
     evaluation: RolloutEvaluation
-    actions: np.ndarray
+    actions: np.ndarray          # emitted (possibly event-truncated)
+    solver_actions: np.ndarray   # full optimized action suffix
     replay_metrics: Dict[str, float]
     solver_seed: int
+
+
+@dataclass
+class TimeSearchResult:
+    best: ReclipSolveResult
+    attempts: List[Dict[str, Any]]
 
 
 def _phys_steps() -> int:
@@ -288,8 +295,8 @@ def reclip_path_sweep(
                for f in CORE_FIELDS}
     return ReclipSolveResult(
         clip=CoreClip(stacked, meta, ra), evaluation=out_eval,
-        actions=out_actions, replay_metrics=replay_metrics,
-        solver_seed=seed)
+        actions=out_actions, solver_actions=seq,
+        replay_metrics=replay_metrics, solver_seed=seed)
 
 
 def reclip_path_search(
@@ -307,3 +314,75 @@ def reclip_path_search(
     return min(results, key=lambda r: (
         0 if r.evaluation.status == "completed" else 1,
         r.evaluation.score))
+
+
+def _resample_actions(actions: np.ndarray, frames: int) -> np.ndarray:
+    """Time-resample an action sequence to a new control-frame budget."""
+    a = np.asarray(actions, dtype=np.float32)
+    if frames <= 0:
+        return np.zeros((0, 21), np.float32)
+    if len(a) == 0:
+        return np.zeros((frames, 21), np.float32)
+    if len(a) == frames:
+        return a.copy()
+    x_old = np.linspace(0.0, 1.0, len(a))
+    x_new = np.linspace(0.0, 1.0, frames)
+    return np.stack([np.interp(x_new, x_old, a[:, j])
+                     for j in range(21)], axis=1).astype(np.float32)
+
+
+def reclip_time_search(
+        start: Dict[str, np.ndarray],
+        path: TargetPath,
+        objective: ReclipObjectiveConfig,
+        budget_candidates: Sequence[int],
+        init_actions: Optional[np.ndarray] = None,
+        seeds: Sequence[int] = (0,),
+        **kwargs) -> TimeSearchResult:
+    """Search a discrete set of control-frame budgets.
+
+    The previous best action sequence is resampled as the next budget's
+    warm start.  This finds the best completed result under the supplied
+    solver settings and candidate budgets; it is not a proof of global
+    minimum time.
+    """
+    budgets = sorted({int(b) for b in budget_candidates})
+    if not budgets or budgets[0] <= 0:
+        raise ValueError("budget_candidates must contain positive frames")
+    warm = init_actions
+    best: Optional[ReclipSolveResult] = None
+    attempts: List[Dict[str, Any]] = []
+    for budget in budgets:
+        objective_i = ReclipObjectiveConfig(
+            kind=objective.kind,
+            time_budget_frames=budget,
+            ds_max=objective.ds_max,
+            progress_weight=objective.progress_weight,
+            path_weight=objective.path_weight,
+            reg_weight=objective.reg_weight,
+            terminal_pose_weight=objective.terminal_pose_weight,
+            terminal_vel_weight=objective.terminal_vel_weight,
+            fall_weight=objective.fall_weight,
+            track_s=objective.track_s)
+        init_i = (None if warm is None else
+                  _resample_actions(warm, budget))
+        res = reclip_path_search(
+            start, path, objective_i, init_actions=init_i,
+            seeds=seeds, budget_frames=budget, **kwargs)
+        attempts.append({
+            "budget_frames": budget,
+            "status": res.evaluation.status,
+            "event_frame": res.evaluation.event_frame,
+            "score": float(res.evaluation.score),
+            "s_final": float(res.evaluation.progress[-1]),
+            "seed": res.solver_seed,
+        })
+        if best is None or (
+                res.evaluation.status == "completed",
+                -res.evaluation.score) > (
+                best.evaluation.status == "completed",
+                -best.evaluation.score):
+            best = res
+        warm = res.solver_actions
+    assert best is not None
+    return TimeSearchResult(best=best, attempts=attempts)
