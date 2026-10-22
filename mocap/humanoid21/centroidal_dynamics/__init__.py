@@ -23,6 +23,7 @@ from .contracts import (
     skew,
 )
 from .model_spec import CentroidalModelSpec, RobotModelSpec, build_model_spec
+from .external_loads import ExternalLoadNormalizer
 from .state import (
     CentroidalStateExtractor,
     ConsistencyTolerances,
@@ -44,6 +45,7 @@ __all__ = [
     "DomainIssue",
     "DomainReport",
     "ExternalLoad",
+    "ExternalLoadNormalizer",
     "GeneralizedLoad",
     "LoadSnapshot",
     "MissingAppliedLoad",
