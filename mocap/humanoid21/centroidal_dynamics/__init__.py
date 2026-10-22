@@ -23,6 +23,11 @@ from .contracts import (
     skew,
 )
 from .model_spec import CentroidalModelSpec, RobotModelSpec, build_model_spec
+from .state import (
+    CentroidalStateExtractor,
+    ConsistencyTolerances,
+    extract_centroidal_state,
+)
 
 __all__ = [
     "AFF_ENV",
@@ -34,6 +39,8 @@ __all__ = [
     "CentroidalDynamicsError",
     "CentroidalModelSpec",
     "CentroidalState",
+    "CentroidalStateExtractor",
+    "ConsistencyTolerances",
     "DomainIssue",
     "DomainReport",
     "ExternalLoad",
@@ -47,5 +54,6 @@ __all__ = [
     "UnknownExternalSource",
     "UnsupportedGeneralizedLoad",
     "build_model_spec",
+    "extract_centroidal_state",
     "skew",
 ]
