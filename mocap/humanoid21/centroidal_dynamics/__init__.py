@@ -24,6 +24,8 @@ from .contracts import (
 )
 from .model_spec import CentroidalModelSpec, RobotModelSpec, build_model_spec
 from .external_loads import ExternalLoadNormalizer
+from .balance import momentum_balance
+from .probe import PhysicsStepProbe, ProbeStepResult
 from .state import (
     CentroidalStateExtractor,
     ConsistencyTolerances,
@@ -49,7 +51,9 @@ __all__ = [
     "GeneralizedLoad",
     "LoadSnapshot",
     "MissingAppliedLoad",
+    "PhysicsStepProbe",
     "OutOfDomainContact",
+    "ProbeStepResult",
     "PredictionDomainViolation",
     "RobotModelSpec",
     "StateNotConsistent",
@@ -57,5 +61,6 @@ __all__ = [
     "UnsupportedGeneralizedLoad",
     "build_model_spec",
     "extract_centroidal_state",
+    "momentum_balance",
     "skew",
 ]

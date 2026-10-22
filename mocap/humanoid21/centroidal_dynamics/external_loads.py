@@ -63,6 +63,13 @@ class ExternalLoadNormalizer:
         """
         if robot_id not in self.model_spec.robots:
             raise ValueError(f"unknown robot_id {robot_id!r}")
+        # mj_forward() consumes/clears xfrc_applied in MuJoCo 3.8. Capture the
+        # applied-load ledger before any refresh, then update kinematics and
+        # contacts for the spatial interpretation below.
+        xfrc_cache = np.asarray(self.data.xfrc_applied,
+                                dtype=np.float64).copy()
+        qfrc_cache = np.asarray(self.data.qfrc_applied,
+                                dtype=np.float64).copy()
         if refresh:
             mujoco.mj_forward(self.model, self.data)
 
@@ -84,10 +91,11 @@ class ExternalLoadNormalizer:
                 robot_id, contact_id, decision_or_none,
                 contact_torque_tolerance))
 
-        xfrc_loads, other_xfrc = self._xfrc_loads(robot_id, load_tolerance)
+        xfrc_loads, other_xfrc = self._xfrc_loads(
+            robot_id, load_tolerance, xfrc_cache)
         spatial.extend(xfrc_loads)
         generalized, other_qfrc = self._generalized_loads(
-            robot_id, load_tolerance, strict_generalized)
+            robot_id, load_tolerance, strict_generalized, qfrc_cache)
 
         return LoadSnapshot(
             robot_id=robot_id,
@@ -177,16 +185,15 @@ class ExternalLoadNormalizer:
             },
         )
 
-    def _xfrc_loads(self, robot_id: str,
-                    load_tolerance: float) -> Tuple[Tuple[ExternalLoad, ...],
-                                                    Tuple[int, ...]]:
+    def _xfrc_loads(self, robot_id: str, load_tolerance: float,
+                    xfrc_cache: np.ndarray) -> Tuple[Tuple[ExternalLoad, ...],
+                                                     Tuple[int, ...]]:
         loads = []
         other = []
         robot = self.model_spec.robots[robot_id]
         target_ids = set(int(x) for x in robot.body_ids)
         for body_id in range(int(self.model.nbody)):
-            wrench = np.asarray(self.data.xfrc_applied[body_id],
-                                dtype=np.float64)
+            wrench = np.asarray(xfrc_cache[body_id], dtype=np.float64)
             if np.linalg.norm(wrench) <= load_tolerance:
                 continue
             if body_id not in target_ids:
@@ -207,8 +214,9 @@ class ExternalLoadNormalizer:
         return tuple(loads), tuple(other)
 
     def _generalized_loads(self, robot_id: str, load_tolerance: float,
-                           strict: bool) -> Tuple[Tuple[GeneralizedLoad, ...],
-                                                  int]:
+                           strict: bool,
+                           qfrc_cache: np.ndarray
+                           ) -> Tuple[Tuple[GeneralizedLoad, ...], int]:
         robot = self.model_spec.robots[robot_id]
         root_dofs = np.arange(robot.root_dof_adr,
                               robot.root_dof_adr + 6, dtype=np.int32)
@@ -216,12 +224,10 @@ class ExternalLoadNormalizer:
             root_dofs,
             np.asarray(robot.controlled_dof_adrs, dtype=np.int32),
         ]))
-        vals = np.asarray(self.data.qfrc_applied[dof_ids],
-                          dtype=np.float64)
+        vals = np.asarray(qfrc_cache[dof_ids], dtype=np.float64)
         nz = np.abs(vals) > load_tolerance
         other_qfrc = int(np.count_nonzero(
-            np.abs(np.asarray(self.data.qfrc_applied,
-                              dtype=np.float64)) > load_tolerance)
+            np.abs(np.asarray(qfrc_cache, dtype=np.float64)) > load_tolerance)
             - np.count_nonzero(nz))
         loads = []
         if np.any(nz):

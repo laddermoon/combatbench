@@ -1,7 +1,7 @@
 # Humanoid21 质心动力学模型实施计划
 
 > 类型：详细实施计划  
-> 状态：P0–P2 已完成，P3–P6 待实施  
+> 状态：P0–P3 已完成，P4–P6 待实施  
 > 上级设计：`mocap/HUMANOID21_CENTROIDAL_DYNAMICS_META_DESIGN.md`  
 > 目标目录：`mocap/humanoid21/centroidal_dynamics/`  
 > 原则：先证明“提取的质心状态与动量收支是真的”，再做预测；先证明“预测是真的”，再谈主路径规划。
