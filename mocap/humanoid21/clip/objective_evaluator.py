@@ -65,17 +65,17 @@ class ObjectiveEvaluator:
         self.path = path
         self.config = config
 
-    def _target_s(self, n_states: int) -> np.ndarray:
+    def _target_s(self, n_states: int, frame_offset: int) -> np.ndarray:
         if self.config.track_s is not None:
             s = np.asarray(self.config.track_s, dtype=np.float64)
-            if len(s) != n_states:
-                raise ValueError(
-                    f"track_s has {len(s)} entries for {n_states} states")
-            return s
-        if len(self.path.knot_s) == n_states:
-            return self.path.knot_s
-        raise ValueError(
-            "track requires one target s per output state; provide track_s")
+        else:
+            s = self.path.knot_s
+        out = s[frame_offset:frame_offset + n_states]
+        if len(out) != n_states:
+            raise ValueError(
+                f"track needs {n_states} targets at frame_offset "
+                f"{frame_offset}, got {len(out)}")
+        return out
 
     def _project_progress(self, states: List[Dict[str, np.ndarray]],
                           start_s: float) -> np.ndarray:
@@ -111,8 +111,8 @@ class ObjectiveEvaluator:
 
     def evaluate_rollout(
             self, states: List[Dict[str, np.ndarray]],
-            actions: np.ndarray, start_s: float = 0.0
-            ) -> RolloutEvaluation:
+            actions: np.ndarray, start_s: float = 0.0,
+            frame_offset: int = 0) -> RolloutEvaluation:
         if not states:
             raise ValueError("states must include at least the initial state")
         actions = np.asarray(actions, dtype=np.float64)
@@ -120,7 +120,7 @@ class ObjectiveEvaluator:
             raise ValueError("actions must have len(states)-1 entries")
 
         if self.config.kind == "track":
-            progress = self._target_s(len(states))
+            progress = self._target_s(len(states), frame_offset)
         else:
             progress = self._project_progress(states, start_s)
         pose_errors = self._pose_errors(states, progress)
