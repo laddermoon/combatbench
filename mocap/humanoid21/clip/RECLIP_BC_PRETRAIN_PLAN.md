@@ -75,13 +75,27 @@
 - 不给 warmup command；
 - 目标技能隐式固定，由策略参数表示。
 
-### 3.3 训练 policy 输出
+### 3.3 Policy 契约
+
+- 训练和 rollout 输入采用 `obs57 + zeros(9)` 的 66 维形式；
+- 实际信息只来自 `obs[:57]`，后 9 维恒为零；
+- 选择该形式是为了后续直接接入现有 66 维 PPO actor / checkpoint / resume 管线；
+- `obs[:57]` 之外不加入 target、path、phase、time 或 opponent 信息。
+
+### 3.4 根位置语义
+
+- 本实验的目标是固定“身体姿态”，不是固定世界坐标；
+- `pass` 目标评估应先支持忽略绝对 `root_pos` 的模式；
+- 根位置仍在输出 CoreState 中记录和报告，但不参与该实验的路径进度/姿态目标；
+- 后续如果需要约束水平位移，可另加“只忽略 x/y、保留 z”或“init-frame relative root position”模式。
+
+### 3.5 训练 policy 输出
 
 - 21 维 normalized PD target action；
 - 与 Reclip `ref_action` 语义一致；
 - rollout 中由 simulator 执行 25 个 0.002s 物理子步，即 20Hz 控制。
 
-### 3.4 双机器人处理
+### 3.6 双机器人处理
 
 - 默认训练 `robot_a`；
 - expert 生成与 policy 评估时，`robot_b` 固定为 canonical idle state；
@@ -107,6 +121,26 @@
 
 ---
 
+### T0.5. Position-free 姿态目标
+
+**关键点**
+
+- 让 `pass` / `reach-stop` 的路径投影、路径误差和 terminal pose error 支持忽略绝对 `root_pos`；
+- 第一版目标语义是“body pose only”，即只匹配 `root_rot + joint_pos_norm`；
+- `root_pos` 仍保留在 TargetPath / CoreClip / metrics 中，便于诊断，但不进入该实验的 pose score；
+- `track` 暂不使用 position-free，避免破坏“同步复刻”的语义；
+- 优先复用现有 `TargetPath.pose_weights`：将 `rp` 权重置 0；
+- 若需要保留根高度约束，再扩展为 `rp_xy` / `rp_z` 分项。
+
+**产出**
+
+- position-free pose weight / objective 配置；
+- 单元测试覆盖 `pass` 与 `reach-stop`；
+- CLI / metadata 中能看出该 run 是否忽略 root position；
+- 一份小样本 Reclip 验证：即使根位置不同，投影和 event 也只由身体姿态推进。
+
+---
+
 ### T1. 初始状态采样器
 
 **关键点**
@@ -126,21 +160,15 @@
 
 ---
 
-### T2. init-relative target 构造器
+### T2. 目标姿态构造器
 
 **关键点**
 
-- 默认采用 `init-relative` target；
-- 从目标 clip 的起止根位姿提取相对变换：
-
-```text
-T_rel = T_start⁻¹ · T_end
-T_target_i = T_init_root · T_rel
-```
-
-- `joint_pos_norm` 取目标 clip 的 target frame；
+- 目标 body pose 固定取 `cmu_144_20_m_seg01_pass_ep` 的末帧；
+- 使用两点路径 `init_i -> target`；
+- 根位置不参与路径进度和姿态目标，由 T0.5 的 position-free 模式处理；
 - 目标速度不进入路径目标；
-- absolute target 和 opponent-relative target 作为后续变体，不进入第一版。
+- absolute / init-relative / opponent-relative root position 作为后续可选模式，不进入第一版。
 
 **产出**
 
@@ -232,11 +260,11 @@ solver_score
 **关键点**
 
 - 第一版使用 deterministic supervised learning；
-- 优先训练 57 维 PPO-compatible actor：
+- 优先训练 66 维 PPO-compatible actor，输入为 `obs57 + zeros(9)`：
 
 ```text
 StateMixtureBoundedStdTruncatedNormalPolicy
-obs_dim=57
+obs_dim=66
 action_dim=21
 hidden_dim=256
 num_components=3
@@ -344,10 +372,10 @@ num_components=3
 
 **关键点**
 
-- 导出 57 维 actor state dict；
+- 导出 66 维 actor state dict；
+- policy 输入为 `obs57 + zeros(9)`，不额外使用 command 信息；
 - critic 从零初始化；
 - optimizer state 新建；
-- 若后续 PPO 仍使用 66 维 CommandSimulator，需要 body-only simulator/wrapper；
 - 验证 `--resume-from` 能加载。
 
 **产出**
@@ -384,12 +412,12 @@ num_components=3
 |---|---|---|
 | D1 | 目标 CoreClip 放在哪里 | 把 `/tmp/.../cmu_144_20_m_seg01_pass_ep.npz` 冻结到 `mocap/humanoid21/clip/data/reclip_bc/target/` |
 | D2 | target frame | 使用 `pass_ep` 输出末帧 `state(6)` |
-| D3 | target transform | `init-relative` |
+| D3 | 目标根位置语义 | `position-free`：只匹配身体姿态，不匹配绝对 `root_pos` |
 | D4 | 每个 init 的路径 | `init -> target` 的 `endpoints` 路径 |
 | D5 | Reclip objective | `pass`，快速穿过目标，不要求停止 |
 | D6 | 控制机器人 | `robot_a`；`robot_b` 固定 canonical idle |
-| D7 | policy 输入 | 严格 57 维本体观测 |
-| D8 | policy 结构 | 57 维 PPO-compatible MBS actor |
+| D7 | policy 输入 | `obs57 + zeros(9)`，只使用本体信息但保持 66 维契约 |
+| D8 | policy 结构 | 66 维 PPO-compatible MBS actor |
 | D9 | init 采样 policy | 冻结 `u06689`，只生成初始状态 |
 | D10 | expert 数据标签 | Reclip `ref_action[k]`，只用 `k=0..T-2` |
 | D11 | 评估成功定义 | `s>=1` 且不 fall；terminal pose error 是否进入成功判据待 D14 |
@@ -425,9 +453,9 @@ num_components=3
 3. **多模态 expert**：不同 init/seed 可能给出不同合理动作，deterministic MSE 可能学平均动作。
 4. **观测因果一致性**：BC obs 必须通过 replay action 获得，不能只 teleport 到 CoreState。
 5. **`pass` 不等于精确停在目标点**：它允许穿过，terminal pose error 需要单独筛选和评估。
-6. **绝对/相对目标语义**：如果不做 init-relative transform，任务会变成回到固定世界坐标。
+6. **根位置语义**：position-free 解决绝对坐标问题，但也可能放过不合理的水平漂移；必要时再拆 `rp_xy` / `rp_z` 或加 init-relative 模式。
 7. **失败初始状态分布**：warmup 采到的状态可能太远或太失衡，solver 成功率可能很低。
-8. **57 维与后续 PPO 契约**：若后续 experiment 仍返回 66 维，需要 body-only simulator/wrapper 或统一改成 57。
+8. **66 维零命令契约**：`obs57 + zeros(9)` 便于接入 PPO，但必须保证后 9 维恒为零，不能泄漏 command/target 信息。
 
 ## 7. 最小验收标准
 
@@ -436,7 +464,7 @@ Pilot 完成后至少应有：
 - 一批可复现 init states；
 - 一批通过 replay 验证的 expert CoreClip；
 - `train/val` BC dataset；
-- 一个 `obs57 -> action21` actor；
+- 一个 `obs57 + zeros9 -> action21` actor；
 - teacher forcing 和 one-step error 报告；
 - held-out init states 的 closed-loop success/fall/path 指标；
 - 明确是否值得扩到大规模以及是否适合进入 PPO fine-tune。
