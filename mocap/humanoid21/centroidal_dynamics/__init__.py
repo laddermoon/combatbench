@@ -32,6 +32,15 @@ from .predict import (
     PredictionResult,
     PredictionStep,
 )
+from .planning import (
+    CentroidalPlan,
+    PlanContext,
+    build_centroidal_plan,
+    direct_reclip_solver,
+    make_plan_context,
+    run_same_budget_comparison,
+    summarize_solver_result,
+)
 from .state import (
     CentroidalStateExtractor,
     ConsistencyTolerances,
@@ -50,6 +59,7 @@ __all__ = [
     "CentroidalState",
     "CentroidalStateExtractor",
     "CentroidalDomainChecker",
+    "CentroidalPlan",
     "ConsistencyTolerances",
     "ContactAssessment",
     "DomainIssue",
@@ -63,6 +73,7 @@ __all__ = [
     "MissingAppliedLoad",
     "PhysicsStepProbe",
     "OutOfDomainContact",
+    "PlanContext",
     "ProbeStepResult",
     "PredictionDomainViolation",
     "PredictionResult",
@@ -71,8 +82,13 @@ __all__ = [
     "StateNotConsistent",
     "UnknownExternalSource",
     "UnsupportedGeneralizedLoad",
+    "build_centroidal_plan",
     "build_model_spec",
+    "direct_reclip_solver",
     "extract_centroidal_state",
+    "make_plan_context",
     "momentum_balance",
+    "run_same_budget_comparison",
     "skew",
+    "summarize_solver_result",
 ]
