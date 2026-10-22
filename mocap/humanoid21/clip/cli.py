@@ -125,6 +125,12 @@ def _cmd_reclip(args) -> int:
             k, v = kv.split("=")
             weights[k.strip()] = float(v)
     out = args.out or f"{start_clip.clip_id}_reclip.npz"
+    out_path = Path(out).resolve()
+    inputs = [args.start, args.via, args.end]
+    if any(p and Path(p).resolve() == out_path for p in inputs):
+        print("[reclip] refused: --out must differ from every input clip",
+              file=sys.stderr)
+        return 2
     if args.method == "sweep":
         from .reclip import reclip_sweep
         if guide_actions is not None:

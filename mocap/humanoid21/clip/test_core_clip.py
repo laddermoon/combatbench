@@ -206,7 +206,10 @@ def test_check_ref_action_replay():
     sim = Humanoid21Simulator()
     r = check_ref_action(clip, "robot_a", sim)
     assert r.status in ("PASS", "WARN", "FAIL")
-    assert np.isfinite(r.metrics["joint_err_mean_max"])
+    for key in ("joint_err_mean_max", "joint_vel_err_mean_max",
+                "root_pos_err_max", "root_rot_err_max",
+                "root_vel_err_max", "root_angvel_err_max"):
+        assert np.isfinite(r.metrics[key])
     # garbage actions -> should diverge or fall
     clip2 = refclip_to_coreclip(ref, start=2, end=8)
     clip2.ref_action[:] = 1.0
@@ -297,3 +300,16 @@ def test_reclip_executable_by_construction():
     # velocities are measured, finite
     assert np.isfinite(new.states["joint_vel_norm"]).all()
     sim.close()
+
+
+def test_reclip_rejects_output_equal_to_input(tmp_path):
+    """reclip must never overwrite any input clip."""
+    from mocap.humanoid21.clip.cli import main
+    rng = np.random.default_rng(4)
+    clip = CoreClip.from_states(
+        [_rand_state(rng) for _ in range(3)], {"clip_id": "in"})
+    p = tmp_path / "in.npz"
+    clip.save(p)
+    rc = main(["reclip", "--start", str(p), "--end", str(p),
+               "--out", str(p)])
+    assert rc == 2

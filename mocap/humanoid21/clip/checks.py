@@ -397,8 +397,11 @@ def check_ref_action(clip: CoreClip, robot: str, sim) -> SectionResult:
     sim.set_core_state({robot: clip.state(0), other: stand_state})
     T = clip.T
     jerr = np.zeros(T)
+    jverr = np.zeros(T)
     rerr = np.zeros(T)
-    jerr[0] = 0.0
+    rqerr = np.zeros(T)
+    rverr = np.zeros(T)
+    raerr = np.zeros(T)
     diverge_k = None
     fall_k = None
     for k in range(T - 1):
@@ -411,8 +414,18 @@ def check_ref_action(clip: CoreClip, robot: str, sim) -> SectionResult:
         ref = clip.state(k + 1)
         jerr[k + 1] = float(np.abs(
             st["joint_pos_norm"] - ref["joint_pos_norm"]).mean())
+        jverr[k + 1] = float(np.abs(
+            st["joint_vel_norm"] - ref["joint_vel_norm"]).mean())
         rerr[k + 1] = float(np.linalg.norm(
             st["root_pos"] - ref["root_pos"]))
+        q_rel = _quat_mul_wxyz(
+            _quat_inv_wxyz(ref["root_rot"]), st["root_rot"])
+        rqerr[k + 1] = float(np.linalg.norm(_quat_log_wxyz(q_rel)))
+        rverr[k + 1] = float(np.linalg.norm(
+            st["root_vel_local"] - ref["root_vel_local"]))
+        raerr[k + 1] = float(np.linalg.norm(
+            st["root_angular_vel_local"] -
+            ref["root_angular_vel_local"]))
         if diverge_k is None and jerr[k + 1] > 0.3:
             diverge_k = k + 1
         z = st["root_pos"][2]
@@ -422,7 +435,11 @@ def check_ref_action(clip: CoreClip, robot: str, sim) -> SectionResult:
     r.metrics = {
         "joint_err_mean_max": float(jerr.max()),
         "joint_err_final": float(jerr[-1]),
+        "joint_vel_err_mean_max": float(jverr.max()),
         "root_pos_err_max": float(rerr.max()),
+        "root_rot_err_max": float(rqerr.max()),
+        "root_vel_err_max": float(rverr.max()),
+        "root_angvel_err_max": float(raerr.max()),
         "divergence_frame": diverge_k,
         "fall_frame": fall_k,
     }
