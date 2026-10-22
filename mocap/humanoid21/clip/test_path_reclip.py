@@ -127,3 +127,25 @@ def test_cli_clip_pass_all_and_budget_search(tmp_path):
     assert meta["solver"]["method"] == "path_sweep"
     assert [a["budget_frames"] for a in meta["time_search"]] == [2, 4]
     assert meta["replay_error"]["root_rot_err_max"] < 1e-5
+
+
+def test_cli_reach_stop_reports_terminal_errors(tmp_path):
+    """reach-stop emits terminal pose/zero-velocity feedback."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "src.npz"
+    out_p = tmp_path / "stop.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--clip", str(src_p), "--objective", "reach-stop",
+        "--path", "endpoints", "--out", str(out_p),
+        "--budget-frames", "3", "--ds-max", "1.0",
+        "--n-samples", "4", "--n-iters", "1", "--sweeps", "1"])
+    assert rc == 0
+    out = CoreClip.load(out_p)
+    meta = out.meta["reclip"]
+    assert meta["objective"] == "reach-stop"
+    assert np.isfinite(meta["metrics"]["terminal_pose_error"])
+    assert np.isfinite(meta["metrics"]["terminal_vel_error"])
+    assert meta["replay_error"]["joint_vel_err_mean_max"] < 1e-5

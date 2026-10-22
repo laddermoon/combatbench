@@ -225,7 +225,15 @@ def _cmd_reclip(args) -> int:
         try:
             objective = ReclipObjectiveConfig(
                 kind=kind, time_budget_frames=budget,
-                ds_max=args.ds_max)
+                ds_max=args.ds_max,
+                terminal_pose_weight=(
+                    args.terminal_pose_weight if
+                    args.terminal_pose_weight is not None else
+                    (1.0 if kind == "reach-stop" else 0.0)),
+                terminal_vel_weight=(
+                    args.terminal_vel_weight if
+                    args.terminal_vel_weight is not None else
+                    (1.0 if kind == "reach-stop" else 0.0)))
             if search_budgets:
                 ts = reclip_time_search(
                     start, path, objective, search_budgets,
@@ -438,6 +446,12 @@ def main(argv=None) -> int:
                    help="bounded path extension beyond s=1")
     p.add_argument("--post-frames", type=int, default=0,
                    help="extra output frames after a pass/reach event")
+    p.add_argument("--terminal-pose-weight", type=float, default=None,
+                   help="reach-stop terminal pose weight (default 1.0 "
+                        "for reach-stop, 0 otherwise)")
+    p.add_argument("--terminal-vel-weight", type=float, default=None,
+                   help="reach-stop zero-velocity weight (default 1.0 "
+                        "for reach-stop, 0 otherwise)")
     p.add_argument("--sweeps", type=int, default=3)
     p.add_argument("--sigma0", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)
