@@ -285,8 +285,10 @@ class TargetPath:
         # on source poses and report s=1 / s_max without grid error.
         local_knots = self.knot_s[(self.knot_s >= lo) &
                                   (self.knot_s <= hi)]
+        milestones = [v for v in (self.s_end, self.s_max)
+                      if lo <= v <= hi]
         cand = np.unique(np.concatenate(
-            [cand, local_knots, [lo, hi, self.s_end, self.s_max]]))
+            [cand, local_knots, [lo, hi], milestones]))
         best = None
         for s in cand:
             p = self.sample(float(s))

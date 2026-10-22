@@ -19,6 +19,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <command> [args]
 | `fix` | root-lift 穿地自动修复 |
 | `rederive-vel` | 从姿态轨迹重算速度场 |
 | `rederive-action` | 逐帧 CEM 求解最优近似 ref_action |
+| `reclip` | 沿连续姿态路径优化动作序列，生成可执行 CoreClip |
 | `convert` | 既有 retarget RefClip npz → CoreClip |
 
 ---
@@ -152,38 +153,94 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip rederive-action \
   回放节验证）；实测 jab：CEM 解的回放误差 0.17 < 转换值 0.26
 - 绝不原地覆盖；约 15s / 22 帧 clip
 
-## `reclip` —— 端到端可执行 clip 合成
+## `reclip` —— 沿目标路径生成可执行 clip
+
+新版默认方法是 `path-sweep`。它把源 Clip 的姿态构建成连续
+`TargetPath q=γ(s)`，再用后缀 rollout 优化动作序列；路径只提供
+姿态几何，时间进度由优化器决定。输出的每个状态都是仿真落点：
+
+```text
+sim(output[k], output.ref_action[k]) == output[k+1]
+```
+
+### 新接口
 
 ```bash
 PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
-    --start s.npz [--start-frame 0] \
-    --end e.npz [--end-frame -1] [--T 40] \
-    [--via guide.npz] [--settle 20 --tol-final 0.1] \
-    [--method sweep|greedy|mpc] [--sweeps 3 --sigma0 0.15] \
-    --out r.npz
+    --clip source.npz \
+    --objective track|pass|reach-stop \
+    --path endpoints|all \
+    [--start-frame 0 --end-frame -1] \
+    [--budget-frames 12 | --time-budget 0.60 | --budget-search 8,10,12] \
+    [--ds-max 0.2 --s-ext 0.10 --post-frames 0] \
+    [--seeds 0,1 --sweeps 3 --n-samples 32 --n-iters 2] \
+    --out result.npz
 ```
 
-- **导轨**：`--end` + `--T` 做姿态线性插值（slerp/lerp）；
-  `--via` 直接用已有 clip 的姿态序列当导轨（重规范化坏 clip），
-  且其 `ref_action` 自动用作动作序列热启动
-- **存的是仿真落点**：执行求解出的 action，实际落点存入
-  clip → `sim(clip[k], ref_action[k]) == clip[k+1]` 由构造成立，
-  回放误差恒为 0；速度/接触是真实测量值
-- **method（关键）**：
-  - `sweep`（默认，推荐）：迭代射击——每个动作按"执行它之后沿
-    当前序列走完整条轨迹的总误差"评分（后缀评分），保留序列
-    整体的动态稳定结构。实测 4 条 extend 打击 clip 全部成功
-    （final_D 0.36-0.44，root_z 误差 <1cm，无摔倒）
-  - `greedy`：逐帧最近——短视，动态动作上会发散（jab 曾漂到
-    final_D 4+），仅适用近似准静态过渡
-  - `mpc`：h 步前瞻——理论更强，但序列维度上样本稀疏，实测
-    不如 sweep
-- `--settle`：导轨走完后继续朝终态求解直到 `final_D < tol`
-- **适用边界**：短过渡（出拳/收拳/回防，~1-3s）。仍要求动作
-  在动力学下大体可达——若导轨本身需超容量力矩，sweep 也只能
-  逼近，如实报 per-frame D
-- meta `reclip` 记录 per_frame_target_D、final_distance、
-  method/权重/参数
+目标语义：
+
+| objective | 含义 | 备注 |
+|---|---|---|
+| `track` | 保留源姿态时间线，同步经过每个路径 waypoint | 必须 `--path all`；中间速度不是优化目标 |
+| `pass` | 沿路径尽快推进；首个 `s>=1` 控制帧为通过事件 | 默认截断到事件帧；不要求目标稳定 |
+| `reach-stop` | 到达 `s=1`，并在事件帧优化/报告零速度误差 | 不做保持验证，不设固定容差 |
+| `reach-state` | 语义保留：到达末姿态并匹配源末速度 | **当前未实现，CLI 返回 2** |
+
+路径模式：
+
+- `endpoints`：只使用片段首尾姿态，适合短单向过渡，不适合 `track`。
+- `all`：使用片段内全部源姿态 waypoint；保留动作形态和全身协调顺序，
+  适合 `track`，也可用于 `pass` / `reach-stop`。
+
+`--ds-max` 是每个控制帧允许的局部进度搜索宽度，不是路径容差；
+`--s-ext` 是有界外延，允许 `s` 少量超过 1（默认 `s_max=1.1`）。
+`pass` 按 20Hz 控制帧检测通过事件，不做物理子步检测。
+
+### 兼容旧调用
+
+- `--via guide.npz`：在新默认 `path-sweep` 下映射为
+  `track + all`，并使用 `guide.ref_action` 热启动。
+- `--start s.npz --end e.npz`：映射为 `pass + endpoints`；
+  `--T` 仍表示导轨帧数，对应动作预算 `T-1`。
+- `--method sweep|greedy|mpc` 保留旧的固定帧号导轨实现；
+  `--method path-sweep` 是新默认。
+
+### 求解与输出
+
+- `path-sweep` 对某一帧的候选 action 不只看下一步，而是执行完整
+  action 后缀后由 objective evaluator 评分，因此会选择有利于后续
+  推进的动作。
+- `--budget-search 8,10,12` 会逐个尝试离散动作预算；上一最好动作
+  序列会重采样为下一预算的热启动。结果记录的是该预算集合、该
+  seed/采样预算下找到的最好结果，**不声称全局最速**。
+- `--seeds` 可传多个 CEM seed；无 `--budget-search` 时使用 `--seed`。
+- 输出前会从初始完整 CoreState 重新回放选中动作序列并录制；
+  `meta["reclip"]["replay_error"]` 包含关节位姿/速度、根位置/朝向/
+  线速度/角速度的全部回放误差。
+- `meta["reclip"]` 记录 objective、path knots、solver 参数、事件帧、
+  progress、逐帧路径误差、terminal pose/velocity error、status。
+- 不预设固定姿态/路径/速度容差；优化结果直接报告偏差。
+- `--out` 不得等于任何输入路径（`--clip` / `--start` / `--via` /
+  `--end`），否则退出码 2。
+
+示例：
+
+```bash
+# 保留整条源姿态路径，尽快通过末端姿态
+PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
+    --clip /tmp/reclip_work/hdm05_3146_88_2895_127_ext.npz \
+    --objective pass --path all --budget-frames 12 \
+    --ds-max 0.4 --seeds 0,1 --out /tmp/jab_pass_all.npz
+
+# 老 --via 写法：track + all
+PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
+    --start guide.npz --via guide.npz --out guide_track.npz
+```
+
+已实测的 extend 回归中，`pass + endpoints` 与 `pass + all`
+均可生成 `ref_action` 回放 PASS 的输出。若源初始姿态本身穿地，
+输出的 `basic` 检查仍会继承该问题；`fix` 会改变 root_pos 并破坏
+"ref_action 精确回放"语义，不能把它当作 reclip 的后处理。
 
 ## `convert` —— retarget clip 转换
 

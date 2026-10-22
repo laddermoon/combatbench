@@ -50,7 +50,7 @@ meta 中只记 `joint_space="humanoid21"` 标识。
   "phy_dt": 0.002,                      // 固定
   "model": {"file": "battle_circular_v2.xml", "sha256": "..."},
   "source": {                           // 必填，溯源
-    "type": "refclip | policy_rollout | slice | edit | generated",
+    "type": "refclip | policy_rollout | slice | edit | generated | reclip",
     "ref_clip_id": "cmu_...",           // type=refclip 时
     "ctrl_range": [0, 61],
     "agent_id": "robot_a"               // rollout 时
@@ -59,13 +59,15 @@ meta 中只记 `joint_space="humanoid21"` 标识。
     {"op": "convert", "parent": "cmu_144_20_seg01",
      "params": {...}, "ts": "iso8601"},
     {"op": "rederive_vel", "parent": "jab_r_core", "params": {...}}
-    // op: convert | slice | fix_ground | rederive_vel | record | edit
+    // op: convert | slice | fix_ground | rederive_vel | record | edit | reclip
   ],
   "ref_action_semantics": "pd_target_norm",  // 有 ref_action 时必填
                                              // 或 "best_effort_pd_target"
-                                             //（solver 求解，见 ref_action_solver）
+                                             // 或 "executed_pd_target"
+                                             //（reclip 物理执行产物）
   "ref_action_solver": {...},           // rederive-action 产物：
                                         // 权重、逐帧 D、评级、unsolved
+  "reclip": {...},                      // path-sweep reclip 产物，见 §6.1
   "notes": "free text"
 }
 ```
@@ -104,6 +106,73 @@ action；转换自 RefClip 时是该帧参考关节角的归一化 PD 目标。
 它展示记录下来的运动外观，**不代表该运动可被机器人通过
 动作指令执行**。可执行性验证见 `check` 的 `ref_action` 回放节。
 
+## 6.1 Reclip 可执行输出 meta
+
+`reclip --method path-sweep` 的产物使用
+`ref_action_semantics="executed_pd_target"`。每个状态都是仿真器
+执行动作后的真实落点，末帧 `ref_action` 仅作为保持姿态的占位指令。
+
+`meta["reclip"]` 的结构：
+
+```jsonc
+{
+  "objective": "track | pass | reach-stop",   // reach-state 暂不支持
+  "status": "completed | budget_exhausted",
+  "path": {
+    "mode": "endpoints | all",
+    "source_clip_id": "...",
+    "frame_indices": [0, 1, 2],
+    "knot_s": [0.0, 0.4, 1.0],
+    "s_end": 1.0,
+    "s_ext": 0.1,
+    "s_max": 1.1
+  },
+  "solver": {
+    "method": "path_sweep",
+    "budget_frames": 12,
+    "sweeps": 3,
+    "n_samples": 32,
+    "n_iters": 2,
+    "sigma0": 0.15,
+    "seed": 0,
+    "post_frames": 0
+  },
+  "event": {"type": "pass", "frame": 9, "time": 0.45},
+  "time_search": [                         // 仅 --budget-search
+    {"budget_frames": 8, "status": "budget_exhausted", ...}
+  ],
+  "progress": [0.0, 0.2, 1.0],
+  "pose_error_by_frame": [0.0, 0.1, 0.2],
+  "metrics": {
+    "s_final": 1.0,
+    "s_max_seen": 1.0,
+    "event_frame": 9,
+    "event_time": 0.45,
+    "path_error_mean": 0.2,
+    "path_error_max": 0.4,
+    "action_reg_mean": 0.3,
+    "fall_frame": null,
+    "fall_count": 0,
+    "terminal_pose_error": 0.3,
+    "terminal_vel_error": 0.2
+  },
+  "replay_error": {
+    "joint_pos_err_mean_max": 0.0,
+    "joint_pos_err_mean_final": 0.0,
+    "joint_vel_err_mean_max": 0.0,
+    "root_pos_err_max": 0.0,
+    "root_rot_err_max": 0.0,
+    "root_vel_err_max": 0.0,
+    "root_angvel_err_max": 0.0
+  }
+}
+```
+
+`status` 只表示在当前动作预算内是否达到 objective 的进度事件；
+`path_error_*` 和 `terminal_*_error` 是实测偏差，不是固定容差。
+`event` 对 `track` 为 `null`；`pass` / `reach-stop` 在首个
+`s>=1` 的控制帧记事件。
+
 ## 7. 统一 CLI
 
 所有 clip 操作经单一入口（`clip/cli.py` + `clip/__main__.py`）：
@@ -116,7 +185,11 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
   fix      --clip x.npz [--mode lowest|constant --margin .002]
   rederive-vel --clip x.npz [--out y.npz --zero-endpoints]
   rederive-action --clip x.npz [--out y.npz --weights ... --tol-solved .05]
-  reclip   --start s.npz [--end e.npz|--via g.npz] --out r.npz [--T --settle]
+  reclip   (--clip x.npz | --start s.npz [--end e.npz|--via g.npz])
+           [--objective track|pass|reach-stop|reach-state]
+           [--path endpoints|all] [--method path-sweep|sweep|greedy|mpc]
+           [--budget-frames N | --time-budget S | --budget-search a,b,c]
+           --out r.npz
   convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
   info     --clip x.npz
 ```
@@ -139,6 +212,12 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
 - `convert.refclip_to_coreclip(ref, start, end)` —— 现有 mocap → CoreClip。
 - `CoreClipRecorder.record_sim(sim, action)` —— 运行中录制。
 - `checks.run_checks(clip)` —— 程序化检查入口（返回 `SectionResult` dict）。
+- `target_path.TargetPath` —— 连续姿态路径 `q=γ(s)`，支持
+  `endpoints` / `all`、局部单调投影和有界 `s>1` 外延。
+- `objective_evaluator.ObjectiveEvaluator` —— `track` / `pass` /
+  `reach-stop` 的 rollout 进度、事件和指标。
+- `path_reclip.reclip_path_sweep` / `reclip_time_search` ——
+  后缀 rollout 评分和多预算搜索。
 - `fix.fix_ground_penetration(clip)` —— root-lift 穿透修复，
   修复结果带 `source.type="fix_ground_penetration"` 溯源；仅抬
   root_z，不改关节/速度，脚部仍可能虚浮（源数据腿不一致时需

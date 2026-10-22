@@ -80,9 +80,13 @@ def test_projection_is_local_and_monotonic():
         assert proj.errors["total"] == pytest.approx(0.0, abs=1e-5)
         s_hint = proj.s
 
-    # A limited local window cannot jump directly to the final waypoint.
+    # A limited local window cannot jump directly to the final waypoint
+    # or to the bounded extension milestone.
     mid = path.project(states[0], path.frame_to_s(1), ds_max=0.05)
     assert mid.s <= path.frame_to_s(1) + 0.051
+    end_like = path.project(states[-1], path.frame_to_s(1),
+                            ds_max=0.02)
+    assert end_like.s <= path.frame_to_s(1) + 0.021
 
 
 def test_bounded_extension_and_s_range():

@@ -165,6 +165,11 @@ def reclip_path_sweep(
     entire remaining action suffix.  Thus an action is rewarded for
     enabling future progress, not just for the next landing pose.
     """
+    evaluator = ObjectiveEvaluator(path, objective)
+    budget = (objective.time_budget_frames if budget_frames is None
+              else int(budget_frames))
+    if budget <= 0:
+        raise ValueError("budget_frames must be positive")
     own = sim is None
     if own:
         from .rederive_action import _mk_sim
@@ -172,11 +177,6 @@ def reclip_path_sweep(
     rng = np.random.default_rng(seed)
     other = "robot_b" if robot == "robot_a" else "robot_a"
     other_state = sim.get_core_state()[other]
-    evaluator = ObjectiveEvaluator(path, objective)
-    budget = (objective.time_budget_frames if budget_frames is None
-              else int(budget_frames))
-    if budget <= 0:
-        raise ValueError("budget_frames must be positive")
     seq = _prepare_actions(init_actions, path, budget, start_s)
 
     def suffix_roll(k: int, suffix: np.ndarray) -> PathRollout:
