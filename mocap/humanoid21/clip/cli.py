@@ -130,6 +130,7 @@ def _cmd_reclip(args) -> int:
         if guide_actions is not None:
             init_a = guide_actions
         else:
+            import numpy as np
             init_a = np.stack(
                 [g["joint_pos_norm"] for g in guide[1:]])
         new = reclip_sweep(
