@@ -27,6 +27,11 @@ from .external_loads import ExternalLoadNormalizer
 from .balance import momentum_balance
 from .probe import PhysicsStepProbe, ProbeStepResult
 from .domain import CentroidalDomainChecker, ContactAssessment, DomainLimits
+from .predict import (
+    DiscreteCentroidalPredictor,
+    PredictionResult,
+    PredictionStep,
+)
 from .state import (
     CentroidalStateExtractor,
     ConsistencyTolerances,
@@ -50,6 +55,7 @@ __all__ = [
     "DomainIssue",
     "DomainLimits",
     "DomainReport",
+    "DiscreteCentroidalPredictor",
     "ExternalLoad",
     "ExternalLoadNormalizer",
     "GeneralizedLoad",
@@ -59,6 +65,8 @@ __all__ = [
     "OutOfDomainContact",
     "ProbeStepResult",
     "PredictionDomainViolation",
+    "PredictionResult",
+    "PredictionStep",
     "RobotModelSpec",
     "StateNotConsistent",
     "UnknownExternalSource",
