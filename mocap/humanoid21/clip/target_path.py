@@ -172,6 +172,17 @@ class TargetPath:
             self._scalar_interp.derivative()(self.knot_s[-1]))
 
     @classmethod
+    def from_pose_pair(cls, start: Dict[str, np.ndarray],
+                       end: Dict[str, np.ndarray],
+                       source_clip_id: str = "pose_pair",
+                       s_ext: float = 0.1,
+                       pose_weights: Optional[Dict[str, float]] = None
+                       ) -> "TargetPath":
+        return cls([pose_dict(start), pose_dict(end)], "endpoints",
+                   source_clip_id, np.array([0, 1], dtype=int),
+                   s_ext=s_ext, pose_weights=pose_weights)
+
+    @classmethod
     def from_clip(cls, clip: CoreClip, mode: str = "all",
                   start_frame: int = 0, end_frame: int = -1,
                   s_ext: float = 0.1,

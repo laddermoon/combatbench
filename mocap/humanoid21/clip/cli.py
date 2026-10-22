@@ -106,24 +106,15 @@ def _cmd_reclip(args) -> int:
                          interp_guide, reclip)
     start_clip = CoreClip.load(args.start)
     start = start_clip.state(args.start_frame)
-    guide_actions = None
-    if args.via:
-        via = CoreClip.load(args.via)
-        guide = guide_from_clip(via)
-        guide_actions = via.ref_action
-    else:
+    via = CoreClip.load(args.via) if args.via else None
+    end_clip = None
+    if via is None:
         if not args.end:
             print("[reclip] --end required unless --via is given",
                   file=sys.stderr)
             return 2
         end_clip = CoreClip.load(args.end)
-        k = args.end_frame if args.end_frame >= 0 else end_clip.T - 1
-        guide = interp_guide(start, end_clip.state(k), args.T)
-    weights = dict(RECLIP_WEIGHTS)
-    if args.weights:
-        for kv in args.weights.split(","):
-            k, v = kv.split("=")
-            weights[k.strip()] = float(v)
+
     out = args.out or f"{start_clip.clip_id}_reclip.npz"
     out_path = Path(out).resolve()
     inputs = [args.start, args.via, args.end]
@@ -131,40 +122,119 @@ def _cmd_reclip(args) -> int:
         print("[reclip] refused: --out must differ from every input clip",
               file=sys.stderr)
         return 2
-    if args.method == "sweep":
-        from .reclip import reclip_sweep
-        if guide_actions is not None:
-            init_a = guide_actions
+
+    if args.method == "path-sweep":
+        from .objective_evaluator import ReclipObjectiveConfig
+        from .path_reclip import reclip_path_sweep
+        from .target_path import TargetPath
+
+        pose_weights = None
+        if args.weights:
+            pose_weights = {}
+            for kv in args.weights.split(","):
+                k, v = kv.split("=")
+                if k.strip() in ("jp", "rp", "rq"):
+                    pose_weights[k.strip()] = float(v)
+        if via is not None:
+            path_mode = args.path or "all"
+            kind = args.objective or "track"
+            if kind == "track" and path_mode != "all":
+                print("[reclip] track requires --path all", file=sys.stderr)
+                return 2
+            path = TargetPath.from_clip(
+                via, path_mode, s_ext=args.s_ext,
+                pose_weights=pose_weights)
+            init_a = via.ref_action
+            budget = (args.budget_frames if args.budget_frames is not None
+                      else via.T - 1)
         else:
-            import numpy as np
-            init_a = np.stack(
-                [g["joint_pos_norm"] for g in guide[1:]])
-        new = reclip_sweep(
-            start, guide, init_a, robot=args.robot,
-            weights=weights if args.weights else None,
-            sweeps=args.sweeps, n_samples=args.n_samples,
-            n_iters=args.n_iters, sigma0=args.sigma0,
-            seed=args.seed,
-            clip_id=args.clip_id or f"{start_clip.clip_id}_reclip")
+            path_mode = args.path or "endpoints"
+            kind = args.objective or "pass"
+            if path_mode != "endpoints":
+                print("[reclip] start/end legacy inputs support only "
+                      "--path endpoints; use --via for --path all",
+                      file=sys.stderr)
+                return 2
+            end_i = (args.end_frame if args.end_frame >= 0
+                     else end_clip.T - 1)
+            path = TargetPath.from_pose_pair(
+                start, end_clip.state(end_i),
+                source_clip_id=f"{start_clip.clip_id}->{end_clip.clip_id}",
+                s_ext=args.s_ext, pose_weights=pose_weights)
+            init_a = None
+            budget = (args.budget_frames if args.budget_frames is not None
+                      else args.T - 1)
+        try:
+            objective = ReclipObjectiveConfig(
+                kind=kind, time_budget_frames=budget,
+                ds_max=args.ds_max)
+            res = reclip_path_sweep(
+                start, path, objective, init_actions=init_a,
+                budget_frames=budget, robot=args.robot,
+                sweeps=args.sweeps, n_samples=args.n_samples,
+                n_iters=args.n_iters, sigma0=args.sigma0,
+                seed=args.seed, post_frames=args.post_frames,
+                clip_id=args.clip_id or f"{start_clip.clip_id}_reclip")
+        except NotImplementedError as exc:
+            print(f"[reclip] {exc}", file=sys.stderr)
+            return 2
+        new = res.clip
     else:
-        horizon = args.horizon
-        if args.method == "mpc" and horizon == 1:
-            horizon = 4
-        new = reclip(start, guide, robot=args.robot,
-                     weights=weights if args.weights else None,
-                     settle=args.settle, tol_final=args.tol_final,
-                     n_samples=args.n_samples, n_iters=args.n_iters,
-                     horizon=horizon, disc=args.disc,
-                     guide_actions=guide_actions,
-                     seed=args.seed,
-                     clip_id=args.clip_id or
-                     f"{start_clip.clip_id}_reclip")
+        guide_actions = None
+        if via is not None:
+            guide = guide_from_clip(via)
+            guide_actions = via.ref_action
+        else:
+            k = args.end_frame if args.end_frame >= 0 else end_clip.T - 1
+            guide = interp_guide(start, end_clip.state(k), args.T)
+        weights = dict(RECLIP_WEIGHTS)
+        if args.weights:
+            for kv in args.weights.split(","):
+                k, v = kv.split("=")
+                weights[k.strip()] = float(v)
+        if args.method == "sweep":
+            from .reclip import reclip_sweep
+            if guide_actions is not None:
+                init_a = guide_actions
+            else:
+                import numpy as np
+                init_a = np.stack(
+                    [g["joint_pos_norm"] for g in guide[1:]])
+            new = reclip_sweep(
+                start, guide, init_a, robot=args.robot,
+                weights=weights if args.weights else None,
+                sweeps=args.sweeps, n_samples=args.n_samples,
+                n_iters=args.n_iters, sigma0=args.sigma0,
+                seed=args.seed,
+                clip_id=args.clip_id or f"{start_clip.clip_id}_reclip")
+        else:
+            horizon = args.horizon
+            if args.method == "mpc" and horizon == 1:
+                horizon = 4
+            new = reclip(start, guide, robot=args.robot,
+                         weights=weights if args.weights else None,
+                         settle=args.settle, tol_final=args.tol_final,
+                         n_samples=args.n_samples, n_iters=args.n_iters,
+                         horizon=horizon, disc=args.disc,
+                         guide_actions=guide_actions,
+                         seed=args.seed,
+                         clip_id=args.clip_id or
+                         f"{start_clip.clip_id}_reclip")
     new.save(out)
     m = new.meta["reclip"]
-    extra = (f"settle {m['settle_used']}"
-             if "settle_used" in m else f"sweeps {m['sweeps']}")
-    print(f"[reclip:{m.get('method','greedy')}] T={new.T} "
-          f"({extra})  final_D={m['final_distance']:.3f}  -> {out}")
+    if m.get("solver", {}).get("method") == "path_sweep":
+        event = m.get("event")
+        event_s = ("none" if not event
+                   else f"f{event['frame']} @{event['time']:.2f}s")
+        print(f"[reclip:{m['solver']['method']}] {m['objective']} "
+              f"{m['path']['mode']} status={m['status']} "
+              f"event={event_s} s_final={m['metrics']['s_final']:.3f} "
+              f"path_err={m['metrics']['path_error_max']:.3f} -> {out}")
+    else:
+        extra = (f"settle {m['settle_used']}"
+                 if "settle_used" in m else f"sweeps {m['sweeps']}")
+        print(f"[reclip:{m.get('method','greedy')}] T={new.T} "
+              f"({extra})  final_D={m['final_distance']:.3f}  -> {out}")
     return 0
 
 
@@ -264,14 +334,29 @@ def main(argv=None) -> int:
     p.add_argument("--weights", default=None)
     p.add_argument("--n-samples", type=int, default=64)
     p.add_argument("--n-iters", type=int, default=4)
-    p.add_argument("--method", default="sweep",
-                   choices=("greedy", "mpc", "sweep"),
-                   help="sweep = iterated-shooting suffix-optimal "
-                        "refinement (recommended)")
+    p.add_argument("--method", default="path-sweep",
+                   choices=("path-sweep", "greedy", "mpc", "sweep"),
+                   help="path-sweep = continuous TargetPath + suffix "
+                        "rollouts (new default); legacy methods kept")
     p.add_argument("--horizon", type=int, default=1,
                    help="MPC receding horizon in control frames "
                         "(1 = greedy per-frame)")
     p.add_argument("--disc", type=float, default=0.9)
+    p.add_argument("--objective", default=None,
+                   choices=("track", "pass", "reach-stop", "reach-state"),
+                   help="path-sweep objective (default: track with --via, "
+                        "pass without)")
+    p.add_argument("--path", default=None,
+                   choices=("endpoints", "all"),
+                   help="TargetPath construction mode")
+    p.add_argument("--budget-frames", type=int, default=None,
+                   help="control-frame action budget for path-sweep")
+    p.add_argument("--ds-max", type=float, default=0.2,
+                   help="per-frame local progress search window")
+    p.add_argument("--s-ext", type=float, default=0.1,
+                   help="bounded path extension beyond s=1")
+    p.add_argument("--post-frames", type=int, default=0,
+                   help="extra output frames after a pass/reach event")
     p.add_argument("--sweeps", type=int, default=3)
     p.add_argument("--sigma0", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=0)

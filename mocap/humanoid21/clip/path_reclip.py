@@ -235,11 +235,13 @@ def reclip_path_sweep(
     ra = np.zeros((T, 21), np.float32)
     ra[:len(out_actions)] = out_actions.astype(np.float32)
     ra[T - 1] = np.clip(out_states[-1]["joint_pos_norm"], -1, 1)
-    event = (None if out_eval.event_frame is None else {
-        "type": "pass" if objective.kind == "pass" else "reach",
-        "frame": out_eval.event_frame,
-        "time": out_eval.event_frame * CONTROL_DT,
-    })
+    event = None
+    if objective.kind != "track" and out_eval.event_frame is not None:
+        event = {
+            "type": "pass" if objective.kind == "pass" else "reach",
+            "frame": out_eval.event_frame,
+            "time": out_eval.event_frame * CONTROL_DT,
+        }
     meta: Dict[str, Any] = {
         "spec_version": SPEC_VERSION,
         "clip_id": clip_id,

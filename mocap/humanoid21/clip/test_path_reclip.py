@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from mocap.humanoid21.clip.convert import refclip_to_coreclip
+from mocap.humanoid21.clip.core_clip import CoreClip
 from mocap.humanoid21.clip.objective_evaluator import (
     ReclipObjectiveConfig)
 from mocap.humanoid21.clip.path_reclip import (
@@ -62,3 +63,43 @@ def test_pd_init_actions_follow_path():
     np.testing.assert_allclose(a[-1], path.sample(1.0).joint_pos_norm,
                                atol=1e-6)
     assert np.abs(a).max() <= 1.0
+
+
+def test_cli_via_maps_to_track_all_path_sweep(tmp_path):
+    """Legacy --via becomes track+all under the new default method."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "via.npz"
+    out_p = tmp_path / "out.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--start", str(src_p), "--via", str(src_p),
+        "--out", str(out_p), "--n-samples", "4", "--n-iters", "1",
+        "--sweeps", "1", "--seed", "0"])
+    assert rc == 0
+    out = CoreClip.load(out_p)
+    assert out.T == src.T
+    meta = out.meta["reclip"]
+    assert meta["objective"] == "track"
+    assert meta["path"]["mode"] == "all"
+    assert meta["solver"]["method"] == "path_sweep"
+    assert meta["replay_error"]["joint_pos_err_mean_max"] < 1e-5
+
+
+def test_cli_via_legacy_sweep_still_available(tmp_path):
+    """Explicit --method sweep keeps the old frame-guide behavior."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "via.npz"
+    out_p = tmp_path / "legacy.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--start", str(src_p), "--via", str(src_p),
+        "--out", str(out_p), "--method", "sweep",
+        "--n-samples", "4", "--n-iters", "1", "--sweeps", "1"])
+    assert rc == 0
+    out = CoreClip.load(out_p)
+    assert out.T == src.T
+    assert out.meta["reclip"]["method"] == "sweep"
