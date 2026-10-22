@@ -58,6 +58,11 @@ class ObjectiveEvaluator:
                 "reach-state is reserved semantically but not implemented")
         if config.kind not in self._KINDS:
             raise ValueError(f"unknown objective {config.kind!r}")
+        if config.kind == "track" and path.root_pos_mode == "free":
+            raise ValueError(
+                "track requires absolute root position; "
+                "root_pos_mode='free' is only supported by "
+                "pass and reach-stop")
         if config.time_budget_frames < 0:
             raise ValueError("time_budget_frames must be >= 0")
         if config.ds_max <= 0:

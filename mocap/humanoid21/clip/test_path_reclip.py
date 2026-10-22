@@ -42,6 +42,8 @@ def test_path_sweep_executable_result(tmp_path):
     rc = out.meta["reclip"]
     assert rc["objective"] == "pass"
     assert rc["path"]["mode"] == "endpoints"
+    assert rc["path"]["root_pos_mode"] == "absolute"
+    assert rc["path"]["pose_weights"]["rp"] > 0.0
     assert rc["solver"]["method"] == "path_sweep"
     assert np.isfinite(rc["solver_score"])
     assert np.isfinite(rc["metrics"]["s_final"])
@@ -149,3 +151,42 @@ def test_cli_reach_stop_reports_terminal_errors(tmp_path):
     assert np.isfinite(meta["metrics"]["terminal_pose_error"])
     assert np.isfinite(meta["metrics"]["terminal_vel_error"])
     assert meta["replay_error"]["joint_vel_err_mean_max"] < 1e-5
+
+
+def test_cli_root_pos_free_records_path_semantics(tmp_path):
+    """--root-pos-mode free removes rp from the objective and records it."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "src.npz"
+    out_p = tmp_path / "free.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--clip", str(src_p), "--objective", "pass",
+        "--path", "endpoints", "--root-pos-mode", "free",
+        "--out", str(out_p), "--budget-frames", "3",
+        "--ds-max", "1.0", "--n-samples", "4", "--n-iters", "1",
+        "--sweeps", "1"])
+    assert rc == 0
+    meta = CoreClip.load(out_p).meta["reclip"]
+    assert meta["objective"] == "pass"
+    assert meta["path"]["root_pos_mode"] == "free"
+    assert meta["path"]["pose_weights"]["rp"] == 0.0
+    assert meta["path"]["pose_weights"]["jp"] > 0.0
+    assert meta["path"]["pose_weights"]["rq"] > 0.0
+
+
+def test_cli_track_rejects_root_pos_free(tmp_path):
+    """track remains an absolute-position objective."""
+    from mocap.humanoid21.clip.cli import main
+    ref = RefClip("cmu_144_20_seg01", CLIPS)
+    src = refclip_to_coreclip(ref, start=2, end=6)
+    src_p = tmp_path / "src.npz"
+    out_p = tmp_path / "track_free.npz"
+    src.save(src_p)
+    rc = main([
+        "reclip", "--clip", str(src_p), "--objective", "track",
+        "--path", "all", "--root-pos-mode", "free",
+        "--out", str(out_p)])
+    assert rc == 2
+    assert not out_p.exists()

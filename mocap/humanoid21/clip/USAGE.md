@@ -170,6 +170,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
     --clip source.npz \
     --objective track|pass|reach-stop \
     --path endpoints|all \
+    [--root-pos-mode absolute|free] \
     [--start-frame 0 --end-frame -1] \
     [--budget-frames 12 | --time-budget 0.60 | --budget-search 8,10,12] \
     [--ds-max 0.2 --s-ext 0.10 --post-frames 0] \
@@ -191,6 +192,17 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
 - `endpoints`：只使用片段首尾姿态，适合短单向过渡，不适合 `track`。
 - `all`：使用片段内全部源姿态 waypoint；保留动作形态和全身协调顺序，
   适合 `track`，也可用于 `pass` / `reach-stop`。
+
+根位置目标模式：
+
+- `absolute`：默认；`root_pos` 参与路径参数化、投影和 terminal pose error。
+- `free`：`rp=0`；`root_pos` 仍写入路径/输出并作为诊断分量保留，但不参与
+  姿态进度评分。仅支持 `pass` / `reach-stop`；`track + free` 返回 2。
+  `free` 忽略完整 x/y/z，不表示 init-frame relative position。
+
+`--weights` 可覆盖 `jp/rp/rq`；缺省字段继承默认值。`--root-pos-mode free`
+与 `rp!=0` override 冲突；旧写法 `--weights rp=0` 在 path-sweep 中也会推断为
+`root_pos_mode=free`。
 
 `--ds-max` 是每个控制帧允许的局部进度搜索宽度，不是路径容差；
 `--s-ext` 是有界外延，允许 `s` 少量超过 1（默认 `s_max=1.1`）。
@@ -217,8 +229,9 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
 - 输出前会从初始完整 CoreState 重新回放选中动作序列并录制；
   `meta["reclip"]["replay_error"]` 包含关节位姿/速度、根位置/朝向/
   线速度/角速度的全部回放误差。
-- `meta["reclip"]` 记录 objective、path knots、solver 参数、事件帧、
-  progress、逐帧路径误差、terminal pose/velocity error、status。
+- `meta["reclip"]` 记录 objective、path knots、`root_pos_mode`、实际
+  `pose_weights`、solver 参数、事件帧、progress、逐帧路径误差、
+  terminal pose/velocity error、status。
 - 不预设固定姿态/路径/速度容差；优化结果直接报告偏差。
 - `--out` 不得等于任何输入路径（`--clip` / `--start` / `--via` /
   `--end`），否则退出码 2。
@@ -231,6 +244,12 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
     --clip /tmp/reclip_work/hdm05_3146_88_2895_127_ext.npz \
     --objective pass --path all --budget-frames 12 \
     --ds-max 0.4 --seeds 0,1 --out /tmp/jab_pass_all.npz
+
+# 身体姿态目标：忽略绝对 root_pos，快速通过末姿态
+PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
+    --clip /tmp/reclip_work/source.npz \
+    --objective pass --path endpoints --root-pos-mode free \
+    --budget-frames 12 --out /tmp/body_pose_pass.npz
 
 # 老 --via 写法：track + all
 PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \

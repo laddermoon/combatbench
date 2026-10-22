@@ -84,6 +84,8 @@ class TargetPath:
     source_clip_id: str
     s_end: float               # 固定为 1.0
     s_max: float               # 1.0 + s_ext
+    root_pos_mode: str         # "absolute" | "free"
+    pose_weights: dict         # resolved jp / rp / rq weights
 ```
 
 核心 API：
@@ -95,6 +97,8 @@ TargetPath.from_clip(
     start_frame: int = 0,
     end_frame: int = -1,
     s_ext: float = 0.1,
+    pose_weights: dict | None = None,
+    root_pos_mode: str | None = None,   # absolute | free
 ) -> TargetPath
 
 path.sample(s: float) -> PoseSample
@@ -126,6 +130,13 @@ pose_error = w_jp * jp_err + w_rp * rp_err + w_rq * rq_err
 ```
 
 第一版可以复用现有 `frame_distance` 的姿态分量权重，但单独抽出 `pose_distance`，不要沿用速度分量。
+
+`root_pos_mode` 决定 `rp` 是否进入上述总分：
+
+- `absolute`：默认，`rp` 参与路径参数化、投影和 terminal pose error；
+- `free`：`rp=0`，只匹配 `root_rot + joint_pos_norm`；`root_pos` 仍保留在路径和输出状态中，`components.rp` 作为诊断保留。
+
+`free` 仅允许 `pass` / `reach-stop`；`track` 必须保持 `absolute`。`pose_weights` 应按“默认权重 + override 字段”合并，不能把未提供的 `jp/rq` 当成 0。
 
 ### 2.3 插值方式
 

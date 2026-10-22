@@ -25,12 +25,14 @@ def _state(root_pos=(0, 0, 1), yaw=0.0, joints=None,
     }
 
 
-def _path(s_ext=0.1):
+def _path(s_ext=0.1, root_pos_mode=None):
     clip = CoreClip.from_states(
         [_state((0, 0, 1), 0.0, np.zeros(21)),
          _state((1, 0, 1), 0.4, np.ones(21))],
         {"clip_id": "src"})
-    return TargetPath.from_clip(clip, "endpoints", s_ext=s_ext)
+    return TargetPath.from_clip(
+        clip, "endpoints", s_ext=s_ext,
+        root_pos_mode=root_pos_mode)
 
 
 def _with_pose(sample, **kwargs):
@@ -101,6 +103,48 @@ def test_reach_stop_reports_zero_velocity_error():
     assert r.event_frame == 1
     assert r.metrics["terminal_vel_error"] > 0.0
     assert r.metrics["terminal_pose_error"] == pytest.approx(0.0)
+
+
+def test_free_root_position_does_not_change_pass_event():
+    path = _path(root_pos_mode="free")
+    ev = ObjectiveEvaluator(path, ReclipObjectiveConfig(
+        kind="pass", time_budget_frames=2, ds_max=1.0))
+    states = [_with_pose(path.sample(0.0)),
+              _with_pose(path.sample(1.0))]
+    for i, st in enumerate(states):
+        st["root_pos"] += np.array(
+            [100.0 * (i + 1), -20.0, 5.0], dtype=np.float32)
+    r = ev.evaluate_rollout(states, np.zeros((1, 21)))
+    assert r.status == "completed"
+    assert r.event_frame == 1
+    assert r.metrics["s_final"] == pytest.approx(1.0)
+    assert r.metrics["terminal_pose_error"] == pytest.approx(0.0)
+    assert (r.terminal_errors["pose"]["components"]["rp"]
+            > 1.0)
+
+
+def test_free_root_position_keeps_reach_stop_body_target():
+    path = _path(root_pos_mode="free")
+    ev = ObjectiveEvaluator(path, ReclipObjectiveConfig(
+        kind="reach-stop", time_budget_frames=2, ds_max=1.0,
+        terminal_vel_weight=0.1))
+    states = [_with_pose(path.sample(0.0)),
+              _with_pose(path.sample(1.0),
+                         joint_vel=np.ones(21),
+                         root_vel=np.ones(3))]
+    states[1]["root_pos"] += np.array([10.0, 5.0, -1.0],
+                                     dtype=np.float32)
+    r = ev.evaluate_rollout(states, np.zeros((1, 21)))
+    assert r.status == "completed"
+    assert r.metrics["terminal_pose_error"] == pytest.approx(0.0)
+    assert r.metrics["terminal_vel_error"] > 0.0
+
+
+def test_track_rejects_free_root_position():
+    with pytest.raises(ValueError, match="absolute root position"):
+        ObjectiveEvaluator(_path(root_pos_mode="free"),
+                           ReclipObjectiveConfig(
+                               kind="track", time_budget_frames=1))
 
 
 def test_reach_state_is_explicitly_unimplemented():

@@ -22,6 +22,7 @@ POSE_WEIGHTS = {
     "rp": DEFAULT_WEIGHTS["rp"],
     "rq": DEFAULT_WEIGHTS["rq"],
 }
+ROOT_POS_MODES = ("absolute", "free")
 VEL_WEIGHTS = {
     "jv": DEFAULT_WEIGHTS["jv"],
     "rv": DEFAULT_WEIGHTS["rv"],
@@ -74,11 +75,54 @@ def pose_dict(state: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             ("root_pos", "root_rot", "joint_pos_norm")}
 
 
+def _merged_pose_weights(
+        weights: Optional[Dict[str, float]]) -> Dict[str, float]:
+    w = dict(POSE_WEIGHTS)
+    if weights is None:
+        return w
+    unknown = set(weights) - set(w)
+    if unknown:
+        raise ValueError(
+            f"unknown pose weight keys: {sorted(unknown)}")
+    w.update({k: float(v) for k, v in weights.items()})
+    return w
+
+
+def resolve_pose_weights(
+        weights: Optional[Dict[str, float]] = None,
+        root_pos_mode: Optional[str] = None
+        ) -> tuple[Dict[str, float], str]:
+    """Resolve partial pose weights and the root-position objective mode.
+
+    ``root_pos_mode='free'`` removes absolute root position from every
+    pose-distance use in TargetPath (parameterization, projection and
+    terminal pose error).  ``rp`` remains reported as a diagnostic
+    component, but does not contribute to ``total``.
+    """
+    w = _merged_pose_weights(weights)
+    if root_pos_mode is None:
+        root_pos_mode = "free" if w["rp"] == 0.0 else "absolute"
+    if root_pos_mode not in ROOT_POS_MODES:
+        raise ValueError(
+            f"unknown root_pos_mode {root_pos_mode!r}; expected "
+            f"one of {ROOT_POS_MODES}")
+    if root_pos_mode == "free":
+        if weights is not None and "rp" in weights \
+                and float(weights["rp"]) != 0.0:
+            raise ValueError(
+                "root_pos_mode='free' conflicts with nonzero rp weight")
+        w["rp"] = 0.0
+    elif w["rp"] == 0.0:
+        raise ValueError(
+            "rp=0 requires root_pos_mode='free'")
+    return w, root_pos_mode
+
+
 def pose_error(a: Dict[str, np.ndarray], b: Dict[str, np.ndarray],
                weights: Optional[Dict[str, float]] = None
                ) -> Dict[str, Any]:
     """Pose-only weighted error (no velocity terms)."""
-    w = dict(POSE_WEIGHTS if weights is None else weights)
+    w = _merged_pose_weights(weights)
     q_rel = _quat_mul_wxyz(_quat_inv_wxyz(b["root_rot"]),
                            a["root_rot"])
     comp = {
@@ -141,7 +185,8 @@ class TargetPath:
                  mode: str, source_clip_id: str,
                  frame_indices: np.ndarray,
                  s_ext: float = 0.1,
-                 pose_weights: Optional[Dict[str, float]] = None) -> None:
+                 pose_weights: Optional[Dict[str, float]] = None,
+                 root_pos_mode: Optional[str] = None) -> None:
         if len(poses) < 2:
             raise ValueError("TargetPath needs at least two poses")
         if s_ext < 0:
@@ -152,8 +197,8 @@ class TargetPath:
         self.s_end = 1.0
         self.s_ext = float(s_ext)
         self.s_max = 1.0 + self.s_ext
-        self.pose_weights = dict(POSE_WEIGHTS if pose_weights is None
-                                 else pose_weights)
+        self.pose_weights, self.root_pos_mode = resolve_pose_weights(
+            pose_weights, root_pos_mode)
 
         self.root_pos = np.stack([p["root_pos"] for p in poses])
         self.root_rot = np.stack([
@@ -176,17 +221,20 @@ class TargetPath:
                        end: Dict[str, np.ndarray],
                        source_clip_id: str = "pose_pair",
                        s_ext: float = 0.1,
-                       pose_weights: Optional[Dict[str, float]] = None
+                       pose_weights: Optional[Dict[str, float]] = None,
+                       root_pos_mode: Optional[str] = None
                        ) -> "TargetPath":
         return cls([pose_dict(start), pose_dict(end)], "endpoints",
                    source_clip_id, np.array([0, 1], dtype=int),
-                   s_ext=s_ext, pose_weights=pose_weights)
+                   s_ext=s_ext, pose_weights=pose_weights,
+                   root_pos_mode=root_pos_mode)
 
     @classmethod
     def from_clip(cls, clip: CoreClip, mode: str = "all",
                   start_frame: int = 0, end_frame: int = -1,
                   s_ext: float = 0.1,
-                  pose_weights: Optional[Dict[str, float]] = None
+                  pose_weights: Optional[Dict[str, float]] = None,
+                  root_pos_mode: Optional[str] = None
                   ) -> "TargetPath":
         end = clip.T - 1 if end_frame < 0 else int(end_frame)
         start = int(start_frame)
@@ -201,7 +249,8 @@ class TargetPath:
             raise ValueError(f"unknown path mode {mode!r}")
         poses = [pose_dict(clip.state(int(k))) for k in idx]
         return cls(poses, mode, clip.clip_id, idx,
-                   s_ext=s_ext, pose_weights=pose_weights)
+                   s_ext=s_ext, pose_weights=pose_weights,
+                   root_pos_mode=root_pos_mode)
 
     def _parameterize(self) -> np.ndarray:
         """Arc-length-like knot parameterization by weighted pose error."""

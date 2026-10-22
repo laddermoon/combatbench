@@ -265,6 +265,9 @@ def reclip_path_sweep(
                 "s_end": path.s_end,
                 "s_ext": path.s_ext,
                 "s_max": path.s_max,
+                "root_pos_mode": path.root_pos_mode,
+                "pose_weights": {
+                    k: float(v) for k, v in path.pose_weights.items()},
             },
             "solver": {
                 "method": "path_sweep",

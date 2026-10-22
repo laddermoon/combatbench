@@ -125,7 +125,9 @@ action；转换自 RefClip 时是该帧参考关节角的归一化 PD 目标。
     "knot_s": [0.0, 0.4, 1.0],
     "s_end": 1.0,
     "s_ext": 0.1,
-    "s_max": 1.1
+    "s_max": 1.1,
+    "root_pos_mode": "absolute | free",
+    "pose_weights": {"jp": 1.0, "rp": 1.0, "rq": 0.5}
   },
   "solver": {
     "method": "path_sweep",
@@ -173,6 +175,12 @@ action；转换自 RefClip 时是该帧参考关节角的归一化 PD 目标。
 `event` 对 `track` 为 `null`；`pass` / `reach-stop` 在首个
 `s>=1` 的控制帧记事件。
 
+`root_pos_mode="free"` 表示 `root_pos` 不参与路径参数化、投影、
+path error 或 terminal pose error；该模式仅用于 `pass` /
+`reach-stop`，`track` 必须保持 `absolute`。即使在 `free` 模式，
+`root_pos` 仍完整保存在输出状态和 `replay_error` 中；`pose_error`
+的 `components.rp` 也仍会记录原始根位置偏差，便于诊断漂移。
+
 ## 7. 统一 CLI
 
 所有 clip 操作经单一入口（`clip/cli.py` + `clip/__main__.py`）：
@@ -187,7 +195,8 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
   rederive-action --clip x.npz [--out y.npz --weights ... --tol-solved .05]
   reclip   (--clip x.npz | --start s.npz [--end e.npz|--via g.npz])
            [--objective track|pass|reach-stop|reach-state]
-           [--path endpoints|all] [--method path-sweep|sweep|greedy|mpc]
+           [--path endpoints|all] [--root-pos-mode absolute|free]
+           [--method path-sweep|sweep|greedy|mpc]
            [--budget-frames N | --time-budget S | --budget-search a,b,c]
            --out r.npz
   convert  --ref-id <id> --dir <clips_dir> --out x.npz [--start --end]
@@ -213,7 +222,8 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip <cmd>
 - `CoreClipRecorder.record_sim(sim, action)` —— 运行中录制。
 - `checks.run_checks(clip)` —— 程序化检查入口（返回 `SectionResult` dict）。
 - `target_path.TargetPath` —— 连续姿态路径 `q=γ(s)`，支持
-  `endpoints` / `all`、局部单调投影和有界 `s>1` 外延。
+  `endpoints` / `all`、局部单调投影、有界 `s>1` 外延，以及
+  `root_pos_mode=absolute|free` 的根位置目标模式。
 - `objective_evaluator.ObjectiveEvaluator` —— `track` / `pass` /
   `reach-stop` 的 rollout 进度、事件和指标。
 - `path_reclip.reclip_path_sweep` / `reclip_time_search` ——

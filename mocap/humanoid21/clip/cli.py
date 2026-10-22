@@ -134,19 +134,36 @@ def _cmd_reclip(args) -> int:
               file=sys.stderr)
         return 2
 
+    if args.method != "path-sweep" and args.root_pos_mode is not None:
+        print("[reclip] --root-pos-mode requires --method path-sweep",
+              file=sys.stderr)
+        return 2
+
     if args.method == "path-sweep":
         from .objective_evaluator import ReclipObjectiveConfig
         from .path_reclip import (reclip_path_sweep,
                                   reclip_time_search)
-        from .target_path import TargetPath
+        from .target_path import TargetPath, resolve_pose_weights
 
-        pose_weights = None
+        weight_overrides = {}
         if args.weights:
-            pose_weights = {}
-            for kv in args.weights.split(","):
-                k, v = kv.split("=")
-                if k.strip() in ("jp", "rp", "rq"):
-                    pose_weights[k.strip()] = float(v)
+            try:
+                for kv in args.weights.split(","):
+                    k, v = kv.split("=")
+                    key = k.strip()
+                    if key not in ("jp", "rp", "rq"):
+                        raise ValueError(key)
+                    weight_overrides[key] = float(v)
+            except ValueError as exc:
+                print("[reclip] --weights must be a CSV of "
+                      "jp=...,rp=...,rq=...", file=sys.stderr)
+                return 2
+        try:
+            pose_weights, root_pos_mode = resolve_pose_weights(
+                weight_overrides or None, args.root_pos_mode)
+        except ValueError as exc:
+            print(f"[reclip] {exc}", file=sys.stderr)
+            return 2
         if via is not None:
             path_mode = args.path or "all"
             path_src = via
@@ -162,6 +179,10 @@ def _cmd_reclip(args) -> int:
         if kind == "track" and path_mode != "all":
             print("[reclip] track requires --path all", file=sys.stderr)
             return 2
+        if kind == "track" and root_pos_mode == "free":
+            print("[reclip] track requires --root-pos-mode absolute",
+                  file=sys.stderr)
+            return 2
         if path_mode == "all" and path_src is None:
             print("[reclip] --path all requires --clip or --via",
                   file=sys.stderr)
@@ -173,11 +194,13 @@ def _cmd_reclip(args) -> int:
                     path_src, path_mode,
                     start_frame=args.start_frame,
                     end_frame=args.end_frame,
-                    s_ext=args.s_ext, pose_weights=pose_weights)
+                    s_ext=args.s_ext, pose_weights=pose_weights,
+                    root_pos_mode=root_pos_mode)
             else:
                 path = TargetPath.from_clip(
                     path_src, path_mode, s_ext=args.s_ext,
-                    pose_weights=pose_weights)
+                    pose_weights=pose_weights,
+                    root_pos_mode=root_pos_mode)
             if path_mode == "all" and path_src.ref_action is not None:
                 if path_src is source_clip:
                     end_i = (args.end_frame if args.end_frame >= 0
@@ -194,7 +217,8 @@ def _cmd_reclip(args) -> int:
             path = TargetPath.from_pose_pair(
                 start, end_clip.state(end_i),
                 source_clip_id=f"{start_clip.clip_id}->{end_clip.clip_id}",
-                s_ext=args.s_ext, pose_weights=pose_weights)
+                s_ext=args.s_ext, pose_weights=pose_weights,
+                root_pos_mode=root_pos_mode)
             init_a = None
 
         search_budgets = None
@@ -432,6 +456,11 @@ def main(argv=None) -> int:
     p.add_argument("--path", default=None,
                    choices=("endpoints", "all"),
                    help="TargetPath construction mode")
+    p.add_argument("--root-pos-mode", default=None,
+                   choices=("absolute", "free"),
+                   help="path-sweep root-position objective mode: "
+                        "absolute (default) uses rp; free removes "
+                        "root_pos from path/pose errors")
     p.add_argument("--budget-frames", type=int, default=None,
                    help="control-frame action budget for path-sweep")
     p.add_argument("--time-budget", type=float, default=None,

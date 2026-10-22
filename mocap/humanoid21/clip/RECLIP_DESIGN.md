@@ -213,6 +213,29 @@ s_k = argmin_s pose_distance(q_k, γ(s))
 
 “单调前进”约束的是统一进度 `s`，不是每个关节都单调。路径本身可以包含先收后放、转腰再回正等协调动作。
 
+#### 根位置目标模式
+
+`TargetPath` 的姿态距离始终计算 `jp` / `rp` / `rq` 三个诊断分量，但可通过 `root_pos_mode` 决定 `rp` 是否进入加权总分：
+
+- `absolute`：默认模式；绝对根位置参与路径参数化、投影、路径误差和 terminal pose error；
+- `free`：`rp=0`；路径仍记录和插值 `root_pos`，但进度只由 `root_rot + joint_pos_norm` 决定。`rp` 原始误差仍作为 component 保留，便于诊断水平/高度漂移。
+
+`free` 适用于 `pass` 和 `reach-stop`，用于“身体姿态到达目标、但不要求回到固定世界坐标”的任务。`track` 必须保持 `absolute`，否则同步复刻目标的语义不完整。
+
+`free` 是**完全忽略绝对根位置**，包括 x/y/z。它不是 init-frame relative position：如果后续需要“保留从初始状态出发的相对位移”或“只忽略 x/y、保留 z”，应增加独立的 relative/free-xy 模式，而不是复用 `free`。
+
+API / CLI 形式：
+
+```python
+TargetPath.from_pose_pair(start, end, root_pos_mode="free")
+```
+
+```bash
+clip reclip ... --objective pass --root-pos-mode free
+```
+
+`pose_weights` 仍可用于调 `jp` / `rp` / `rq` 权重；`root_pos_mode="free"` 会固定 `rp=0` 并拒绝非零 `rp` override。`track + free` 由 evaluator 和 CLI 显式拒绝。
+
 ### 4.5 路径外延
 
 **[原始构想]** `pass` 目标中，机器人可以“走过终点”，目标路径需要支持外延。

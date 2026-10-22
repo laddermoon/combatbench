@@ -5,7 +5,8 @@ from scipy.spatial.transform import Rotation as _R
 
 from mocap.humanoid21.clip.core_clip import CoreClip
 from mocap.humanoid21.clip.target_path import (
-    TargetPath, pose_error, velocity_error)
+    POSE_WEIGHTS, TargetPath, pose_error, resolve_pose_weights,
+    velocity_error)
 
 
 def _state(rng, root_pos=(0, 0, 1), yaw=0.0, joints=None):
@@ -112,3 +113,63 @@ def test_pose_path_ignores_intermediate_velocity():
 
     assert pose_error(s0, different_velocity) == pose_error(s0, s0)
     assert velocity_error(s0, different_velocity)["total"] > 0.0
+
+
+def test_pose_weight_overrides_merge_with_defaults():
+    w, mode = resolve_pose_weights({"jp": 0.25}, "absolute")
+    assert mode == "absolute"
+    assert w["jp"] == pytest.approx(0.25)
+    assert w["rp"] == pytest.approx(POSE_WEIGHTS["rp"])
+    assert w["rq"] == pytest.approx(POSE_WEIGHTS["rq"])
+
+    w, mode = resolve_pose_weights({"rp": 0.0})
+    assert mode == "free"
+    assert w["rp"] == 0.0
+    assert w["jp"] == pytest.approx(POSE_WEIGHTS["jp"])
+    assert w["rq"] == pytest.approx(POSE_WEIGHTS["rq"])
+
+    with pytest.raises(ValueError, match="rp=0"):
+        resolve_pose_weights({"rp": 0.0}, "absolute")
+    with pytest.raises(ValueError, match="nonzero rp"):
+        resolve_pose_weights({"rp": 1.0}, "free")
+    with pytest.raises(ValueError, match="unknown pose weight"):
+        pose_error(_state(np.random.default_rng(1)),
+                   _state(np.random.default_rng(2)), {"bad": 1.0})
+
+
+def test_free_root_position_excludes_root_motion_from_knot_spacing():
+    rng = np.random.default_rng(16)
+    s0 = _state(rng, (0, 0, 1), yaw=0.0,
+                joints=np.zeros(21))
+    moved_same_body = _state(rng, (5, -3, 0.7), yaw=0.0,
+                             joints=np.zeros(21))
+    s2 = _state(rng, (8, -4, 0.6), yaw=0.8,
+                joints=np.ones(21))
+    free_path = TargetPath.from_clip(
+        _clip([s0, moved_same_body, s2]), "all",
+        root_pos_mode="free")
+    absolute_path = TargetPath.from_clip(
+        _clip([s0, moved_same_body, s2]), "all")
+
+    assert free_path.knot_s[1] < 1e-6
+    assert absolute_path.knot_s[1] > 0.5
+
+
+def test_free_root_position_makes_projection_translation_invariant():
+    rng = np.random.default_rng(15)
+    s0 = _state(rng, (0, 0, 1), yaw=0.0,
+                joints=np.zeros(21))
+    s1 = _state(rng, (4, -2, 0.8), yaw=0.6,
+                joints=np.ones(21))
+    path = TargetPath.from_pose_pair(
+        s0, s1, root_pos_mode="free")
+    assert path.root_pos_mode == "free"
+    assert path.pose_weights["rp"] == 0.0
+
+    translated = dict(s1)
+    translated["root_pos"] = s1["root_pos"] + np.array(
+        [100.0, -50.0, 10.0], dtype=np.float32)
+    proj = path.project(translated, s_hint=0.9, ds_max=0.2)
+    assert proj.s == pytest.approx(1.0)
+    assert proj.errors["total"] == pytest.approx(0.0, abs=1e-7)
+    assert proj.errors["components"]["rp"] > 1.0

@@ -85,9 +85,10 @@
 ### 3.4 根位置语义
 
 - 本实验的目标是固定“身体姿态”，不是固定世界坐标；
-- `pass` 目标评估应先支持忽略绝对 `root_pos` 的模式；
-- 根位置仍在输出 CoreState 中记录和报告，但不参与该实验的路径进度/姿态目标；
-- 后续如果需要约束水平位移，可另加“只忽略 x/y、保留 z”或“init-frame relative root position”模式。
+- Reclip 使用 `root_pos_mode="free"`：`rp=0`，绝对 `root_pos` 不参与路径参数化、投影、路径误差或 terminal pose error；
+- 根位置仍完整保留在 `TargetPath`、输出 CoreState、`replay_error` 和 `pose_error.components.rp` 中，便于诊断；
+- `free` 会忽略完整 x/y/z，包括根高度；后续如果需要约束水平位移，可另加“只忽略 x/y、保留 z”或“init-frame relative root position”模式；
+- `track` 明确不支持 `free`，避免破坏“同步复刻”的语义。
 
 ### 3.5 训练 policy 输出
 
@@ -121,23 +122,24 @@
 
 ---
 
-### T0.5. Position-free 姿态目标
+### T0.5. Position-free 姿态目标（已实现）
 
 **关键点**
 
-- 让 `pass` / `reach-stop` 的路径投影、路径误差和 terminal pose error 支持忽略绝对 `root_pos`；
-- 第一版目标语义是“body pose only”，即只匹配 `root_rot + joint_pos_norm`；
-- `root_pos` 仍保留在 TargetPath / CoreClip / metrics 中，便于诊断，但不进入该实验的 pose score；
-- `track` 暂不使用 position-free，避免破坏“同步复刻”的语义；
-- 优先复用现有 `TargetPath.pose_weights`：将 `rp` 权重置 0；
-- 若需要保留根高度约束，再扩展为 `rp_xy` / `rp_z` 分项。
+- `TargetPath` 新增 `root_pos_mode="absolute"|"free"`；
+- `free` 将 `rp` 固定为 0，使 `pass` / `reach-stop` 的路径参数化、路径投影、path error 和 terminal pose error 只由 `root_rot + joint_pos_norm` 决定；
+- `root_pos` 仍保留在 TargetPath / CoreClip / replay metrics / `pose_error.components.rp` 中，便于诊断；
+- `track` 明确拒绝 `free`，避免破坏“同步复刻”的语义；
+- `pose_weights` override 与默认权重合并，避免只写 `rp=0` 时把 `jp/rq` 意外清零；
+- 若需要保留根高度约束，后续再扩展 `rp_xy` / `rp_z` 或 init-relative 模式。
 
 **产出**
 
-- position-free pose weight / objective 配置；
-- 单元测试覆盖 `pass` 与 `reach-stop`；
-- CLI / metadata 中能看出该 run 是否忽略 root position；
-- 一份小样本 Reclip 验证：即使根位置不同，投影和 event 也只由身体姿态推进。
+- `TargetPath.root_pos_mode` 与 `resolve_pose_weights()`；
+- CLI `--root-pos-mode free`；
+- `meta["reclip"]["path"]["root_pos_mode"]` 与 `pose_weights`；
+- `pass` / `reach-stop` / `track` 约束与位置平移不变性单元测试；
+- 小型 path-sweep CLI 验证：输出记录 `root_pos_mode=free` 且 `rp=0`。
 
 ---
 
@@ -412,7 +414,7 @@ num_components=3
 |---|---|---|
 | D1 | 目标 CoreClip 放在哪里 | 把 `/tmp/.../cmu_144_20_m_seg01_pass_ep.npz` 冻结到 `mocap/humanoid21/clip/data/reclip_bc/target/` |
 | D2 | target frame | 使用 `pass_ep` 输出末帧 `state(6)` |
-| D3 | 目标根位置语义 | `position-free`：只匹配身体姿态，不匹配绝对 `root_pos` |
+| D3 | 目标根位置语义 | `root_pos_mode="free"`：只匹配 `root_rot + joint_pos_norm`，不匹配绝对 `root_pos` |
 | D4 | 每个 init 的路径 | `init -> target` 的 `endpoints` 路径 |
 | D5 | Reclip objective | `pass`，快速穿过目标，不要求停止 |
 | D6 | 控制机器人 | `robot_a`；`robot_b` 固定 canonical idle |
