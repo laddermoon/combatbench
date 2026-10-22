@@ -26,6 +26,7 @@ from .model_spec import CentroidalModelSpec, RobotModelSpec, build_model_spec
 from .external_loads import ExternalLoadNormalizer
 from .balance import momentum_balance
 from .probe import PhysicsStepProbe, ProbeStepResult
+from .domain import CentroidalDomainChecker, ContactAssessment, DomainLimits
 from .state import (
     CentroidalStateExtractor,
     ConsistencyTolerances,
@@ -43,8 +44,11 @@ __all__ = [
     "CentroidalModelSpec",
     "CentroidalState",
     "CentroidalStateExtractor",
+    "CentroidalDomainChecker",
     "ConsistencyTolerances",
+    "ContactAssessment",
     "DomainIssue",
+    "DomainLimits",
     "DomainReport",
     "ExternalLoad",
     "ExternalLoadNormalizer",
