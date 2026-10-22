@@ -101,7 +101,7 @@ dq_target/dt = dγ/ds · ds/dt
 |---|---|---:|---|---|
 | 1 | `track` | 是 | 同步复刻每帧姿态（中间速度不作目标） | 完成源时长，报告整段姿态跟踪误差 |
 | 2 | `reach-state` | 否 | 沿路径单调前进 | 路径进度到达 1，报告末姿态和末速度误差（暂不实现） |
-| 3 | `reach-stop` | 否 | 沿路径单调前进，允许提前制动 | 到达末姿态，并达到/保持静止 |
+| 3 | `reach-stop` | 否 | 沿路径单调前进，允许提前制动 | 路径进度到达 1，末速度尽量接近零并报告误差 |
 | 4 | `pass` | 否 | 沿路径单调前进 | 正向通过末姿态邻域，末速度自由 |
 
 ### 3.2 `track`：复刻目标轨迹
@@ -135,22 +135,17 @@ report: vel_error(v(t_goal), v_end)
 
 ### 3.4 `reach-stop`：最速到达目标姿态并静止
 
-**[原始构想]** 忽略源末速度，以最快速度到达目标姿态并停止。
+**[原始构想]** 忽略源末速度，以最快速度到达目标姿态并尽量停止。
 
-完成条件：
-
-```text
-| q(t_goal) - q_end | <= tol_pose
-| v(t_goal) |       <= tol_vel
-```
-
-**[新增建议]** “速度接近零”不能只看某一瞬间。机器人可能在翻转最高点瞬时低速但下一刻继续倒下。建议增加短暂保持验证：
+完成主轴仍是路径进度：当 `s` 到达 1 时认为路径终点已经到达，并报告：
 
 ```text
-在 t_goal 后 hold_ms 内，姿态和速度均保持在容差内
+s(t_goal) = 1
+report: pose_error(q(t_goal), q_end)
+report: vel_error(v(t_goal), 0)
 ```
 
-报告中分别给出到达时间和保持验证结果。
+**[原始构想]** 不额外加入“保持一段时间不倒”的验证。Reclip 当前主要解决短连续动作的生成问题，不为复杂失稳/恢复场景增加优化目标或判据。
 
 ### 3.5 `pass`：最速通过目标姿态
 
@@ -232,7 +227,7 @@ s_k = argmin_s pose_distance(q_k, γ(s))
 - 初始状态必须包含初始速度，否则仿真起点不完整；
 - `track` 通过同步姿态时间点和当前速度自然产生运动牵引，不设置中间速度匹配目标；
 - `reach-state` 将源末速度作为软性末端参考并报告误差；该目标暂不实现；
-- `reach-stop` 使用零速度作为终端条件；
+- `reach-stop` 将零速度作为末端参考并报告误差；
 - `pass` 不约束末速度。
 
 **[新增建议]** 首尾速度不一定与路径端点切线同向。仅改变 `ds/dt` 只能改变沿路径方向的速度大小，不能改变速度方向。因此第一版需要处理三种情况：
@@ -277,7 +272,7 @@ J = -w_progress · 进度收益
 
 - `track`：同步时间点的姿态误差为主；
 - `reach-state`：进度收益 + 末端姿态误差 + 末端速度误差（后段软性目标，暂不实现）；
-- `reach-stop`：进度收益 + 末端姿态/零速度 + 保持验证；
+- `reach-stop`：进度收益 + 末端姿态误差 + 零速度误差；
 - `pass`：通过时间 + 路径偏差，末速度不计入终端误差。
 
 **[新增建议]** 综合评分只用于优化排序；最终“是否更快”必须按明确指标报告，例如首次满足条件的物理时间、路径偏差、末速度误差和完整回放误差，不能只拿综合分说更快。
@@ -361,7 +356,7 @@ J = -w_progress · 进度收益
 
 - `track`：只检查同步姿态；末端速度是否作为完成条件由调用方另行指定；
 - `reach-state`：报告末端速度误差，但不设硬完成阈值；该目标暂不实现；
-- `reach-stop`：末端速度必须接近零，并通过保持验证；
+- `reach-stop`：报告末端零速度误差，不额外做保持验证；
 - `pass`：默认无末端速度约束。
 
 ### 8.3 子步事件检测
@@ -403,7 +398,7 @@ sim(output_clip[k], ref_action[k]) -> output_clip[k+1]
   "path": {"mode": "endpoints", "length": 1.0},
   "status": "completed | budget_exhausted | failed",
   "event": {"type": "pass", "time": 0.374},
-  "tolerances": {"pose": ..., "vel": ..., "hold_ms": ...},
+  "tolerances": {"pose": ..., "vel": ...},
   "metrics": {
     "path_error_mean": ...,
     "path_error_max": ...,
@@ -477,7 +472,7 @@ sim(output_clip[k], ref_action[k]) -> output_clip[k+1]
 
 ### 阶段 4：补齐 `reach-stop`
 
-- `reach-stop`：零速度 + 保持验证；
+- `reach-stop`：末端零速度误差；
 - 边界速度冲突检测；
 - 多预算时间搜索；
 - `reach-state` 暂不实现，仅在目标和接口设计中保留语义占位。
@@ -492,7 +487,7 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
     --objective track|reach-state|reach-stop|pass \
     --path endpoints|all \
     --time-budget 0.60 \
-    [--tol-pose ... --tol-vel ... --hold-ms 200] \
+    [--tol-pose ... --tol-vel ...] \
     [--method sweep --sweeps 3 --seed 0] \
     --out result.npz
 ```
@@ -521,8 +516,8 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
 6. **`pass` 需要物理子步事件检测；路径外延已确定为 `s` 少量超过 1。**
    好处是能真实表达“穿过目标”；代价是实现复杂度增加。
 
-7. **`reach-stop` 加入保持验证。**  
-   好处是避免把瞬时低速误判为静止；代价是完成时间略长于首次低速时刻。
+7. **`reach-stop` 不做额外保持验证（已确认）。**
+   Reclip 当前面向短连续动作生成，不针对复杂失稳/恢复场景增加优化目标或判据；末端只报告零速度误差。
 
 8. **“最快”只承诺求解器和预算下找到的最短时间。**  
    好处是语义诚实；代价是不能宣称全局时间最优。
