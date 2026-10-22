@@ -1,0 +1,15 @@
+{
+  "experiment": "reclip_bc_cmu_strike_v1",
+  "target_clip_path": "mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/target_clip.npz",
+  "target_video_path": "mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/target_video.mp4",
+  "source_tmp_clip": "/tmp/reclip_work/path_wp7/cmu_144_20_m_seg01_pass_ep.npz",
+  "source_clip_id": "cmu_144_20_m_seg01_core_reclip",
+  "target_frame": 6,
+  "target_T": 7,
+  "objective": "pass",
+  "path_mode": "endpoints",
+  "root_pos_mode": "free",
+  "policy_obs_contract": "obs57 + zeros9 -> action21",
+  "control_robot": "robot_a",
+  "other_robot": "fixed_canonical_idle"
+}

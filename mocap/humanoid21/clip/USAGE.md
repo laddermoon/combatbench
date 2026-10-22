@@ -261,6 +261,92 @@ PYTHONPATH=. python3 -m mocap.humanoid21.clip reclip \
 输出的 `basic` 检查仍会继承该问题；`fix` 会改变 root_pos 并破坏
 "ref_action 精确回放"语义，不能把它当作 reclip 的后处理。
 
+## `reclip_bc` —— warmup init -> position-free expert pipeline
+
+`mocap.humanoid21.clip.reclip_bc` 是 Reclip→BC 的批量数据管线，
+面向冻结 warmup policy 初始状态采样、批量 position-free `pass`
+求解和 expert 筛选。它是独立模块入口，不走 `clip <cmd>` 子命令。
+
+### 1. 采样初始 CoreState
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip.reclip_bc sample-inits \
+    --out-dir data/reclip_bc/pilot_v1 \
+    --count 16 --seed 20261022 --shard-size 8 \
+    --policy-export baseline/runs/train_skill_full_mbs_ppo_20261020_104315/policy_exports/u06689
+```
+
+默认从 `WARMUP_SKILLS` 中采样非 strike 技能（`move_fwd/back,
+move_left/right, turn_left/right, step`），steps 默认 `0–30`，
+command scale 默认 `0.6–1.0`。输出：
+
+- `init_states/shard_*.npz`：每个 NPZ 是一组独立 CoreState，
+  `semantics=independent_core_states_not_a_trajectory`；
+- `init_manifest.jsonl`：`init_id -> shard/frame/warmup metadata`；
+- `init_summary.json`：技能、steps、root height/yaw/speed 分布。
+
+同一 `out_dir/count/seed` 重跑会 resume，不重复写已完成 `init_id`。
+
+### 2. 批量生成 position-free pass expert
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip.reclip_bc experts \
+    --init-dir data/reclip_bc/pilot_v1 \
+    --target data/reclip_bc/cmu_strike_target/target_clip.npz \
+    --target-frame -1 \
+    --out-dir data/reclip_bc/pilot_v1/experts \
+    --budget-frames 16 --ds-max 0.5 --s-ext 0.1 --post-frames 1 \
+    --sweeps 1 --n-samples 8 --n-iters 1 --seeds 0 --workers 4
+```
+
+每个 init 都构造：
+
+```text
+TargetPath.from_pose_pair(init_state, target_state,
+                          root_pos_mode="free")
+ReclipObjectiveConfig(kind="pass")
+```
+
+输出：
+
+- `expert_clips/<init_id>.npz`：仅 `completed` 时保存（除非
+  `--save-all`）；
+- `reclip_results.jsonl`：**append-only solver attempt log**；
+- `solver_summary.json`：按 `init_id` 取 latest attempt 的结果，并另记
+  `attempt_count` / `attempt_status_counts`。
+
+Resume 语义：
+
+- 不加 `--retry-failures`：任何已有 `init_id` 记录都视为完成，
+  用于继续追加新 init；
+- 加 `--retry-failures`：只跳过 latest/历史中已 `completed` 的
+  `init_id`，失败样本会追加新的 attempt 记录。
+
+### 3. 筛选 expert
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.clip.reclip_bc filter \
+    --results data/reclip_bc/pilot_v1/experts/reclip_results.jsonl \
+    --accepted data/reclip_bc/pilot_v1/quality/accepted_results.jsonl \
+    --rejected data/reclip_bc/pilot_v1/quality/rejected_results.jsonl \
+    --summary data/reclip_bc/pilot_v1/quality/quality_summary.json
+```
+
+筛选会先按 `init_id` 只保留最后一次 solver attempt，再检查：
+
+- `status == completed`；
+- `event_frame` 存在；
+- `fall_count == 0`；
+- 独立 `ref_action` replay 指标均不超过 `--replay-tol`；
+- `clip_path` 存在；
+- 可选 `--terminal-pose-max` / `--path-error-max` /
+  `--action-saturation-max`。
+
+注意：`reclip_results.jsonl` 可包含同一 init 的多次 retry，不能把行数
+直接当作初始状态数；以 `quality_summary.total` 或 latest attempt 为准。
+
+---
+
 ## `convert` —— retarget clip 转换
 
 ```bash

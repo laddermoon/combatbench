@@ -181,6 +181,12 @@ path error 或 terminal pose error；该模式仅用于 `pass` /
 `root_pos` 仍完整保存在输出状态和 `replay_error` 中；`pose_error`
 的 `components.rp` 也仍会记录原始根位置偏差，便于诊断漂移。
 
+批量 Reclip→BC 管线生成的 expert clip 还会带
+`meta["reclip_bc"]`，记录跨阶段 lineage：`init_id`、完整 warmup
+`init_record`、`target_clip_id`、`target_frame` 和训练 policy 契约
+（当前为 `obs57 + zeros9 -> action21`）。这些字段不改变 CoreState
+数据格式，只用于追踪该 expert 是从哪个初始状态、哪个目标姿态生成。
+
 ## 7. 统一 CLI
 
 所有 clip 操作经单一入口（`clip/cli.py` + `clip/__main__.py`）：

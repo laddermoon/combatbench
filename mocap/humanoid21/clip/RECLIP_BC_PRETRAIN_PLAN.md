@@ -1,6 +1,6 @@
 # Reclip 批量专家数据 + BC 预训练实验计划
 
-> 状态：计划草案，待执行  
+> 状态：T0–T4 已实现并完成 16-state pilot；T5+ 待实现  
 > 日期：2026-10-22  
 > 范围：`mocap/humanoid21/clip` 与其依赖的 Humanoid21 / CommandSimulator / PPO 组件
 
@@ -143,7 +143,7 @@
 
 ---
 
-### T1. 初始状态采样器
+### T1. 初始状态采样器（已实现）
 
 **关键点**
 
@@ -162,7 +162,7 @@
 
 ---
 
-### T2. 目标姿态构造器
+### T2. 目标姿态构造器（已实现）
 
 **关键点**
 
@@ -180,7 +180,7 @@
 
 ---
 
-### T3. Batch Reclip 求解器
+### T3. Batch Reclip 求解器（已实现，含 retry）
 
 **关键点**
 
@@ -201,7 +201,7 @@
 
 ---
 
-### T4. Expert 质量筛选
+### T4. Expert 质量筛选（已实现，latest attempt）
 
 **关键点**
 
@@ -334,7 +334,7 @@ num_components=3
 
 ---
 
-### T9. Pilot 批次
+### T9. Pilot 批次（小规模 pilot 已执行，100–300 仍待）
 
 **关键点**
 
@@ -405,6 +405,46 @@ num_components=3
 - `baseline/experiments_ppo/exp_reclip_bc_finetune.py`
 - 对应 env blueprint
 - `reports/bc_vs_rl_finetune.json`
+
+### Pilot v1（16-state smoke）
+
+实现入口：`mocap.humanoid21.clip.reclip_bc`，包含 `sample-inits`、
+`experts`、`filter` 三个命令。冻结目标已放入
+`data/reclip_bc/cmu_strike_target/`；pilot 数据放在
+`data/reclip_bc/pilot_v1/`。
+
+**初始状态：** 用冻结 `u06689` 采样 16 个 `robot_a` warmup 末态，
+2 个 shard，每个 8 个状态。技能分布为 `step=4, move_right=4,
+move_fwd=3, turn_right=2, move_back=1, move_left=1, turn_left=1`；
+warmup steps `1–28`，均值 `12.875`。
+
+**Reclip 策略阶梯：** 先用 `budget=6`，随后对失败样本以
+`10 -> 12 -> 16` 重试；均使用 `pass + endpoints +
+root_pos_mode=free`，`ds_max=0.5, s_ext=0.1, post_frames=1,
+sweeps=1, n_samples=8, n_iters=1, seed=0, workers=4`。
+
+**结果：** `reclip_results.jsonl` 是 attempt log，共 64 次尝试；
+T4 按 `init_id` 取最后一次 attempt，16 个初始状态中 4 个 accepted、
+12 个 rejected（accept rate `0.25`）。4 条 accepted expert 均在
+`event_frame=16` 通过 `s>=1`，`fall_count=0`，root/joint replay
+误差为 0，action saturation `0.003–0.027`。
+
+**accepted：** `init_000002(move_fwd,18)`、
+`init_000003(step,27)`、`init_000011(step,25)`、
+`init_000014(move_right,11)`。kinematic 预览视频在
+`data/reclip_bc/pilot_v1/videos/`。
+
+**主要发现：**
+
+- `budget<=12` 时多数样本已到 `s≈0.83–0.98`，失败主要是预算不足；
+- 绝对 yaw 仍是约束，`turn_left/right` 初始状态在当前两点 free-root
+  路径下最难，最终没有转身样本 accepted；
+- 对 10k 扩展不能直接按 16-frame 全量跑，应采用 cheap-first
+  `budget=6/8`、再对 near-miss 重试更强档位；
+- `reclip_results.jsonl` 保留所有 solver attempts，summary/filter
+  必须按 `init_id` 去重取 latest，避免 retry 放大失败数。
+
+---
 
 ## 5. 当前仍需决策的点
 
