@@ -14,11 +14,11 @@
 ```text
 left:
   [t0, t1] -> p_left_0
-  [t3, t5] -> p_left_1
+  [t3, ∞)   -> p_left_1
 
 right:
   [t0, t2] -> p_right_0
-  [t4, t5] -> p_right_1
+  [t4, ∞)  -> p_right_1
 ```
 
 区间是逐脚独立的时间序列：一只脚可以出现多个支撑区间以重复迈步；
@@ -77,22 +77,25 @@ z=(c,l,L)
 SupportInterval:
     foot: Literal["left", "right"]
     start_time: float
-    end_time: float
+    end_time: Optional[float] # None 表示最后支撑点，持续到规划结束
     point_world: np.ndarray   # (3,)
 ```
 
-数据层只校验字段本身：`foot` 合法、`start_time < end_time`、
-`point_world` 为有限 `(3,)` 向量。同一只脚的时间区间不得重叠，因为
-同一时刻不能声明它位于两个不同支撑点；相邻或重复的多个区间合法。
-左右脚之间不做数据层关联约束，任意支撑组合都可以表示，包括双脚
-同时不支撑。
+`end_time=None` 表示这是最后一段支撑：该脚不再切换支撑点，规划器
+应在当前任务 horizon 内把它解释为“保持在该点并收敛到平衡”的目标，
+而不是缺少截止时间的数据错误。
+
+数据层只校验字段本身：`foot` 合法、`point_world` 为有限 `(3,)` 向量；
+若 `end_time` 非空则要求 `start_time < end_time`。同一只脚的时间区间
+不得重叠，`end_time=None` 后不能再有后续区间；相邻或重复的多个
+区间合法。左右脚之间不做数据层关联约束，任意支撑组合都可以表示，
+包括双脚同时不支撑。
 
 规划器内部可以按采样时刻求活动支撑集合，并据此决定双脚、单脚或
 腾空段的动力学；是否接受这些组合属于具体任务或规划器约束。
 
-输入本身不包含平衡标记。第一轮任务的“初始站稳、末端站稳”由任务
-配置单独给出，例如 `settle_start` / `settle_end` 或最终保持时长；
-在这些窗口内，规划目标为：
+开放式最终支撑区间天然给出末端保持窗口；第一轮任务也可以用任务
+配置额外指定初始保持时长。保持窗口内的规划目标为：
 
 \[
 l\approx0,\qquad L\approx0
@@ -118,7 +121,7 @@ branch simulation 和实际 rollout 验收，而不是由支撑输入声明。
 ```text
 初始 CentroidalState
 左右脚 SupportInterval 列表
-任务结束与最终保持窗口
+任务 horizon 与可选初始保持窗口
 质心参考高度 / 高度包络
 每脚允许作用区域与受力约束
 阶段持续时间边界
