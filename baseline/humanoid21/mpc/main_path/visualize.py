@@ -9,7 +9,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import animation
-from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Rectangle
 import numpy as np
 
 from .contracts import MainPathState, SupportInterval, SupportSchedule
@@ -52,45 +52,28 @@ def animate_support_schedule(
     title: str = "Support schedule playback",
     fps: int = 20,
 ) -> Path:
-    """Render a generic MP4 playback for one support-sequence result."""
+    """Render a real-time 2D MP4 playback for one support sequence."""
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     if not np.isfinite(fps) or fps <= 0:
         raise ValueError("fps must be positive")
 
-    t0 = float(state.time)
-    duration = float(schedule.horizon - t0)
+    duration = float(schedule.horizon - state.time)
     if duration <= 0.0:
         raise ValueError("schedule horizon must be after state.time")
-    frame_count = max(2, int(np.ceil(duration * fps)) + 1)
-    frame_times = np.linspace(t0, schedule.horizon, frame_count)
-    curve_times = np.linspace(t0, schedule.horizon,
-                              max(64, frame_count * 4))
-    curves = _schedule_curves(schedule, curve_times)
+    frame_count = max(2, int(np.floor(duration * fps)) + 1)
+    frame_times = state.time + np.arange(frame_count) / float(fps)
+    frame_times = frame_times[frame_times <= schedule.horizon + 1e-9]
 
-    fig = plt.figure(figsize=(13.5, 8.2), constrained_layout=True)
-    grid = GridSpec(
-        2, 2, figure=fig,
-        width_ratios=[1.15, 1.0],
-        height_ratios=[1.35, 1.0],
-    )
-    ax_map = fig.add_subplot(grid[0, 0])
-    ax_time = fig.add_subplot(grid[0, 1])
-    ax_support = fig.add_subplot(grid[1, 0])
-    ax_travel = fig.add_subplot(grid[1, 1])
+    fig, ax = plt.subplots(figsize=(8.0, 6.2), constrained_layout=True)
 
     def draw(frame_index: int) -> None:
-        current_time = float(frame_times[frame_index])
-        for ax in (ax_map, ax_time, ax_support, ax_travel):
-            ax.clear()
-        _plot_map(
-            ax_map, schedule, state, target_pos_world,
-            current_time=current_time)
-        _plot_timeline(ax_time, schedule, state,
-                       current_time=current_time)
-        _plot_support_curve(ax_support, curves, t0, current_time)
-        _plot_travel_curve(ax_travel, curves, t0, current_time)
-        fig.suptitle(f"{title}  |  t={current_time - t0:5.2f} s")
+        ax.clear()
+        _plot_playback_frame(
+            ax, schedule, state, target_pos_world,
+            current_time=float(frame_times[frame_index]))
+        fig.suptitle(
+            f"{title}  |  robot t={frame_times[frame_index]:5.2f} s")
 
     writer = animation.FFMpegWriter(
         fps=int(fps),
@@ -98,7 +81,7 @@ def animate_support_schedule(
         bitrate=1800,
     )
     render = animation.FuncAnimation(
-        fig, draw, frames=frame_count, interval=1000.0 / fps,
+        fig, draw, frames=len(frame_times), interval=1000.0 / fps,
         blit=False, repeat=False)
     render.save(output, writer=writer, dpi=130)
     plt.close(fig)
@@ -171,6 +154,87 @@ def _plot_map(
     ax.legend(loc="best", fontsize=8)
 
 
+def _plot_playback_frame(
+    ax,
+    schedule: SupportSchedule,
+    state: MainPathState,
+    target_pos_world: np.ndarray,
+    *,
+    current_time: float,
+) -> None:
+    gait = schedule.metadata.get("gait", {})
+    foot_length = float(gait.get("foot_length", 0.24))
+    foot_width = float(gait.get("foot_width", 0.09))
+    margin = max(0.18, foot_length * 0.75)
+
+    points = [
+        state.com_pos[:2],
+        state.left_point_world[:2],
+        state.right_point_world[:2],
+        np.asarray(target_pos_world, dtype=np.float64)[:2],
+        *[item.point_world[:2] for item in schedule.intervals],
+    ]
+    points = np.asarray(points, dtype=np.float64)
+    x_min, y_min = points.min(axis=0) - margin
+    x_max, y_max = points.max(axis=0) + margin
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.grid(True, alpha=0.25)
+    ax.set_title("2D support playback")
+
+    start = state.com_pos[:2]
+    target = np.asarray(target_pos_world, dtype=np.float64)[:2]
+    heading = np.array([
+        np.cos(state.heading_yaw), np.sin(state.heading_yaw)])
+    ax.plot([start[0], target[0]], [start[1], target[1]],
+            color="#2ca02c", linestyle="--", linewidth=1.2, alpha=0.6)
+    ax.scatter([start[0]], [start[1]], marker="o", s=70,
+               color="black", label="COM start")
+    ax.annotate(
+        "", xy=start + heading * 0.16, xytext=start,
+        arrowprops={"arrowstyle": "->", "color": "black", "lw": 1.6})
+    ax.scatter([target[0]], [target[1]], marker="*", s=180,
+               color="#2ca02c", label="Target")
+
+    for foot in ("left", "right"):
+        point = schedule.active_point(foot, current_time)
+        if point is None:
+            continue
+        patch = Rectangle(
+            (point[0] - foot_length * 0.5,
+             point[1] - foot_width * 0.5),
+            foot_length,
+            foot_width,
+            angle=float(np.degrees(state.heading_yaw)),
+            rotation_point="center",
+            facecolor=FOOT_COLORS[foot],
+            edgecolor="black",
+            linewidth=0.8,
+            alpha=0.82,
+            zorder=4,
+        )
+        ax.add_patch(patch)
+        ax.text(
+            point[0], point[1], FOOT_LABELS[foot],
+            ha="center", va="center", color="white",
+            fontsize=11, fontweight="bold", zorder=5)
+
+    active = schedule.active_feet(current_time)
+    ax.text(
+        0.02, 0.03,
+        "support: " + (", ".join(active) or "none"),
+        transform=ax.transAxes, fontsize=10,
+        bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"})
+    ax.scatter([], [], marker="s", s=80, color=FOOT_COLORS["left"],
+               label="left on ground")
+    ax.scatter([], [], marker="s", s=80, color=FOOT_COLORS["right"],
+               label="right on ground")
+    ax.legend(loc="upper right", fontsize=8)
+
+
 def _plot_timeline(
     ax,
     schedule,
@@ -208,84 +272,6 @@ def _plot_timeline(
     if current_time is not None:
         ax.axvline(
             current_time - t0, color="black", linestyle="--", linewidth=1.4)
-
-
-def _schedule_curves(
-    schedule: SupportSchedule,
-    times: np.ndarray,
-) -> dict[str, np.ndarray]:
-    left = np.array([
-        1.0 if "left" in schedule.active_feet(t) else 0.0
-        for t in times
-    ])
-    right = np.array([
-        1.0 if "right" in schedule.active_feet(t) else 0.0
-        for t in times
-    ])
-    return {
-        "times": np.asarray(times, dtype=np.float64),
-        "left_active": left,
-        "right_active": right,
-        "support_count": left + right,
-        "left_remaining": np.array([
-            _remaining_foot_travel(schedule, "left", t) for t in times]),
-        "right_remaining": np.array([
-            _remaining_foot_travel(schedule, "right", t) for t in times]),
-    }
-
-
-def _plot_support_curve(ax, curves: dict, t0: float, current_time: float) -> None:
-    times = curves["times"] - t0
-    ax.set_title("Support state")
-    ax.set_xlabel("time [s]")
-    ax.set_ylabel("active feet")
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylim(-0.2, 2.4)
-    ax.set_yticks([0, 1, 2])
-    ax.grid(True, alpha=0.25)
-    ax.step(times, curves["support_count"], where="post",
-            color="black", linewidth=1.8, label="support count")
-    ax.step(times, curves["left_active"] * 0.22 - 0.11, where="post",
-            color=FOOT_COLORS["left"], linewidth=1.2, label="left duty")
-    ax.step(times, curves["right_active"] * 0.22 + 2.09, where="post",
-            color=FOOT_COLORS["right"], linewidth=1.2, label="right duty")
-    ax.axvline(current_time - t0, color="black", linestyle="--",
-               linewidth=1.2)
-    ax.legend(loc="upper right", fontsize=8)
-
-
-def _plot_travel_curve(ax, curves: dict, t0: float, current_time: float) -> None:
-    times = curves["times"] - t0
-    ax.set_title("Remaining planned foot travel")
-    ax.set_xlabel("time [s]")
-    ax.set_ylabel("distance [m]")
-    ax.set_xlim(times[0], times[-1])
-    ax.grid(True, alpha=0.25)
-    ax.plot(times, curves["left_remaining"], color=FOOT_COLORS["left"],
-            linewidth=1.8, label="left")
-    ax.plot(times, curves["right_remaining"], color=FOOT_COLORS["right"],
-            linewidth=1.8, label="right")
-    ax.axvline(current_time - t0, color="black", linestyle="--",
-               linewidth=1.2)
-    ax.legend(loc="best", fontsize=8)
-
-
-def _remaining_foot_travel(
-    schedule: SupportSchedule,
-    foot: str,
-    time: float,
-) -> float:
-    own = [x for x in schedule.intervals if x.foot == foot]
-    if not own:
-        return 0.0
-    previous = [x for x in own if x.start_time <= time]
-    reference = previous[-1].point_world if previous else own[0].point_world
-    future = [x for x in own if x.start_time > time]
-    distance = 0.0
-    for item in future:
-        distance += float(np.linalg.norm(item.point_world - reference))
-        reference = item.point_world
-    return distance
 
 
 def _unique_placements(intervals: Iterable[SupportInterval]) -> List[np.ndarray]:
