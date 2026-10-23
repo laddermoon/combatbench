@@ -136,9 +136,40 @@ def window_score(d: dict, feats: np.ndarray, i0: int, L: int) -> float | None:
     return float(alternations) + 2.0 * both - 5.0 * z_std
 
 
+def _emit(picked, meta, args, tag: str) -> None:
+    feats = np.stack([p[3] for p in picked])            # (M, L, 53)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mu, sd_eff = whitening_params(feats)
+    np.savez_compressed(
+        out,
+        clip_features=feats.astype(np.float32),          # (M, L, 53)
+        delta=np.int32(DELTA),
+        feature_weights=feature_weights(),
+        feat_mu=mu,                                      # whitening stats
+        feat_sd_eff=sd_eff,
+        joint_angles=np.stack([p[5] for p in picked]),   # replay/debug
+        root_quat=np.stack([p[6] for p in picked]),
+        body_xpos=np.stack([p[7] for p in picked]),
+        feet_forces=np.stack([p[8] for p in picked]),
+        meta_json=json.dumps(meta, indent=1),
+    )
+    print(f'[extract:{tag}] {len(picked)} clips '
+          f'(L={args.window}, delta={DELTA}) -> {out}')
+    for i, m in enumerate(meta):
+        print(f'  clip{i}: {m}')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--capture-dir', required=True)
+    ap.add_argument('--capture-dir', default=None)
+    ap.add_argument('--npz', default=None,
+                    help='single capture npz: window it directly without '
+                         'the cyclic-stepping quality gates (for clips '
+                         'hand-picked by the caller, e.g. a guard hold)')
+    ap.add_argument('--start', type=int, default=0,
+                    help='--npz mode: first frame index to window from '
+                         '(skip warmup/lead-in frames)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--num-clips', type=int, default=5)
     ap.add_argument('--window', type=int, default=40,
@@ -147,6 +178,35 @@ def main() -> None:
     ap.add_argument('--plot', default=None, help='optional diagnostic PNG path')
     args = ap.parse_args()
 
+    if args.npz:
+        npz = np.load(args.npz)
+        d = {k: npz[k] for k in npz.files}
+        feats = frames_to_features(d)
+        T = feats.shape[0]
+        picked, meta = [], []
+        for i0 in range(int(args.start), T - args.window + 1, args.stride):
+            s = window_score(d, feats, i0, args.window)
+            picked.append((s if s is not None else float('nan'),
+                           args.npz, i0, feats[i0:i0 + args.window],
+                           d['root_pos'][i0:i0 + args.window].copy(),
+                           d['joint_angles'][i0:i0 + args.window].copy(),
+                           d['root_quat'][i0:i0 + args.window].copy(),
+                           d['body_xpos'][i0:i0 + args.window].copy(),
+                           d['feet_forces'][i0:i0 + args.window].copy()))
+            meta.append({
+                'source_file': Path(args.npz).name, 'start_step': int(i0),
+                'score': (None if s is None else round(float(s), 3)),
+                'mean_root_z': round(
+                    float(d['root_pos'][i0:i0 + args.window, 2].mean()), 3)})
+        if not picked:
+            sys.exit(f'npz too short for window={args.window}')
+        _emit(picked, meta, args, tag='npz')
+        if args.plot:
+            print('[extract:npz] --plot not supported in single-file mode')
+        return
+
+    if not args.capture_dir:
+        sys.exit('either --capture-dir or --npz is required')
     files = sorted(Path(args.capture_dir).glob('ep_*_robot_*.npz'))
     if not files:
         sys.exit(f'no npz files in {args.capture_dir}')

@@ -1,0 +1,79 @@
+# Hierarchy Step 1 — from-scratch standup -> jab_l dynamic guard hold.
+#
+# Same skeleton as hier_s1_standup_step_env.yaml: CommandSimulator,
+# both robots spawn from random fallen states (RandomFallenStatePlugin),
+# stand up via the 4-stage dense potential, then hold the jab_l guard
+# learned by strike_kp_2phase u09260 (eval-faithful rollout clip).
+#
+# Clip library: assets/jab_l_guard_clips.npz — 7x40-frame feature windows
+# built by extract_standard_clips.py --npz from a 100-step TrajectoryRecorder
+# capture of the eval command (seed 997777).  The guard is *dynamic*:
+# foot-load alternates with a ~16-step period -> cadence_lag=8.
+#
+# Reward channels (in exp_hier_s1_guard_mbs.py):
+#   r_potential = 0.01 × φ(t),                      aw = 1.0 (fixed)
+#   r_std_clip  = clip + pose + 0.5·cad + 0.5·h,    aw = φ(t)^2
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 200
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      clip_path: "/data1/mono/things/combatbench/baseline/humanoid21/hierarchy/assets/jab_l_guard_clips.npz"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 8
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      clip_path: "/data1/mono/things/combatbench/baseline/humanoid21/hierarchy/assets/jab_l_guard_clips.npz"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 8
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
