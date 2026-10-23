@@ -288,26 +288,64 @@ MainPath
 
 下游可以反馈要求重新规划，但全身姿态和动作实现不属于本模块。
 
-## 9. 建议文件划分
+## 9. 当前实现与文件划分
+
+第一阶段 `SupportSequencePlanner` 已实现，当前文件：
 
 ```text
-contracts.py           # MainPathState / MainPathRequest / SupportInterval / MainPath
-support_sequence.py    # 状态 + 目标位置 -> SupportSchedule
+contracts.py           # MainPathState / MainPathRequest / SupportInterval / SupportSchedule
+gait_model.py          # 从 Humanoid21 站姿提取步态数值包络
+support_sequence.py    # MainPathState + target_pos -> SupportSchedule
+visualize.py           # 支撑点俯视图 + 支撑时间轴 PNG
+render_cases.py        # 批量生成代表性用例图片
+test_support_sequence.py
+```
+
+后续第二阶段文件仍为：
+
+```text
 trajectory.py          # SupportSchedule + 当前状态 -> MainPath
 force_allocation.py    # 双脚等效受力分配与约束检查
 diagnostics.py         # 结构化失败原因与余量
-test_support_sequence.py
-test_trajectory.py
-test_force_allocation.py
 ```
 
-测试重点：
+当前从 `standing` 姿态提取的默认 gait envelope：
 
-- 目标很近时直接生成开放式保持区间；
-- 目标较远时生成确定性交替支撑序列；
-- 一只脚可以出现多个支撑区间；
-- 最终开放式区间要求 `lin_mom/ang_mom` 收敛；
-- 非支撑脚 force 恒为零；
-- 无支撑段满足 \(\dot l=mg,\dot L=0\)；
-- 摩擦、法向力和力变化率约束；
-- 不可行目标 fail loud。
+```text
+mass                    40.844 kg
+stance_width             0.180 m
+foot_length              0.265 m
+foot_width               0.094 m
+leg_length               0.830 m
+nominal_com_height       0.850 m
+nominal_step_length      0.344 m
+max_step_length          0.477 m
+double_support_duration  0.150 s
+swing_duration           0.350 s
+settle_duration          0.600 s
+control_dt               0.050 s
+```
+
+生成可视化用例：
+
+```bash
+PYTHONPATH=. python3 -m baseline.humanoid21.mpc.main_path.render_cases
+```
+
+输出目录：
+
+```text
+baseline/humanoid21/mpc/main_path/visualizations/
+├── hold.png
+├── forward_step.png
+└── diagonal_two_steps.png
+```
+
+当前测试覆盖：
+
+- Humanoid21 站姿几何与 gait envelope 提取；
+- 目标很近时生成开放式保持区间；
+- 前向目标生成右脚先动的交替支撑序列；
+- 更远目标自动增加左右脚步数；
+- `SupportInterval` 字段级校验；
+- PNG 可视化输出。
