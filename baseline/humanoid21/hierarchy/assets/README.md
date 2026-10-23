@@ -74,7 +74,7 @@ videos/<variant>/<skill>.mp4        _src.npz 的三视图骨架视频（矢状/
 
 | clip | 来源 | 内容 |
 |---|---|---|
-| `guard_jab_r_u08760_robot_{a,b}.npz` | `train_strike_kp_2phase_ppo_20261021_001547` best-of-run（u08760），双侧 `jab_r`，seed 1010 | 抱架保持 2.5s（50 帧）：双手护脸、前后站架。窗口 = 录制 episode steps 10–59，已过 `check`（basic WARN 0.5cm 自碰撞 @k38）+ `fix`（脚部穿地修复）+ `ref_action` PASS（动作序列物理回放 0 误差，可执行） |
+| `guard_jab_r_u09260_robot_{a,b}.npz` | `train_strike_kp_2phase_ppo_20261021_001547` 最后导出（u09260），双侧 `jab_r`，seed 1010 | 抱架保持 2.5s（50 帧）：双手护脸、前后站架。窗口 = 录制 episode steps 10–59，已过 `check`（basic WARN 0.4cm 自碰撞 @k43）+ `fix`（脚部穿地修复）+ `ref_action` PASS（动作序列物理回放 0 误差，可执行） |
 
 采集/切片/校验/渲染命令：
 
