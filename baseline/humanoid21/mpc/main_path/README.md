@@ -158,9 +158,8 @@ TODO: 后续加入 `target_yaw` 和 nominal centerline 后，再把曲线路径�
 
 ## 3. 第二阶段：主路径轨迹规划器
 
-细化实施方案见 [STAGE2_PLAN.md](STAGE2_PLAN.md)：包含连续状态表示、
-任意区间积分验证、能力包络、求解方式、事件衔接和分步验收。
-该文档是待实现方案；以下接口为设计概览。
+细化实施方案见 [STAGE2_PLAN.md](STAGE2_PLAN.md)。当前已实现第一版
+连续路径生成器和独立验证器。
 
 `MainPathTrajectoryPlanner` 消费：
 
@@ -169,29 +168,48 @@ MainPathTrajectoryRequest:
     current_state: MainPathState
     support_schedule: SupportSchedule
     target_pos_world: np.ndarray
-    constraints: MainPathConstraints
 ```
 
 这里的 `support_schedule` 是第一阶段的输出，不是外部输入。
+`MainPathModel` 与 `MainPathConstraints` 是 planner 配置，不属于请求。
 
-它输出：
+调用结果是结构化的 `PlanningResult`：
 
 ```python
-MainPath:
-    state_at(time: float) -> MainPathState
-    times: np.ndarray              # (N,)
-    com_pos: np.ndarray            # (N,3)
-    lin_mom: np.ndarray            # (N,3)
-    ang_mom: np.ndarray            # (N,3)
-    heading_yaw: np.ndarray        # (N,)
-    left_point: np.ndarray         # (N,3)
-    left_force: np.ndarray         # (N,3)
-    right_point: np.ndarray        # (N,3)
-    right_force: np.ndarray        # (N,3)
-    left_active: np.ndarray        # (N,), bool
-    right_active: np.ndarray       # (N,), bool
+PlanningResult:
+    success: bool
+    path: Optional[MainPath]
+    report: ValidationReport
     diagnostics: dict
 ```
+
+`MainPath` 的核心语义是 `MainPathState` 在时间维度上的连续表示：
+
+```python
+state = main_path.state_at(t)
+```
+
+对定义域 `[start_time, end_time]` 内任意 `t` 都返回完整的
+`MainPathState`，包含质心、动量、角动量、朝向、左右脚等效点、左右脚
+受力和支撑标志。某个脚 inactive 时，对应 force 严格为零；摆动脚的
+等效点仍有连续几何参考，但不参与动力学。
+
+当前连续表示采用支撑事件对齐的 `PathPiece`：
+
+- 每只脚的外力在段内线性的；
+- `l(t)` 由合外力解析积分为二次曲线；
+- `c(t)` 由 `l(t)/m` 再积分为三次曲线；
+- `L(t)` 由等效接触点关于 COM 的力矩积分得到；
+- `state_at(t)` 是唯一的对外查询接口，不从另一套采样数组插值。
+
+活动支撑脚的 `point_world` 是该脚的等效受力点。它可以在支撑点周围
+的脚底尺寸包络内连续移动，用于实现简化 COP 调节；第一阶段给出的
+`SupportInterval.point_world` 仍是脚底几何支撑中心。摆动期或脚不承
+载时，外力为零，等效点只作为连续几何参考。
+
+开放式最后支撑区间会额外使用 `terminal_extension` 做收敛检查：路径
+不能只到第一阶段 `schedule.horizon` 就声称停稳，而必须在扩展窗口末
+端满足位置、线动量、角动量、合力和合力矩条件。
 
 `MainPath` 的核心语义是 `MainPathState` 在时间维度上的连续表示。
 离散数组只是实现和检查方式；对外契约要求：
@@ -237,34 +255,52 @@ f_L=f_R=0,\qquad \dot l=mg,\qquad \dot L=0
 规划器必须保证整个连续表示满足这些方程；节点检查只是其中一部分。
 对任意时间区间，状态差分须与区间内速度、合力和力矩的积分一致。
 
-## 5. 受力约束
+## 5. 能力与受力约束
 
-第一版使用可配置的脚部等效受力限制：
+第一版能力包络由 `MainPathConstraints` 显式配置，默认值从
+`GaitModel` 推导并用 metadata 记录来源：
 
 ```python
-FootLoadLimits:
-    max_force: float
-    max_force_rate: float
-    friction: float
-    min_normal_force: float
-    max_normal_force: float
+MainPathConstraints:
+    friction
+    max_normal_force
+    max_force
+    max_force_rate
+    max_com_height_deviation
+    max_com_speed
+    max_ang_mom
+    max_com_to_support_xy
+    max_cop_x
+    max_cop_y
+    max_swing_speed
+    swing_lift_height
+    nominal_com_height
+    tracking_time_constant
+    angular_tracking_time_constant
+    terminal_extension
+    integration_dt / constraint_dt / residual tolerances
 ```
 
-对每只活动支撑脚：
+对每只活动支撑脚检查：
 
 \[
-f_{z,\min}\le f_z\le f_{z,\max}
+0\le f_z\le f_{z,\max}
 \]
 
 \[
-\sqrt{f_x^2+f_y^2}\le\mu_{\rm safe}f_z
+\sqrt{f_x^2+f_y^2}\le\mu f_z
 \]
 
 \[
 |f|\le f_{\max},\qquad |\dot f|\le\dot f_{\max}
 \]
 
-第一版不引入接触 torque，也不规划惯量张量。
+等效受力点还必须留在名义支撑点周围的 `max_cop_x / max_cop_y` 包络
+内。当前假设脚底局部轴与世界 XY 对齐；非零 yaw 下的 COP 局部坐标映
+射仍属于后续细化项。
+
+第一版不引入接触 torque，也不规划惯量张量；角动量只能通过等效受力
+点位置、脚部受力分配和质心运动调节。
 
 ## 6. 目标与可行性
 
@@ -294,20 +330,33 @@ f_L+f_R=-mg
 
 这不证明全身动作可行；最终能否站立必须由下游全身仿真验证。
 
-## 7. 求解方式
+## 7. 求解与验证方式
 
-第二阶段计划采用事件对齐的分段线性脚力，解析积分生成连续 `c,l,L`，
-联合优化脚力和节点状态。名义质心曲线只用于初始化与软目标。
-求解后由独立验证器检查区间守恒、整段能力约束和终端保持；优化器
-返回 success 本身不构成验收通过。具体步骤与失败分类见实施方案。
+当前生成器是透明的参考/反馈式第一版，不是通用 NLP 求解器：
 
-失败诊断至少包含：
+1. 用支撑事件和控制周期构造连续 `PathPiece` 网格；
+2. 根据活动支撑点生成 COM 参考；
+3. 用位置/速度反馈计算期望接触力，并按时限平滑；
+4. 按支撑切换规则保持力连续，离地端清零，新落地端从零加载；
+5. 在双脚支撑时分配总力，并用差动切向力辅助调节 `L_z`；
+6. 在脚底包络内移动等效受力点，用 COP 偏移调节 `L_x/L_y`；
+7. 将候选交给独立 `MainPathValidator`。
 
-- 失败时刻；
-- 当前活动支撑集合；
-- 违反的约束；
-- 目标位置是否超出步长/受力/平衡包络；
-- 可调整的边界余量。
+求解器与验证器分离。`PlanningResult.success=True` 只表示候选通过
+独立验证，不代表优化器自评通过。验证器支持任意区间：
+
+```python
+report = validator.check_interval(path, t_a, t_b)
+```
+
+它把区间切到 piece 边界，对状态差分和动力学积分比较，同时检查：
+力连续性、inactive 零力、法向力、摩擦锥、最大力、力变化率、COM
+高度/速度、COM 到支撑距离、等效点脚底包络、角动量包络、摆动脚速
+度和终端保持。
+
+失败结果包含结构化 `ValidationIssue(code, message, time, interval,
+measured, limit, details)`，可区分前置输入冲突、动力学残差、能力约
+束和终端收敛失败。
 
 ## 8. 与下游的边界
 
@@ -330,24 +379,24 @@ MainPath
 
 ## 9. 当前实现与文件划分
 
-第一阶段 `SupportSequencePlanner` 已实现，当前文件：
+当前文件：
 
 ```text
 contracts.py           # MainPathState / MainPathRequest / SupportInterval / SupportSchedule
 gait_model.py          # 从 Humanoid21 站姿提取步态数值包络
 support_sequence.py    # MainPathState + target_pos -> SupportSchedule
-visualize.py           # 支撑点俯视图、支撑时间轴 PNG 与通用 MP4 回放
+constraints.py         # MainPathModel 与能力包络
+trajectory.py          # SupportSchedule + 当前状态 -> 连续 MainPath
+validation.py          # 任意区间动力学与能力包络验证器
+diagnostics.py         # ValidationIssue / ValidationReport / PlanningResult
+visualize.py           # 第一阶段 MP4 与第二阶段主路径 MP4
 render_cases.py        # 批量生成代表性用例视频
 test_support_sequence.py
+test_trajectory.py
 ```
 
-后续第二阶段文件仍为：
-
-```text
-trajectory.py          # SupportSchedule + 当前状态 -> MainPath
-force_allocation.py    # 双脚等效受力分配与约束检查
-diagnostics.py         # 结构化失败原因与余量
-```
+`render_cases.py` 会为三个用例同时生成第一阶段支撑序列回放和第二阶
+段验证后的 `MainPath` 回放。
 
 当前从 `standing` 姿态提取的默认 gait envelope：
 
@@ -378,19 +427,24 @@ PYTHONPATH=. python3 -m baseline.humanoid21.mpc.main_path.render_cases
 baseline/humanoid21/mpc/main_path/visualizations/
 ├── hold.mp4
 ├── forward_step.mp4
-└── diagonal_two_steps.mp4
+├── diagonal_two_steps.mp4
+├── hold_main_path.mp4
+├── forward_step_main_path.mp4
+└── diagonal_two_steps_main_path.mp4
 ```
 
-视频是这一阶段结果的通用展示形式，视频时间与机器人时间轴一致：
+第一阶段视频仍只展示二维支撑回放：脚在支撑区间内按颜色绘制，离地时
+不绘制；视频时间与机器人时间轴一致。
 
-- 只展示二维地面视角；
-- 某只脚在支撑区间内，就按其颜色绘制脚底矩形；
-- 脚离地时不绘制该脚；
-- 左右脚接触曲线因此由脚形出现/消失直接表达；
-- 同时显示 COM 起点、`heading_yaw` 和目标位置。
+第二阶段 `*_main_path.mp4` 使用 `path.state_at(t)` 逐帧查询，显示：
 
-这里不绘制尚未规划的 `c,l,L` 轨迹，避免把支撑序列结果伪装成完整
-主路径。PNG 静态图接口仍保留，便于单帧检查和测试。
+- COM 投影轨迹与当前 COM；
+- 当前活动脚底矩形和实际等效受力点；
+- 左右脚支撑区间；
+- `|l|/m` 与 `|L|/(m·leg)` 曲线；
+- 左右脚合力与法向力曲线。
+
+PNG 静态支撑序列图接口仍保留，便于单帧检查和测试。
 
 当前测试覆盖：
 
@@ -401,4 +455,11 @@ baseline/humanoid21/mpc/main_path/visualizations/
 - 前向目标生成右脚先动的交替支撑序列；
 - 更远目标自动增加左右脚步数；
 - `SupportInterval` 字段级校验；
+- `MainPath.state_at(t)` 完整状态查询与越界错误；
+- 静态保持和短步/斜向主路径的独立验证；
+- 任意时间区间动力学残差；
+- 无支撑弹道段解析积分；
+- 单支撑期 inactive 脚零外力；
+- 终端位置、线动量、角动量与静态力矩；
+- 结构化前置冲突与内部能力违规诊断；
 - PNG 与 MP4 可视化输出。

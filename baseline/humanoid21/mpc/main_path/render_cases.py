@@ -9,7 +9,11 @@ import numpy as np
 
 from .contracts import MainPathRequest, MainPathState
 from .support_sequence import SupportSequencePlanner
-from .visualize import animate_support_schedule
+from .trajectory import (
+    MainPathTrajectoryPlanner,
+    MainPathTrajectoryRequest,
+)
+from .visualize import animate_main_path, animate_support_schedule
 
 
 CASES = {
@@ -21,6 +25,7 @@ CASES = {
 
 def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
     planner = SupportSequencePlanner()
+    trajectory_planner = MainPathTrajectoryPlanner(gait_model=planner.model)
     half_width = planner.model.stance_width * 0.5
     state = MainPathState(
         time=0.0,
@@ -39,7 +44,8 @@ def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
     )
     paths = []
     for name, target in CASES.items():
-        schedule = planner.plan(MainPathRequest(state, target))
+        request = MainPathRequest(state, target)
+        schedule = planner.plan(request)
         path = animate_support_schedule(
             schedule,
             state,
@@ -48,14 +54,36 @@ def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
             title=f"Support sequence: {name}",
             fps=fps,
         )
+        result = trajectory_planner.plan(
+            MainPathTrajectoryRequest.from_support_result(request, schedule))
+        main_path_output = None
+        issue_codes = []
+        if result.success:
+            main_path_output = animate_main_path(
+                result.path,
+                target,
+                Path(output_dir) / f"{name}_main_path.mp4",
+                title=f"Main path: {name}",
+                fps=fps,
+            )
+            paths.append(main_path_output)
+        else:
+            issue_codes = [issue.code for issue in result.report.issues]
         print(json.dumps({
             "case": name,
             "target": target.tolist(),
             "horizon": schedule.horizon,
             "mode": schedule.metadata.get("mode"),
             "step_counts": schedule.metadata.get("step_counts"),
+            "main_path_valid": result.success,
+            "main_path_end": (
+                result.path.end_time if result.path is not None else None),
+            "issue_codes": issue_codes,
             "fps": fps,
             "output": str(path),
+            "main_path_output": (
+                str(main_path_output)
+                if main_path_output is not None else None),
         }, ensure_ascii=False))
         paths.append(path)
     return paths
