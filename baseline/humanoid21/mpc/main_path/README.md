@@ -174,10 +174,12 @@ MainPathTrajectoryRequest:
 
 ```python
 MainPath:
+    state_at(time: float) -> MainPathState
     times: np.ndarray              # (N,)
     com_pos: np.ndarray            # (N,3)
     lin_mom: np.ndarray            # (N,3)
     ang_mom: np.ndarray            # (N,3)
+    heading_yaw: np.ndarray        # (N,)
     left_point: np.ndarray         # (N,3)
     left_force: np.ndarray         # (N,3)
     right_point: np.ndarray        # (N,3)
@@ -187,8 +189,24 @@ MainPath:
     diagnostics: dict
 ```
 
-`*_active=False` 时，对应 `force_world` 必须为零；对应 `point` 不参与
-动力学。
+`MainPath` 的核心语义是 `MainPathState` 在时间维度上的连续表示。
+离散数组只是实现和检查方式；对外契约要求：
+
+```python
+state = main_path.state_at(t)
+```
+
+对定义域内任意 `t` 都返回一个完整的 `MainPathState`。返回值必须包含
+质心、动量、角动量、朝向、左右脚等效点、左右脚受力和支撑标志。某个
+脚 inactive 时，对应 force 必须为零。
+
+“整条时间线上的状态对机器人可行”是指它必须持续满足当前 reduced
+model 和任务能力包络：支撑点与 active flag 一致、受力在约束内、状态
+变化满足主路径动力学、没有伪造的瞬时跳变。它仍不单独证明所有关节
+动作可实现；全身可实现性由后续参考姿态和 branch simulation 验证。
+
+`*_active=False` 时，对应 `force_world` 必须为零；对应 `point` 可表
+示当前等效脚部位置，但不参与支撑动力学。
 
 ## 4. 动力学
 
