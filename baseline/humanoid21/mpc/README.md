@@ -83,13 +83,22 @@ MPC 是有状态的：
 
 ## 验证结果
 
-运行：
+视频与完整 round 统一走项目现有的 `RoundRunner` 入口：
 
 ```bash
-PYTHONPATH=. python3 baseline/humanoid21/mpc/run_standing.py --steps 200
+PYTHONPATH=. python3 -m envs.framework.round_runner \
+  --env-blueprint baseline/humanoid21/mpc/standing_mpc_env.yaml \
+  --policy-a-blueprint baseline/humanoid21/mpc/standing_mpc_policy_a.yaml \
+  --policy-b-blueprint baseline/humanoid21/mpc/standing_mpc_policy_b.yaml \
+  --video baseline/humanoid21/mpc/videos/standing_mpc_round.mp4 \
+  --seed 0
 ```
 
-当前本机结果（10 秒真实 rollout）：
+`standing_mpc_env.yaml` 当前设置为 200 个控制步，即 10 秒；VideoRecorderPlugin
+按物理频率采样并以 30 FPS 编码。当前验证 round 为 `seed=0`、双方均在第
+200 步 timeout，视频共 295 帧。
+
+此前同等 10 秒真实 rollout 的机器人 A 指标：
 
 ```text
 min_height          1.281266
@@ -99,13 +108,6 @@ final_uprightness   0.999378
 plan calls          20
 mean plan latency   0.734 s
 p95 plan latency    0.742 s
-```
-
-`robot_b` 也可用同一接口运行：
-
-```bash
-PYTHONPATH=. python3 baseline/humanoid21/mpc/run_standing.py \
-  --steps 40 --robot-id robot_b --horizon 20 --replan-interval 5
 ```
 
 ## 测试
@@ -139,8 +141,11 @@ PYTHONPATH=. pytest -q baseline/humanoid21/mpc/test_standing_mpc.py
 ## 文件
 
 ```text
-observation_codec.py   # 96-D Observation -> 自身 CoreState（canonical yaw）
-standing_mpc.py        # StandingMPCPolicy + FeedbackGains + branch rollout
-run_standing.py        # CLI 验证脚本
-test_standing_mpc.py   # 解码、动作合法性和 2 秒站立集成测试
+observation_codec.py        # 96-D Observation -> 自身 CoreState（canonical yaw）
+standing_mpc.py             # StandingMPCPolicy + FeedbackGains + branch rollout
+policy.py                   # Directory-based policy entry point
+standing_mpc_env.yaml       # 10 秒站立 EnvBlueprint
+standing_mpc_policy_a.yaml  # robot_a PolicyBlueprint
+standing_mpc_policy_b.yaml  # robot_b PolicyBlueprint
+test_standing_mpc.py        # 解码、动作合法性和 2 秒站立集成测试
 ```

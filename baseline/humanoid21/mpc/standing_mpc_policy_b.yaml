@@ -1,0 +1,7 @@
+version: 1
+cls: "baseline.humanoid21.mpc.policy:StandingMPCPolicy"
+config:
+  robot_id: "robot_b"
+  horizon_control_steps: 40
+  replan_interval: 10
+  seed: 0

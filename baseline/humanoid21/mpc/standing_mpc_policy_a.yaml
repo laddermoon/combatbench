@@ -1,5 +1,5 @@
 version: 1
-cls: "baseline.humanoid21.mpc.standing_mpc:StandingMPCPolicy"
+cls: "baseline.humanoid21.mpc.policy:StandingMPCPolicy"
 config:
   robot_id: "robot_a"
   horizon_control_steps: 40

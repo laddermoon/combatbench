@@ -1,0 +1,14 @@
+version: 1
+runtime:
+  phy_steps_per_action: 25
+  max_steps: 200
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: 2.0
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+plugins: []
+observer_plugins: {}
