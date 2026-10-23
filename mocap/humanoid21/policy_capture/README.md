@@ -18,6 +18,7 @@ mocap 库可用的轨迹数据。产出的是"机器人原生动作"：所有速
 | `push_probe_base_env.yaml` | 基础环境：标准 `Humanoid21Simulator`（站立起始）+ `RandomPushPlugin`（随机方向、30–250N 力度区间）。无倒地重置、无计分——摔倒原样记录，下游筛。 |
 | `recorder.py` | `TrajectoryRecorder`（PostActionRecorder）：逐 action 步录全量状态，episode 末写 `ep_<seed>_<robot>.npz` + `ep_<seed>_meta.json` |
 | `collect.py` | 批量驱动：跑 N 个 episode × 不同 seed，可选前几个渲 mp4 |
+| `slice_clip.py` | 切片：把 ep npz 按 action-step 窗口切成 clip（npz + meta），可选同步切 mp4 |
 
 ## 用法
 
@@ -50,6 +51,10 @@ PYTHONPATH=. python3 -m mocap.humanoid21.policy_capture.collect \
   ```
 
 - A/B 可以挂不同策略（`--policy-b`），比如一边是受测策略、一边是脚本策略。
+- 非标准观测的策略（如 CommandSimulator 66-dim）：不走 collect.py，直接
+  `envs.framework.round_runner` + `--recorder
+  mocap.humanoid21.policy_capture.recorder:TrajectoryRecorder?output_dir=...`，
+  env/options 用该实验 videos/ 目录下的复现产物。
 
 ### 扰动扫描
 
@@ -67,3 +72,12 @@ npz 字段与库 clip 对齐：`joint_angles`(rad) / `joint_velocities`(rad/s �
 
 采样率 = 20 Hz（500 Hz 物理 ÷ 25 phy/action）。入库导出（15 点 keypoint
 映射、push 窗口切片、index 条目）是下一步。
+
+### 切片
+
+```bash
+PYTHONPATH=. python3 -m mocap.humanoid21.policy_capture.slice_clip \
+    --npz ep_1010_robot_a.npz --meta ep_1010_meta.json --robot robot_a \
+    --start 10 --end 60 --out clips/<name>.npz \
+    --video-in ep_1010.mp4 --video-out clips/<name>.mp4
+```
