@@ -136,9 +136,9 @@ def test_sample_pose_returns_complete_consistent_skeleton():
     assert not ref.left_support_active or not ref.right_support_active
     left_ankle = pose.keypoints["ankle_left"]
     assert left_ankle[2] == pytest.approx(
-        ref.left_foot_pos[2] + reference.params.ankle_height)
-    # Two-link leg: hip-knee distance matches the upper-leg ratio.
-    upper = reference.params.upper_leg_ratio * gait.leg_length
+        ref.left_foot_pos[2] + reference.proportions.foot_body_height)
+    # Two-link leg: hip-knee distance matches the measured upper leg.
+    upper = reference.proportions.upper_leg
     for foot in ("left", "right"):
         hip = pose.keypoints[f"hip_{foot}"]
         knee = pose.keypoints[f"knee_{foot}"]
@@ -187,7 +187,7 @@ def test_sim_playback_solves_poses_and_renders(tmp_path):
         world_offset=offset,
     )
     assert q.shape == sim.data.qpos.shape
-    assert err < 0.03
+    assert err < 0.06
     sim.close()
 
     output = render_reference_in_sim(

@@ -14,6 +14,7 @@ from .constraints import MainPathConstraints, MainPathModel
 from .diagnostics import PlanningResult, ValidationIssue, ValidationReport
 from .gait_model import GaitModel, build_gait_model, default_gait_model
 from .reference import (
+    BodyProportions,
     MotionReference,
     MotionReferenceParams,
     MotionReferenceState,
@@ -37,6 +38,7 @@ from .visualize import (
 )
 
 __all__ = [
+    "BodyProportions",
     "FootPointTrack",
     "GaitModel",
     "MainPath",

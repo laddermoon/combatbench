@@ -4,11 +4,97 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+import mujoco
 import numpy as np
 
 from .contracts import FOOT_NAMES, FootName, MainPathState, _vec3
 from .gait_model import GaitModel, default_gait_model
 from .trajectory import MainPath
+
+
+@dataclass(frozen=True)
+class BodyProportions:
+    """Measured segment lengths and offsets of the real Humanoid21 body.
+
+    Extracted from the standing simulator so the sampled skeleton matches
+    the actual model instead of guessed ratios.
+    """
+
+    pelvis_offset_z: float       # pelvis_pos = com_pos + this z offset
+    shoulder_height: float       # pelvis -> shoulder line along the spine
+    head_height: float           # pelvis -> head along the spine
+    chest_height: float          # pelvis -> chest (arm attachment) along spine
+    hip_half_width: float
+    shoulder_half_width: float
+    upper_leg: float
+    lower_leg: float
+    upper_arm: float
+    forearm: float
+    foot_body_height: float      # foot body xipos height over the support point
+
+    @classmethod
+    def from_simulator(
+        cls,
+        sim,
+        robot_id: str = "robot_a",
+    ) -> "BodyProportions":
+        """Measure proportions from a reset ``Humanoid21Simulator``."""
+        model, data = sim.model, sim.data
+        suffix = "_a" if robot_id == "robot_a" else "_b"
+        cache = sim._robot(robot_id)
+        kp = cache["keypoint_body_ids"]
+        mujoco.mj_forward(model, data)
+
+        def bid(name: str) -> int:
+            return int(mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, f"{name}{suffix}"))
+
+        com_z = float(data.subtree_com[int(cache["root_body_id"]), 2])
+        pelvis_z = float(data.xipos[kp["pelvis"], 2])
+        head_z = float(data.xipos[kp["head"], 2])
+        torso_z = float(data.xipos[kp["torso"], 2])
+        arm_l, lower_l, hand_l = (
+            bid("upper_arm_left"), bid("lower_arm_left"), bid("hand_left"))
+        arm_r = bid("upper_arm_right")
+        thigh_l, shin_l, foot_l = (
+            bid("thigh_left"), bid("shin_left"), bid("foot_left"))
+        shoulder_z = float(data.xpos[arm_l, 2])
+        return cls(
+            pelvis_offset_z=pelvis_z - com_z,
+            shoulder_height=shoulder_z - pelvis_z,
+            head_height=head_z - pelvis_z,
+            chest_height=max(torso_z - pelvis_z, 0.3),
+            hip_half_width=float(abs(data.xpos[thigh_l, 1])),
+            shoulder_half_width=float(
+                abs(data.xpos[arm_l, 1] - data.xpos[arm_r, 1]) * 0.5),
+            upper_leg=float(np.linalg.norm(
+                data.xpos[thigh_l] - data.xpos[shin_l])),
+            lower_leg=float(np.linalg.norm(
+                data.xpos[shin_l] - data.xpos[foot_l])),
+            upper_arm=float(np.linalg.norm(
+                data.xpos[arm_l] - data.xpos[lower_l])),
+            forearm=float(np.linalg.norm(
+                data.xpos[lower_l] - data.xpos[hand_l])),
+            foot_body_height=float(data.xipos[kp["foot_left"], 2]),
+        )
+
+    @classmethod
+    def from_gait(cls, gait: GaitModel) -> "BodyProportions":
+        """Fallback proportions when only the gait envelope is known."""
+        leg = gait.leg_length
+        return cls(
+            pelvis_offset_z=0.0,
+            shoulder_height=0.58 * leg,
+            head_height=0.72 * leg,
+            chest_height=0.50 * leg,
+            hip_half_width=0.5 * gait.stance_width,
+            shoulder_half_width=0.9 * gait.stance_width,
+            upper_leg=0.50 * leg,
+            lower_leg=0.50 * leg,
+            upper_arm=0.36 * leg,
+            forearm=0.36 * leg,
+            foot_body_height=0.03,
+        )
 
 
 @dataclass(frozen=True)
@@ -27,25 +113,16 @@ class MotionReferenceParams:
     hip_twist_max: float = 0.18
     torso_counter_twist_gain: float = 0.20
     torso_twist_max: float = 0.15
-    arm_swing_gain: float = 0.80
+    arm_swing_gain: float = 1.00
     arm_swing_max: float = 0.55
     arm_lift_base: float = 0.0
     arm_lift_gain: float = 0.60
     arm_lift_max: float = 0.50
     elbow_angle: float = 0.45
-    trunk_pitch: float = 0.08
-    pelvis_com_offset_z: float = -0.02
-    knee_flexion_base: float = 0.25
-    knee_flexion_swing_extra: float = 0.55
+    trunk_pitch: float = 0.05
+    knee_flexion_base: float = 0.10
+    knee_flexion_swing_extra: float = 0.70
     swing_foot_pitch_max: float = 0.30
-    ankle_height: float = 0.08
-    upper_leg_ratio: float = 0.55
-    torso_ratio: float = 0.62
-    head_ratio: float = 0.22
-    shoulder_width_ratio: float = 1.60
-    hip_width_ratio: float = 0.90
-    upper_arm_ratio: float = 0.38
-    forearm_ratio: float = 0.32
 
     def __post_init__(self) -> None:
         if self.template not in ("walk", "boxing_guard"):
@@ -54,10 +131,7 @@ class MotionReferenceParams:
             "hip_twist_max", "torso_twist_max", "arm_swing_max",
             "arm_lift_max", "elbow_angle", "trunk_pitch",
             "knee_flexion_base", "knee_flexion_swing_extra",
-            "swing_foot_pitch_max", "ankle_height",
-            "upper_leg_ratio", "torso_ratio", "head_ratio",
-            "shoulder_width_ratio", "hip_width_ratio",
-            "upper_arm_ratio", "forearm_ratio",
+            "swing_foot_pitch_max",
         ):
             value = float(getattr(self, name))
             if not np.isfinite(value) or value < 0.0:
@@ -189,11 +263,13 @@ class MotionReference:
         path: MainPath,
         params: Optional[MotionReferenceParams] = None,
         gait: Optional[GaitModel] = None,
+        proportions: Optional[BodyProportions] = None,
     ) -> None:
         self.path = path
         self.gait = gait or default_gait_model()
         self.params = params or MotionReferenceParams.for_template(
             "walk", self.gait)
+        self.proportions = proportions or BodyProportions.from_gait(self.gait)
 
     @property
     def start_time(self) -> float:
@@ -257,7 +333,7 @@ class MotionReference:
         right_knee = self._knee_flexion("right", t, state)
 
         pelvis = state.com_pos.copy()
-        pelvis[2] += p.pelvis_com_offset_z
+        pelvis[2] += self.proportions.pelvis_offset_z
         left_cop = state.left_point_world if state.left_support_active \
             else left_foot
         right_cop = state.right_point_world if state.right_support_active \
@@ -354,25 +430,22 @@ class MotionReference:
         right_lift: float,
     ) -> Dict[FootName, np.ndarray]:
         p = self.params
+        prop = self.proportions
         frame = self._frames(heading)
         trunk_frame = self._frames(heading + pelvis_yaw + trunk_yaw)
-        torso = p.torso_ratio * self.gait.leg_length
         spine = _rot(frame["left"], p.trunk_pitch) @ frame["up"]
-        chest = pelvis + spine * (0.72 * torso)
-        shoulder_half = 0.5 * p.shoulder_width_ratio * self.gait.stance_width
-        upper = p.upper_arm_ratio * self.gait.leg_length
-        forearm = p.forearm_ratio * self.gait.leg_length
         hands = {}
         for foot, swing, lift, side in (
             ("left", left_swing, left_lift, 1.0),
             ("right", right_swing, -right_lift, -1.0),
         ):
-            shoulder = chest + trunk_frame["left"] * (side * shoulder_half)
+            shoulder = pelvis + spine * prop.shoulder_height \
+                + trunk_frame["left"] * (side * prop.shoulder_half_width)
             arm_dir = _rot(trunk_frame["left"], -swing) @ (-frame["up"])
             arm_dir = _rot(trunk_frame["forward"], side * lift) @ arm_dir
-            elbow_pos = shoulder + arm_dir * upper
+            elbow_pos = shoulder + arm_dir * prop.upper_arm
             fore_dir = _rot(trunk_frame["left"], -p.elbow_angle) @ arm_dir
-            hands[foot] = elbow_pos + fore_dir * forearm
+            hands[foot] = elbow_pos + fore_dir * prop.forearm
         return hands
 
     @staticmethod
@@ -387,19 +460,15 @@ class MotionReference:
         """Instantiate one representative complete skeleton at ``time``."""
         ref = self.state_at(time)
         p = self.params
-        leg = self.gait.leg_length
+        prop = self.proportions
         frame = self._frames(ref.heading_yaw)
         pelvis_frame = self._frames(ref.heading_yaw + ref.pelvis_yaw_offset)
         trunk_frame = self._frames(
             ref.heading_yaw + ref.pelvis_yaw_offset + ref.trunk_yaw_offset)
 
-        torso = p.torso_ratio * leg
         spine = _rot(frame["left"], ref.trunk_pitch) @ frame["up"]
-        chest = ref.pelvis_pos + spine * (0.72 * torso)
-        head = ref.pelvis_pos + spine * torso + frame["up"] * (
-            p.head_ratio * leg)
-        shoulder_half = 0.5 * p.shoulder_width_ratio * self.gait.stance_width
-        hip_half = 0.5 * p.hip_width_ratio * self.gait.stance_width
+        chest = ref.pelvis_pos + spine * prop.chest_height
+        head = ref.pelvis_pos + spine * prop.head_height
 
         keypoints: Dict[str, np.ndarray] = {
             "pelvis": ref.pelvis_pos,
@@ -409,16 +478,18 @@ class MotionReference:
         for foot in FOOT_NAMES:
             side = 1.0 if foot == "left" else -1.0
             keypoints[f"shoulder_{foot}"] = (
-                chest + trunk_frame["left"] * (side * shoulder_half))
+                ref.pelvis_pos + spine * prop.shoulder_height
+                + trunk_frame["left"] * (side * prop.shoulder_half_width))
             keypoints[f"hip_{foot}"] = (
-                ref.pelvis_pos + pelvis_frame["left"] * (side * hip_half))
+                ref.pelvis_pos + pelvis_frame["left"]
+                * (side * prop.hip_half_width))
             foot_pos = getattr(ref, f"{foot}_foot_pos")
             pitch = getattr(ref, f"{foot}_foot_pitch")
-            ankle = foot_pos + frame["up"] * p.ankle_height
+            ankle = foot_pos + frame["up"] * prop.foot_body_height
             keypoints[f"ankle_{foot}"] = ankle
             keypoints[f"toe_{foot}"] = (
                 foot_pos + frame["forward"] * (0.40 * self.gait.foot_length)
-                + frame["up"] * (p.ankle_height * np.sin(pitch)))
+                + frame["up"] * (prop.foot_body_height * np.sin(pitch)))
             keypoints[f"knee_{foot}"] = self._solve_knee(
                 keypoints[f"hip_{foot}"], ankle, frame["forward"])
             swing = getattr(ref, f"{foot}_arm_swing")
@@ -427,12 +498,12 @@ class MotionReference:
             arm_dir = _rot(trunk_frame["forward"], side * lift) @ arm_dir
             keypoints[f"elbow_{foot}"] = (
                 keypoints[f"shoulder_{foot}"]
-                + arm_dir * (p.upper_arm_ratio * leg))
+                + arm_dir * prop.upper_arm)
             fore_dir = _rot(
                 trunk_frame["left"], -p.elbow_angle) @ arm_dir
             keypoints[f"hand_{foot}"] = (
                 keypoints[f"elbow_{foot}"]
-                + fore_dir * (p.forearm_ratio * leg))
+                + fore_dir * prop.forearm)
         return SampledPose(
             time=ref.time,
             keypoints=keypoints,
@@ -452,9 +523,8 @@ class MotionReference:
         forward: np.ndarray,
     ) -> np.ndarray:
         """Two-link IK: knee bends toward the heading forward direction."""
-        leg = self.gait.leg_length
-        upper = self.params.upper_leg_ratio * leg
-        lower = (1.0 - self.params.upper_leg_ratio) * leg
+        upper = self.proportions.upper_leg
+        lower = self.proportions.lower_leg
         leg_axis = ankle - hip
         d = min(float(np.linalg.norm(leg_axis)), (upper + lower) * 0.999)
         axis = leg_axis / max(np.linalg.norm(leg_axis), 1e-12)

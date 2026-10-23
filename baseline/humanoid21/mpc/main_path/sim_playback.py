@@ -13,7 +13,13 @@ import imageio.v2 as imageio
 import mujoco
 import numpy as np
 
-from .reference import MotionReference, MotionReferenceState, SampledPose, _rot
+from .reference import (
+    BodyProportions,
+    MotionReference,
+    MotionReferenceState,
+    SampledPose,
+    _rot,
+)
 
 
 @dataclass
@@ -107,9 +113,9 @@ class ReferenceIKSolver:
                 errs.append(err * task.weight)
             for i, adr in enumerate(self.qpos_idx):
                 reg = np.zeros(len(self.dofs))
-                reg[self._dof_to_column[int(self.qvel_idx[i])]] = 0.02
+                reg[self._dof_to_column[int(self.qvel_idx[i])]] = 0.15
                 rows.append(reg)
-                errs.append(np.array([0.02 * (self.q_rest[i] - q[adr])]))
+                errs.append(np.array([0.15 * (self.q_rest[i] - q[adr])]))
             a = np.vstack(rows)
             b = np.concatenate(errs)
             step = a.T @ np.linalg.solve(
@@ -191,6 +197,7 @@ def render_reference_in_sim(
     sim=None,
     robot_id: str = "robot_a",
     max_ik_iters: int = 120,
+    proportions: Optional[BodyProportions] = None,
 ) -> Path:
     """Drive the real Humanoid21 model through sampled poses and record MP4."""
     output = Path(output_path)
@@ -203,6 +210,14 @@ def render_reference_in_sim(
         sim = Humanoid21Simulator(
             initial_pose_a="standing", initial_pose_b="standing")
         sim.reset(seed=0)
+    prop = proportions or BodyProportions.from_simulator(sim, robot_id)
+    if prop is not reference.proportions:
+        reference = MotionReference(
+            reference.path,
+            params=reference.params,
+            gait=reference.gait,
+            proportions=prop,
+        )
     solver = ReferenceIKSolver(sim, robot_id)
 
     cache = sim._robot(robot_id)
