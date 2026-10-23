@@ -65,6 +65,32 @@ videos/<variant>/<skill>.mp4        _src.npz 的三视图骨架视频（矢状/
 帧，等价于 `extend/` 档的语义；`retract/` 档为将来"打完收回"评价
 预留数据。
 
+## policy_rollout — 策略回放 CoreClip
+
+`clips/policy_rollout/` 与 `videos/policy_rollout/` 是第二类动作资产：
+**训练策略在仿真器里实际执行的 rollout**，CoreClip 格式（20Hz、机体系
+速度、归一化关节 + `ref_action`，契约见
+`mocap/humanoid21/clip/CORECLIP_SPEC.md`），与人捕 retarget clip 分开管理。
+
+| clip | 来源 | 内容 |
+|---|---|---|
+| `guard_jab_r_u08760_robot_{a,b}.npz` | `train_strike_kp_2phase_ppo_20261021_001547` best-of-run（u08760），双侧 `jab_r`，seed 1010 | 抱架保持 2.5s（50 帧）：双手护脸、前后站架。窗口 = 录制 episode steps 10–59，已过 `check`（basic WARN 0.5cm 自碰撞 @k38）+ `fix`（脚部穿地修复）+ `ref_action` PASS（动作序列物理回放 0 误差，可执行） |
+
+采集/切片/校验/渲染命令：
+
+```bash
+# 录制（66-dim 实验策略，用 run videos/ 下的 env/options 复现产物）
+python3 -m envs.framework.round_runner \
+    --env-blueprint <env.yaml> --policy-a-blueprint <pol.yaml> \
+    --policy-b-blueprint <pol.yaml> --options-json <opts.json> \
+    --seed 1010 --video ep.mp4 \
+    --recorder "mocap.humanoid21.clip.recorder:CoreClipPostRecorder?output_dir=<dir>&clip_id=<id>"
+# 切片 / 校验 / 修复 / 回放视频
+python3 -m mocap.humanoid21.clip check --clip <x.npz> --only basic,ref_action
+python3 -m mocap.humanoid21.clip fix   --clip <x.npz> --out <x_fix.npz>
+python3 -m mocap.humanoid21.clip play  --clip <x.npz> --out <x.mp4> --robot robot_a
+```
+
 视频复现命令：
 
 ```bash

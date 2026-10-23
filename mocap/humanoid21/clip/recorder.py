@@ -7,9 +7,13 @@ state observed at k+1).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
+
+from envs.framework.context import ReadOnlySimContext
+from envs.framework.recorder import PostActionRecorder
 
 from .core_clip import CORE_FIELDS, CoreClip, SPEC_VERSION
 
@@ -74,3 +78,72 @@ class CoreClipRecorder:
 
     def __len__(self) -> int:
         return len(self._states)
+
+
+class CoreClipPostRecorder(PostActionRecorder):
+    """``PostActionRecorder`` adapter: one CoreClip npz per agent on
+    episode end.
+
+    Temporal pairing follows the causal CoreClip convention: each call
+    sees the post-step state ``s_{t+1}`` and the action ``a_t`` that was
+    applied at ``s_t``, so the recorder stores ``(s_t, a_t)`` pairs —
+    the pre-episode state seeds ``s_0``, the terminal post-state is
+    implicit in ``a_{T-1}``.
+
+    CLI usage (``envs.framework.round_runner --recorder``)::
+
+        mocap.humanoid21.clip.recorder:CoreClipPostRecorder?\
+            output_dir=<dir>&clip_id=<id>&agents=robot_a,robot_b
+    """
+
+    def __init__(self, output_dir: str,
+                 clip_id: str = "rec",
+                 agents: str = "robot_a,robot_b",
+                 meta_extra: Optional[Mapping[str, Any]] = None) -> None:
+        self.output_dir = Path(output_dir)
+        self.clip_id = str(clip_id)
+        self.agents = tuple(s for s in str(agents).split(",") if s)
+        self.meta_extra = dict(meta_extra or {})
+        self._recs: Dict[str, CoreClipRecorder] = {}
+        self._prev: Dict[str, Dict[str, np.ndarray]] = {}
+
+    def on_pre_episode(self, ctx: ReadOnlySimContext) -> None:
+        cs = ctx.accessor.get_core_state()
+        seed = ctx.base_seed
+        for rid in self.agents:
+            self._prev[rid] = {
+                f: np.asarray(cs[rid][f]).copy() for f in CORE_FIELDS}
+            extra = dict(self.meta_extra)
+            extra.update({"episode_seed": seed})
+            self._recs[rid] = CoreClipRecorder(
+                agent_id=rid,
+                clip_id=f"{self.clip_id}_{seed}_{rid}",
+                meta_extra=extra)
+
+    def on_post_action_step(
+        self,
+        ctx: ReadOnlySimContext,
+        observation: Mapping[str, Any],
+        action: Mapping[str, Any],
+        observer_outputs: Mapping[str, Any],
+        action_extras: Optional[Mapping[str, Optional[Mapping[str, Any]]]] = None,
+    ) -> None:
+        cs = ctx.accessor.get_core_state()
+        for rid in self.agents:
+            a = action.get(rid)
+            self._recs[rid].record(
+                self._prev[rid],
+                None if a is None else np.asarray(a, dtype=np.float32))
+            self._prev[rid] = {
+                f: np.asarray(cs[rid][f]).copy() for f in CORE_FIELDS}
+
+    def on_post_episode(self, ctx: ReadOnlySimContext) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        seed = ctx.base_seed
+        for rid, rec in self._recs.items():
+            cc = rec.finish(meta_extra={
+                "termination_reasons":
+                    ctx.agent_termination_proposals.get(rid, [])})
+            cc.save(self.output_dir / f"{cc.clip_id}.npz")
+        self._recs = {}
+        self._prev = {}
