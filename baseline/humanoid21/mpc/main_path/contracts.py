@@ -25,13 +25,40 @@ class MainPathState:
     com_pos: np.ndarray
     lin_mom: np.ndarray
     ang_mom: np.ndarray
+    heading_yaw: float
+    left_point_world: np.ndarray
+    right_point_world: np.ndarray
+    left_force_world: np.ndarray
+    right_force_world: np.ndarray
+    left_support_active: bool = True
+    right_support_active: bool = True
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.time):
             raise ValueError("time must be finite")
+        if not np.isfinite(self.heading_yaw):
+            raise ValueError("heading_yaw must be finite")
         object.__setattr__(self, "com_pos", _vec3(self.com_pos, "com_pos"))
         object.__setattr__(self, "lin_mom", _vec3(self.lin_mom, "lin_mom"))
         object.__setattr__(self, "ang_mom", _vec3(self.ang_mom, "ang_mom"))
+        object.__setattr__(
+            self, "left_point_world",
+            _vec3(self.left_point_world, "left_point_world"))
+        object.__setattr__(
+            self, "right_point_world",
+            _vec3(self.right_point_world, "right_point_world"))
+        object.__setattr__(
+            self, "left_force_world",
+            _vec3(self.left_force_world, "left_force_world"))
+        object.__setattr__(
+            self, "right_force_world",
+            _vec3(self.right_force_world, "right_force_world"))
+        if (not self.left_support_active and
+                np.linalg.norm(self.left_force_world) > 1e-9):
+            raise ValueError("inactive left support must have zero force")
+        if (not self.right_support_active and
+                np.linalg.norm(self.right_force_world) > 1e-9):
+            raise ValueError("inactive right support must have zero force")
 
 
 @dataclass(frozen=True)

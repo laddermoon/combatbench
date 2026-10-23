@@ -8,7 +8,7 @@ from .contracts import (
 )
 from .gait_model import GaitModel, build_gait_model, default_gait_model
 from .support_sequence import SupportSequencePlanner
-from .visualize import plot_support_schedule
+from .visualize import animate_support_schedule, plot_support_schedule
 
 __all__ = [
     "GaitModel",
@@ -17,6 +17,7 @@ __all__ = [
     "SupportInterval",
     "SupportSchedule",
     "SupportSequencePlanner",
+    "animate_support_schedule",
     "build_gait_model",
     "default_gait_model",
     "plot_support_schedule",

@@ -35,10 +35,26 @@ MainPathRequest:
 ```python
 MainPathState:
     time: float
-    com_pos: np.ndarray  # world (3,)
-    lin_mom: np.ndarray  # world (3,)
-    ang_mom: np.ndarray  # about com_pos, world (3,)
+    com_pos: np.ndarray          # world (3,)
+    lin_mom: np.ndarray          # world (3,)
+    ang_mom: np.ndarray          # about com_pos, world (3,)
+    heading_yaw: float           # body yaw in world XY
+    left_point_world: np.ndarray   # equivalent point, world (3,)
+    right_point_world: np.ndarray  # equivalent point, world (3,)
+    left_force_world: np.ndarray   # external force on robot, world (3,)
+    right_force_world: np.ndarray  # external force on robot, world (3,)
+    left_support_active: bool
+    right_support_active: bool
 ```
+
+`heading_yaw` 是必需的最小上下文：线动量为零时没有方向信息，而且
+即使线动量非零，它的方向也不等于身体朝向。左右脚等效点和当前受力
+同样属于这个约化状态的边界条件；没有它们，第一阶段无法知道当前支
+撑结构。
+
+`*_support_active=False` 时，对应外力必须为零；对应点仍可表示当前
+脚部等效位置，但不参与支撑动力学。当前 `heading_yaw` 同时作为左/
+右脚语义和最终站姿宽度方向的参考；请求暂不指定目标朝向。
 
 质量、重力、时间步和模型几何放在 `MainPathModel` / planner config
 中，不属于瞬时状态，也不在本目录重新复制一套历史契约。
@@ -49,11 +65,12 @@ MainPathState:
 规划请求不包含：
 
 - 当前关节状态；
-- root pose；
+- 完整 root pose；
 - 全身惯量；
 - 手动指定的支撑区间；
 - 对手状态；
-- 全身动作目标。
+- 全身动作目标；
+- 目标朝向。
 
 ## 2. 第一阶段：支撑序列规划器
 
@@ -63,8 +80,9 @@ MainPathState:
 plan_support_sequence(request) -> SupportSchedule
 ```
 
-它根据当前 `(c,l,L)`、目标位置、步长/步宽/时长等能力参数，生成未来
-每只脚的支撑位置和支撑时间区间。
+它根据当前 `(c,l,L)`、身体朝向、左右脚等效点、支撑状态，以及目标
+位置和步长/步宽/时长等能力参数，生成未来每只脚的支撑位置和支撑
+时间区间。
 
 输出形式：
 
@@ -122,16 +140,20 @@ right:
 
 第一版支撑序列规划器使用确定性启发式：
 
-1. 取 `com_pos` 的水平投影与 `target_pos_world` 的差作为位移需求；
-2. 若位移小于最小步长阈值，直接生成保持当前支撑的开放式区间；
-3. 否则按最大步长、步宽、最小/最大支撑时长估计需要几步；
-4. 确定先迈哪只脚，使最终双脚支撑更容易覆盖目标停止位置；
-5. 交替生成左右脚落点和接触/摆动时间；
-6. 最后一对支撑区间以 `end_time=None` 结束。
+1. 用 `heading_yaw` 建立 body XY frame，取 `com_pos` 到
+   `target_pos_world` 的水平位移并投影到前向/左向分量；
+2. 若位移小于 `target_tolerance`，直接生成保持当前左右脚点的开放
+   式区间；
+3. 否则以当前左右脚点为起点，以目标位置周围沿 `heading_yaw` 展开
+   的双脚站姿为终点；
+4. 按 `max_step_length` 分别计算左右脚需要的步数；
+5. 侧向目标优先移动对应侧的脚，纵向目标默认右脚先动；
+6. 交替生成左右脚落点和接触/摆动时间；
+7. 最后一对支撑区间以 `end_time=None` 结束。
 
-当前 `MainPathState` 不包含脚的位置。第一版使用模型默认的站姿
-几何，根据 `com_pos` 的水平投影生成初始等效支撑点。这个近似必须
-明确记录；以后如果主路径状态加入当前脚部支撑点，应优先使用真实值。
+第一版没有目标朝向，因此最终站姿保持当前 `heading_yaw`。需要转向、
+背向移动或指定目标朝向的任务，应在后续请求中加入 `target_yaw` 或
+单独的转向目标。
 
 ## 3. 第二阶段：主路径轨迹规划器
 
@@ -296,8 +318,8 @@ MainPath
 contracts.py           # MainPathState / MainPathRequest / SupportInterval / SupportSchedule
 gait_model.py          # 从 Humanoid21 站姿提取步态数值包络
 support_sequence.py    # MainPathState + target_pos -> SupportSchedule
-visualize.py           # 支撑点俯视图 + 支撑时间轴 PNG
-render_cases.py        # 批量生成代表性用例图片
+visualize.py           # 支撑点俯视图、支撑时间轴 PNG 与通用 MP4 回放
+render_cases.py        # 批量生成代表性用例视频
 test_support_sequence.py
 ```
 
@@ -336,16 +358,28 @@ PYTHONPATH=. python3 -m baseline.humanoid21.mpc.main_path.render_cases
 
 ```text
 baseline/humanoid21/mpc/main_path/visualizations/
-├── hold.png
-├── forward_step.png
-└── diagonal_two_steps.png
+├── hold.mp4
+├── forward_step.mp4
+└── diagonal_two_steps.mp4
 ```
+
+视频是这一阶段结果的通用展示形式：
+
+- 左上：左右脚支撑点俯视回放、当前活动脚和 `heading_yaw`；
+- 右上：左右脚支撑区间时间轴和当前时间；
+- 左下：活动支撑脚数量与左右脚支撑占空曲线；
+- 右下：左右脚剩余规划脚程曲线。
+
+这里不绘制尚未规划的 `c,l,L` 轨迹，避免把支撑序列结果伪装成完整
+主路径。PNG 静态图接口仍保留，便于单帧检查和测试。
 
 当前测试覆盖：
 
 - Humanoid21 站姿几何与 gait envelope 提取；
+- `MainPathState` 中朝向、脚点、支撑标志与受力校验；
+- 朝向决定左右脚几何和侧向首迈脚；
 - 目标很近时生成开放式保持区间；
 - 前向目标生成右脚先动的交替支撑序列；
 - 更远目标自动增加左右脚步数；
 - `SupportInterval` 字段级校验；
-- PNG 可视化输出。
+- PNG 与 MP4 可视化输出。

@@ -1,4 +1,4 @@
-"""Render representative support-sequence plans to PNG files."""
+"""Render representative support-sequence plans to MP4 videos."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ import numpy as np
 
 from .contracts import MainPathRequest, MainPathState
 from .support_sequence import SupportSequencePlanner
-from .visualize import plot_support_schedule
+from .visualize import animate_support_schedule
 
 
 CASES = {
@@ -19,23 +19,34 @@ CASES = {
 }
 
 
-def render_cases(output_dir: str | Path) -> list[Path]:
+def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
     planner = SupportSequencePlanner()
+    half_width = planner.model.stance_width * 0.5
     state = MainPathState(
         time=0.0,
         com_pos=np.array([0.0, 0.0, planner.model.nominal_com_height]),
         lin_mom=np.zeros(3),
         ang_mom=np.zeros(3),
+        heading_yaw=0.0,
+        left_point_world=np.array(
+            [0.0, half_width, planner.model.foot_height]),
+        right_point_world=np.array(
+            [0.0, -half_width, planner.model.foot_height]),
+        left_force_world=np.array(
+            [0.0, 0.0, planner.model.mass * planner.model.gravity * 0.5]),
+        right_force_world=np.array(
+            [0.0, 0.0, planner.model.mass * planner.model.gravity * 0.5]),
     )
     paths = []
     for name, target in CASES.items():
         schedule = planner.plan(MainPathRequest(state, target))
-        path = plot_support_schedule(
+        path = animate_support_schedule(
             schedule,
             state,
             target,
-            Path(output_dir) / f"{name}.png",
+            Path(output_dir) / f"{name}.mp4",
             title=f"Support sequence: {name}",
+            fps=fps,
         )
         print(json.dumps({
             "case": name,
@@ -43,6 +54,7 @@ def render_cases(output_dir: str | Path) -> list[Path]:
             "horizon": schedule.horizon,
             "mode": schedule.metadata.get("mode"),
             "step_counts": schedule.metadata.get("step_counts"),
+            "fps": fps,
             "output": str(path),
         }, ensure_ascii=False))
         paths.append(path)
@@ -56,8 +68,9 @@ def main() -> None:
         type=Path,
         default=Path(__file__).parent / "visualizations",
     )
+    parser.add_argument("--fps", type=int, default=20)
     args = parser.parse_args()
-    render_cases(args.output_dir)
+    render_cases(args.output_dir, fps=args.fps)
 
 
 if __name__ == "__main__":

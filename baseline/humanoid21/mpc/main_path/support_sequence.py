@@ -45,29 +45,38 @@ class SupportSequencePlanner:
         target_xy = request.target_pos_world[:2]
         delta = target_xy - origin_xy
         distance = float(np.linalg.norm(delta))
-        direction, lateral = self._frame(delta)
-        final_left, final_right = self._stance_points(target_xy, lateral)
+        heading, leftward = self._heading_frame(state.heading_yaw)
+        delta_body = np.array([
+            float(np.dot(delta, heading)),
+            float(np.dot(delta, leftward)),
+        ])
+        final_left, final_right = self._stance_points(target_xy, leftward)
+        current_points = {
+            "left": state.left_point_world[:2],
+            "right": state.right_point_world[:2],
+        }
 
         if distance <= self.model.target_tolerance:
             intervals = (
                 SupportInterval("left", t0, None,
-                                self._point(final_left)),
+                                self._point(current_points["left"])),
                 SupportInterval("right", t0, None,
-                                self._point(final_right)),
+                                self._point(current_points["right"])),
             )
             return SupportSchedule(
                 intervals=intervals,
                 horizon=t0 + self.model.settle_duration,
                 metadata={
                     "mode": "hold",
+                    "heading_yaw": float(state.heading_yaw),
+                    "target_delta_body": delta_body.tolist(),
                     "target_distance": distance,
                     "step_counts": {"left": 0, "right": 0},
                     "gait": self.inspect_parameters(),
                 },
             )
 
-        initial_left, initial_right = self._stance_points(origin_xy, lateral)
-        initial_points = {"left": initial_left, "right": initial_right}
+        initial_points = dict(current_points)
         final_points = {"left": final_left, "right": final_right}
         step_counts = {
             foot: self._step_count(initial_points[foot], final_points[foot])
@@ -78,7 +87,7 @@ class SupportSequencePlanner:
                 initial_points[foot], final_points[foot], step_counts[foot])
             for foot in FOOT_NAMES
         }
-        first = self._choose_first_foot(request)
+        first = self._choose_first_foot(delta_body)
         events = self._event_order(step_counts, first)
 
         intervals: List[SupportInterval] = []
@@ -120,6 +129,8 @@ class SupportSequencePlanner:
             horizon=t + self.model.settle_duration,
             metadata={
                 "mode": "walk",
+                "heading_yaw": float(state.heading_yaw),
+                "target_delta_body": delta_body.tolist(),
                 "target_distance": distance,
                 "step_counts": step_counts,
                 "first_foot": first,
@@ -129,14 +140,11 @@ class SupportSequencePlanner:
             },
         )
 
-    def _frame(self, delta_xy: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        norm = float(np.linalg.norm(delta_xy))
-        if norm <= 1e-9:
-            direction = np.array([1.0, 0.0], dtype=np.float64)
-        else:
-            direction = delta_xy / norm
-        lateral = np.array([-direction[1], direction[0]], dtype=np.float64)
-        return direction, lateral
+    @staticmethod
+    def _heading_frame(yaw: float) -> Tuple[np.ndarray, np.ndarray]:
+        heading = np.array([np.cos(yaw), np.sin(yaw)], dtype=np.float64)
+        leftward = np.array([-heading[1], heading[0]], dtype=np.float64)
+        return heading, leftward
 
     def _stance_points(
         self,
@@ -169,12 +177,12 @@ class SupportSequencePlanner:
             for i in range(count)
         ]
 
-    def _choose_first_foot(self, request: MainPathRequest) -> FootName:
+    def _choose_first_foot(self, delta_body: np.ndarray) -> FootName:
         if self.first_foot is not None:
             return self.first_foot
-        # Deterministic default for a purely longitudinal target.  A lateral
-        # target is already folded into the heading frame, so left/right are
-        # symmetric at this reduced-order level.
+        lateral = float(delta_body[1])
+        if abs(lateral) > self.model.target_tolerance:
+            return "left" if lateral > 0.0 else "right"
         return "right"
 
     @staticmethod
