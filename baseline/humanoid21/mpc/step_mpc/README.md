@@ -9,22 +9,20 @@
 
 ## 1. 第一轮任务定义
 
-输入为一个带时间的支撑点序列。最小示例：
+输入只包含每只脚的支撑时间区间和支撑位置。最小示例：
 
 ```text
-t0: 左脚、右脚位于初始位置；要求平衡
-t1: 左脚继续支撑，右脚准备离地；重心转移完成
-t2: 左脚支撑，右脚落到前方短距离位置
-t3: 双脚位于最终支撑点；要求平衡并站稳
+left:
+  [t0, t_end] -> p_left_0
+
+right:
+  [t0, t1]     -> p_right_0
+  [t2, t_end]  -> p_right_1
 ```
 
-该序列只回答：
-
-- 哪只脚在哪个世界坐标点获得支撑；
-- 何时切换支撑；
-- 哪些节点要求达到平衡。
-
-它不直接指定关节轨迹。
+这里 `t1 < t2` 的区间空缺表示右脚不在支撑中；左脚全程支撑。输入
+只记录位置和时间边界，不包含“准备离地”“重心转移完成”“要求平衡”
+等阶段语义，也不直接指定关节轨迹。
 
 第一轮只允许平地、屈膝姿态附近、无腾空的小步。跑步、对手接触和
 大幅转向不在第一版范围内。
@@ -67,30 +65,31 @@ z=(c,l,L)
 
 第一轮不规划惯量张量、关节状态、全身姿态或接触扭矩。
 
-## 3. 支撑节点与“平衡点”
+## 3. 支撑区间与任务结束条件
 
-支撑节点建议的数据形式：
+支撑输入的数据形式只包含三个信息：脚、时间区间、世界坐标点。
 
 ```python
-SupportNode:
-    time: float
-    left_point: Optional[np.ndarray]    # None 表示左脚不支撑
-    right_point: Optional[np.ndarray]   # None 表示右脚不支撑
-    require_equilibrium: bool
+SupportInterval:
+    foot: Literal["left", "right"]
+    start_time: float
+    end_time: float
+    point_world: np.ndarray   # (3,)
 ```
 
-相邻节点确定一个支撑阶段：
+同一只脚的区间不得重叠。某只脚没有覆盖到的时间段表示该脚不支撑。
+任意采样时刻的活动支撑集合由所有覆盖该时刻的区间推出：
 
-- 双脚支撑；
-- 左脚支撑；
-- 右脚支撑；
-- 腾空（第一轮拒绝）。
+- 双脚都在区间内：双脚支撑；
+- 只有左脚或右脚：单脚支撑；
+- 两只脚都没有：腾空（第一轮拒绝）。
 
-`require_equilibrium` 是状态要求，不只是“质心在某个点上方”。第一版
-判定条件为：
+输入本身不包含平衡标记。第一轮任务的“初始站稳、末端站稳”由任务
+配置单独给出，例如 `settle_start` / `settle_end` 或最终保持时长；
+在这些窗口内，规划目标为：
 
 \[
-l=0,\qquad L=0
+l\approx0,\qquad L\approx0
 \]
 
 且在当前支撑点下存在一组可行脚部受力，使：
@@ -103,7 +102,8 @@ f_L+f_R=-mg
 (p_L-c)\times f_L+(p_R-c)\times f_R=0
 \]
 
-同时每只支撑脚满足后续定义的受力约束。最终还必须通过全身仿真验证。
+每只支撑脚还必须满足后续定义的受力约束。最终能否保持，由全身
+branch simulation 和实际 rollout 验收，而不是由支撑输入声明。
 
 ## 4. 主路径生成
 
@@ -111,7 +111,8 @@ f_L+f_R=-mg
 
 ```text
 初始 CentroidalState
-支撑节点序列
+左右脚 SupportInterval 列表
+任务结束与最终保持窗口
 质心参考高度 / 高度包络
 每脚允许作用区域与受力约束
 阶段持续时间边界
@@ -237,7 +238,7 @@ Observation
 
 策略内部保存：
 
-- 支撑节点序列；
+- 左右脚 `SupportInterval` 列表；
 - 当前 `CentroidalPath`；
 - 当前 `ReferencePosePath`；
 - 当前执行阶段与时间；
@@ -277,7 +278,7 @@ Observation
 ## 9. 建议文件划分
 
 ```text
-support_plan.py       # SupportNode / phase sequence / validation
+support_plan.py       # SupportInterval / phase derivation / validation
 centroidal_path.py    # c,l,L 与脚部受力的主路径生成
 reference_pose.py     # 主路径 -> 协调全身参考姿态
 step_policy.py        # Observation-only 动作搜索 Policy
