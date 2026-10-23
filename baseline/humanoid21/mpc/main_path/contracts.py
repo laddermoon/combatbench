@@ -67,6 +67,7 @@ class MainPathRequest:
 
     current_state: MainPathState
     target_pos_world: np.ndarray
+    # TODO: add target_yaw when curved-path and slow-turn planning are needed.
 
     def __post_init__(self) -> None:
         object.__setattr__(
