@@ -1,6 +1,10 @@
 """Render representative support-sequence plans to MP4 videos."""
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+
 import argparse
 import json
 from pathlib import Path
@@ -8,6 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from .contracts import MainPathRequest, MainPathState
+from .reference import MotionReference
+from .sim_playback import render_reference_in_sim
 from .support_sequence import SupportSequencePlanner
 from .trajectory import (
     MainPathTrajectoryPlanner,
@@ -57,6 +63,7 @@ def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
         result = trajectory_planner.plan(
             MainPathTrajectoryRequest.from_support_result(request, schedule))
         main_path_output = None
+        reference_output = None
         issue_codes = []
         if result.success:
             main_path_output = animate_main_path(
@@ -67,6 +74,13 @@ def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
                 fps=fps,
             )
             paths.append(main_path_output)
+            reference = MotionReference(result.path, gait=planner.model)
+            reference_output = render_reference_in_sim(
+                reference,
+                Path(output_dir) / f"{name}_reference.mp4",
+                fps=fps,
+            )
+            paths.append(reference_output)
         else:
             issue_codes = [issue.code for issue in result.report.issues]
         print(json.dumps({
@@ -84,6 +98,9 @@ def render_cases(output_dir: str | Path, *, fps: int = 20) -> list[Path]:
             "main_path_output": (
                 str(main_path_output)
                 if main_path_output is not None else None),
+            "reference_output": (
+                str(reference_output)
+                if reference_output is not None else None),
         }, ensure_ascii=False))
         paths.append(path)
     return paths

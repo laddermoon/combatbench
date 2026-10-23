@@ -358,7 +358,53 @@ report = validator.check_interval(path, t_a, t_b)
 measured, limit, details)`，可区分前置输入冲突、动力学残差、能力约
 束和终端收敛失败。
 
-## 8. 与下游的边界
+## 8. 第三阶段：运动参照（MotionReference）
+
+第三阶段是第二阶段之上的**纯函数推演**，不做搜索也不做 IK 求解：
+
+```text
+(t, MainPath, MotionReferenceParams)
+    -> MotionReferenceState    # 参数化关键形态参照
+    -> sample_pose(t)          # 代表性的完整骨架状态（采样接口）
+```
+
+`MotionReference` 消费的是已经通过独立验证的 `MainPath`，其第一个状
+态与机器人当前主路径状态一致；参照因此天然从机器人当前状态出发。
+
+参照采用显式参数化的协调规则，而不是隐式约束集合：
+
+- `stride_delta = (p_left - p_right) · forward` 度量左右脚前后差；
+- 骨盆扭转 `= clip(k_hip * stride_delta)`，躯干反向扭转
+  `= clip(-k_torso * stride_delta)`；
+- 摆臂异侧协调：左脚在前时左臂向后、右臂向前，幅度
+  `clip(k_arm * stride_delta)`，同时给出摆臂角速度参考；
+- 肘角、躯干前倾、屈膝量、摆动脚 pitch 都是模板参数；
+- `arm_lift` 是唯一自由调节通道：按当前 `ang_mom` 水平推导出限幅
+  目标，用于转动性能调节；
+- 骨盆位置取 `com_pos` 的固定竖直偏移；
+- 支撑脚的脚底中心取第一阶段名义支撑点，等效受力点（COP 偏移）作
+  为独立字段输出。
+
+姿态模板由 `MotionReferenceParams.for_template()` 提供：
+
+- `walk`：自然步态，摆臂与异侧协调正常，肘角较小；
+- `boxing_guard`：拳击架，肘角大、手臂抬起、摆臂幅度受限。
+
+`sample_pose(t)` 把参照实例化为一个**代表性的完整骨架**
+（`SampledPose.keypoints`）：骨盆、胸、头、肩、肘、手、髋、膝、踝、
+脚尖。腿部用两段连杆 IK 朝 heading 前方屈膝，手臂由摆角/抬角/肘角
+唯一确定。采样状态只用于检查和可视化，不是关节轨迹命令。
+
+`sim_playback.py` 进一步把采样骨架映射到真实 Humanoid21 模型：
+`ReferenceIKSolver` 用阻尼最小二乘把骨盆/脚/手/头关键点解到完整
+`qpos`（含脚部与躯干的旋转任务和站姿正则项），`render_reference_in_sim`
+逐帧写入仿真器并用广播相机渲染 MP4。离线渲染需要
+`MUJOCO_GL=egl`（`render_cases.py` 与测试 `conftest.py` 已默认设置）。
+
+第三阶段仍不输出力矩、关节角命令或 MuJoCo 状态；下游动作层围绕这
+些参照搜索自己的动作。
+
+## 9. 与下游的边界
 
 `MainPath` 只回答：
 
@@ -377,7 +423,7 @@ MainPath
 
 下游可以反馈要求重新规划，但全身姿态和动作实现不属于本模块。
 
-## 9. 当前实现与文件划分
+## 10. 当前实现与文件划分
 
 当前文件：
 
@@ -389,14 +435,17 @@ constraints.py         # MainPathModel 与能力包络
 trajectory.py          # SupportSchedule + 当前状态 -> 连续 MainPath
 validation.py          # 任意区间动力学与能力包络验证器
 diagnostics.py         # ValidationIssue / ValidationReport / PlanningResult
-visualize.py           # 第一阶段 MP4 与第二阶段主路径 MP4
+reference.py           # 第三阶段：MotionReference / 参数化模板 / 骨架采样
+sim_playback.py        # 采样骨架 -> MuJoCo qpos IK -> 仿真器渲染
+visualize.py           # 支撑序列 / 主路径 / 运动参照 MP4
 render_cases.py        # 批量生成代表性用例视频
 test_support_sequence.py
 test_trajectory.py
+test_reference.py
 ```
 
-`render_cases.py` 会为三个用例同时生成第一阶段支撑序列回放和第二阶
-段验证后的 `MainPath` 回放。
+`render_cases.py` 会为三个用例同时生成第一阶段支撑序列回放、第二阶
+段验证后的 `MainPath` 回放和第三阶段骨架采样回放。
 
 当前从 `standing` 姿态提取的默认 gait envelope：
 
@@ -430,7 +479,10 @@ baseline/humanoid21/mpc/main_path/visualizations/
 ├── diagonal_two_steps.mp4
 ├── hold_main_path.mp4
 ├── forward_step_main_path.mp4
-└── diagonal_two_steps_main_path.mp4
+├── diagonal_two_steps_main_path.mp4
+├── hold_reference.mp4
+├── forward_step_reference.mp4
+└── diagonal_two_steps_reference.mp4
 ```
 
 第一阶段视频仍只展示二维支撑回放：脚在支撑区间内按颜色绘制，离地时
@@ -443,6 +495,14 @@ baseline/humanoid21/mpc/main_path/visualizations/
 - 左右脚支撑区间；
 - `|l|/m` 与 `|L|/(m·leg)` 曲线；
 - 左右脚合力与法向力曲线。
+
+第三阶段 `*_reference.mp4` 直接用 MuJoCo 仿真器渲染：每帧对
+`reference.sample_pose(t)` 的骨架关键点解 `ReferenceIKSolver`，把完
+整 `qpos` 写入仿真器后用广播相机成像，可以直接检查采样参照在真实
+模型上是否合理（脚是否落地、膝肘方向、手臂形态）。
+
+`animate_motion_reference` 保留 matplotlib 调试视图：俯视脚位/COM/
+骨盆、侧视与正视骨架棍图、摆臂/屈膝/脚高曲线。
 
 PNG 静态支撑序列图接口仍保留，便于单帧检查和测试。
 
@@ -462,4 +522,9 @@ PNG 静态支撑序列图接口仍保留，便于单帧检查和测试。
 - 单支撑期 inactive 脚零外力；
 - 终端位置、线动量、角动量与静态力矩；
 - 结构化前置冲突与内部能力违规诊断；
+- `MotionReferenceState` 完整字段与模板参数；
+- 步态异侧协调（摆臂/骨盆/躯干扭转方向）；
+- 参照随时间的连续性；
+- 骨架采样的一致性（两段腿长、支撑踝高度、关键点完备）；
+- 仿真器 IK 求解残差与 MP4 渲染输出；
 - PNG 与 MP4 可视化输出。

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import matplotlib
 
@@ -169,6 +169,100 @@ def animate_main_path(
         ax_force.axvline(current.time, color="black", linestyle="--", lw=1.2)
         ax_force.legend(loc="upper right", fontsize=8, ncol=2)
         fig.suptitle(f"{title}  |  robot t={current.time:5.2f} s")
+
+    writer = animation.FFMpegWriter(
+        fps=int(fps), metadata={"title": title}, bitrate=2200)
+    render = animation.FuncAnimation(
+        fig, draw, frames=len(frame_times), interval=1000.0 / fps,
+        blit=False, repeat=False)
+    render.save(output, writer=writer, dpi=130)
+    plt.close(fig)
+    return output
+
+
+def animate_motion_reference(
+    reference,
+    target_pos_world: np.ndarray,
+    output_path: str | Path,
+    *,
+    title: str = "Motion reference playback",
+    fps: int = 20,
+) -> Path:
+    """Render a real-time MP4 for sampled motion-reference skeletons."""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError("fps must be positive")
+
+    duration = float(reference.end_time - reference.start_time)
+    if duration <= 0.0:
+        raise ValueError("reference end_time must be after start_time")
+    frame_count = max(2, int(np.floor(duration * fps)) + 1)
+    frame_times = reference.start_time + np.arange(frame_count) / float(fps)
+    frame_times = frame_times[frame_times <= reference.end_time + 1e-9]
+    if abs(frame_times[-1] - reference.end_time) > 1e-6:
+        frame_times = np.append(frame_times, reference.end_time)
+    states = reference.states_at(frame_times)
+    poses = reference.sample_poses(frame_times)
+
+    all_points = np.asarray([
+        point for pose in poses for point in pose.keypoints.values()],
+        dtype=np.float64)
+    heading = float(states[0].heading_yaw)
+    forward = np.array([np.cos(heading), np.sin(heading), 0.0])
+    left = np.array([-np.sin(heading), np.cos(heading), 0.0])
+    f_coords = all_points @ forward
+    l_coords = all_points @ left
+    z_coords = all_points[:, 2]
+    span = max(0.3, float(f_coords.max() - f_coords.min()) * 0.15)
+
+    foot_heights = np.array([
+        [s.left_foot_pos[2], s.right_foot_pos[2]] for s in states])
+    arm_swings = np.array([
+        [s.left_arm_swing, s.right_arm_swing] for s in states])
+    knee_flex = np.array([
+        [s.left_knee_flexion, s.right_knee_flexion] for s in states])
+
+    fig, ((ax_map, ax_side), (ax_front, ax_curve)) = plt.subplots(
+        2, 2, figsize=(13.2, 8.6), constrained_layout=True,
+        gridspec_kw={"width_ratios": [1.0, 1.35],
+                     "height_ratios": [1.15, 1.0]},
+    )
+
+    def draw(frame_index: int) -> None:
+        for ax in (ax_map, ax_side, ax_front, ax_curve):
+            ax.clear()
+        state = states[frame_index]
+        pose = poses[frame_index]
+        _plot_reference_map(
+            ax_map, reference, states, frame_index, target_pos_world)
+        _plot_skeleton(
+            ax_side, pose, forward, "Side view", z_range=(0.0, 1.3))
+        _plot_skeleton(
+            ax_front, pose, left, "Front view", z_range=(0.0, 1.3))
+        ax_side.set_xlim(f_coords.min() - span, f_coords.max() + span)
+        ax_front.set_xlim(l_coords.min() - span, l_coords.max() + span)
+
+        ax_curve.set_title("Reference curves")
+        ax_curve.set_xlabel("time [s]")
+        ax_curve.set_ylabel("rad / m")
+        ax_curve.grid(True, alpha=0.25)
+        ax_curve.set_xlim(reference.start_time, reference.end_time)
+        ax_curve.plot(frame_times, arm_swings[:, 0], color=FOOT_COLORS["left"],
+                      label="L arm swing")
+        ax_curve.plot(frame_times, arm_swings[:, 1], color=FOOT_COLORS["right"],
+                      label="R arm swing")
+        ax_curve.plot(frame_times, knee_flex[:, 0], color=FOOT_COLORS["left"],
+                      linestyle="--", alpha=0.8, label="L knee")
+        ax_curve.plot(frame_times, knee_flex[:, 1], color=FOOT_COLORS["right"],
+                      linestyle="--", alpha=0.8, label="R knee")
+        ax_curve.plot(frame_times, foot_heights[:, 0], color=FOOT_COLORS["left"],
+                      linestyle=":", alpha=0.8, label="L foot z")
+        ax_curve.plot(frame_times, foot_heights[:, 1], color=FOOT_COLORS["right"],
+                      linestyle=":", alpha=0.8, label="R foot z")
+        ax_curve.axvline(state.time, color="black", linestyle="--", lw=1.2)
+        ax_curve.legend(loc="upper right", fontsize=7, ncol=2)
+        fig.suptitle(f"{title}  |  robot t={state.time:5.2f} s")
 
     writer = animation.FFMpegWriter(
         fps=int(fps), metadata={"title": title}, bitrate=2200)
@@ -483,3 +577,118 @@ def _unique_placements(intervals: Iterable[SupportInterval]) -> List[np.ndarray]
         if not result or not np.allclose(point, result[-1]):
             result.append(point)
     return result
+
+
+def _plot_reference_map(
+    ax,
+    reference,
+    states,
+    frame_index: int,
+    target_pos_world: np.ndarray,
+) -> None:
+    """Top-down view: foot poses, COM path, and pelvis projection."""
+    current = states[frame_index]
+    path = reference.path
+    schedule = path.support_schedule
+    gait = schedule.metadata.get("gait", {})
+    foot_length = float(gait.get("foot_length", 0.24))
+    foot_width = float(gait.get("foot_width", 0.09))
+    margin = max(0.2, foot_length * 0.8)
+    points = np.asarray(
+        [x.com_pos[:2] for x in states]
+        + [x.pelvis_pos[:2] for x in states]
+        + [x.point_world[:2] for x in schedule.intervals]
+        + [np.asarray(target_pos_world, dtype=np.float64)[:2]],
+        dtype=np.float64,
+    )
+    lower = points.min(axis=0) - margin
+    upper = points.max(axis=0) + margin
+    ax.set_xlim(lower[0], upper[0])
+    ax.set_ylim(lower[1], upper[1])
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_title("Top view")
+    ax.grid(True, alpha=0.25)
+
+    com_xy = np.asarray([x.com_pos[:2] for x in states])
+    ax.plot(com_xy[:, 0], com_xy[:, 1], color="black", alpha=0.22,
+            linewidth=1.8)
+    ax.plot(com_xy[:frame_index + 1, 0], com_xy[:frame_index + 1, 1],
+            color="black", linewidth=2.0)
+    target = np.asarray(target_pos_world, dtype=np.float64)[:2]
+    ax.scatter([target[0]], [target[1]], marker="*", s=170,
+               color="#2ca02c", label="Target")
+    for foot in ("left", "right"):
+        color = FOOT_COLORS[foot]
+        pos = getattr(current, f"{foot}_foot_pos")
+        active = getattr(current, f"{foot}_support_active")
+        patch = Rectangle(
+            (pos[0] - foot_length * 0.5, pos[1] - foot_width * 0.5),
+            foot_length,
+            foot_width,
+            angle=float(np.degrees(current.heading_yaw)),
+            rotation_point="center",
+            facecolor=color if active else "none",
+            edgecolor=color,
+            linewidth=1.2,
+            alpha=0.80 if active else 0.85,
+            linestyle="-" if active else "--",
+            zorder=4,
+        )
+        ax.add_patch(patch)
+        ax.text(pos[0], pos[1], FOOT_LABELS[foot], ha="center", va="center",
+                color="white" if active else color, fontsize=9,
+                fontweight="bold", zorder=5)
+    ax.scatter([current.pelvis_pos[0]], [current.pelvis_pos[1]], marker="s",
+               s=55, color="#9467bd", label="Pelvis", zorder=6)
+    ax.scatter([current.com_pos[0]], [current.com_pos[1]], marker="o", s=70,
+               facecolors="none", edgecolors="black", linewidths=2.0,
+               label="COM", zorder=6)
+    heading = np.array(
+        [np.cos(current.heading_yaw), np.sin(current.heading_yaw)])
+    ax.annotate("", xy=current.com_pos[:2] + heading * 0.16,
+                xytext=current.com_pos[:2],
+                arrowprops={"arrowstyle": "->", "color": "black", "lw": 1.4})
+    ax.legend(loc="upper left", fontsize=7, ncol=2)
+
+
+def _plot_skeleton(
+    ax,
+    pose,
+    horizontal_axis: np.ndarray,
+    title: str,
+    *,
+    z_range: Tuple[float, float] = (0.0, 1.3),
+) -> None:
+    """Project the sampled skeleton onto one vertical plane."""
+    from .reference import SKELETON_BONES
+
+    axis = np.asarray(horizontal_axis, dtype=np.float64)[:2]
+    axis = axis / max(np.linalg.norm(axis), 1e-12)
+
+    def project(point: np.ndarray) -> Tuple[float, float]:
+        return (float(np.dot(point[:2], axis)), float(point[2]))
+
+    ax.set_title(title)
+    ax.set_ylim(*z_range)
+    ax.set_xlabel("horizontal [m]")
+    ax.set_ylabel("z [m]")
+    ax.grid(True, alpha=0.2)
+    ax.axhline(0.0, color="#555555", linewidth=1.2)
+    for a, b in SKELETON_BONES:
+        xa, za = project(pose.keypoints[a])
+        xb, zb = project(pose.keypoints[b])
+        side = "left" if a.endswith("_left") or b.endswith("_left") else \
+            "right" if a.endswith("_right") or b.endswith("_right") else None
+        color = FOOT_COLORS.get(side, "#333333") if side else "#333333"
+        ax.plot([xa, xb], [za, zb], color=color, linewidth=2.0, alpha=0.9)
+    for name, point in pose.keypoints.items():
+        x, z = project(point)
+        side = "left" if name.endswith("_left") else \
+            "right" if name.endswith("_right") else None
+        color = FOOT_COLORS.get(side, "#333333") if side else "#333333"
+        ax.scatter([x], [z], s=18, color=color, zorder=5)
+    com_x, com_z = project(pose.com_pos)
+    ax.scatter([com_x], [com_z], marker="o", s=80, facecolors="none",
+               edgecolors="black", linewidths=1.8, label="COM", zorder=6)
