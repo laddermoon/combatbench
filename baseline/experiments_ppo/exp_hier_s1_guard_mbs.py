@@ -35,6 +35,12 @@ class HierS1GuardMBS(HierS1StandupStepMBS):
     # (robot_a mean root_z 1.223 / robot_b 1.207 over the hold).
     _H_TARGET: float = 1.21
 
+    # Truncate r_potential at the clip's own torso height: the guard
+    # rides at torso_z ~1.21-1.23 (p90=1.235, standing COM=1.236), so
+    # the standing pull is cut off at 1.24 — above that the potential
+    # reward pays nothing and the clip channel owns the gradient.
+    _pot_h_cap = 1.24
+
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import (
             ParameterizedEnvBlueprint,

@@ -63,6 +63,12 @@ class HierS1StandupStepMBS(Standup):
     _H_TARGET: float = 1.20
     _H_SIGMA: float = 0.08
 
+    # Optional r_potential height cutoff: when set, steps with
+    # h_torso > _POT_H_CAP get ZERO potential reward (the standing
+    # pull is truncated instead of kept pulling past the imitation
+    # clip's own torso height).  None = always on (default).
+    _pot_h_cap: "float | None" = None
+
     # Track both criteria for best-checkpoint selection.
     _best_score: float = -1.0
 
@@ -148,9 +154,13 @@ class HierS1StandupStepMBS(Standup):
         r_clip = (clip_arr + 1.0 * pose_arr + 0.5 * cad_arr
                   + 0.5 * h_term)
 
+        pot_r = 0.01 * phi_arr
+        if self._pot_h_cap is not None:
+            pot_r = pot_r * (h_arr <= self._pot_h_cap)
+
         channels = {
             self._ch_pot: ChannelData(
-                reward=(0.01 * phi_arr).astype(np.float32),
+                reward=pot_r.astype(np.float32),
                 is_terminated=False,
                 actor_weight=np.ones(T, dtype=np.float32),
             ),
