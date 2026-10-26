@@ -88,8 +88,13 @@ class HierS3FollowGuard96D(FollowPure):
     _H_SIGMA: float = 0.08
     _pot_h_cap = 1.24
 
-    # --- Fixed speed ceiling: no curriculum (v* ~ U[0,1] in plugin) ---
-    LEVEL_SPEEDS: Tuple[float, ...] = (1.0,)
+    # --- Speed curriculum: 9 levels 0.2 -> 1.0 m/s ---
+    # Promotes when eval hold (dist <= HOLD_DIST on standing frames)
+    # >= PROMOTE_HOLD_RATIO for FOLLOW_PROMOTE_PATIENCE evals running.
+    # v* ~ U[0, level_max] inside the ArcMovePlugin's speed segments.
+    LEVEL_SPEEDS: Tuple[float, ...] = (
+        0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+    )
 
     # ------------------------------------------------------------------
     def _env_pb(self):
@@ -253,6 +258,7 @@ class HierS3FollowGuard96D(FollowPure):
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
                    stochastic=True):
         from baseline.framework.rollout import Job, SamplingSpec
+        smax = self.current_speed
         env_bps: Dict[str, Any] = {
             aid: self._env_pb().materialize(
                 max_steps=self.max_steps,
@@ -260,6 +266,7 @@ class HierS3FollowGuard96D(FollowPure):
                 oppo_agent_id=(
                     "robot_b" if aid == "robot_a" else "robot_a"
                 ),
+                arc_v_max=smax,
             )
             for aid in self._AGENT_IDS
         }

@@ -32,6 +32,9 @@ parameters:
   oppo_agent_id:
     default: "robot_b"
     description: "The arc-moving target robot."
+  arc_v_max:
+    default: 1.0
+    description: "Opponent speed ceiling (m/s) — curriculum-controlled."
 
 runtime:
   phy_steps_per_action: 25
@@ -56,7 +59,7 @@ plugins:
   - cls: "baseline.humanoid21.plugins.arc_move:ArcMovePlugin"
     config:
       target_robot: ${oppo_agent_id}
-      v_max: 1.0
+      v_max: ${arc_v_max}
       v_min: 0.0
       speed_seg_tmin: 1.0
       speed_seg_tmax: 3.0
