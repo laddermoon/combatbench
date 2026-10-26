@@ -21,9 +21,11 @@ Motion model (three independent stochastic processes):
     The actual speed ramps toward the target at |dv/dt| <= accel_max,
     so large target changes are bridged by a smooth transition.
 
-  * Facing — re-sampled together with each speed segment: with
-    probability face_learner_prob the torso tracks the learner;
-    otherwise it holds a random fixed yaw for the whole segment.
+  * Facing — sampled ONCE per episode: with probability
+    face_learner_prob the torso tracks the learner for the whole
+    episode; otherwise it holds one random fixed yaw for the whole
+    episode (per user spec — mid-episode mode flips or yaw changes are
+    observable state jumps that disturb the learner).
 
 The target may legitimately move TOWARD the learner — only a hard
 ``avoid_min`` contact radius is enforced (the step is clamped at that
@@ -147,15 +149,11 @@ class ArcMovePlugin(BasePlugin):
     # ------------------------------------------------------------------
 
     def _start_speed_segment(self) -> None:
-        """New time-domain segment: speed target + facing mode."""
+        """New time-domain segment: duration + speed target."""
         t = self._rng.uniform(self.speed_seg_tmin, self.speed_seg_tmax)
         self._speed_steps_left = max(1, int(round(t / self.ACTION_DT)))
         self._v_target = float(
             self._rng.uniform(self.v_min, self.v_max))
-        self._face_learner = bool(
-            self._rng.uniform() < self.face_learner_prob)
-        if not self._face_learner:
-            self._fixed_yaw = float(self._rng.uniform(-np.pi, np.pi))
 
     def _start_path_segment(self, pos: np.ndarray) -> None:
         """New arc-length segment: resample heading (inward cone near wall)."""
@@ -194,13 +192,51 @@ class ArcMovePlugin(BasePlugin):
         self._sub_left = 0.0
         self._kappa = 0.0
         core_state = ctx.accessor.get_core_state()
-        if self.target_robot in core_state and self.trained_robot in core_state:
-            opp_pos = np.asarray(
-                core_state[self.target_robot]["root_pos"], dtype=np.float64)
-            trained_pos = np.asarray(
-                core_state[self.trained_robot]["root_pos"], dtype=np.float64)
-            to_trained = trained_pos[:2] - opp_pos[:2]
+        if self.target_robot not in core_state or self.trained_robot not in core_state:
+            return
+
+        opp_pos_3d = np.asarray(
+            core_state[self.target_robot]["root_pos"], dtype=np.float64)
+        trained_pos = np.asarray(
+            core_state[self.trained_robot]["root_pos"], dtype=np.float64)[:2]
+
+        # Random spawn: uniform in the arena disk inside the margin,
+        # at least spawn_min_distance away from the learner.  (The level-0
+        # static target is a random fixed point per user spec.)
+        r_lim = self.ARENA_RADIUS - self.boundary_margin
+        spawn = opp_pos_3d[:2].copy()
+        for _ in range(30):
+            ang = self._rng.uniform(-np.pi, np.pi)
+            rad = r_lim * np.sqrt(self._rng.uniform())
+            cand = np.array([rad * np.cos(ang), rad * np.sin(ang)])
+            if np.linalg.norm(cand - trained_pos) >= 0.8:
+                spawn = cand
+                break
+
+        # Episode-facing mode: sampled once, constant all episode.
+        self._face_learner = bool(
+            self._rng.uniform() < self.face_learner_prob)
+        self._fixed_yaw = float(self._rng.uniform(-np.pi, np.pi))
+        if self._face_learner:
+            to_trained = trained_pos - spawn
             self._facing = float(np.arctan2(to_trained[1], to_trained[0]))
+        else:
+            self._facing = self._fixed_yaw
+
+        rot = R.from_euler("z", self._facing)
+        q = rot.as_quat()
+        ctx.mutator.set_core_state({
+            self.target_robot: {
+                "root_pos": np.array(
+                    [spawn[0], spawn[1], opp_pos_3d[2]], dtype=np.float32),
+                "root_rot": np.array([q[3], q[0], q[1], q[2]],
+                                     dtype=np.float32),
+                "root_vel_local": np.zeros(3, dtype=np.float32),
+                "root_angular_vel_local": np.zeros(3, dtype=np.float32),
+                "joint_pos_norm": self.STANDING_JOINT_POS.copy(),
+                "joint_vel_norm": np.zeros(21, dtype=np.float32),
+            }
+        })
 
     def on_pre_action_step(self, ctx: SimContext) -> None:
         core_state = ctx.accessor.get_core_state()

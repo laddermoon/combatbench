@@ -93,7 +93,7 @@ class HierS3FollowGuard96D(FollowPure):
     # >= PROMOTE_HOLD_RATIO for FOLLOW_PROMOTE_PATIENCE evals running.
     # v* ~ U[0, level_max] inside the ArcMovePlugin's speed segments.
     LEVEL_SPEEDS: Tuple[float, ...] = (
-        0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
+        0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
     )
 
     # ------------------------------------------------------------------
