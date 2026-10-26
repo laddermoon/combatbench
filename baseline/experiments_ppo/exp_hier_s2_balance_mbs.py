@@ -56,6 +56,17 @@ class HierS2BalanceMBS(BalancePure):
     _CLIP_OBS = {"robot_a": "standard_clip_a", "robot_b": "standard_clip_b"}
     _clip_aw_scale: float = 2.0
 
+    # Uprightness shaping inside r_std_clip (mirrors the S1 hook):
+    # Gaussian pull toward _H_TARGET in torso height.
+    _H_TARGET: float = 1.20
+    _H_SIGMA: float = 0.08
+
+    # Optional r_potential height cutoff (default off): when set, steps
+    # with h_torso > _pot_h_cap get ZERO potential reward — the standing
+    # pull is truncated at the imitation clip's own torso height so it
+    # stops fighting the posture channel.
+    _pot_h_cap: "float | None" = None
+
     # ------------------------------------------------------------------
     def _env_pb(self):
         from envs.framework.parameterized_blueprint import (
@@ -160,7 +171,10 @@ class HierS2BalanceMBS(BalancePure):
         h_arr = (np.asarray(h_arr[:T], dtype=np.float32)
                  if h_arr is not None else np.zeros(T, dtype=np.float32))
         r_clip = r_clip + 0.5 * np.exp(
-            -((h_arr - 1.20) / 0.08) ** 2)
+            -((h_arr - self._H_TARGET) / self._H_SIGMA) ** 2)
+
+        if self._pot_h_cap is not None:
+            r_potential = r_potential * (h_arr <= self._pot_h_cap)
 
         aw_clip = (self._clip_aw_scale * phi_arr * phi_arr
                    * not_pushing.astype(np.float32)).astype(np.float32)

@@ -1,0 +1,115 @@
+# Guard-96 Step 2 — push recovery -> return to jab_l dynamic guard.
+#
+# 96-dim AttackPrep stage 2 (bootstrip.md new-route chain): bare
+# Humanoid21Simulator (canonical 96-dim obs).  Both robots spawn from
+# random fallen states, stand up, then take curriculum-scheduled torso
+# pushes (StandingTriggeredForcePlugin) and must re-settle into the
+# jab_l dynamic guard captured in assets/jab_l_guard_clips.npz.
+#
+# Push plugin params copied from the proven hier_s2_balance_env.yaml:
+# threshold 1.10 + grace 5 — a dynamic posture dips below 1.15
+# transiently, so without grace the standing timer never reaches 20
+# and pushes never fire.
+#
+# Reward channels (in exp_hier_s2_guard_96d.py):
+#   r_potential = 0.01 × φ(t) × I(h_torso ≤ 1.24),   aw = 3.0 (fixed)
+#   r_fall      = fall + wall-lean + push-clean,     aw = 2.0 (fixed)
+#   r_std_clip  = clip + pose + 0.5·cad + 0.5·h,
+#                                     aw = 2·φ²·(push_phase != PUSHING)
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      standing_height_threshold: 1.10
+      standing_grace_steps: 5
+      standing_settle_steps: 20
+      random_delay_max_steps: 10
+      observe_steps: 20
+      impulse_body: "torso"
+      force_threshold: 1.0
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  standard_clip_a:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_a"
+      clip_path: "/data1/mono/things/combatbench/baseline/humanoid21/hierarchy/assets/jab_l_guard_clips.npz"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 8
+  standard_clip_b:
+    cls: "baseline.humanoid21.hierarchy.standard_clip_observer:StandardClipObserver"
+    config:
+      agent_id: "robot_b"
+      clip_path: "/data1/mono/things/combatbench/baseline/humanoid21/hierarchy/assets/jab_l_guard_clips.npz"
+      sigma: 8.0
+      sigma_pose: 0.9
+      cadence_lag: 8
+  cross_support_a:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_a"
+  cross_support_b:
+    cls: "baseline.humanoid21.rewards.cross_support:CrossSupportBalanceRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_b"
