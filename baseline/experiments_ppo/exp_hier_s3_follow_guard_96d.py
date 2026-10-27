@@ -25,6 +25,10 @@ Channels (7):
     r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term(h→1.21),
                           aw = φ²·(1.0 out-band, 3.0 in-band)
 
+Disturbance: StandingTriggeredForcePlugin on the learner only, fixed
+top-tier 40N profile (duration 31-40 steps) — all follow/clip actor
+weights cut while push_phase == PUSHING (S2 recipe).
+
 Blueprint: blueprints/hier_s3_follow_guard_96d_env.yaml
 Launch:
     --experiment hier_s3_follow_guard_96d \
@@ -215,6 +219,16 @@ class HierS3FollowGuard96D(FollowPure):
             0.0, 1.0,
         ).astype(np.float32)
 
+        # --- Push gate: task channels off while a push is physically
+        # applied (S2 recipe — recovery may break stance/band freely). ---
+        push_key = self._PUSH_OBS.get(agent_id)
+        push_phase = extract_per_step_field(
+            oo, push_key, "push_phase", T_full,
+        ) if push_key is not None else None
+        not_pushing = (np.asarray(push_phase[:T_full]) != 2).astype(
+            np.float32) if push_phase is not None else np.ones(
+            T_full, dtype=np.float32)
+
         # --- r_std_clip: guard posture, emphasised inside the band ---
         r_clip = np.zeros(T_full, dtype=np.float32)
         if clip_key is not None:
@@ -251,7 +265,7 @@ class HierS3FollowGuard96D(FollowPure):
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_band_actor_weight
-                    * out_band[:T] * stand2[:T]
+                    * out_band[:T] * stand2[:T] * not_pushing[:T]
                 ).astype(np.float32),
             )
             t.channels["r_tan_step"] = ChannelData(
@@ -259,7 +273,7 @@ class HierS3FollowGuard96D(FollowPure):
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_tangential_actor_weight
-                    * out_band[:T] * stand2[:T]
+                    * out_band[:T] * stand2[:T] * not_pushing[:T]
                 ).astype(np.float32),
             )
             t.channels["r_face"] = ChannelData(
@@ -267,14 +281,14 @@ class HierS3FollowGuard96D(FollowPure):
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_face_actor_weight
-                    * dist_gate[:T] * stand2[:T]
+                    * dist_gate[:T] * stand2[:T] * not_pushing[:T]
                 ).astype(np.float32),
             )
             t.channels["r_std_clip"] = ChannelData(
                 reward=r_clip[:T],
                 is_terminated=ref.is_terminated,
                 actor_weight=(
-                    clip_w[:T] * stand2[:T]
+                    clip_w[:T] * stand2[:T] * not_pushing[:T]
                 ).astype(np.float32),
             )
         return trajs
@@ -358,6 +372,16 @@ class HierS3FollowGuard96D(FollowPure):
                 episode_options={
                     "agent_id": agent_id,
                     "initial_distance": initial_distance,
+                    # Fixed top-tier 40N push (S2 level-3 profile).
+                    "impulse_params": {
+                        agent_id: {
+                            "force": 40.0,
+                            "duration_min": 31,
+                            "duration_max": 40,
+                            "body": "torso",
+                            "seed": seed,
+                        }
+                    },
                 },
                 sampling_a=sampling,
                 sampling_b=sampling,
@@ -372,6 +396,8 @@ class HierS3FollowGuard96D(FollowPure):
     def on_eval(self, episodes, update) -> Dict[str, Any]:
         result = super().on_eval(episodes, update)
 
+        total_push = 0
+        total_fall = 0
         band_ratios: List[float] = []
         clips: List[float] = []
         cads: List[float] = []
@@ -385,6 +411,10 @@ class HierS3FollowGuard96D(FollowPure):
             _, phi_key = self._AGENT_OBS_MAP[agent_id]
             app_key = self._APPROACH_OBS[agent_id]
             clip_key = self._CLIP_OBS[agent_id]
+
+            em = dict(getattr(ep, "episode_metrics", None) or {})
+            total_push += int(em.get(f"{agent_id}_push_count", 0))
+            total_fall += int(em.get(f"{agent_id}_fall_count", 0))
 
             phi = extract_per_step_field(
                 ep.observer_outputs, phi_key, "potential", T)
@@ -423,6 +453,10 @@ class HierS3FollowGuard96D(FollowPure):
             if cd is not None:
                 cads.append(float(np.asarray(cd[:T])[standing].mean()))
 
+        result["info"]["pushes"] = total_push
+        result["info"]["push_falls"] = total_fall
+        result["info"]["recovery"] = round(
+            1.0 - total_fall / total_push if total_push > 0 else 1.0, 3)
         result["info"]["band"] = round(
             sum(band_ratios) / max(len(band_ratios), 1), 3)
         result["info"]["clip"] = round(

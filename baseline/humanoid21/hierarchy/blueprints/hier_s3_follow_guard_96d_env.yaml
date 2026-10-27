@@ -56,6 +56,16 @@ plugins:
       max_phy_steps: 1000
       height_threshold: 0.3
       reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["${agent_id}"]
+      standing_height_threshold: 1.10
+      standing_grace_steps: 5
+      standing_settle_steps: 20
+      random_delay_max_steps: 10
+      observe_steps: 20
+      impulse_body: "torso"
+      force_threshold: 1.0
   - cls: "baseline.humanoid21.plugins.arc_move:ArcMovePlugin"
     config:
       target_robot: ${oppo_agent_id}
@@ -118,6 +128,14 @@ observer_plugins:
       agent_id: "robot_a"
   wall_contact_b:
     cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
     config:
       agent_id: "robot_b"
   approach_velocity_a:
