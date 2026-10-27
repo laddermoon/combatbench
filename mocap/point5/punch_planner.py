@@ -26,10 +26,15 @@ Design model (boxing kinetic chain, expressed in the 5-point language):
   Rear-hand punches (punching hand on the anchor-foot side, e.g. a
   right cross from a left-lead guard) get ``cross_reach_bonus`` extra
   effective reach — hip rotation buys range without moving the anchor.
+  Their HAND PATH also differs: a rear hand starts behind and is driven
+  through by the shoulder/hip, so the ``extend`` midpoint keeps it
+  later (~35 % extension, biased to its own side) — the elbow leads
+  before the fist extends, instead of a straight teleport-to-target.
 
 Verdicts are honest: ``out_of_sector`` (needs a turn) and
 ``out_of_reach`` (needs a walk-in) return ``task=None``.
 
+Keyframes:  start -> load -> extend -> strike.
 v2 deliberately still omits: recovery after impact, pivot/heel-lift on
 the anchor foot (P5 positions only), turning, multi-step approach.
 """
@@ -79,9 +84,15 @@ class PunchPlannerConfig:
     guard_tuck_side: float = 0.10   # lateral offset to its own side (m)
     guard_tuck_drop: float = 0.12   # below head (m)
 
+    # --- punch path shaping (extend midpoint between load & strike) ---
+    mid_frac_lead: float = 0.50   # lead hand: halfway along the line
+    mid_frac_rear: float = 0.35   # rear hand stays back longer (rotation)
+    mid_side_off: float = 0.04    # rear hand: bias to its own side (m)
+
     # --- timing (phase A slower, phase B fast) ---
     dur_load: float = 0.16
-    dur_extend: float = 0.10
+    dur_reach: float = 0.06       # load -> extend midpoint
+    dur_snap: float = 0.06        # extend -> impact
 
     # --- reward annotations (downstream scorer) ---
     w_strike_hand: float = 3.0
@@ -201,17 +212,26 @@ def plan_punch(initial: Point5State,
         [0, 0, -(sink_strike - cfg.head_sink_load)])
 
     # --- hands -------------------------------------------------------
-    # punch hand: guard position (phase A frozen) -> straight drive
+    # punch hand: guard position (phase A frozen) -> shaped drive.
+    # A rear hand travels further and comes through with the elbow
+    # leading, so its midpoint stays later and biased to its own side.
     punch_dir = _norm(target - hp)
     if not np.any(punch_dir):
         punch_dir = a
     hp_hit = target + punch_dir * cfg.penetration
+    mid_frac = cfg.mid_frac_rear if rear_hand else cfg.mid_frac_lead
+    punch_side = 1.0 if hp_name == "hand_right" else -1.0
+    right = np.array([a[1], -a[0], 0.0])
+    hp_mid = (hp + (hp_hit - hp) * mid_frac
+              + right * (punch_side * cfg.mid_side_off if rear_hand
+                         else 0.0))
     # guard hand: stays in phase A, tucks to the chin on impact
     side = 1.0 if hg_name == "hand_right" else -1.0
-    right = np.array([a[1], -a[0], 0.0])
     hg_hit = (head_hit - a * cfg.guard_tuck_back
               + right * (side * cfg.guard_tuck_side)
               + np.array([0, 0, -cfg.guard_tuck_drop]))
+    hg_mid = hg + (hg_hit - hg) * 0.5
+    head_mid = head_load + (head_hit - head_load) * 0.5
 
     # --- keyframes ---------------------------------------------------
     def kf(label: str, hp_t, hg_t, head_t, fm_t) -> Keyframe:
@@ -228,12 +248,13 @@ def plan_punch(initial: Point5State,
 
     kf0 = kf("start", hp, hg, head, f_move)
     kf1 = kf("load", hp, hg, head_load, f_landed)
-    kf2 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
+    kf2 = kf("extend", hp_mid, hg_mid, head_mid, f_landed)
+    kf3 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
 
     task = Point5Task(
         name=f"punch_{hand}",
-        keyframes=(kf0, kf1, kf2),
-        durations=(cfg.dur_load, cfg.dur_extend),
+        keyframes=(kf0, kf1, kf2, kf3),
+        durations=(cfg.dur_load, cfg.dur_reach, cfg.dur_snap),
         metadata={
             "hand": hand,
             "target": target.tolist(),

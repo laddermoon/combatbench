@@ -134,6 +134,24 @@ def test_rear_hand_gets_reach_bonus():
     assert plan_punch(GUARD_L, far, "right", CFG).reachable
 
 
+def test_extend_midpoint_progresses_and_rear_stays_back():
+    """The 'extend' frame sits between guard and impact along the path;
+    rear-hand midpoints stay earlier (elbow leads, fist follows)."""
+    tgt = np.array([0.9, 0.0, 1.1])
+    for hand in ("left", "right"):
+        plan = plan_punch(GUARD_L, tgt, hand, CFG)
+        assert len(plan.task.keyframes) == 4
+        hp_name = f"hand_{hand}"
+        hp0 = GUARD_L.pos[POINT_INDEX[hp_name]]
+        mid = _targets(plan.task.keyframes[2])[hp_name]
+        hit = _targets(plan.task.keyframes[3])[hp_name]
+        f_mid = np.linalg.norm(mid - hp0) / np.linalg.norm(hit - hp0)
+        if plan.diag["rear_hand"]:
+            assert f_mid < 0.45                 # rear hand stays back
+        else:
+            assert 0.35 < f_mid < 0.65          # lead ~halfway
+
+
 def test_durations_encode_slow_load_fast_extend():
     plan = plan_punch(GUARD_L, np.array([0.9, 0.0, 1.1]), "left", CFG)
     d = plan.task.durations
