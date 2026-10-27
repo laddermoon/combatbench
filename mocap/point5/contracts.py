@@ -17,6 +17,9 @@ POINT_INDEX = {name: i for i, name in enumerate(POINT_NAMES)}
 GROUND_Z = 0.0
 PLANT_HEIGHT_TOL = 0.02  # foot z below this counts as planted
 
+TASK_FORMAT = "point5.task.v1"    # serialized Point5Task format tag
+FRAMES_FORMAT = "point5.frames.v1"  # serialized sampled-frames payload tag
+
 
 class Point5Error(ValueError):
     """Base class for point5 contract violations."""
@@ -269,13 +272,18 @@ class Point5Task:
         return len(self.durations)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"name": self.name,
+        return {"format": TASK_FORMAT,
+                "name": self.name,
                 "keyframes": [k.to_dict() for k in self.keyframes],
                 "durations": list(self.durations),
                 "metadata": dict(self.metadata)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Point5Task":
+        fmt = d.get("format", TASK_FORMAT)
+        if fmt != TASK_FORMAT:
+            raise TaskValidationError(
+                f"unsupported task format {fmt!r}; expected {TASK_FORMAT!r}")
         return cls(name=str(d.get("name", "")),
                    keyframes=tuple(Keyframe.from_dict(k)
                                    for k in d["keyframes"]),

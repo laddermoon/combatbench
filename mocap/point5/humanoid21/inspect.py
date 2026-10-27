@@ -36,6 +36,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--task", help="Point5Task JSON file to sample")
     ap.add_argument("--dt", type=float, default=0.05)
+    ap.add_argument("--viz", help="write self-contained HTML player to this path")
+    ap.add_argument("--max-step", type=float, default=0.01,
+                    help="max per-frame point displacement for --viz (m)")
     args = ap.parse_args(argv)
 
     from envs.humanoid21.simulator import Humanoid21Simulator
@@ -55,6 +58,12 @@ def main(argv=None) -> int:
     print(f"task {task.name!r} duration={ref.duration:.3f}s "
           f"robot={args.robot}")
     print(f"measured @t=0\n{_fmt_state(adapter.measure(args.robot))}")
+    if args.viz:
+        from mocap.point5 import export_html
+        out = export_html(ref, args.viz, max_step=args.max_step,
+                          measured=adapter.measure(args.robot).pos)
+        print(f"wrote {out}")
+        return 0
     fr = ref.frames(args.dt)
     for k, st in enumerate(fr.states):
         m = st.metadata

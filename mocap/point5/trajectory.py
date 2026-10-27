@@ -152,3 +152,52 @@ def build_reference(task: Point5Task,
                     resolver: AnchorResolver) -> Point5Reference:
     """Resolve + wrap. ``initial`` (if needed) lives inside the resolver."""
     return Point5Reference(resolve_task(task, resolver))
+
+
+def adaptive_sample(reference: Point5Reference,
+                    max_step: float = 0.01) -> ReferenceFrames:
+    """Sample so every point's per-frame displacement stays <= ``max_step``.
+
+    Per segment ``i`` the polyline is linear, so ``n_i = ceil(D_i/max_step)``
+    equal ``s`` subdivisions (D_i = max per-point endpoint distance) give the
+    guarantee exactly — including across segment boundaries. Static segments
+    (D_i == 0) collapse to a single frame.
+    """
+    if not np.isfinite(max_step) or max_step <= 0.0:
+        raise TaskValidationError("max_step must be positive")
+    task = reference.task
+    P = reference.resolved.positions
+    n_seg = task.n_segments
+    pairs = []
+    for seg in range(n_seg):
+        d = float(np.linalg.norm(P[seg + 1] - P[seg], axis=1).max())
+        n = max(1, int(np.ceil(d / max_step)))
+        stop = n if seg < n_seg - 1 else n + 1  # boundary shared with next seg
+        for k in range(stop):
+            pairs.append((seg, k / n))
+    states = tuple(reference.sample(seg, s) for seg, s in pairs)
+    return ReferenceFrames(
+        pos=np.stack([st.pos for st in states]),
+        times=np.asarray([st.time for st in states]),
+        segs=np.asarray([st.metadata["seg"] for st in states],
+                        dtype=np.int32),
+        s=np.asarray([st.metadata["s"] for st in states]),
+        states=states)
+
+
+def frames_payload(reference: Point5Reference,
+                   frames: ReferenceFrames) -> Dict[str, Any]:
+    """JSON-safe sampled-trajectory payload (``point5.frames.v1``)."""
+    return {
+        "format": "point5.frames.v1",
+        "task": reference.task.name,
+        "duration": reference.duration,
+        "point_names": list(POINT_NAMES),
+        "frames": [
+            {"t": float(st.time),
+             "seg": int(st.metadata["seg"]),
+             "s": float(st.metadata["s"]),
+             "label": st.metadata["keyframe_label"],
+             "pos": st.pos.tolist()}
+            for st in frames.states],
+    }

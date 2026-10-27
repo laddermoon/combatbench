@@ -131,6 +131,20 @@ pos(seg, s) = (1 - s) * P[seg] + s * P[seg + 1]     # s ∈ [0,1]
 - `frames(dt)`：dense 采样，返回 pos `(T,5,3)` + t/seg/s 标签数组
 - 参考 `Point5State.vel` 恒为 `None`；metadata 带 seg/s/t/label
 
+### 5.4 距离自适应采样（可视化用）
+
+`adaptive_sample(ref, max_step=0.01)`：不按时间均匀采样，按位移细分——
+每段切 `n_i = ceil(D_i/max_step)` 帧（`D_i` = 该段 5 点端点距离的最大值）。
+段内线性 ⇒ 保证**相邻两帧任意点位移 ≤ max_step**（含跨段边界）。
+静止段只产出边界帧。用途：可视化/播放时不该因 dt 选错而跳变或漏动作。
+
+### 5.5 可视化
+
+`export_html(ref, out, max_step=0.01, measured=None)` → 单文件 HTML：
+内嵌 `point5.frames.v1` 帧数据 + 三视图 canvas（top x-y / front x-z /
+side y-z），vanilla JS 播放+拖动条，`measured` 叠灰色 ghost 做参考对照。
+零外部依赖，离线可开。CLI：`inspect --task t.json --viz out.html`。
+
 ## 6. 校验（仅结构层，v1）
 
 构造时 fail-loud（`TaskValidationError`）：
@@ -147,6 +161,13 @@ pos(seg, s) = (1 - s) * P[seg] + s * P[seg + 1]     # s ∈ [0,1]
 `to_dict()` / `from_dict()`，JSON-safe（list 不是 ndarray）。
 anchor 带 type 标签：`{"type":"world","pos":[...]}` 等。
 这是 human authoring / 编辑工具的存储格式。
+
+**格式版本标签**（`from_dict` 拒绝未知版本）：
+
+| 载荷 | format |
+|---|---|
+| `Point5Task.to_dict()` | `point5.task.v1` |
+| `frames_payload()` 采样帧 | `point5.frames.v1` |
 
 ## 8. 明确不做（防止烂尾的清单）
 

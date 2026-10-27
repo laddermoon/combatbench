@@ -17,7 +17,13 @@ from .contracts import (
     TaskValidationError,
     WorldPoint,
 )
-from .trajectory import Point5Reference, build_reference, resolve_task
+from .trajectory import (
+    Point5Reference,
+    adaptive_sample,
+    build_reference,
+    frames_payload,
+    resolve_task,
+)
 
 
 def _kf(pos_fn, label=""):
@@ -156,3 +162,68 @@ class TestFrames:
                 _kf(lambda i, n: (1, 0, i)))), _world_resolver())
         with pytest.raises(TaskValidationError):
             ref.frames(0.0)
+
+
+class TestAdaptiveSample:
+    def _task(self):
+        # head travels 0.25m in seg0, then static 0.4s in seg1
+        def mk(head):
+            def f(i, n):
+                return head if n == "head" else (0, 0, i)
+            return _kf(f)
+        return Point5Task(name="t", durations=(0.2, 0.4), keyframes=(
+            mk((0, 0, 0)), mk((0.25, 0, 0)), mk((0.25, 0, 0))))
+
+    def test_per_frame_step_bounded(self):
+        ref = build_reference(self._task(), _world_resolver())
+        fr = adaptive_sample(ref, max_step=0.01)
+        d = np.linalg.norm(np.diff(fr.pos, axis=0), axis=2)  # (T-1,5)
+        assert d.size and float(d.max()) <= 0.01 + 1e-9
+
+    def test_static_segment_collapses(self):
+        ref = build_reference(self._task(), _world_resolver())
+        fr = adaptive_sample(ref, max_step=0.01)
+        # seg1 is static: emits only its two boundaries (kf1 at s=0, kf2 at s=1)
+        seg1 = fr.states[fr.segs.tolist().index(1):]
+        assert len(seg1) == 2
+        np.testing.assert_allclose(seg1[0].pos, seg1[1].pos)
+
+    def test_boundary_not_duplicated(self):
+        ref = build_reference(self._task(), _world_resolver())
+        fr = adaptive_sample(ref, max_step=0.01)
+        assert len(np.unique(fr.times)) == len(fr.times)
+
+    def test_max_step_validation(self):
+        ref = build_reference(self._task(), _world_resolver())
+        with pytest.raises(TaskValidationError):
+            adaptive_sample(ref, max_step=0.0)
+
+
+class TestFramesPayload:
+    def test_payload_format_and_jsonable(self):
+        import json
+        ref = build_reference(self._task(), _world_resolver())
+        payload = frames_payload(ref, adaptive_sample(ref))
+        assert payload["format"] == "point5.frames.v1"
+        assert payload["frames"][0]["pos"][0] == [0.0, 0.0, 0.0]
+        json.dumps(payload)  # must be JSON-safe
+
+    def _task(self):
+        return Point5Task(name="t", durations=(0.5,), keyframes=(
+            _kf(lambda i, n: (0, 0, i)),
+            _kf(lambda i, n: (0.1, 0, i))))
+
+
+class TestExportHtml:
+    def test_writes_player(self, tmp_path):
+        from mocap.point5 import export_html
+        ref = build_reference(
+            Point5Task(name="t", durations=(0.5,), keyframes=(
+                _kf(lambda i, n: (0, 0, i)),
+                _kf(lambda i, n: (0.2, 0, i)))),
+            _world_resolver())
+        out = export_html(ref, tmp_path / "t.html")
+        text = out.read_text()
+        assert "point5.frames.v1" in text
+        assert '"hand_right"' in text
+        assert "<canvas" in text
