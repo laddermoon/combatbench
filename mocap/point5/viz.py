@@ -1,26 +1,44 @@
-"""Standalone HTML visualization for a point5 reference trajectory.
+"""Offline visualization for point5 reference trajectories.
 
-Produces a single self-contained .html file: frames are embedded as JSON and
-drawn on three orthographic canvases (top XY / front XZ / side YZ) with plain
-JavaScript. No external dependencies, works offline.
+Two outputs, both simulator-unaware:
 
-Frame sampling is distance-adaptive (``adaptive_sample``): the tool guarantees
-that between consecutive frames no point moves more than ``max_step`` metres.
+- ``export_mp4``: PIL-rendered 3-view frames piped to ffmpeg.
+- ``export_html``: single self-contained HTML canvas player.
+
+Frame sampling is distance-adaptive (``adaptive_sample``): between consecutive
+frames no point moves more than ``max_step`` metres.
+
+CLI::
+
+    PYTHONPATH=. python3 -m mocap.point5.viz --task t.json --out t.mp4
+    PYTHONPATH=. python3 -m mocap.point5.viz --task t.json --ctx start.json \
+        --out t.mp4 --fps 30
 """
 from __future__ import annotations
 
+import argparse
 import html
 import json
+import subprocess
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+from PIL import Image, ImageDraw
 
-from .contracts import POINT_NAMES
+from .contracts import (
+    POINT_NAMES,
+    Point5State,
+    Point5Task,
+    StaticStartResolver,
+    TaskValidationError,
+)
 from .trajectory import (
     Point5Reference,
     ReferenceFrames,
     adaptive_sample,
+    build_reference,
     frames_payload,
 )
 
@@ -31,24 +49,146 @@ _POINT_COLORS = {
     "foot_right": "#e0a02a",
     "foot_left": "#b56ae0",
 }
-# star skeleton: which pairs get a connecting line
 _BONES = [("head", "hand_right"), ("head", "hand_left"),
           ("head", "foot_right"), ("head", "foot_left"),
           ("foot_right", "foot_left"), ("hand_right", "hand_left")]
 
+_VIEWS = (("top  x-y", (0, 1)),
+          ("front x-z", (0, 2)),
+          ("side  y-z", (1, 2)))
 
-def export_html(reference: Point5Reference,
-                out_path,
-                *,
-                max_step: float = 0.01,
+_W, _H = 960, 480
+_PANEL = 300          # drawing area per view (square)
+_MARGIN_X = 15
+_TOP = 55
+
+
+# ---------------------------------------------------------------------------
+# shared bounds / projection
+# ---------------------------------------------------------------------------
+
+def _bounds(*pos_arrays: np.ndarray) -> Tuple[np.ndarray, float]:
+    """Shared (center, half-span) across frames so views don't wobble."""
+    allpos = np.concatenate(
+        [p.reshape(-1, 3) for p in pos_arrays if p is not None])
+    lo, hi = allpos.min(axis=0), allpos.max(axis=0)
+    lo[2], hi[2] = min(lo[2], 0.0), max(hi[2], 1.6)
+    ctr = (lo + hi) / 2.0
+    span = float(max(hi - lo)) * 1.15
+    return ctr, max(span, 0.3)
+
+
+def _xy(ctr: np.ndarray, scale: float, ax: Tuple[int, int],
+        p3: np.ndarray, ox: int, oy: int) -> Tuple[float, float]:
+    s = _PANEL / scale
+    return (ox + _PANEL / 2 + (p3[ax[0]] - ctr[ax[0]]) * s,
+            oy + _PANEL / 2 - (p3[ax[1]] - ctr[ax[1]]) * s)
+
+
+# ---------------------------------------------------------------------------
+# PIL rendering
+# ---------------------------------------------------------------------------
+
+def render_frame(pos: np.ndarray, info: str,
+                 ctr: np.ndarray, scale: float,
+                 measured: Optional[np.ndarray] = None) -> Image.Image:
+    """One 960x480 frame: three orthographic views of the five points."""
+    img = Image.new("RGB", (_W, _H), (17, 17, 17))
+    dr = ImageDraw.Draw(img)
+    dr.text((_MARGIN_X, 8), info, fill=(200, 200, 200))
+    dr.text((_MARGIN_X, 24),
+            " ".join(f"{n}" for n in POINT_NAMES), fill=(120, 120, 120))
+    for i, n in enumerate(POINT_NAMES):
+        c = _POINT_COLORS[n]
+        dr.text((150 + i * 95, 24), n, fill=tuple(
+            int(c[j:j + 2], 16) for j in (1, 3, 5)))
+    for vi, (label, ax) in enumerate(_VIEWS):
+        ox = _MARGIN_X + vi * (_PANEL + 20)
+        oy = _TOP
+        dr.rectangle([ox, oy, ox + _PANEL, oy + _PANEL],
+                     outline=(60, 60, 60))
+        dr.text((ox + 6, oy + 4), label, fill=(136, 136, 136))
+        if ax[1] == 2:  # ground line on elevation views
+            xa, ya = _xy(ctr, scale, ax, [-1e3, 0, 0], ox, oy)
+            xb, yb = _xy(ctr, scale, ax, [1e3, 0, 0], ox, oy)
+            dr.line([xa, ya, xb, yb], fill=(42, 74, 42), width=1)
+        if measured is not None:
+            for a, b in _BONES:
+                i, j = POINT_NAMES.index(a), POINT_NAMES.index(b)
+                dr.line([*_xy(ctr, scale, ax, measured[i], ox, oy),
+                         *_xy(ctr, scale, ax, measured[j], ox, oy)],
+                        fill=(70, 70, 70), width=1)
+            for i in range(len(POINT_NAMES)):
+                x, y = _xy(ctr, scale, ax, measured[i], ox, oy)
+                dr.ellipse([x - 2.5, y - 2.5, x + 2.5, y + 2.5],
+                           fill=(90, 90, 90))
+        for a, b in _BONES:
+            i, j = POINT_NAMES.index(a), POINT_NAMES.index(b)
+            dr.line([*_xy(ctr, scale, ax, pos[i], ox, oy),
+                     *_xy(ctr, scale, ax, pos[j], ox, oy)],
+                    fill=(100, 100, 100), width=2)
+        for i, n in enumerate(POINT_NAMES):
+            x, y = _xy(ctr, scale, ax, pos[i], ox, oy)
+            c = _POINT_COLORS[n]
+            dr.ellipse([x - 5, y - 5, x + 5, y + 5],
+                       fill=tuple(int(c[k:k + 2], 16) for k in (1, 3, 5)))
+    return img
+
+
+# ---------------------------------------------------------------------------
+# MP4 export
+# ---------------------------------------------------------------------------
+
+def export_mp4(reference: Point5Reference, out_path,
+               *, max_step: float = 0.01, fps: int = 30,
+               measured: Optional[np.ndarray] = None,
+               ffmpeg: str = "ffmpeg") -> Path:
+    """Render the reference to an MP4 via ffmpeg.
+
+    Frames come from ``adaptive_sample(max_step)`` — distance-uniform, so
+    playback speed follows motion density rather than wall time.
+    """
+    if fps <= 0:
+        raise TaskValidationError("fps must be positive")
+    frames = adaptive_sample(reference, max_step=max_step)
+    arrays = [frames.pos] + ([measured] if measured is not None else [])
+    ctr, span = _bounds(*arrays)
+    out = Path(out_path)
+    cmd = [ffmpeg, "-y",
+           "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{_W}x{_H}", "-r", str(fps), "-i", "-",
+           "-an", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+           "-movflags", "+faststart", str(out)]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    try:
+        n = len(frames.states)
+        for k, st in enumerate(frames.states):
+            m = st.metadata
+            info = (f"{reference.task.name}  {k + 1}/{n}  "
+                    f"t={m['t']:.3f}s seg{m['seg']} s={m['s']:.2f} "
+                    f"[{m['keyframe_label']}]")
+            img = render_frame(st.pos, info, ctr, span, measured)
+            proc.stdin.write(np.asarray(img, dtype=np.uint8).tobytes())
+        proc.stdin.close()
+        rc = proc.wait()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    if rc != 0:
+        raise RuntimeError(f"ffmpeg exited with {rc}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# HTML export (kept: zero-dependency alternative)
+# ---------------------------------------------------------------------------
+
+def export_html(reference: Point5Reference, out_path,
+                *, max_step: float = 0.01,
                 measured: Optional[np.ndarray] = None,
                 frames: Optional[ReferenceFrames] = None,
                 title: Optional[str] = None) -> Path:
-    """Write a self-contained HTML player for ``reference``.
-
-    ``measured`` (optional (5,3) world positions) is drawn as a grey ghost
-    for comparison with the reference.
-    """
     if frames is None:
         frames = adaptive_sample(reference, max_step=max_step)
     payload = frames_payload(reference, frames)
@@ -56,14 +196,66 @@ def export_html(reference: Point5Reference,
     payload["bones"] = _BONES
     payload["max_step"] = float(max_step)
     if measured is not None:
-        payload["measured"] = np.asarray(
-            measured, dtype=np.float64).tolist()
+        payload["measured"] = np.asarray(measured,
+                                         dtype=np.float64).tolist()
     data = json.dumps(payload, separators=(",", ":"))
     name = title or f"point5: {reference.task.name}"
     out = Path(out_path)
     out.write_text(_TEMPLATE.replace("__TITLE__", html.escape(name))
                     .replace("__DATA__", data), encoding="utf-8")
     return out
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _load_context(path: Optional[str]) -> StaticStartResolver:
+    """Start context for anchor resolution.
+
+    JSON: {"initial": [[x,y,z] x5], "root_pos": [x,y,z],
+           "root_rot": [[..],[..],[..]]}
+    Without ``--ctx``: zero initial state + identity root at origin
+    (sufficient for tasks that only use WorldPoint anchors).
+    """
+    if path is None:
+        return StaticStartResolver(
+            initial=Point5State(pos=np.zeros((5, 3))),
+            root_pos=np.zeros(3), root_rot=np.eye(3))
+    d = json.loads(Path(path).read_text())
+    return StaticStartResolver(
+        initial=Point5State(pos=np.asarray(d["initial"], dtype=np.float64)),
+        root_pos=np.asarray(d.get("root_pos", [0, 0, 0]), dtype=np.float64),
+        root_rot=np.asarray(d.get("root_rot", np.eye(3).tolist()),
+                            dtype=np.float64))
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="point5-viz")
+    ap.add_argument("--task", required=True, help="point5.task.v1 JSON")
+    ap.add_argument("--ctx", help="start context JSON for non-world anchors")
+    ap.add_argument("--out", required=True, help="output .mp4 (or .html)")
+    ap.add_argument("--max-step", type=float, default=0.01)
+    ap.add_argument("--fps", type=int, default=30)
+    args = ap.parse_args(argv)
+
+    task = Point5Task.from_dict(json.loads(Path(args.task).read_text()))
+    resolver = _load_context(args.ctx)
+    ref = build_reference(task, resolver)
+    measured = (resolver.initial.pos if args.ctx else None)
+    out = Path(args.out)
+    if out.suffix == ".html":
+        path = export_html(ref, out, max_step=args.max_step,
+                           measured=measured)
+    else:
+        path = export_mp4(ref, out, max_step=args.max_step, fps=args.fps,
+                          measured=measured)
+    print(f"wrote {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
 
 _TEMPLATE = """<!DOCTYPE html>
@@ -101,7 +293,6 @@ document.getElementById("legend").innerHTML =
 document.getElementById("meta").textContent =
   `frames=${F.length} duration=${D.duration.toFixed(3)}s ` +
   `max_step=${D.max_step}m  (左: top x-y, 中: front x-z, 右: side y-z)`;
-// shared scale across all frames and views
 let lo=[1e9,1e9,1e9], hi=[-1e9,-1e9,-1e9];
 for (const f of F) for (const p of f.pos)
   for (let a=0;a<3;a++){lo[a]=Math.min(lo[a],p[a]);hi[a]=Math.max(hi[a],p[a]);}

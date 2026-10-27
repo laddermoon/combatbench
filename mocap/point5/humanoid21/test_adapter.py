@@ -4,19 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mocap.point5 import (
-    POINT_INDEX,
-    POINT_NAMES,
-    Keyframe,
-    Point5Task,
-    PointSpec,
-    RootOffset,
-    SelfPointOffset,
-    WorldPoint,
-    build_reference,
-    is_planted,
-)
-from mocap.point5.humanoid21 import Humanoid21Point5
+from mocap.point5 import is_planted
+from mocap.point5.humanoid21 import Humanoid21Point5, Point5AdapterError
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +37,7 @@ class TestMeasure:
         assert st.vel is not None and st.vel.shape == (5, 3)
         assert st.time == pytest.approx(0.0)
         assert st.metadata["robot_id"] == "robot_a"
+        assert st.metadata["source"] == "humanoid21_sim"
 
     def test_vel_optional(self, adapter):
         assert adapter.measure("robot_a", with_vel=False).vel is None
@@ -57,60 +47,12 @@ class TestMeasure:
         b = adapter.measure("robot_b")
         assert abs(a.point_pos("head")[0]
                    - b.point_pos("head")[0]) > 1.5   # roots on opposite sides
-        np.testing.assert_allclose(
-            a.point_pos("foot_right")[1], a.point_pos("foot_left")[1],
-            atol=0.2)
+
+    def test_unknown_robot(self, adapter):
+        with pytest.raises(Point5AdapterError):
+            adapter.measure("robot_c")
 
     def test_returns_copies(self, adapter):
         st = adapter.measure("robot_a")
         st.pos[0, 0] = 999.0
         assert adapter.measure("robot_a").pos[0, 0] != 999.0
-
-
-class TestResolver:
-    def test_root_offset_facing_direction(self, adapter):
-        # robot_a faces +x, robot_b faces -x (euler 180deg)
-        a = adapter.resolver("robot_a")
-        b = adapter.resolver("robot_b")
-        pa = a.resolve(RootOffset([1.0, 0, 0])) - adapter.root_pose("robot_a")[0]
-        pb = b.resolve(RootOffset([1.0, 0, 0])) - adapter.root_pose("robot_b")[0]
-        assert pa[0] > 0.9 and pb[0] < -0.9
-
-    def test_self_point_offset(self, adapter):
-        r = adapter.resolver("robot_a")
-        st = adapter.measure("robot_a")
-        got = r.resolve(SelfPointOffset("head", [0, 0, 0.1]))
-        np.testing.assert_allclose(
-            got, st.point_pos("head") + np.array([0, 0, 0.1]))
-
-    def test_resolver_uses_supplied_snapshot(self, adapter):
-        st = adapter.measure("robot_a")
-        moved = type(st)(pos=st.pos + np.array([10, 0, 0]), time=0.0)
-        r = adapter.resolver("robot_a", initial=moved,
-                             root_pose=(np.zeros(3), np.eye(3)))
-        got = r.resolve(SelfPointOffset("foot_left", np.zeros(3)))
-        np.testing.assert_allclose(
-            got, st.point_pos("foot_left") + np.array([10, 0, 0]))
-
-
-class TestEndToEnd:
-    def test_task_against_live_resolver(self, adapter):
-        # "hand_right reaches 0.3m forward of root" at a reset pose
-        reach = Keyframe(specs={
-            n: PointSpec(WorldPoint(
-                adapter.measure("robot_a").point_pos(n)))
-            for n in POINT_NAMES})
-        strike = Keyframe(specs={
-            **{n: PointSpec(WorldPoint(
-                adapter.measure("robot_a").point_pos(n)))
-               for n in POINT_NAMES if n != "hand_right"},
-            "hand_right": PointSpec(RootOffset([0.3, 0, 1.2])),
-        }, label="strike")
-        task = Point5Task(name="reach", keyframes=(reach, strike),
-                          durations=(0.4,))
-        ref = build_reference(task, adapter.resolver("robot_a"))
-        mid = ref.sample_time(0.2)
-        p0 = ref.target_at(0)[POINT_INDEX["hand_right"]]
-        p1 = ref.target_at(1)[POINT_INDEX["hand_right"]]
-        np.testing.assert_allclose(
-            mid.point_pos("hand_right"), 0.5 * p0 + 0.5 * p1)

@@ -227,3 +227,17 @@ class TestExportHtml:
         assert "point5.frames.v1" in text
         assert '"hand_right"' in text
         assert "<canvas" in text
+
+
+class TestExportMp4:
+    def test_writes_video(self, tmp_path):
+        from mocap.point5 import export_mp4
+        ref = build_reference(
+            Point5Task(name="t", durations=(0.5,), keyframes=(
+                _kf(lambda i, n: (0, 0, i)),
+                _kf(lambda i, n: (0.2, 0, i)))),
+            _world_resolver())
+        out = export_mp4(ref, tmp_path / "t.mp4", fps=10)
+        head = out.read_bytes()[:16]
+        assert b"ftyp" in head          # MP4 container magic
+        assert out.stat().st_size > 2000

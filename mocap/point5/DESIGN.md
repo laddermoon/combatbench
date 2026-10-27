@@ -138,12 +138,14 @@ pos(seg, s) = (1 - s) * P[seg] + s * P[seg + 1]     # s ∈ [0,1]
 段内线性 ⇒ 保证**相邻两帧任意点位移 ≤ max_step**（含跨段边界）。
 静止段只产出边界帧。用途：可视化/播放时不该因 dt 选错而跳变或漏动作。
 
-### 5.5 可视化
+### 5.5 可视化（sim 无关，离线）
 
-`export_html(ref, out, max_step=0.01, measured=None)` → 单文件 HTML：
-内嵌 `point5.frames.v1` 帧数据 + 三视图 canvas（top x-y / front x-z /
-side y-z），vanilla JS 播放+拖动条，`measured` 叠灰色 ghost 做参考对照。
-零外部依赖，离线可开。CLI：`inspect --task t.json --viz out.html`。
+`export_mp4(ref, out, max_step=0.01, fps=30, measured=None)`：
+PIL 画三视图帧（top/front/side）→ ffmpeg 管道出 MP4。
+`export_html(...)`：单文件 HTML canvas 播放器（零依赖备选）。
+独立 CLI：`python3 -m mocap.point5.viz --task t.json --out t.mp4`，
+`--ctx start.json` 提供 `{initial, root_pos, root_rot}` 供非 world anchor
+离线解析（ctx 由 adapter 侧一次性导出，viz 本身不碰 sim）。
 
 ## 6. 校验（仅结构层，v1）
 

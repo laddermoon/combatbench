@@ -36,7 +36,7 @@ from .trajectory import (
     frames_payload,
     resolve_task,
 )
-from .viz import export_html
+from .viz import export_html, export_mp4
 
 __all__ = [
     "Anchor",
@@ -67,6 +67,7 @@ __all__ = [
     "anchor_from_dict",
     "build_reference",
     "export_html",
+    "export_mp4",
     "frames_payload",
     "is_planted",
     "resolve_task",
