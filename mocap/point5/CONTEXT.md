@@ -37,9 +37,10 @@
 
 ## 下游怎么用（本目录不负责）
 
-- `point5/humanoid21/`：**唯一的 sim 绑定点，单一数据切面**——
-  `measure_point5(sim, robot_id)` 一个函数，`sim.data.xpos/cvel[keypoint_body_ids]`
-  → 实测 `Point5State`。为 observer 插件内嵌使用设计。
+- `point5/humanoid21/`：**唯一的数据切面**——`point5_from_view(view, robot_id)`
+  一个函数，输入是 `get_derived_state()['robot_x']` 的 view dict
+  （`body_xpos`/`body_linvel_world` 按全名索引）→ 实测 `Point5State`。
+  为 observer 插件内嵌使用设计，不依赖 sim 对象。
 - `point5/viz.py`：sim 无关的离线可视化。
   `python3 -m mocap.point5.viz --task t.json --out t.mp4 [--ctx start.json]`，
   `--ctx` 提供 {initial, root_pos, root_rot} 供非 world anchor 解析。

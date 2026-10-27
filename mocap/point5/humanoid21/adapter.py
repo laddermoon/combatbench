@@ -1,13 +1,17 @@
-"""Humanoid21 adapter: convert simulator data into Point5State.
+"""Humanoid21 adapter: convert derived-state views into Point5State.
 
-Single function, designed for use inside observer plugins: call it with the
-simulator (or anything exposing ``._robots``/``.data``, e.g. an
-``IDataAccessor``) and get a measured ``Point5State`` back.
+Single function, designed for use inside observer plugins. The input is the
+per-robot view produced by ``Humanoid21Simulator.get_derived_state()``
+(e.g. ``accessor.get_derived_state(['robot_a'])['robot_a']``) — plain dicts
+keyed by full body names. No simulator object required.
 """
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 import numpy as np
 
+from envs.humanoid21.meta import Humanoid21Meta
 from mocap.point5.contracts import (
     POINT_NAMES,
     Point5Error,
@@ -15,27 +19,45 @@ from mocap.point5.contracts import (
 )
 
 
-def measure_point5(sim, robot_id: str, *,
-                   with_vel: bool = True) -> Point5State:
-    """World-frame positions (and optional velocities) of the five points.
+def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
+                     with_vel: bool = True) -> Point5State:
+    """Convert a ``get_derived_state`` robot view into a ``Point5State``.
 
-    Reads the simulator's current kinematics buffers; call after
-    ``physical_step()``/``reset()`` when they are fresh. No refresh is
-    performed here — ``mj_forward`` would consume pending applied loads.
+    Reads ``body_xpos`` (required) and ``body_linvel_world`` (required when
+    ``with_vel=True``), both keyed by full body names such as ``head_a``.
+    Missing keys or non-finite data raise ``Point5Error`` — never silently
+    fabricate a point.
     """
-    tables = sim._robots.get(robot_id)
-    if tables is None:
+    suffix = Humanoid21Meta.ROBOT_SUFFIXES.get(robot_id)
+    if suffix is None:
         raise Point5Error(f"unknown robot_id {robot_id!r}")
-    kp = tables["keypoint_body_ids"]
-    pos = np.stack([np.asarray(sim.data.xpos[kp[n]])
-                    for n in POINT_NAMES]).astype(np.float64)
-    if not np.all(np.isfinite(pos)):
-        raise Point5Error(f"{robot_id} has non-finite point pos")
-    vel = None
+    bodies = view.get("body_xpos")
+    if bodies is None:
+        raise Point5Error("view lacks 'body_xpos'")
+    vels = None
     if with_vel:
-        vel = np.stack([np.asarray(sim.data.cvel[kp[n], 3:6])
-                        for n in POINT_NAMES]).astype(np.float64)
+        vels = view.get("body_linvel_world")
+        if vels is None:
+            raise Point5Error("view lacks 'body_linvel_world'")
+
+    pos = np.empty((len(POINT_NAMES), 3), dtype=np.float64)
+    vel = np.empty_like(pos) if with_vel else None
+    for i, name in enumerate(POINT_NAMES):
+        full = f"{name}{suffix}"
+        try:
+            pos[i] = np.asarray(bodies[full], dtype=np.float64)
+        except KeyError:
+            raise Point5Error(f"body_xpos missing {full!r}") from None
+        if vel is not None:
+            try:
+                vel[i] = np.asarray(vels[full], dtype=np.float64)
+            except KeyError:
+                raise Point5Error(
+                    f"body_linvel_world missing {full!r}") from None
+    if not np.all(np.isfinite(pos)) or (
+            vel is not None and not np.all(np.isfinite(vel))):
+        raise Point5Error(f"{robot_id} has non-finite point data")
+
     return Point5State(
-        pos=pos.copy(), vel=None if vel is None else vel.copy(),
-        time=float(sim.data.time), frame="world",
-        metadata={"robot_id": robot_id, "source": "humanoid21_sim"})
+        pos=pos, vel=vel, frame="world",
+        metadata={"robot_id": robot_id, "source": "derived_view"})
