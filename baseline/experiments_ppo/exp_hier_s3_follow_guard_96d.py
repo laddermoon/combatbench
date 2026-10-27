@@ -23,7 +23,9 @@ Channels (7):
     r_tan_step  = −|tan| per stride, same settlement, aw = 1.0·out_band·φ²
     r_face      = cos(forward, to_opp)⁺,            aw = 1.0·dist_gate·φ²
     r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term(h→1.21),
-                          aw = φ²·(1.0 out-band, 3.0 in-band)
+                          aw = 3.0·φ²·I(dist≤1.0 & cos≥0.5)
+                  — guard only while close AND facing; far → move
+                  freely, turned away → turn freely
 
 Disturbance: StandingTriggeredForcePlugin on the learner only, fixed
 top-tier 40N profile (duration 31-40 steps) — all follow/clip actor
@@ -89,8 +91,11 @@ class HierS3FollowGuard96D(FollowPure):
     _CLIP_OBS = {
         "robot_a": "standard_clip_a", "robot_b": "standard_clip_b",
     }
-    _clip_aw_out: float = 1.0       # aw scale outside the band
-    _clip_aw_in: float = 3.0        # aw scale inside the band
+    # Guard clip gate: posture is only required when close AND facing.
+    # Far away → move fast however it can; turned away → turn fast.
+    _clip_aw_in: float = 3.0        # aw scale when gated ON
+    _D_CLIP_GATE: float = 1.0       # clip active within this distance
+    _FACE_GATE_COS: float = 0.5     # clip active when within ±60°
     _H_TARGET: float = 1.21
     _H_SIGMA: float = 0.08
     _pot_h_cap = 1.24
@@ -242,10 +247,11 @@ class HierS3FollowGuard96D(FollowPure):
                         -1.0, 1.0)
         r_clip = r_clip + 0.5 * np.exp(
             -((h_arr - self._H_TARGET) / self._H_SIGMA) ** 2)
-        clip_w = (
-            self._clip_aw_out
-            + (self._clip_aw_in - self._clip_aw_out) * in_band
+        clip_gate = (
+            (dist <= self._D_CLIP_GATE)
+            & (cos_angle >= self._FACE_GATE_COS)
         ).astype(np.float32)
+        clip_w = (self._clip_aw_in * clip_gate).astype(np.float32)
 
         for t in trajs:
             T = t.obs.shape[0]
