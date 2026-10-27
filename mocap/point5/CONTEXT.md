@@ -29,6 +29,9 @@
 
 - `build_reference(task, resolver)` → `Point5Reference`
 - `StaticStartResolver(initial, root_pos, root_rot)` —— adapter 构造它
+- `punch_planner.plan_punch(initial_p5, target, hand, cfg)` → `PunchPlan`
+  —— v1 几何打击规划器（一脚锚定、前脚进步、经验编码关键帧）；
+  `PunchPlan.task` 为 `Point5Task` 或 `None`（out_of_sector/out_of_reach）
 - serde：`task.to_dict()/from_dict()`（JSON-safe）
 
 ## 测试
