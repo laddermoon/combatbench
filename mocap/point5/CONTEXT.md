@@ -37,6 +37,9 @@
 
 ## 下游怎么用（本目录不负责）
 
-adapter 层（`envs/humanoid21` / `baseline`）把 `sim.data.xpos[keypoint_body_ids]`
-喂成实测 `Point5State`，把本库参考变成 reward/obs。v2 候选：动态 anchor、
-先验填充、评分模块、编辑运算——见 DESIGN.md §8。
+- `point5/humanoid21/`：**唯一的 sim 绑定点**。`Humanoid21Point5.measure()`
+  把 `sim.data.xpos[keypoint_body_ids]`/`cvel` 变成实测 `Point5State`；
+  `resolver()` 用当前 sim 状态构造 `StaticStartResolver`。
+  CLI：`python3 -m mocap.point5.humanoid21.inspect [--task t.json]`
+- 评分/观测/PPO 插件等 harness 仍在目录外（baseline/、envs/）。
+- v2 候选：动态 anchor、先验填充、评分模块、编辑运算——见 DESIGN.md §8。
