@@ -25,7 +25,8 @@ Channels (7):
     r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term(h→1.21),
                           aw = 3.0·φ²·I(dist≤1.0 & cos≥0.5)
                   — guard only while close AND facing; far → move
-                  freely, turned away → turn freely
+                  freely, turned away → turn freely; NOT cut during
+                  pushes (40N is minor — posture must hold through it)
 
 Disturbance: StandingTriggeredForcePlugin on the learner only, fixed
 top-tier 40N profile (duration 31-40 steps) — all follow/clip actor
@@ -294,7 +295,7 @@ class HierS3FollowGuard96D(FollowPure):
                 reward=r_clip[:T],
                 is_terminated=ref.is_terminated,
                 actor_weight=(
-                    clip_w[:T] * stand2[:T] * not_pushing[:T]
+                    clip_w[:T] * stand2[:T]
                 ).astype(np.float32),
             )
         return trajs
