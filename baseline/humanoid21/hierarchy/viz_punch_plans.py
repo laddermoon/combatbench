@@ -1,45 +1,39 @@
-"""Offline validation for the punch planner (per-robot P5 set).
+"""Scenario-space validation for the punch planner.
 
-Strike targets are SYNTHESISED relative to the robot's own stance —
-the recorded opponent is irrelevant.  Two passes:
-
-1. STATS: every state plans against a canonical target (stance-forward
-   at --stat-dist, head height) -> reach/step/moving-foot distribution.
-2. MP4: a few sampled states each plan against a small grid of targets
-   (dist x lateral-offset) -> three-view videos for eyeballing.
+The task space is a product: (initial pose) x (target) x (hand) —
+2 304 sampled stances, continuous target in the frontal envelope,
+two hands.  This script samples that space randomly, reports the
+outcome distribution, and exports three-view MP4s per outcome
+bucket so real plans can be eyeballed (successes AND the honest
+failure modes).
 
 Usage:
     PYTHONPATH=. python3 baseline/humanoid21/hierarchy/viz_punch_plans.py \
-        --p5 .../strike_start_p5.npz --out-dir /data1/dev/punch_plans/v2 \
-        --hand left --n-states 6
+        --p5 .../strike_start_p5.npz --out-dir /data1/dev/punch_plans/scen \
+        --scenarios 400 --per-bucket 8
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
 
 
-def _mk_target(head: np.ndarray, fwd: np.ndarray,
-               dist: float, lateral: float, z: float) -> np.ndarray:
-    """Target = head + fwd·dist + right·lateral + (0,0,z−head_z offset)."""
-    right = np.array([fwd[1], -fwd[0], 0.0])     # fwd x up -> right?  verify sign:
-    # fwd=(1,0): right=(0,-1) → -Y is right when facing +X.  Correct.
-    return np.array([head[0] + fwd[0] * dist + right[0] * lateral,
-                     head[1] + fwd[1] * dist + right[1] * lateral,
-                     z])
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--p5", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--hand", default="left")
-    ap.add_argument("--n-states", type=int, default=6)
-    ap.add_argument("--stat-dist", type=float, default=0.60)
+    ap.add_argument("--scenarios", type=int, default=400)
+    ap.add_argument("--per-bucket", type=int, default=8)
     ap.add_argument("--max-step", type=float, default=0.35)
+    # target sampling envelope (stance frame, metres)
+    ap.add_argument("--dist", type=float, nargs=2, default=(0.3, 1.2))
+    ap.add_argument("--lat", type=float, nargs=2, default=(-0.35, 0.35))
+    ap.add_argument("--zdrop", type=float, nargs=2,
+                    default=(0.0, 0.55), help="target = head_z - U(a,b)")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parents[3]
@@ -58,63 +52,68 @@ def main() -> None:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     n = len(d["p5"])
+    rng = np.random.default_rng(1)
 
     def stance_fwd(p5):
         f = _stance_forward(p5[4], p5[3])
         return f if np.any(f) else np.array([1.0, 0.0, 0.0])
 
-    # ---------- pass 1: stats over the whole set -------------------
-    stats = {"reachable": 0, "out_of_reach": 0, "out_of_sector": 0}
-    steps, movers = [], {"foot_left": 0, "foot_right": 0}
-    for i in range(n):
-        p5 = np.asarray(d["p5"][i], dtype=np.float64)
-        st = Point5State(pos=p5)
-        head = p5[0]
-        tgt = _mk_target(head, stance_fwd(p5), args.stat_dist, 0.0,
-                         head[2] - 0.10)
-        plan = plan_punch(st, tgt, args.hand, cfg)
-        if plan.reachable:
-            stats["reachable"] += 1
-            steps.append(plan.diag["step_len"])
-            movers[plan.diag["moving_foot"]] += 1
-        else:
-            stats[plan.reason] = stats.get(plan.reason, 0) + 1
-    print(f"== canonical target (fwd {args.stat_dist} m, head-0.10 m) "
-          f"over {n} states, hand={args.hand} ==", flush=True)
-    for k, v in stats.items():
-        print(f"  {k:14s} {v:5d} ({v / n:.1%})", flush=True)
-    if steps:
-        s = np.asarray(steps)
-        print(f"  step_len: mean {s.mean():.3f} p50 {np.median(s):.3f} "
-              f"max {s.max():.3f}  mover L/R = "
-              f"{movers['foot_left']}/{movers['foot_right']}", flush=True)
-
-    # ---------- pass 2: MP4s on sampled states ---------------------
-    rng = np.random.default_rng(0)
-    picks = rng.choice(n, size=min(args.n_states, n), replace=False)
-    variants = [(d_, l_) for d_ in (0.40, 0.85)
-                for l_ in (-0.20, 0.0, 0.20)]
-    for i in picks:
+    buckets: dict[str, list] = {}
+    for k in range(args.scenarios):
+        i = int(rng.integers(n))
         p5 = np.asarray(d["p5"][i], dtype=np.float64)
         st = Point5State(pos=p5)
         fwd = stance_fwd(p5)
+        right = np.array([fwd[1], -fwd[0], 0.0])
         head = p5[0]
-        for dist, lat in variants:
-            tgt = _mk_target(head, fwd, dist, lat, head[2] - 0.10)
-            plan = plan_punch(st, tgt, args.hand, cfg)
-            tag = (f"s{i:04d}_d{dist:.2f}_l{lat:+.2f}")
+        dist = float(rng.uniform(*args.dist))
+        lat = float(rng.uniform(*args.lat))
+        zdrop = float(rng.uniform(*args.zdrop))
+        tgt = np.array([head[0] + fwd[0] * dist + right[0] * lat,
+                        head[1] + fwd[1] * dist + right[1] * lat,
+                        head[2] - zdrop])
+        hand = "left" if rng.random() < 0.5 else "right"
+        plan = plan_punch(st, tgt, hand, cfg)
+        if plan.reachable:
+            key = "in_range" if plan.diag["step_len"] <= 1e-6 else "step"
+        else:
+            key = plan.reason
+        buckets.setdefault(key, []).append(dict(
+            state=i, hand=hand, dist=dist, lat=lat, zdrop=zdrop,
+            target=tgt, plan=plan))
+
+    print(f"== {args.scenarios} sampled scenarios ==", flush=True)
+    for key, items in sorted(buckets.items(),
+                             key=lambda kv: -len(kv[1])):
+        print(f"  {key:14s} {len(items):4d} ({len(items)/args.scenarios:.1%})",
+              flush=True)
+
+    # one MP4 per sampled case, up to per-bucket
+    for key, items in buckets.items():
+        take = rng.choice(len(items),
+                          size=min(args.per_bucket, len(items)),
+                          replace=False)
+        for j in take:
+            rec = items[int(j)]
+            i, plan = rec["state"], rec["plan"]
             if not plan.reachable:
-                print(f"[{tag}] {plan.reason}", flush=True)
                 continue
-            q = np.asarray(d["root_rot"][i], dtype=np.float64)
+            st = Point5State(pos=np.asarray(d["p5"][i], np.float64))
+            q = np.asarray(d["root_rot"][i], np.float64)
             rot_m = R.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
             ref = build_reference(plan.task, StaticStartResolver(
                 st, np.asarray(d["root_pos"][i]), rot_m))
+            tag = (f"{key}_s{i:04d}_{rec['hand'][0]}"
+                   f"_d{rec['dist']:.2f}l{rec['lat']:+.2f}"
+                   f"z{rec['zdrop']:.2f}")
             mp4 = out / f"{tag}.mp4"
-            export_mp4(ref, mp4)
+            export_mp4(ref, mp4, measured=st.pos)
             dg = plan.diag
             print(f"[{tag}] step={dg['step_len']:.3f} "
-                  f"move={dg['moving_foot']} -> {mp4}", flush=True)
+                  f"move={dg['moving_foot']}", flush=True)
+
+    (out / "summary.json").write_text(json.dumps({
+        k: len(v) for k, v in buckets.items()}, indent=2))
 
 
 if __name__ == "__main__":
