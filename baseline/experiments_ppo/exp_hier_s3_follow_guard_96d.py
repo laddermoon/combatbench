@@ -16,10 +16,11 @@ Channels (7):
     r_potential = 0.01 × φ(t) × I(h_torso ≤ 1.24),  aw = 3.0
     r_fall      = fall-onset + wall-lean,           aw = 2.0
     r_cross     = alternation guidance,             aw = 1.0·φ²
-    r_band      = sgn-gated radial velocity:
-                  dist>1.0 → +v_rad, dist<0.6 → −v_rad, else 0,
-                                                   aw = 3.0·out_band·φ²
-    r_tangential= −|v_tan| lateral drift,           aw = 1.0·out_band·φ²
+    r_band_step = stride-settled radial verdict — learner dxy over the
+                  gait cycle decomposed on d_hat = to_opp(t_b):
+                  dist>1.0 → +2·rad, dist<0.6 → −2·rad, else 0;
+                  sparse at landing, aw = 3.0·out_band·φ² (dense)
+    r_tan_step  = −|tan| per stride, same settlement, aw = 1.0·out_band·φ²
     r_face      = cos(forward, to_opp)⁺,            aw = 1.0·dist_gate·φ²
     r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term(h→1.21),
                           aw = φ²·(1.0 out-band, 3.0 in-band)
@@ -38,10 +39,6 @@ import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
-from baseline.humanoid21.rewards.follow_opponent import (
-    compute_radial_tangential_rewards,
-)
-
 from .exp_balance_pure import BalancePure
 from .exp_balance_step import _balance_explore_factor
 from .exp_follow_pure import FollowPure
@@ -56,14 +53,14 @@ class HierS3FollowGuard96D(FollowPure):
 
     max_updates: int = 6000
 
-    # --- Channels: swap r_radial for band-aware r_band, add r_std_clip ---
+    # --- Channels: stride-settled band/tangent + dense face + clip ---
     _channel_names = (
         "r_potential", "r_fall", "r_cross",
-        "r_band", "r_tangential", "r_face", "r_std_clip",
+        "r_band_step", "r_tan_step", "r_face", "r_std_clip",
     )
     _channel_gammas = {
         "r_potential": 0.99, "r_fall": 0.99, "r_cross": 0.99,
-        "r_band": 0.99, "r_tangential": 0.99, "r_face": 0.99,
+        "r_band_step": 0.99, "r_tan_step": 0.99, "r_face": 0.99,
         "r_std_clip": 0.99,
     }
 
@@ -73,6 +70,12 @@ class HierS3FollowGuard96D(FollowPure):
     HOLD_DIST: float = 1.0          # eval hold = within reach band
     D_FACE: float = 1.5
     D_STRIKE: float = 0.5
+
+    # --- Stride settlement (skill_step_mbs recipe) ---
+    _CONTACT_TAU: float = 0.10      # feet contact threshold
+    _MIN_STRIKE_GAP: int = 3        # debounce frames between strikes
+    _RAD_COEF: float = 2.0          # radial displacement coef / stride
+    _TAN_COEF: float = 1.0          # tangential displacement coef
 
     r_band_actor_weight: float = 3.0
     r_tangential_actor_weight: float = 1.0
@@ -147,7 +150,7 @@ class HierS3FollowGuard96D(FollowPure):
             for t in trajs:
                 T = t.obs.shape[0]
                 z = np.zeros(T, dtype=np.float32)
-                for key in ("r_band", "r_tangential", "r_face",
+                for key in ("r_band_step", "r_tan_step", "r_face",
                             "r_std_clip"):
                     t.channels[key] = ChannelData(
                         reward=z.copy(),
@@ -164,19 +167,44 @@ class HierS3FollowGuard96D(FollowPure):
             else np.tile([1.0, 0.0], (T_full, 1))
         )
         dist = np.linalg.norm(opp_xy - self_xy, axis=1)
-        far = dist > self.D_MAX
-        near = dist < self.D_MIN
-        out_band = (far | near).astype(np.float32)
+        out_band = (
+            (dist > self.D_MAX) | (dist < self.D_MIN)
+        ).astype(np.float32)
         in_band = (1.0 - out_band).astype(np.float32)
 
-        # --- r_band: sign-gated radial velocity ---
-        r_radial, r_tan = compute_radial_tangential_rewards(
-            self_xy, opp_xy, gate=False,
-        )
-        r_band = np.where(
-            far, r_radial,
-            np.where(near, -r_radial, 0.0),
-        ).astype(np.float32)
+        # --- Stride-settled verdicts (skill_step_mbs recipe) ---
+        # Each gait cycle [t_a, t_b] is scored ONCE at the landing step:
+        # the LEARNER's net displacement dxy is decomposed against
+        # d_hat — the direction to the opponent AT t_b — so the
+        # opponent's own motion never feeds the reward (unlike Δdist).
+        lc = extract_per_step_field(
+            oo, foot_key, "left_foot_contact", T_full)
+        rc = extract_per_step_field(
+            oo, foot_key, "right_foot_contact", T_full)
+        r_band_step = np.zeros(T_full, dtype=np.float32)
+        r_tan_step = np.zeros(T_full, dtype=np.float32)
+        if lc is not None and rc is not None:
+            contact = np.stack(
+                [np.asarray(lc[:T_full]) > 0.5,
+                 np.asarray(rc[:T_full]) > 0.5], axis=1)
+            for t_a, t_b in self._stride_windows(
+                    self._strike_bounds(contact), T_full):
+                if t_b <= t_a:
+                    continue
+                dxy = self_xy[t_b] - self_xy[t_a]
+                to_opp = opp_xy[t_b] - self_xy[t_b]
+                dist_b = float(np.linalg.norm(to_opp))
+                if dist_b < 1e-6:
+                    continue
+                d_hat = to_opp / dist_b
+                rad = float(dxy @ d_hat)
+                tan = dxy - rad * d_hat
+                if dist_b > self.D_MAX:
+                    r_band_step[t_b - 1] += self._RAD_COEF * rad
+                elif dist_b < self.D_MIN:
+                    r_band_step[t_b - 1] += -self._RAD_COEF * rad
+                r_tan_step[t_b - 1] += (
+                    -self._TAN_COEF * float(np.linalg.norm(tan)))
 
         # --- r_face ---
         to_opp_hat = (opp_xy - self_xy) / np.maximum(dist, 1e-6)[:, None]
@@ -218,16 +246,16 @@ class HierS3FollowGuard96D(FollowPure):
                     is_terminated=pot.is_terminated,
                     actor_weight=pot.actor_weight,
                 )
-            t.channels["r_band"] = ChannelData(
-                reward=r_band[:T],
+            t.channels["r_band_step"] = ChannelData(
+                reward=r_band_step[:T],
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_band_actor_weight
                     * out_band[:T] * stand2[:T]
                 ).astype(np.float32),
             )
-            t.channels["r_tangential"] = ChannelData(
-                reward=r_tan[:T].astype(np.float32),
+            t.channels["r_tan_step"] = ChannelData(
+                reward=r_tan_step[:T],
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_tangential_actor_weight
@@ -250,6 +278,49 @@ class HierS3FollowGuard96D(FollowPure):
                 ).astype(np.float32),
             )
         return trajs
+
+    # ------------------------------------------------------------------
+    # Stride segmentation (from foot_state observer contacts)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _strike_bounds(cls, contact: np.ndarray) -> Dict[int, List[int]]:
+        """Per-foot foot-strike frames {foot: [t, ...]} — rising edges
+        of ground contact, debounced by _MIN_STRIKE_GAP."""
+        prev = np.zeros_like(contact)
+        prev[1:] = contact[:-1]
+        rise = contact & ~prev
+        rise[0] = False
+        bounds: Dict[int, List[int]] = {}
+        for foot in range(2):
+            strikes: List[int] = []
+            for t in np.flatnonzero(rise[:, foot]):
+                if strikes and t - strikes[-1] < cls._MIN_STRIKE_GAP:
+                    continue
+                strikes.append(int(t))
+            bounds[foot] = strikes
+        return bounds
+
+    @staticmethod
+    def _stride_windows(bounds: Dict[int, List[int]],
+                        T: int) -> List[tuple]:
+        """Sliding per-foot windows (prev same-foot strike, strike].
+        A virtual closing strike on the last-landed foot settles the
+        in-flight cycle at T−1; no complete cycle → whole-episode win."""
+        wins: List[tuple] = []
+        last_foot, last_t = -1, -1
+        for foot, strikes in bounds.items():
+            for i in range(1, len(strikes)):
+                wins.append((strikes[i - 1], strikes[i]))
+            if strikes and strikes[-1] > last_t:
+                last_foot, last_t = foot, strikes[-1]
+        if last_foot >= 0 and last_t < T - 1 and \
+                len(bounds[last_foot]) >= 2:
+            wins.append((bounds[last_foot][-2], T - 1))
+        wins.sort(key=lambda w: w[1])
+        if not wins:
+            wins = [(0, T - 1)]
+        return wins
 
     # ------------------------------------------------------------------
     # Jobs — learner side + ArcMove env (no speed curriculum params)
