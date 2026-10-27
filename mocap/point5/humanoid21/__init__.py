@@ -2,6 +2,6 @@
 
 This is the ONLY package under mocap/point5 allowed to import simulator code.
 """
-from .adapter import Humanoid21Point5, Point5AdapterError
+from .adapter import measure_point5
 
-__all__ = ["Humanoid21Point5", "Point5AdapterError"]
+__all__ = ["measure_point5"]
