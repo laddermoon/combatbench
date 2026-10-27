@@ -21,7 +21,7 @@ Channels (7):
                   dist>1.0 → +2·rad, dist<0.6 → −2·rad, else 0;
                   sparse at landing, aw = 3.0·out_band·φ² (dense)
     r_tan_step  = −|tan| per stride, same settlement, aw = 1.0·out_band·φ²
-    r_face      = cos(forward, to_opp)⁺,            aw = 1.0·dist_gate·φ²
+    r_face      = cos(forward, to_opp)⁺,            aw = 1.0·φ²（全距）
     r_std_clip  = clip + pose + 0.5·cad + 0.5·h_term(h→1.21),
                           aw = 3.0·φ²·I(dist≤1.0 & cos≥0.5)
                   — guard only while close AND facing; far → move
@@ -216,14 +216,13 @@ class HierS3FollowGuard96D(FollowPure):
                 r_tan_step[t_b - 1] += (
                     -self._TAN_COEF * float(np.linalg.norm(tan)))
 
-        # --- r_face ---
+        # --- r_face: facing reward active at ALL distances while
+        # standing — gating it to <1.5m let the policy close in
+        # back-first (radial closing pays regardless of orientation,
+        # so a back-facing locomotion basin formed). ---
         to_opp_hat = (opp_xy - self_xy) / np.maximum(dist, 1e-6)[:, None]
         cos_angle = np.sum(fwd * to_opp_hat, axis=1)
         r_face = np.maximum(0.0, cos_angle).astype(np.float32)
-        dist_gate = np.clip(
-            (self.D_FACE - dist) / (self.D_FACE - self.D_STRIKE),
-            0.0, 1.0,
-        ).astype(np.float32)
 
         # --- Push gate: task channels off while a push is physically
         # applied (S2 recipe — recovery may break stance/band freely). ---
@@ -288,7 +287,7 @@ class HierS3FollowGuard96D(FollowPure):
                 is_terminated=ref.is_terminated,
                 actor_weight=(
                     self.r_face_actor_weight
-                    * dist_gate[:T] * stand2[:T] * not_pushing[:T]
+                    * stand2[:T] * not_pushing[:T]
                 ).astype(np.float32),
             )
             t.channels["r_std_clip"] = ChannelData(
