@@ -1,42 +1,37 @@
-"""Point5 punch planner v1 — geometric, sim-unaware, hand-coded.
+"""Point5 punch planner v2 — two-phase kinetic chain, sim-unaware.
 
-Plans a single strike from an initial 5-point pose to a world target:
+``plan_punch(initial_p5, target, hand, cfg) -> PunchPlan``
 
-    plan_punch(initial_p5, target, hand, cfg) -> PunchPlan
+Design model (boxing kinetic chain, expressed in the 5-point language):
 
-The task model (``Point5Task``: keyframes + durations) forces every
-keyframe to specify ALL five points, so the planner's real job is
-synthesising a whole-body punch shape — the striking hand's endpoint
-is the easy part.  The v1 model:
+    start -> load -> strike        (two phases, three keyframes)
 
-  * ONE foot may move (the other is a hard anchor — identical target in
-    every keyframe).  WHICH foot is analysed per plan, not fixed:
-    the foot already ahead along the attack axis is the "lead" and does
-    the stepping; the rear foot anchors the support polygon.
-  * Stepping covers a reach gap up to ``max_step``; beyond that the
-    plan is honestly ``unreachable`` (a walk-in is a different problem).
-  * The target must lie inside the frontal sector of the stance
-    (cos(angle) >= ``sector_cos_min``) — turning is out of scope.
-  * Centre-of-mass shift is expressed through the only upper-body point
-    we have — the head: a small sink at prepare, then advance with the
-    step plus extra sink scaled by target depth.
+  Phase A ``load``   — FOOT + CENTRE OF MASS ONLY.
+      The lead foot (ahead along the attack axis) steps forward and
+      lands; the head shifts onto the new support and sinks.  BOTH
+      hands stay exactly at their measured guard positions — the
+      punch never telegraphs, and the step is finished before the arm
+      fires (floor -> legs -> hips -> shoulder -> fist).
+  Phase B ``strike`` — ARMS ONLY, fast.
+      Punch hand drives straight to `target + punch_dir * penetration`.
+      Guard hand retracts to the chin (defensive position, it is NOT
+      left hanging).  Head adds a small final lean and a depth-scaled
+      sink.  Anchor foot never moves in either phase.
 
-Keyframes:  start -> prepare -> strike (impact).
+  The step serves BOTH reach and power: ``step = clip(max(reach_gap,
+  power_step_min), 0, max_step)`` — even an in-range punch gets a
+  minimum drive step (``power_step_min``) so weight transfer actually
+  happens; set it to 0 to allow pure-arm punches.
 
-  start    exact measured pose (guard whatever it is).
-  prepare  striking hand chambers slightly back/down, head sinks —
-           feet unchanged (the step happens WITH the extension).
-  strike   hand = target + punch_dir * penetration (hit-through),
-           moving foot landed along the attack axis (z -> ground),
-           head advanced with the step and sunk by target depth,
-           guard hand + anchor foot untouched.
+  Rear-hand punches (punching hand on the anchor-foot side, e.g. a
+  right cross from a left-lead guard) get ``cross_reach_bonus`` extra
+  effective reach — hip rotation buys range without moving the anchor.
 
-Everything is a ``WorldPoint`` anchor — positions are already absolute,
-no resolver dependence.  ``weight``/``tolerance`` annotations are
-written for the downstream DeepMimic-style scorer to consume.
+Verdicts are honest: ``out_of_sector`` (needs a turn) and
+``out_of_reach`` (needs a walk-in) return ``task=None``.
 
-v1 deliberately omits: recovery after impact, turn/pivot, cross-step,
-target tracking (plan-time snapshot only), velocity specs.
+v2 deliberately still omits: recovery after impact, pivot/heel-lift on
+the anchor foot (P5 positions only), turning, multi-step approach.
 """
 from __future__ import annotations
 
@@ -62,30 +57,33 @@ FOOT_POINT = {"left": "foot_left", "right": "foot_right"}
 
 @dataclass(frozen=True)
 class PunchPlannerConfig:
-    """Tunables for the v1 geometric punch planner."""
+    """Tunables for the v2 two-phase punch planner."""
 
     # --- reach / step ---
-    arm_reach: float = 0.55      # fist travel from chamber to impact (m)
-    max_step: float = 0.35       # lead-foot advance cap (m)
-    sector_cos_min: float = 0.26  # target must sit within ~75° of stance fwd
-    penetration: float = 0.08    # overshoot past target along punch dir (m)
-
-    # --- hand path ---
-    chamber_back: float = 0.05   # prepare: pull hand back along -a (m)
-    chamber_drop: float = 0.02   # prepare: drop hand slightly (m)
+    arm_reach: float = 0.55       # fist travel from guard to impact (m)
+    max_step: float = 0.35        # lead-foot advance cap (m)
+    power_step_min: float = 0.12  # min drive step for weight transfer (m)
+    sector_cos_min: float = 0.26  # target within ~75° of stance forward
+    penetration: float = 0.08     # overshoot past target (m)
+    cross_reach_bonus: float = 0.05  # rear-hand rotation reach bonus (m)
 
     # --- centre-of-mass proxy (head) ---
-    head_sink_prepare: float = 0.02   # loading sink at prepare (m)
-    head_lean: float = 0.05           # advance along attack axis (m)
-    head_step_share: float = 0.5      # head follows this fraction of step
-    head_sink_scale: float = 0.15     # extra sink per m of target drop
-    head_sink_max: float = 0.12       # total sink cap (m)
+    head_sink_load: float = 0.04    # loading sink while stepping (m)
+    head_step_share: float = 0.6    # head follows this fraction of step
+    head_lean_strike: float = 0.04  # extra advance at impact (m)
+    head_sink_scale: float = 0.15   # extra sink per m of target drop
+    head_sink_max: float = 0.14     # total sink cap (m)
 
-    # --- timing ---
-    dur_prepare: float = 0.12
-    dur_extend: float = 0.15
+    # --- guard hand (tucks to chin on the strike frame) ---
+    guard_tuck_back: float = 0.05   # behind chin along -a (m)
+    guard_tuck_side: float = 0.10   # lateral offset to its own side (m)
+    guard_tuck_drop: float = 0.12   # below head (m)
 
-    # --- reward annotations (for downstream scorer) ---
+    # --- timing (phase A slower, phase B fast) ---
+    dur_load: float = 0.16
+    dur_extend: float = 0.10
+
+    # --- reward annotations (downstream scorer) ---
     w_strike_hand: float = 3.0
     tol_strike_hand: float = 0.03
     w_feet: float = 1.5
@@ -137,31 +135,28 @@ def plan_punch(initial: Point5State,
                hand: str,
                cfg: PunchPlannerConfig = PunchPlannerConfig(),
                ) -> PunchPlan:
-    """Plan one strike: start -> prepare -> strike.
-
-    Returns ``PunchPlan(task=None, reachable=False, reason=...)`` when
-    the target is outside the frontal sector or beyond one step's reach.
-    """
+    """Plan one strike: start -> load -> strike (two phases)."""
     target = np.asarray(target, dtype=np.float64).reshape(3)
     if hand not in HAND_POINT:
         raise ValueError(f"hand must be 'left'/'right', got {hand!r}")
 
     pos = initial.pos
     hp_name = HAND_POINT[hand]
+    hg_name = "hand_right" if hand == "left" else "hand_left"
     fp_l, fp_r = "foot_left", "foot_right"
     hp = pos[POINT_INDEX[hp_name]]
-    hg = pos[POINT_INDEX["hand_left" if hand == "right" else "hand_right"]]
+    hg = pos[POINT_INDEX[hg_name]]
     head = pos[POINT_INDEX["head"]]
     feet = {fp_l: pos[POINT_INDEX[fp_l]], fp_r: pos[POINT_INDEX[fp_r]]}
     diag: Dict[str, object] = {}
 
-    # --- attack axis (horizontal) -------------------------------
+    # --- attack axis (horizontal) ---------------------------------
     a = _norm(_xy(target - head))
-    if not np.any(a):  # target straight above/below head — use stance fwd
+    if not np.any(a):
         a = _stance_forward(feet[fp_l], feet[fp_r])
     diag["attack_axis"] = a
 
-    # --- frontal sector check ------------------------------------
+    # --- frontal sector check --------------------------------------
     fwd = _stance_forward(feet[fp_l], feet[fp_r])
     cos_af = float(a @ fwd)
     diag["stance_forward"] = fwd
@@ -170,16 +165,7 @@ def plan_punch(initial: Point5State,
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_sector", diag=diag)
 
-    # --- reach gap -> step length --------------------------------
-    gap = float(np.linalg.norm(target - hp)) - cfg.arm_reach
-    diag["reach_gap"] = gap
-    if gap > cfg.max_step:
-        return PunchPlan(task=None, reachable=False,
-                         reason="out_of_reach", diag=diag)
-    step_len = max(0.0, gap)
-    diag["step_len"] = step_len
-
-    # --- lead vs anchor foot (ahead along attack axis steps) -----
+    # --- lead vs anchor foot ---------------------------------------
     proj = {fp_l: float((feet[fp_l] - head) @ a),
             fp_r: float((feet[fp_r] - head) @ a)}
     move_name = max(proj, key=proj.get)
@@ -188,56 +174,73 @@ def plan_punch(initial: Point5State,
     diag["anchor_foot"] = anchor_name
     f_move = feet[move_name]
     f_anchor = feet[anchor_name]
-    # Stepping foot lands on the ground; when no step is needed the foot
-    # target is left exactly as measured (a no-op, not a re-placement).
+
+    # --- reach -> step length (rear-hand bonus reach) --------------
+    rear_hand = (FOOT_POINT[hand] == anchor_name)
+    eff_reach = cfg.arm_reach + (cfg.cross_reach_bonus if rear_hand else 0.0)
+    gap = float(np.linalg.norm(target - hp)) - eff_reach
+    diag["rear_hand"] = rear_hand
+    diag["reach_gap"] = gap
+    diag["eff_arm_reach"] = eff_reach
+    if gap > cfg.max_step:
+        return PunchPlan(task=None, reachable=False,
+                         reason="out_of_reach", diag=diag)
+    step_len = min(max(gap, cfg.power_step_min), cfg.max_step)
+    diag["step_len"] = step_len
     f_landed = np.array([f_move[0] + a[0] * step_len,
                          f_move[1] + a[1] * step_len,
-                         0.0 if step_len > 0 else f_move[2]])
+                         0.0])
 
-    # --- hand path ------------------------------------------------
-    hp_prep = hp - a * cfg.chamber_back + np.array([0, 0, -cfg.chamber_drop])
-    punch_dir = _norm(target - hp_prep)
-    if not np.any(punch_dir):
-        punch_dir = np.array([a[0], a[1], 0.0])
-    hp_hit = target + punch_dir * cfg.penetration
-
-    # --- head / COM proxy -----------------------------------------
+    # --- head / COM proxy ------------------------------------------
     depth = max(0.0, float(head[2] - target[2]))
     sink_strike = min(cfg.head_sink_max,
-                      cfg.head_sink_prepare + cfg.head_sink_scale * depth)
-    head_prep = head + np.array([0, 0, -cfg.head_sink_prepare])
-    head_hit = (head
-                + a * (cfg.head_lean + cfg.head_step_share * step_len)
-                + np.array([0, 0, -sink_strike]))
+                      cfg.head_sink_load + cfg.head_sink_scale * depth)
+    head_load = (head + a * (cfg.head_step_share * step_len)
+                 + np.array([0, 0, -cfg.head_sink_load]))
+    head_hit = head_load + a * cfg.head_lean_strike + np.array(
+        [0, 0, -(sink_strike - cfg.head_sink_load)])
 
-    # --- keyframes ------------------------------------------------
-    def kf(label: str, hp_t, hg_t, head_t, fm_t, fa_t) -> Keyframe:
-        guard_name = "hand_right" if hand == "left" else "hand_left"
+    # --- hands -------------------------------------------------------
+    # punch hand: guard position (phase A frozen) -> straight drive
+    punch_dir = _norm(target - hp)
+    if not np.any(punch_dir):
+        punch_dir = a
+    hp_hit = target + punch_dir * cfg.penetration
+    # guard hand: stays in phase A, tucks to the chin on impact
+    side = 1.0 if hg_name == "hand_right" else -1.0
+    right = np.array([a[1], -a[0], 0.0])
+    hg_hit = (head_hit - a * cfg.guard_tuck_back
+              + right * (side * cfg.guard_tuck_side)
+              + np.array([0, 0, -cfg.guard_tuck_drop]))
+
+    # --- keyframes ---------------------------------------------------
+    def kf(label: str, hp_t, hg_t, head_t, fm_t) -> Keyframe:
         specs = {
             hp_name: _spec(hp_t, cfg.w_strike_hand,
                            cfg.tol_strike_hand if label == "strike"
                            else cfg.tol_generic),
-            guard_name: _spec(hg_t, cfg.w_guard, cfg.tol_guard),
+            hg_name: _spec(hg_t, cfg.w_guard, cfg.tol_guard),
             "head": _spec(head_t, cfg.w_head, cfg.tol_head),
             move_name: _spec(fm_t, cfg.w_feet, cfg.tol_feet),
-            anchor_name: _spec(fa_t, cfg.w_feet, cfg.tol_feet),
+            anchor_name: _spec(f_anchor, cfg.w_feet, cfg.tol_feet),
         }
         return Keyframe(specs=specs, label=label)
 
-    kf0 = kf("start", hp, hg, head, f_move, f_anchor)
-    kf1 = kf("prepare", hp_prep, hg, head_prep, f_move, f_anchor)
-    kf2 = kf("strike", hp_hit, hg, head_hit, f_landed, f_anchor)
+    kf0 = kf("start", hp, hg, head, f_move)
+    kf1 = kf("load", hp, hg, head_load, f_landed)
+    kf2 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
 
     task = Point5Task(
         name=f"punch_{hand}",
         keyframes=(kf0, kf1, kf2),
-        durations=(cfg.dur_prepare, cfg.dur_extend),
+        durations=(cfg.dur_load, cfg.dur_extend),
         metadata={
             "hand": hand,
             "target": target.tolist(),
             "attack_axis": a.tolist(),
             "moving_foot": move_name,
             "anchor_foot": anchor_name,
+            "rear_hand": rear_hand,
             "step_len": step_len,
         },
     )
