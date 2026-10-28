@@ -46,8 +46,8 @@ class PunchP5MBS(HierS2BalanceMBS):
 
     name = "punch_p5_mbs"
     obs_dim = 66
-    # Six 50-ms actions cover the 0.28-s plan; no unscored tail.
-    max_steps = 6
+    # Eight 50-ms actions cover the 0.40-s plan; no unscored tail.
+    max_steps = 8
 
     _P5_OBS = {"robot_a": "point5_a", "robot_b": "point5_b"}
 
@@ -90,11 +90,11 @@ class PunchP5MBS(HierS2BalanceMBS):
                 job.episode_options[f"{rid}_strike_hand"] = (
                     "left" if rng.random() < 0.5 else "right")
                 job.episode_options[f"{rid}_strike_dist"] = float(
-                    rng.uniform(0.35, 0.85))
+                    rng.uniform(0.35, 0.60))
                 job.episode_options[f"{rid}_strike_lat"] = float(
                     rng.uniform(-0.25, 0.25))
                 job.episode_options[f"{rid}_strike_z"] = float(
-                    rng.uniform(0.6, 1.5))
+                    rng.uniform(0.85, 1.45))
         return jobs
 
     # --- trajectories ---------------------------------------------------

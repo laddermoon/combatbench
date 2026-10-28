@@ -15,8 +15,8 @@ parameters:
   initial_distance:
     default: 2.0
   max_steps:
-    default: 6
-    description: "Six 50-ms actions cover the 0.28-s punch; no unscored tail."
+    default: 8
+    description: "Eight 50-ms actions cover the 0.40-s punch; no unscored tail."
 
 runtime:
   phy_steps_per_action: 25

@@ -54,7 +54,7 @@ def test_command_world_target_stays_fixed_as_body_moves():
 def test_policy_init_and_target_precede_initial_p5_observation():
     bp = ParameterizedEnvBlueprint.load(
         "baseline/humanoid21/hierarchy/blueprints/hier_punch_p5_env.yaml")
-    runtime = bp.materialize(max_steps=6).build()
+    runtime = bp.materialize(max_steps=8).build()
     try:
         runtime.reset(seed=175217, options={
             "robot_a_strike_hand": "left",
@@ -96,10 +96,11 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
     assert plan.reachable
     ref = build_reference(
         plan.task, StaticStartResolver(start, np.zeros(3), np.eye(3)))
+    n_steps = int(np.ceil((ref.duration - 1e-9) / 0.05))
     states = [ref.sample_time(min((i + 1) * 0.05, ref.duration)).pos
-              for i in range(6)]
+              for i in range(n_steps)]
     states.append(states[-1] + 1.0)  # unscored tail for this unit test
-    arr = np.stack(states).reshape(7, 15)
+    arr = np.stack(states).reshape(n_steps + 1, 15)
     metrics = {f"robot_a_strike_p5_{i}": float(v)
                for i, v in enumerate(pos.reshape(-1))}
     metrics.update({f"robot_a_strike_t{ax}": float(v)
@@ -113,10 +114,11 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
 
     def fake_parent(self, episode, agent_id, foot_key, phi_key):
         return [Trajectory(
-            obs=np.zeros((7, 66)), actions=np.zeros((7, 21)),
+            obs=np.zeros((n_steps + 1, 66)),
+            actions=np.zeros((n_steps + 1, 21)),
             last_obs=np.zeros(66),
             channels={"r_fall": ChannelData(
-                reward=np.zeros(7), is_terminated=False)},
+                reward=np.zeros(n_steps + 1), is_terminated=False)},
         )]
 
     monkeypatch.setattr(
@@ -124,15 +126,16 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
     tr = PunchP5MBS()._build_agent_trajectory(
         ep, "robot_a", "foot_state_a", "standing_balance_a")[0]
     for name in ("r_strike_hand", "r_guard_hand", "r_head", "r_feet"):
-        np.testing.assert_allclose(tr.channels[name].reward[:6], 1.0)
-        assert tr.channels[name].actor_weight[5] > 0
-        assert tr.channels[name].actor_weight[6] == 0
+        np.testing.assert_allclose(
+            tr.channels[name].reward[:n_steps], 1.0)
+        assert tr.channels[name].actor_weight[n_steps - 1] > 0
+        assert tr.channels[name].actor_weight[n_steps] == 0
         assert tr.channels[name].is_terminated is True
     assert tr.channels["r_fall"].is_terminated is True
     assert tr.channels["r_feet"].actor_weight[2] > (
         tr.channels["r_strike_hand"].actor_weight[2])
-    assert tr.channels["r_strike_hand"].actor_weight[4] > (
-        tr.channels["r_feet"].actor_weight[4])
+    assert tr.channels["r_strike_hand"].actor_weight[n_steps - 2] > (
+        tr.channels["r_feet"].actor_weight[n_steps - 2])
 
     # A missed punch still yields a graded signal, not a near-zero
     # Gaussian plateau at errors typical of a warm-start balance policy.

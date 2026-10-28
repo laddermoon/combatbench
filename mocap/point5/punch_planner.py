@@ -92,9 +92,13 @@ class PunchPlannerConfig:
     mid_side_off: float = 0.04    # rear hand: bias to its own side (m)
 
     # --- timing (phase A slower, phase B fast) ---
-    dur_load: float = 0.16
-    dur_reach: float = 0.06       # load -> extend midpoint
-    dur_snap: float = 0.06        # extend -> impact
+    # Total 0.40 s (8 action steps @50 ms).  The earlier 0.28 s plan
+    # demanded ~4-7 m/s fist speed — beyond what this robot learns
+    # (reference strike clips that trained successfully ran 0.65-1.1 s),
+    # so every episode stalled in the shared load phase.
+    dur_load: float = 0.20
+    dur_reach: float = 0.10       # load -> extend midpoint
+    dur_snap: float = 0.10        # extend -> impact
 
     # --- reward annotations (downstream scorer) ---
     w_strike_hand: float = 3.0
