@@ -30,14 +30,22 @@ natural_pose:
 # Joints excluded from optimization (none: ankles must stay free springs).
 fixed_joints: []
 
-# Stiffness groups k_j, in normalized coords (per-unit-norm-deviation).
+# Spring stiffness per joint, normalized coords.
+# Asymmetric: k = {low: below q0 side, high: above q0 side}.
+# Scalar k expands to symmetric. Stiffer = less willing to deviate.
 stiffness_groups:
-  torso:        {joints: [abdomen_z, abdomen_y, abdomen_x], k: 3.0}
-  legs:         {joints: [hip_x_right, hip_z_right, hip_y_right, knee_right,
-                          ankle_y_right, ankle_x_right,
-                          hip_x_left, hip_z_left, hip_y_left, knee_left,
+  torso:        {joints: [abdomen_z, abdomen_y, abdomen_x],
+                 k: {low: 3.0, high: 3.0}}
+  hips:         {joints: [hip_x_right, hip_z_right, hip_y_right,
+                          hip_x_left, hip_z_left, hip_y_left],
+                 k: {low: 2.0, high: 2.0}}
+  knees:        {joints: [knee_right, knee_left],
+                 # below q0 = deeper flex (soft), above q0 = toward straight
+                 # (stiff, resists losing the natural bend)
+                 k: {low: 1.5, high: 3.0}}
+  ankles:       {joints: [ankle_y_right, ankle_x_right,
                           ankle_y_left, ankle_x_left],
-                 k: 2.0}
+                 k: {low: 2.0, high: 2.0}}
   arms:         {joints: [shoulder1_right, shoulder2_right, elbow_right,
                           shoulder1_left, shoulder2_left, elbow_left],
-                 k: 1.0}
+                 k: {low: 1.0, high: 1.0}}

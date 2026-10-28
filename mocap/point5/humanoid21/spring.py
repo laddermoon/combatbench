@@ -30,9 +30,17 @@ CONFIG_PATH = Path(__file__).with_name("pose_config.yaml")
 
 @dataclass(frozen=True)
 class SpringModel:
+    """Asymmetric piecewise-quadratic springs on normalized coords.
+
+    Per joint, the restoring force pulls toward q0 from both sides but
+    stiffness may differ:  F(q) = -k_side * (q - q0)
+      k_low  : applies when q < q0
+      k_high : applies when q > q0
+    """
     joint_names: tuple          # suffix-stripped CONTROLLED_JOINTS order
     q0: np.ndarray              # (J,) natural angles, NORMALIZED [-1,1]
-    k: np.ndarray               # (J,) stiffness weights
+    k_low: np.ndarray           # (J,) stiffness below q0
+    k_high: np.ndarray          # (J,) stiffness above q0
     fixed_mask: np.ndarray      # (J,) bool, True = excluded from optimization
     ranges: np.ndarray          # (J,2) physical rad limits
     reference: np.ndarray       # (J,) rad midpoint
@@ -42,6 +50,11 @@ class SpringModel:
     def active_idx(self) -> np.ndarray:
         return np.nonzero(~self.fixed_mask)[0]
 
+    @property
+    def k(self) -> np.ndarray:
+        """Symmetric view (max of the two sides) for introspection."""
+        return np.maximum(self.k_low, self.k_high)
+
     # normalized <-> rad conversions -----------------------------------------
     def to_rad(self, q_norm: np.ndarray) -> np.ndarray:
         return np.asarray(q_norm) * self.scale + self.reference
@@ -50,13 +63,17 @@ class SpringModel:
         return (np.asarray(q_rad) - self.reference) / self.scale
 
     # energy in normalized coords ---------------------------------------------
+    def _k_side(self, q_norm: np.ndarray) -> np.ndarray:
+        return np.where(np.asarray(q_norm) < self.q0,
+                        self.k_low, self.k_high)
+
     def energy(self, q_norm: np.ndarray) -> float:
         d = np.asarray(q_norm, dtype=np.float64) - self.q0
-        return 0.5 * float(np.sum(self.k * d * d))
+        return 0.5 * float(np.sum(self._k_side(q_norm) * d * d))
 
     def energy_residual(self, q_norm: np.ndarray) -> np.ndarray:
-        return np.sqrt(self.k) * (np.asarray(q_norm, dtype=np.float64)
-                                  - self.q0)
+        return (np.sqrt(self._k_side(q_norm))
+                * (np.asarray(q_norm, dtype=np.float64) - self.q0))
 
 
 def load_spring_model(fk: Optional[Humanoid21FK] = None,
@@ -70,18 +87,23 @@ def load_spring_model(fk: Optional[Humanoid21FK] = None,
     q0 = np.array([cfg["natural_pose"][n] for n in names],
                   dtype=np.float64)
     fixed = set(cfg.get("fixed_joints", []))
-    k = np.array([_k_of(cfg, n) for n in names], dtype=np.float64)
+    k_low = np.array([_k_of(cfg, n)[0] for n in names], dtype=np.float64)
+    k_high = np.array([_k_of(cfg, n)[1] for n in names], dtype=np.float64)
     ranges = np.asarray(fk.joint_ranges(robot_id), dtype=np.float64)
     reference = (ranges[:, 0] + ranges[:, 1]) / 2.0
     scale = (ranges[:, 1] - ranges[:, 0]) / 2.0
     return SpringModel(
-        joint_names=names, q0=q0, k=k, scale=scale,
+        joint_names=names, q0=q0, k_low=k_low, k_high=k_high, scale=scale,
         fixed_mask=np.array([n in fixed for n in names]),
         ranges=ranges, reference=reference)
 
 
-def _k_of(cfg, name: str) -> float:
+def _k_of(cfg, name: str):
+    """Return (k_low, k_high); scalar k expands to symmetric pair."""
     for group in cfg.get("stiffness_groups", {}).values():
         if name in group["joints"]:
-            return float(group["k"])
-    return 1.0
+            v = group["k"]
+            if isinstance(v, dict):
+                return float(v.get("low", 1.0)), float(v.get("high", 1.0))
+            return float(v), float(v)
+    return 1.0, 1.0
