@@ -60,28 +60,28 @@ class TestSprings:
 class TestEquilibrium:
     def test_zero_target_recovers(self, sk):
         tgt = _planted_zero_target(sk)
-        res = solve_equilibrium(tgt, sk)
+        res = solve_equilibrium(tgt, skeleton=sk)
         assert res["satisfied"]
         assert res["point_errors"].max() < 0.01
 
     def test_deterministic(self, sk):
         tgt = _planted_zero_target(sk)
-        a = solve_equilibrium(tgt, sk)
-        b = solve_equilibrium(tgt, sk)
+        a = solve_equilibrium(tgt, skeleton=sk)
+        b = solve_equilibrium(tgt, skeleton=sk)
         np.testing.assert_allclose(a["q_norm"], b["q_norm"], atol=1e-6)
 
     def test_unreachable_reports(self, sk):
         tgt = _planted_zero_target(sk)
         tgt[0, 2] += 3.0                       # head 3m up: impossible
-        res = solve_equilibrium(tgt, sk)
+        res = solve_equilibrium(tgt, skeleton=sk)
         assert not res["satisfied"]
-        assert res["failed_stage"] in ("head", "hands")
+        assert res["failed_stage"] == "stage1_body"
 
     def test_crouch_legs_absorb(self, sk):
         """Lowering head: legs (hip/knee) should absorb, torso ~stays."""
         tgt = _planted_zero_target(sk)
         tgt[0, 2] -= 0.4
-        res = solve_equilibrium(tgt, sk)
+        res = solve_equilibrium(tgt, skeleton=sk)
         qn = res["q_norm"]
         i_abd = JOINT_NAMES.index("abdomen_y")
         i_knee = JOINT_NAMES.index("knee_right")

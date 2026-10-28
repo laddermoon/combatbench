@@ -213,23 +213,34 @@ class Skeleton:
 
 # -------------------------------------------------- equilibrium solving ---
 _LM_IDX = {n: i for i, n in enumerate(LANDMARK_ORDER)}
-_STAGES = (("foot_right", "foot_left"),
-           ("foot_right", "foot_left", "head"),
-           LANDMARK_ORDER)
-_STAGE_NAMES = ("feet", "head", "hands")
+_JIDX = {n: i for i, n in enumerate(JOINT_NAMES)}
+_ARM_JOINTS = ("shoulder1_right", "shoulder2_right", "elbow_right",
+               "shoulder1_left", "shoulder2_left", "elbow_left")
+_BODY_IDX = np.array([i for i, n in enumerate(JOINT_NAMES)
+                      if n not in _ARM_JOINTS])          # 15 leg+torso
+_STAGE2_IDX = np.array([_JIDX[n] for n in
+                       ("abdomen_z",) + _ARM_JOINTS])    # AZ + arms = 7
 
 
 def solve_equilibrium(target_pos: np.ndarray,
+                      torso_yaw: float | None = None,
                       skeleton: "Skeleton | None" = None,
                       tolerance: float = 0.01,
                       max_iter: int = 500,
                       pull_step: float = 0.05) -> dict:
-    """Pure function: 5 pinned points -> equilibrium joint angles.
+    """Pure function: 5 pinned points (+ optional yaw) -> joint angles.
 
-    Start at the unloaded (all-zero) pose, pin feet -> head -> hands
-    quasi-statically (small pull steps, min-energy equilibrium at each).
-    Returns dict with root pose, q_norm, landmarks, per-point errors,
-    satisfied flag, energy, and failure stage.
+    Two locked stages, per design:
+      stage 1 — pin feet + head (+ torso_yaw if given), solve the BODY
+                (root + legs + abdomen + ankles). Arms stay unloaded.
+                Result is FROZEN.
+      stage 2 — everything frozen except abdomen_z + the 6 arm joints;
+                pin the two hands. Shoulder pull may twist the waist (AZ)
+                and thereby change the final torso yaw — intentional.
+
+    Each stage independently reports feasibility: stage-1 failure means
+    the body geometry is unreachable; stage-2 failure means the hands
+    are unreachable via arms + waist twist alone.
     """
     from scipy.optimize import minimize
     from scipy.spatial.transform import Rotation as _R
@@ -245,56 +256,130 @@ def solve_equilibrium(target_pos: np.ndarray,
         q4 = _R.from_rotvec(rv).as_quat()
         return np.array([q4[3], q4[0], q4[1], q4[2]])
 
-    def lm(x):
-        return sk.landmarks(x[0:3], quat(x[3:6]), norm_to_rad(x[6:]))
+    yaw_rad = np.deg2rad(torso_yaw) if torso_yaw is not None else None
 
-    # initial state: unloaded joints; root above ankle midpoint
+    # ---- stage 1 ---------------------------------------------------------
+    def lm1(v):     # landmarks under a stage-1 variable vector
+        q = np.zeros(len(JOINT_NAMES))
+        q[_BODY_IDX] = v[6:]
+        return sk.landmarks(v[0:3], quat(v[3:6]), norm_to_rad(q))
+
+    def yaw_res(v):
+        """Signed angle between torso +x (xy proj) and target direction."""
+        xf = sk.body_transforms(v[0:3], quat(v[3:6]),
+                                norm_to_rad(_full_q_body(v[6:])))
+        t = xf["torso"][1][:, 0][:2]
+        lmv = lm1(v)
+        b = lmv[_LM_IDX["foot_right"], :2] - lmv[_LM_IDX["foot_left"], :2]
+        nb = np.linalg.norm(b)
+        if nb < 1e-9 or np.linalg.norm(t) < 1e-9:
+            return 0.0
+        b /= nb
+        n = np.array([-b[1], b[0]])
+        dir_t = np.cos(yaw_rad) * n + np.sin(yaw_rad) * b
+        return float(np.arctan2(t @ np.array([-dir_t[1], dir_t[0]]),
+                                t @ dir_t))
+
+    def _full_q_body(body_q):
+        q = np.zeros(len(JOINT_NAMES))
+        q[_BODY_IDX] = body_q
+        return q
+
     fr = target[_LM_IDX["foot_right"]]
     fl = target[_LM_IDX["foot_left"]]
     mid = (fr + fl) / 2.0
     d = fl - fr
-    yaw = float(np.arctan2(-d[0], d[1])) \
+    yaw0 = float(np.arctan2(-d[0], d[1])) \
         if np.linalg.norm(d[:2]) > 1e-3 else 0.0
-    x = np.concatenate([
+    x1 = np.concatenate([
         np.array([mid[0], mid[1], mid[2] + 0.79]),
-        _R.from_euler("z", yaw).as_rotvec(),
-        np.zeros(len(JOINT_NAMES))])
-
-    bounds = [(-np.inf, np.inf)] * 6 + [(-1.0, 1.0)] * len(JOINT_NAMES)
-
-    def equilibrate(x0, idx, tgt):
-        def res(v):
-            return (lm(v)[idx] - tgt).ravel()
-        sol = minimize(lambda v: spring_energy(v[6:]), np.asarray(x0),
-                       method="SLSQP", bounds=bounds,
-                       constraints=[{"type": "eq", "fun": res}],
-                       options={"maxiter": max_iter, "ftol": 1e-12})
-        return sol.x
+        _R.from_euler("z", yaw0).as_rotvec(),
+        np.zeros(len(_BODY_IDX))])
+    b1 = [(-np.inf, np.inf)] * 6 + [(-1.0, 1.0)] * len(_BODY_IDX)
+    lm_idx1 = np.array([_LM_IDX[p] for p in
+                        ("foot_right", "foot_left", "head")])
 
     failed = None
-    for stage, pts in zip(_STAGE_NAMES, _STAGES):
-        idx = np.array([_LM_IDX[p] for p in pts])
-        cur = lm(x)[idx]
-        n = max(1, int(np.ceil(
-            np.linalg.norm(target[idx] - cur, axis=1).max() / pull_step)))
-        for s in range(1, n + 1):
-            x = equilibrate(x, idx, cur + (target[idx] - cur) * (s / n))
-        errs = np.linalg.norm(lm(x)[idx] - target[idx], axis=1)
-        if errs.max() > tolerance:
-            failed = stage
-            break
+    tgt1 = target[lm_idx1]
+    cur = lm1(x1)[lm_idx1]
+    n1 = max(1, int(np.ceil(
+        np.linalg.norm(tgt1 - cur, axis=1).max() / pull_step)))
+    for s in range(1, n1 + 1):
+        sub = cur + (tgt1 - cur) * (s / n1)
+        def res(v, sub=sub):
+            r = (lm1(v)[lm_idx1] - sub).ravel()
+            if yaw_rad is not None:
+                r = np.append(r, yaw_res(v))
+            return r
+        sol = minimize(lambda v: _energy_of(v[6:], _BODY_IDX), x1,
+                       method="SLSQP", bounds=b1,
+                       constraints=[{"type": "eq", "fun": res}],
+                       options={"maxiter": max_iter, "ftol": 1e-12})
+        x1 = sol.x
+    e1 = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1)
+    yaw_err = abs(yaw_res(x1)) if yaw_rad is not None else 0.0
+    if e1.max() > tolerance or yaw_err > np.deg2rad(3.0):
+        failed = "stage1_body"
+        q_full = _full_q_body(x1[6:])
+        achieved = sk.landmarks(x1[0:3], quat(x1[3:6]), norm_to_rad(q_full))
+        return _result(x1[0:3], quat(x1[3:6]), q_full, achieved,
+                       target, tolerance, failed)
 
-    achieved = lm(x)
+    # ---- stage 2 ---------------------------------------------------------
+    root_pos, root_quat = x1[0:3].copy(), quat(x1[3:6])
+    q_frozen = _full_q_body(x1[6:])
+
+    def lm2(v):
+        q = q_frozen.copy()
+        q[_STAGE2_IDX] = v
+        return sk.landmarks(root_pos, root_quat, norm_to_rad(q))
+
+    hand_idx = np.array([_LM_IDX["hand_right"], _LM_IDX["hand_left"]])
+    x2 = np.zeros(len(_STAGE2_IDX))          # AZ + arms start unloaded
+    b2 = [(-1.0, 1.0)] * len(_STAGE2_IDX)
+    tgt2 = target[hand_idx]
+    cur2 = lm2(x2)[hand_idx]
+    n2 = max(1, int(np.ceil(
+        np.linalg.norm(tgt2 - cur2, axis=1).max() / pull_step)))
+    for s in range(1, n2 + 1):
+        sub = cur2 + (tgt2 - cur2) * (s / n2)
+        def res2(v, sub=sub):
+            return (lm2(v)[hand_idx] - sub).ravel()
+        sol = minimize(lambda v: _energy_of(v, _STAGE2_IDX), x2,
+                       method="SLSQP", bounds=b2,
+                       constraints=[{"type": "eq", "fun": res2}],
+                       options={"maxiter": max_iter, "ftol": 1e-12})
+        x2 = sol.x
+    e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
+    if e2.max() > tolerance:
+        failed = "stage2_hands"
+
+    q_full = q_frozen.copy()
+    q_full[_STAGE2_IDX] = x2
+    achieved = sk.landmarks(root_pos, root_quat, norm_to_rad(q_full))
+    return _result(root_pos, root_quat, q_full, achieved,
+                   target, tolerance, failed)
+
+
+def _energy_of(q_partial, idx) -> float:
+    """Spring energy of a subset of normalized joint values."""
+    q = np.zeros(len(JOINT_NAMES))
+    q[idx] = q_partial
+    return spring_energy(q)
+
+
+def _result(root_pos, root_quat, q_norm, achieved, target,
+            tolerance, failed) -> dict:
     errs = np.linalg.norm(achieved - target, axis=1)
     return {
-        "root_pos": x[0:3].copy(),
-        "root_quat_wxyz": quat(x[3:6]),
-        "q_norm": x[6:].copy(),
-        "q_rad": norm_to_rad(x[6:]),
+        "root_pos": np.asarray(root_pos).copy(),
+        "root_quat_wxyz": np.asarray(root_quat).copy(),
+        "q_norm": np.asarray(q_norm).copy(),
+        "q_rad": norm_to_rad(q_norm),
         "landmarks": achieved,
         "point_errors": errs,
         "satisfied": bool(errs.max() <= tolerance),
         "failed_stage": failed,
-        "energy": spring_energy(x[6:]),
+        "energy": spring_energy(q_norm),
         "joint_names": JOINT_NAMES,
     }
