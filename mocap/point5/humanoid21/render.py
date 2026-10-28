@@ -48,6 +48,7 @@ def render_pose(fk: Humanoid21FK, out_path,
                 root_pos=(0.0, 0.0, 1.15),
                 root_quat_wxyz=(1.0, 0, 0, 0),
                 joint_pos: Optional[np.ndarray] = None,
+                target_pos: Optional[np.ndarray] = None,
                 views: Sequence = (("front", 0.0, 0.0),
                                    ("side", 90.0, 0.0),
                                    ("oblique", 45.0, 18.0)),
@@ -73,12 +74,29 @@ def render_pose(fk: Humanoid21FK, out_path,
         if mark_points:
             dr = ImageDraw.Draw(im)
             from mocap.point5.contracts import POINT_NAMES
+            # hollow = target, filled = achieved
+            if target_pos is not None:
+                tp = np.asarray(target_pos, dtype=np.float64)
+                for i, n in enumerate(POINT_NAMES):
+                    px = _project(cam, fovy, size, tp[i])
+                    if px:
+                        dr.ellipse([px[0] - 8, px[1] - 8, px[0] + 8,
+                                    px[1] + 8], outline=(255, 255, 255),
+                                   width=2)
             for i, n in enumerate(POINT_NAMES):
                 px = _project(cam, fovy, size, lm[i])
                 if px:
                     c = _POINT_RGBA[n]
                     dr.ellipse([px[0] - 6, px[1] - 6, px[0] + 6, px[1] + 6],
                                outline=(0, 0, 0), fill=c[:3])
+            if target_pos is not None:
+                errs = np.linalg.norm(
+                    lm - np.asarray(target_pos, dtype=np.float64), axis=1)
+                dr.text((8, size[1] - 40),
+                        "err(m): " + " ".join(
+                            f"{n[:4]}={e:.3f}"
+                            for n, e in zip(POINT_NAMES, errs)),
+                        fill=(255, 255, 0))
         p = Path(str(out_path).format(label=label))
         im.save(p)
         outs.append(p)
