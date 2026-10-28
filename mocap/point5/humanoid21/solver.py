@@ -75,14 +75,15 @@ class PoseSolver:
             if errs[[POINT_INDEX[p] for p in pts]].max() > self.tolerance:
                 failed = stage
                 break
-        lm, root_pos, quat, q = self._unpack(x, robot_id)
+        lm, root_pos, quat, q_norm = self._unpack(x, robot_id)
         errs = np.linalg.norm(lm - target, axis=1)
         return SolveResult(
             robot_id=robot_id, root_pos=root_pos, root_quat_wxyz=quat,
-            joint_pos=q, landmark_pos=lm, point_errors=errs,
+            joint_pos=self.spring.to_rad(q_norm),  # output in radians
+            landmark_pos=lm, point_errors=errs,
             satisfied=bool(errs.max() <= self.tolerance),
             failed_stage=failed,
-            energy=self.spring.energy(q),
+            energy=self.spring.energy(q_norm),
             diagnostics={"tolerance": self.tolerance})
 
     # -- internals -----------------------------------------------------------
@@ -100,7 +101,8 @@ class PoseSolver:
 
     def _unpack(self, x, robot_id):
         quat = _quat_of(x[3:6])
-        self.fk.set_pose(robot_id, x[0:3], quat, x[6:])
+        self.fk.set_pose(robot_id, x[0:3], quat,
+                         self.spring.to_rad(x[6:]))
         return (self.fk.landmark_positions(robot_id),
                 x[0:3].copy(), quat, x[6:].copy())
 
@@ -126,12 +128,13 @@ class PoseSolver:
 
     def _equilibrium(self, x0, idx, sub_target, robot_id) -> np.ndarray:
         def landmark_res(x):
-            self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]), x[6:])
+            self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]),
+                             self.spring.to_rad(x[6:]))
             return (self.fk.landmark_positions(robot_id)[idx]
                     - sub_target).ravel()
 
         bounds = [(-np.inf, np.inf)] * 6 + [
-            tuple(self.spring.ranges[j]) for j in range(len(self.names))]
+            (-1.0, 1.0)] * len(self.names)
         sol = minimize(
             lambda x: self.spring.energy(x[6:]), np.asarray(x0),
             method="SLSQP", bounds=bounds,

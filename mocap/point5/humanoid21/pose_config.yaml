@@ -1,38 +1,36 @@
-# Humanoid21 pose-completion configuration (v1, pending user review)
+# Humanoid21 pose-completion configuration.
+# ALL VALUES ARE NORMALIZED JOINT COORDS: q_norm = (q_rad - mid)/half_range,
+# every joint spans [-1, 1] (project convention, same as action interface).
 # Joint order = Humanoid21Meta.CONTROLLED_JOINTS (suffix stripped).
-# Values are raw qpos radians. Reset pose is all-zero (fully straight).
 
-# Natural pose q^0: visually relaxed stance. Iterated with user via renders.
+# Natural pose q0: visually relaxed stance (v9, user-confirmed).
 natural_pose:
-  # v5: moderate torso lean + elbows forward of body + arms hang (user review)
   abdomen_z: 0.0
-  abdomen_y: -0.25
+  abdomen_y: 0.167      # (-0.25 rad)
   abdomen_x: 0.0
   hip_x_right: 0.0
   hip_z_right: 0.0
-  hip_y_right: -0.30
-  knee_right: -0.55
-  ankle_y_right: 0.40
+  hip_y_right: 0.586    # (-0.30 rad)
+  knee_right: 0.607     # (-0.55 rad)
+  ankle_y_right: 0.444  # (+0.40 rad, compensates knee flex -> foot flat)
   ankle_x_right: 0.0
   hip_x_left: 0.0
   hip_z_left: 0.0
-  hip_y_left: -0.30
-  knee_left: -0.55
-  ankle_y_left: 0.40
+  hip_y_left: 0.586
+  knee_left: 0.607
+  ankle_y_left: 0.444
   ankle_x_left: 0.0
-  shoulder1_right: 0.7
-  shoulder2_right: -0.3
-  elbow_right: -0.9
-  shoulder1_left: 0.7
-  shoulder2_left: -0.3
-  elbow_left: -0.9
+  shoulder1_right: 0.76
+  shoulder2_right: -0.04
+  elbow_right: -0.385
+  shoulder1_left: 0.76
+  shoulder2_left: -0.04
+  elbow_left: -0.385
 
-# Joints excluded from optimization. Ankles must stay FREE: the foot target
-# only pins the ankle CENTER position, not the ankle angle — locking them
-# makes the leg a rigid lever and produces kneeling. Keep this list empty.
+# Joints excluded from optimization (none: ankles must stay free springs).
 fixed_joints: []
 
-# Stiffness groups k_j (spring-prior weights, normalized by joint scale).
+# Stiffness groups k_j, in normalized coords (per-unit-norm-deviation).
 stiffness_groups:
   torso:        {joints: [abdomen_z, abdomen_y, abdomen_x], k: 3.0}
   legs:         {joints: [hip_x_right, hip_z_right, hip_y_right, knee_right,

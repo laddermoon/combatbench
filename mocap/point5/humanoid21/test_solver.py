@@ -17,7 +17,7 @@ def solver():
 
 def _target_of(solver, q=None, root_pos=(0, 0, 1.216)):
     fk = solver.fk
-    q = solver.q0 if q is None else q
+    q = solver.spring.to_rad(solver.q0) if q is None else q
     fk.set_pose("robot_a", root_pos, (1, 0, 0, 0), q)
     return fk.landmark_positions("robot_a")
 
@@ -47,7 +47,8 @@ class TestSolve:
         res = solver.solve(target)
         assert res.satisfied
         assert res.point_errors.max() < solver.tolerance
-        np.testing.assert_allclose(res.joint_pos, solver.q0, atol=0.15)
+        np.testing.assert_allclose(
+            res.joint_pos, solver.spring.to_rad(solver.q0), atol=0.15)
 
     def test_shifted_target_moves_pose(self, solver):
         target = _target_of(solver)
