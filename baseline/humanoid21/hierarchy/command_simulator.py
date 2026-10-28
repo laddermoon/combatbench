@@ -140,6 +140,7 @@ class CommandSimulator(Humanoid21Simulator):
         self._action_step = 0
         self._cmd: Dict[str, np.ndarray] = {}
         self._world_effector: Dict[str, np.ndarray] = {}
+        self._world_effector_track: Dict[str, np.ndarray] = {}
         self._schedules: Dict[str, np.ndarray] = {}
         self._strike_segs: Dict[str, list] = {}
         # Anchored-target mode (precision strikes): episode option
@@ -164,6 +165,7 @@ class CommandSimulator(Humanoid21Simulator):
         # Fresh episode → every agent back to the all-zero command.
         self._cmd = {}
         self._world_effector = {}
+        self._world_effector_track = {}
         # Optional per-episode command schedule from episode_options:
         #   options["move_schedule"] = {robot_id: [[n_steps, vx, vy, w], ...]}
         # speeds in m/s, w in rad/s (v2 semantics; h stays 0).
@@ -263,6 +265,7 @@ class CommandSimulator(Humanoid21Simulator):
         self._require_v2()
         assert eff_type in (+1, -1) and eff_side in (+1, -1)
         self._world_effector.pop(robot_id, None)
+        self._world_effector_track.pop(robot_id, None)
         cmd = self._current_cmd(robot_id)
         cmd[EFF_TYPE] = float(eff_type)
         cmd[EFF_SIDE] = float(eff_side)
@@ -280,6 +283,35 @@ class CommandSimulator(Humanoid21Simulator):
         if target.shape != (3,) or not np.isfinite(target).all():
             raise ValueError("world effector target must be finite xyz")
         self._world_effector[robot_id] = target.copy()
+        self._world_effector_track.pop(robot_id, None)
+        cmd = self._current_cmd(robot_id)
+        cmd[EFF_TYPE] = float(eff_type)
+        cmd[EFF_SIDE] = float(eff_side)
+        cmd[TGT_X:TGT_Z + 1] = self._world_target_ego(robot_id) / TGT_SCALE
+        self._data_cache.pop("_obs_cmd", None)
+
+    def set_effector_world_track(self, robot_id: str, eff_type: int,
+                                 eff_side: int, track_xyz: Any) -> None:
+        """Display successive world waypoints of a reference strike path.
+
+        ``track_xyz`` is an ``(N, 3)`` world-frame array; the target shown
+        at action step ``i`` is ``track[min(i, N-1)]``.  The final entry is
+        the (world-fixed) strike endpoint, so the semantics are identical
+        to :meth:`set_effector_world` plus intermediate guidance — the
+        policy sees WHERE the hand should be now, not only where it must
+        eventually arrive.  ``get_command`` still reports the endpoint.
+        """
+        self._require_v2()
+        if robot_id in self._schedules:
+            raise ValueError("world effector track conflicts with schedule")
+        if eff_type not in (+1, -1) or eff_side not in (+1, -1):
+            raise ValueError("invalid effector type or side")
+        track = np.asarray(track_xyz, dtype=np.float64)
+        if (track.ndim != 2 or track.shape[1] != 3 or len(track) == 0
+                or not np.isfinite(track).all()):
+            raise ValueError("effector track must be finite (N,3) xyz")
+        self._world_effector[robot_id] = track[-1].copy()
+        self._world_effector_track[robot_id] = track.copy()
         cmd = self._current_cmd(robot_id)
         cmd[EFF_TYPE] = float(eff_type)
         cmd[EFF_SIDE] = float(eff_side)
@@ -295,13 +327,17 @@ class CommandSimulator(Humanoid21Simulator):
             dtype=np.float64)
         quat = np.asarray(self.get_core_state()[robot_id]["root_rot"])
         rot = R.from_quat(quat[[1, 2, 3, 0]])
-        return rot.inv().apply(self._world_effector[robot_id] - pelvis)
+        track = self._world_effector_track.get(robot_id)
+        wp = (track[min(self._action_step, len(track) - 1)]
+              if track is not None else self._world_effector[robot_id])
+        return rot.inv().apply(wp - pelvis)
 
     def clear_effector(self, robot_id: str) -> None:
         """Release the effector task (back to default posture); motion
         channel is untouched."""
         self._require_v2()
         self._world_effector.pop(robot_id, None)
+        self._world_effector_track.pop(robot_id, None)
         cmd = self._current_cmd(robot_id)
         cmd[EFF_TYPE:TGT_Z + 1] = 0.0
 
@@ -316,6 +352,7 @@ class CommandSimulator(Humanoid21Simulator):
         """Back to the all-zero command (standard stepping)."""
         self._cmd[robot_id] = np.zeros(self.cmd_dim, dtype=np.float32)
         self._world_effector.pop(robot_id, None)
+        self._world_effector_track.pop(robot_id, None)
 
     # ------------------------------------------------------------------
     # Command storage — persistent until changed.

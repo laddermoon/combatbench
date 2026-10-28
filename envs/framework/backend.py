@@ -86,6 +86,15 @@ class IDataMutator(ABC):
             f"{type(self).__name__} does not support world effector commands"
         )
 
+    def set_effector_world_track(
+        self, robot_id: str, eff_type: int, eff_side: int,
+        track_xyz: Any,
+    ) -> None:
+        """Optional command capability for waypoint-track effector targets."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support effector tracks"
+        )
+
     def apply_external_force(
         self,
         body_name: str,

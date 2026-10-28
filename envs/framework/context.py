@@ -114,6 +114,7 @@ _MUTATOR_ALLOWED: frozenset[str] = frozenset({
     "set_core_state",
     "set_action",
     "set_effector_world",
+    "set_effector_world_track",
     "apply_external_force",
 })
 
@@ -237,6 +238,14 @@ class _MutatorView(IDataMutator):
     ) -> None:
         self._assert_valid()
         self.__sim.set_effector_world(robot_id, eff_type, eff_side, target_xyz)
+
+    def set_effector_world_track(
+        self, robot_id: str, eff_type: int, eff_side: int,
+        track_xyz: Any,
+    ) -> None:
+        self._assert_valid()
+        self.__sim.set_effector_world_track(
+            robot_id, eff_type, eff_side, track_xyz)
 
     def apply_external_force(self, *args: Any, **kwargs: Any) -> None:
         self._assert_valid()

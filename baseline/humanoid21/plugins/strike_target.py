@@ -21,8 +21,10 @@ import numpy as np
 
 from envs.framework import BasePlugin, SimContext
 from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
+from mocap.point5.contracts import POINT_INDEX, StaticStartResolver
 from mocap.point5.humanoid21.adapter import point5_from_view
-from mocap.point5.punch_planner import _stance_forward
+from mocap.point5.punch_planner import _stance_forward, plan_punch
+from mocap.point5.trajectory import build_reference
 
 
 class StrikeTargetPlugin(BasePlugin):
@@ -62,7 +64,26 @@ class StrikeTargetPlugin(BasePlugin):
                             head[1] + fwd[1] * dist + left[1] * lat,
                             z])
             side = 1 if hand == "left" else -1
-            ctx.mutator.set_effector_world(rid, +1, side, tgt)
+            # Plan the punch here too: the reference's striking-hand
+            # path becomes a moving guidance target (one world waypoint
+            # per action step, ending at the fixed strike point).  A
+            # static endpoint leaves the load->extend->snap timing
+            # invisible to the policy — the proven s4 mechanism.
+            plan = plan_punch(p5, tgt, hand)
+            if plan.reachable:
+                ref = build_reference(
+                    plan.task,
+                    StaticStartResolver(p5, np.zeros(3), np.eye(3)))
+                hidx = POINT_INDEX[f"hand_{hand}"]
+                n = int(np.ceil((ref.duration - 1e-9) / 0.05))
+                track = np.stack([
+                    ref.sample_time(min((i + 1) * 0.05,
+                                      ref.duration)).pos[hidx]
+                    for i in range(n)])
+                ctx.mutator.set_effector_world_track(
+                    rid, +1, side, track)
+            else:
+                ctx.mutator.set_effector_world(rid, +1, side, tgt)
             for i, value in enumerate(p5.pos.reshape(-1)):
                 ctx.metrics[f"{rid}_strike_p5_{i}"] = float(value)
             ctx.metrics[f"{rid}_strike_tx"] = float(tgt[0])

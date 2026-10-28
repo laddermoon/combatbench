@@ -70,14 +70,28 @@ def test_policy_init_and_target_precede_initial_p5_observation():
         for i, actual in enumerate(measured):
             assert observed[f"p5_{i}"] == actual
             assert runtime.ctx.metrics[f"{rid}_strike_p5_{i}"] == actual
-        target = np.array([runtime.ctx.metrics[f"{rid}_strike_t{x}"]
-                           for x in "xyz"])
-        np.testing.assert_allclose(
-            _world_target_seen_by_policy(runtime.simulator, rid), target,
-            atol=1e-5)
         obs, _ = runtime.get_observation()
         assert obs[61] == 1.0
         assert obs[62] == 1.0
+        # The displayed target is the first waypoint of the reference
+        # hand track (moving guidance), not the raw endpoint.
+        sim = runtime.simulator
+        track = sim._world_effector_track.get(rid)
+        assert track is not None and len(track) >= 1
+        np.testing.assert_allclose(
+            _world_target_seen_by_policy(sim, rid), track[0], atol=1e-5)
+        # After stepping, the display advances along the track and the
+        # final waypoint stays world-fixed.
+        rt = runtime
+        zero = np.zeros(21, dtype=np.float32)
+        shown = [_world_target_seen_by_policy(sim, rid)]
+        for _ in range(2):
+            rt.step(zero, zero)
+            shown.append(_world_target_seen_by_policy(sim, rid))
+        np.testing.assert_allclose(shown[1], track[min(1, len(track)-1)],
+                                   atol=1e-5)
+        np.testing.assert_allclose(shown[2], track[min(2, len(track)-1)],
+                                   atol=1e-5)
     finally:
         runtime.close()
 
