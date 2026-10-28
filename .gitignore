@@ -64,3 +64,4 @@ obsolete/
 !mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/target_video.mp4
 # Skill-eval 视频产物（render_skill_videos.py 生成，勿入库）
 baseline/humanoid21/hierarchy/videos/
+!mocap/point5/humanoid21/joints/*.png
