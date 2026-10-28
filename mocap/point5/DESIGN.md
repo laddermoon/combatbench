@@ -45,6 +45,7 @@ Point5State:
     pos:  (5,3) float64        # 世界坐标
     time: float = 0.0
     vel:  (5,3) float64 | None # v1 参考恒为 None；实测 adapter 可填
+    torso_yaw: float | None    # 躯干朝向（度），见 §4.6；None=无朝向信息
     frame: str = "world"       # 标签，不解析
     metadata: dict
 ```
@@ -88,6 +89,7 @@ PointSpec:
 ```python
 Keyframe:   specs: {name: PointSpec}   # 必须恰好覆盖 5 个点
             label: str = ""            # "prepare"/"strike"/"recover" 业务标签
+            torso_yaw: float | None    # 躯干朝向（度，§4.6）；None=不约束
 
 Point5Task: name: str
             keyframes: tuple[Keyframe, ...]   # K >= 2
@@ -105,6 +107,50 @@ Point5Task: name: str
 **脚的 pos z ≈ 0 即触地。** 约定常量 `GROUND_Z = 0.0` +
 辅助函数 `is_planted(pos, tol)`。标注/判定语义留给下游。
 
+### 4.6 朝向约定（`torso_yaw`）
+
+**问题**：5 个位置点确定不了身体朝向——同一组点，躯干绕踝线朝前朝后都满足。
+纯位置语言里需要一个朝向量，但它必须是**自参考**的（由自身点定义，
+不引入绝对世界朝向，否则任务在整体旋转/平移后语义会变）。
+
+**基准方向**：两脚踝点投影到地面（xy 平面），取左脚到右脚的连线：
+
+```python
+b = normalize( proj_xy(foot_right) - proj_xy(foot_left) )   # 单位向量
+n = (-b_y, b_x)                                            # b 逆时针90° = 站姿前向法向
+```
+
+**躯干朝向**：`torso_yaw` = 躯干前向轴在 xy 平面的投影 与 n 的**有符号夹角**：
+
+```python
+θ = atan2( dot(t, b), dot(t, n) )    # t = torso 前向轴的 xy 投影（单位向量）
+```
+
+语义：
+
+- `θ = 0`：标准站架——躯干前向垂直于踝线（正对 n 方向）
+- `θ > 0`：躯干向右脚方向拧（从 n 转向 +b，俯视顺时针）
+- `θ < 0`：向左脚方向拧
+- `θ` 只定义 **yaw**；躯干俯仰/侧倾不在朝向语义内，由下游解出
+
+性质：
+
+- **平移/整体旋转不变**——整段任务旋转 90° 后 θ 数值不变
+- 双脚交叉时基准翻转 180°，θ 跳变——这是真实语义变化，不是错误
+- 两脚投影重合时 b 无定义——按约定该情形下 `torso_yaw` 字段视为无效
+  （数值上两脚完全重合几乎不可能，v1 不特判）
+
+**在任务与状态中的位置**：
+
+- `Keyframe.torso_yaw: float | None`（度）——可选；缺省表示朝向不受约束，
+  由下游求解/执行层自行选择
+- `Point5State.torso_yaw: float | None`——实测侧由 adapter 从躯干朝向
+  与踝线计算填入；参考侧由插值产生
+- 段内 yaw 按**角度值线性插值**（不做最短路径回绕处理，相邻 keyframe
+  的 θ 取值应保证路径合理）
+
+朝向只新增**一个标量**，不是第 6 个点，点词表不变。
+
 ## 5. 参考合成（本库唯一的"计算"）
 
 ### 5.1 输入
@@ -120,9 +166,11 @@ Point5Reference(resolved, task)
 
 ```python
 pos(seg, s) = (1 - s) * P[seg] + s * P[seg + 1]     # s ∈ [0,1]
+yaw(seg, s) = (1 - s) * θ[seg] + s * θ[seg + 1]      # 两端都有 θ 时
 ```
 
 无切向量、无速度项、无平滑核。几何上是 keyframe 序列的分段线性折线。
+`torso_yaw` 任一端为 None 时该段 yaw = None（不补造朝向约束）。
 
 ### 5.3 采样与出界
 
@@ -178,6 +226,8 @@ anchor 带 type 标签：`{"type":"world","pos":[...]}` 等。
 - hold/reach/pass 模式枚举（等值 target 即静止段）
 - 动态 anchor（对手绑定、运动中自身点绑定）
 - 区域目标（球/盒），v1 只有 点+tolerance 标注
+- 脚的朝向、躯干俯仰/侧倾、手/头朝向（`torso_yaw` 只管 yaw 一个量）
+- yaw 最短路径回绕/相位归一化
 - 评分/奖励、观测特征、PPO 插件、MuJoCo 提取器（全是 adapter 的活）
 - 可达性/速度合理性 lint
 - mirror/time_scale/concat 等编辑运算（后续单独立项）
