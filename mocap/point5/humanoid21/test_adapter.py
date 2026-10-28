@@ -32,7 +32,8 @@ class TestFromView:
         head = st.point_pos("head")
         assert 1.2 < head[2] < 1.8
         for f in ("foot_right", "foot_left"):
-            assert is_planted(st.point_pos(f), tol=0.05)
+            z = st.point_pos(f)[2]
+            assert 0.05 < z < 0.12   # ankle-center ~0.087, above sole
         assert abs(st.point_pos("foot_right")[1]
                    - st.point_pos("foot_left")[1]) > 0.1
 
@@ -59,9 +60,11 @@ class TestFromView:
         with pytest.raises(Point5Error):
             point5_from_view({}, "robot_a")
         with pytest.raises(Point5Error):
-            point5_from_view({"body_xpos": {}}, "robot_a")
+            point5_from_view({"body_xpos": {},
+                              "body_xquat": {}}, "robot_a")
         with pytest.raises(Point5Error):
-            point5_from_view({"body_xpos": view_a["body_xpos"]},
+            point5_from_view({"body_xpos": view_a["body_xpos"],
+                              "body_xquat": view_a["body_xquat"]},
                              "robot_a", with_vel=True)  # no linvel field
 
     def test_returns_copies(self, view_a):
