@@ -99,7 +99,7 @@ def test_phase_a_hands_ride_with_body():
     to the head each hand keeps its offset."""
     plan = plan_punch(GUARD_L, np.array([1.0, 0.0, 1.1]), "left", CFG)
     start = _targets(plan.task.keyframes[0])
-    load = _targets(plan.task.keyframes[1])
+    load = _targets(plan.task.keyframes[2])
     body_shift = load["head"] - start["head"]
     for hn in ("hand_left", "hand_right"):
         np.testing.assert_allclose(
@@ -152,12 +152,12 @@ def test_extend_midpoint_progresses_and_rear_stays_back():
     tgt = np.array([0.9, 0.0, 1.1])
     for hand in ("left", "right"):
         plan = plan_punch(GUARD_L, tgt, hand, CFG)
-        assert len(plan.task.keyframes) == 4
+        assert len(plan.task.keyframes) == 5
         hp_name = f"hand_{hand}"
         # extension is measured from the LOADED guard position
-        hp_load = _targets(plan.task.keyframes[1])[hp_name]
-        mid = _targets(plan.task.keyframes[2])[hp_name]
-        hit = _targets(plan.task.keyframes[3])[hp_name]
+        hp_load = _targets(plan.task.keyframes[2])[hp_name]
+        mid = _targets(plan.task.keyframes[3])[hp_name]
+        hit = _targets(plan.task.keyframes[4])[hp_name]
         f_mid = np.linalg.norm(mid - hp_load) \
             / np.linalg.norm(hit - hp_load)
         if plan.diag["rear_hand"]:
@@ -169,8 +169,19 @@ def test_extend_midpoint_progresses_and_rear_stays_back():
 def test_durations_encode_slow_load_fast_extend():
     plan = plan_punch(GUARD_L, np.array([0.9, 0.0, 1.1]), "left", CFG)
     d = plan.task.durations
-    assert d[0] > d[1]                       # load slower than extend
+    assert sum(d[:2]) > d[2]                 # load slower than extend
     assert plan.task.metadata["moving_foot"] == "foot_left"
+
+
+def test_swing_foot_lifts_then_lands_at_measured_ankle_height():
+    plan = plan_punch(GUARD_L, np.array([0.9, 0.0, 1.1]), "left", CFG)
+    foot = plan.diag["moving_foot"]
+    start, swing, load = (_targets(kf)[foot]
+                          for kf in plan.task.keyframes[:3])
+    axis = plan.diag["attack_axis"]
+    assert swing[2] == pytest.approx(start[2] + CFG.foot_swing_clearance)
+    assert load[2] == pytest.approx(start[2])
+    assert 0 < (swing - start) @ axis < (load - start) @ axis
 
 
 def test_all_anchors_are_world_points():

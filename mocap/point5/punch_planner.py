@@ -4,9 +4,9 @@
 
 Design model (boxing kinetic chain, expressed in the 5-point language):
 
-    start -> load -> strike        (two phases, three keyframes)
+    start -> swing -> load -> extend -> strike
 
-  Phase A ``load``   — FOOT + CENTRE OF MASS (and the guard rides
+  Phase A ``swing -> load`` — FOOT + CENTRE OF MASS (and the guard rides
       WITH the torso, it is not left behind).  The lead foot (ahead
       along the attack axis) steps forward and lands; the head shifts
       onto the new support and sinks.  Both hands translate by the
@@ -35,7 +35,7 @@ Design model (boxing kinetic chain, expressed in the 5-point language):
 Verdicts are honest: ``out_of_sector`` (needs a turn) and
 ``out_of_reach`` (needs a walk-in) return ``task=None``.
 
-Keyframes:  start -> load -> extend -> strike.
+Keyframes:  start -> swing -> load -> extend -> strike.
 v2 deliberately still omits: recovery after impact, pivot/heel-lift on
 the anchor foot (P5 positions only), turning, multi-step approach.
 """
@@ -76,6 +76,7 @@ class PunchPlannerConfig:
     # --- centre-of-mass proxy (head) ---
     head_sink_load: float = 0.04    # loading sink while stepping (m)
     head_step_share: float = 0.6    # head follows this fraction of step
+    foot_swing_clearance: float = 0.07  # ankle rises before landing (m)
     head_lean_strike: float = 0.04  # extra advance at impact (m)
     head_sink_scale: float = 0.15   # extra sink per m of target drop
     head_sink_max: float = 0.14     # total sink cap (m)
@@ -202,9 +203,11 @@ def plan_punch(initial: Point5State,
                          reason="out_of_reach", diag=diag)
     step_len = min(max(step_need, cfg.power_step_min), cfg.max_step)
     diag["step_len"] = step_len
-    f_landed = np.array([f_move[0] + a[0] * step_len,
-                         f_move[1] + a[1] * step_len,
-                         0.0])
+    # P5 feet are ankle centers: their measured planted z is ~0.09m,
+    # not ground z=0. A straight ground-level slide asks the robot to
+    # penetrate the floor; lift the foot then land at its initial z.
+    f_swing = f_move + a * (0.4 * step_len) + _UP * cfg.foot_swing_clearance
+    f_landed = f_move + a * step_len
 
     # --- body shift & head / COM proxy -------------------------------
     body_shift = (a * (cfg.head_step_share * step_len)
@@ -254,14 +257,17 @@ def plan_punch(initial: Point5State,
         return Keyframe(specs=specs, label=label)
 
     kf0 = kf("start", hp, hg, head, f_move)
-    kf1 = kf("load", hp_load, hg_load, head_load, f_landed)
-    kf2 = kf("extend", hp_mid, hg_mid, head_mid, f_landed)
-    kf3 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
+    kf1 = kf("swing", hp + body_shift * 0.4, hg + body_shift * 0.4,
+             head + body_shift * 0.4, f_swing)
+    kf2 = kf("load", hp_load, hg_load, head_load, f_landed)
+    kf3 = kf("extend", hp_mid, hg_mid, head_mid, f_landed)
+    kf4 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
 
     task = Point5Task(
         name=f"punch_{hand}",
-        keyframes=(kf0, kf1, kf2, kf3),
-        durations=(cfg.dur_load, cfg.dur_reach, cfg.dur_snap),
+        keyframes=(kf0, kf1, kf2, kf3, kf4),
+        durations=(cfg.dur_load * 0.5, cfg.dur_load * 0.5,
+                   cfg.dur_reach, cfg.dur_snap),
         metadata={
             "hand": hand,
             "target": target.tolist(),
