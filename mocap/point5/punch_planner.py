@@ -6,12 +6,13 @@ Design model (boxing kinetic chain, expressed in the 5-point language):
 
     start -> load -> strike        (two phases, three keyframes)
 
-  Phase A ``load``   — FOOT + CENTRE OF MASS ONLY.
-      The lead foot (ahead along the attack axis) steps forward and
-      lands; the head shifts onto the new support and sinks.  BOTH
-      hands stay exactly at their measured guard positions — the
-      punch never telegraphs, and the step is finished before the arm
-      fires (floor -> legs -> hips -> shoulder -> fist).
+  Phase A ``load``   — FOOT + CENTRE OF MASS (and the guard rides
+      WITH the torso, it is not left behind).  The lead foot (ahead
+      along the attack axis) steps forward and lands; the head shifts
+      onto the new support and sinks.  Both hands translate by the
+      SAME body shift — the guard keeps its offset from the torso,
+      so relative to the body nothing moved (no telegraphing), and
+      the step still finishes before the arm fires.
   Phase B ``strike`` — ARMS ONLY, fast.
       Punch hand drives straight to `target + punch_dir * penetration`.
       Guard hand retracts to the chin (defensive position, it is NOT
@@ -187,50 +188,56 @@ def plan_punch(initial: Point5State,
     f_anchor = feet[anchor_name]
 
     # --- reach -> step length (rear-hand bonus reach) --------------
+    # The body follows only a share of the step, so the reach bought
+    # by stepping is share*step, not step — solve for the step needed.
     rear_hand = (FOOT_POINT[hand] == anchor_name)
     eff_reach = cfg.arm_reach + (cfg.cross_reach_bonus if rear_hand else 0.0)
     gap = float(np.linalg.norm(target - hp)) - eff_reach
     diag["rear_hand"] = rear_hand
     diag["reach_gap"] = gap
     diag["eff_arm_reach"] = eff_reach
-    if gap > cfg.max_step:
+    step_need = gap / cfg.head_step_share
+    if step_need > cfg.max_step:
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_reach", diag=diag)
-    step_len = min(max(gap, cfg.power_step_min), cfg.max_step)
+    step_len = min(max(step_need, cfg.power_step_min), cfg.max_step)
     diag["step_len"] = step_len
     f_landed = np.array([f_move[0] + a[0] * step_len,
                          f_move[1] + a[1] * step_len,
                          0.0])
 
-    # --- head / COM proxy ------------------------------------------
+    # --- body shift & head / COM proxy -------------------------------
+    body_shift = (a * (cfg.head_step_share * step_len)
+                  + np.array([0, 0, -cfg.head_sink_load]))
+    head_load = head + body_shift
     depth = max(0.0, float(head[2] - target[2]))
     sink_strike = min(cfg.head_sink_max,
                       cfg.head_sink_load + cfg.head_sink_scale * depth)
-    head_load = (head + a * (cfg.head_step_share * step_len)
-                 + np.array([0, 0, -cfg.head_sink_load]))
     head_hit = head_load + a * cfg.head_lean_strike + np.array(
         [0, 0, -(sink_strike - cfg.head_sink_load)])
 
     # --- hands -------------------------------------------------------
-    # punch hand: guard position (phase A frozen) -> shaped drive.
-    # A rear hand travels further and comes through with the elbow
-    # leading, so its midpoint stays later and biased to its own side.
-    punch_dir = _norm(target - hp)
+    # The guard is carried by the torso: during the step both hands
+    # translate by the same body shift (fixed offset from the body),
+    # then the punch drives from the LOADED guard position.
+    hp_load = hp + body_shift
+    hg_load = hg + body_shift
+    punch_dir = _norm(target - hp_load)
     if not np.any(punch_dir):
         punch_dir = a
     hp_hit = target + punch_dir * cfg.penetration
     mid_frac = cfg.mid_frac_rear if rear_hand else cfg.mid_frac_lead
     punch_side = 1.0 if hp_name == "hand_right" else -1.0
     right = np.array([a[1], -a[0], 0.0])
-    hp_mid = (hp + (hp_hit - hp) * mid_frac
+    hp_mid = (hp_load + (hp_hit - hp_load) * mid_frac
               + right * (punch_side * cfg.mid_side_off if rear_hand
                          else 0.0))
-    # guard hand: stays in phase A, tucks to the chin on impact
+    # guard hand rides in phase A, tucks to the chin on impact
     side = 1.0 if hg_name == "hand_right" else -1.0
     hg_hit = (head_hit - a * cfg.guard_tuck_back
               + right * (side * cfg.guard_tuck_side)
               + np.array([0, 0, -cfg.guard_tuck_drop]))
-    hg_mid = hg + (hg_hit - hg) * 0.5
+    hg_mid = hg_load + (hg_hit - hg_load) * 0.5
     head_mid = head_load + (head_hit - head_load) * 0.5
 
     # --- keyframes ---------------------------------------------------
@@ -247,7 +254,7 @@ def plan_punch(initial: Point5State,
         return Keyframe(specs=specs, label=label)
 
     kf0 = kf("start", hp, hg, head, f_move)
-    kf1 = kf("load", hp, hg, head_load, f_landed)
+    kf1 = kf("load", hp_load, hg_load, head_load, f_landed)
     kf2 = kf("extend", hp_mid, hg_mid, head_mid, f_landed)
     kf3 = kf("strike", hp_hit, hg_hit, head_hit, f_landed)
 

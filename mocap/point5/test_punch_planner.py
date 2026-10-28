@@ -62,7 +62,10 @@ def test_far_target_steps_beyond_minimum():
         - CFG.arm_reach
     plan = plan_punch(GUARD_L, tgt, "left", CFG)
     assert plan.reachable
-    assert plan.diag["step_len"] == pytest.approx(gap)
+    # the body follows only a share of the step, so the step itself
+    # must cover gap / share
+    assert plan.diag["step_len"] == pytest.approx(
+        gap / CFG.head_step_share)
     assert plan.diag["moving_foot"] == "foot_left"
 
 
@@ -90,14 +93,19 @@ def test_low_target_sinks_head():
     assert hz_lo < hz_hi
 
 
-def test_phase_a_feet_move_hands_frozen():
-    """Phase A (load): foot lands + head shifts, BOTH hands identical."""
+def test_phase_a_hands_ride_with_body():
+    """Phase A (load): foot lands + head shifts; hands translate by the
+    SAME body shift — the guard is carried by the torso, so relative
+    to the head each hand keeps its offset."""
     plan = plan_punch(GUARD_L, np.array([1.0, 0.0, 1.1]), "left", CFG)
+    start = _targets(plan.task.keyframes[0])
     load = _targets(plan.task.keyframes[1])
-    np.testing.assert_allclose(
-        load["hand_left"], GUARD_L.pos[POINT_INDEX["hand_left"]])
-    np.testing.assert_allclose(
-        load["hand_right"], GUARD_L.pos[POINT_INDEX["hand_right"]])
+    body_shift = load["head"] - start["head"]
+    for hn in ("hand_left", "hand_right"):
+        np.testing.assert_allclose(
+            load[hn], start[hn] + body_shift, atol=1e-9)
+        np.testing.assert_allclose(           # hand keeps offset from head
+            load[hn] - load["head"], start[hn] - start["head"], atol=1e-9)
     fl = GUARD_L.pos[POINT_INDEX["foot_left"]]
     assert np.linalg.norm((load["foot_left"] - fl)[:2]) == pytest.approx(
         plan.diag["step_len"])
@@ -125,13 +133,17 @@ def test_anchor_foot_identical_everywhere():
 
 
 def test_rear_hand_gets_reach_bonus():
-    """A rear-hand punch reaches a bit further than the same lead jab."""
-    near = np.array([0.55, -0.05, 1.10])
-    plan_r = plan_punch(GUARD_L, near, "right", CFG)
-    assert plan_r.reachable and plan_r.diag["rear_hand"] is True
-    # rear-hand target just beyond lead reach still reachable via bonus
-    far = np.array([1.05, 0.0, 1.10])
-    assert plan_punch(GUARD_L, far, "right", CFG).reachable
+    """rear_hand = punching hand on the ANCHOR-foot side; it gets the
+    rotation reach bonus (frontal target: right hand is rear)."""
+    tgt = np.array([0.55, -0.05, 1.10])
+    plan_r = plan_punch(GUARD_L, tgt, "right", CFG)
+    assert plan_r.diag["rear_hand"] is True
+    assert plan_r.diag["eff_arm_reach"] == pytest.approx(
+        CFG.arm_reach + CFG.cross_reach_bonus)
+    plan_l = plan_punch(GUARD_L, np.array([0.55, 0.05, 1.10]), "left",
+                        CFG)
+    assert plan_l.diag["rear_hand"] is False
+    assert plan_l.diag["eff_arm_reach"] == pytest.approx(CFG.arm_reach)
 
 
 def test_extend_midpoint_progresses_and_rear_stays_back():
@@ -142,10 +154,12 @@ def test_extend_midpoint_progresses_and_rear_stays_back():
         plan = plan_punch(GUARD_L, tgt, hand, CFG)
         assert len(plan.task.keyframes) == 4
         hp_name = f"hand_{hand}"
-        hp0 = GUARD_L.pos[POINT_INDEX[hp_name]]
+        # extension is measured from the LOADED guard position
+        hp_load = _targets(plan.task.keyframes[1])[hp_name]
         mid = _targets(plan.task.keyframes[2])[hp_name]
         hit = _targets(plan.task.keyframes[3])[hp_name]
-        f_mid = np.linalg.norm(mid - hp0) / np.linalg.norm(hit - hp0)
+        f_mid = np.linalg.norm(mid - hp_load) \
+            / np.linalg.norm(hit - hp_load)
         if plan.diag["rear_hand"]:
             assert f_mid < 0.45                 # rear hand stays back
         else:
