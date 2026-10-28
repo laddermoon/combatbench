@@ -45,6 +45,7 @@ class SpringModel:
     joint_names: tuple
     k_low: np.ndarray           # (J,) stiffness below 0
     k_high: np.ndarray          # (J,) stiffness above 0
+    law: np.ndarray             # (J,) bool: True=linear, False=quadratic
     q_init: np.ndarray          # (J,) natural pose (solver init only)
     fixed_mask: np.ndarray      # (J,) bool, True = excluded from optimization
     ranges: np.ndarray          # (J,2) physical rad limits
@@ -74,8 +75,11 @@ class SpringModel:
                         self.k_low, self.k_high)
 
     def energy(self, q_norm: np.ndarray) -> float:
-        a = np.abs(np.asarray(q_norm, dtype=np.float64))
-        return float(np.sum(self._k_side(q_norm) * a * a * a / 3.0))
+        q = np.asarray(q_norm, dtype=np.float64)
+        a = np.abs(q)
+        k = self._k_side(q)
+        return float(np.sum(np.where(
+            self.law, 0.5 * k * q * q, k * a * a * a / 3.0)))
 
 
 def load_spring_model(fk: Optional[Humanoid21FK] = None,
@@ -91,15 +95,24 @@ def load_spring_model(fk: Optional[Humanoid21FK] = None,
     fixed = set(cfg.get("fixed_joints", []))
     k_low = np.array([_k_of(cfg, n)[0] for n in names], dtype=np.float64)
     k_high = np.array([_k_of(cfg, n)[1] for n in names], dtype=np.float64)
+    law = np.array([_law_of(cfg, n) for n in names], dtype=bool)
     ranges = np.asarray(fk.joint_ranges(robot_id), dtype=np.float64)
     reference = (ranges[:, 0] + ranges[:, 1]) / 2.0
     scale = (ranges[:, 1] - ranges[:, 0]) / 2.0
     return SpringModel(
-        joint_names=names, k_low=k_low, k_high=k_high, scale=scale,
-        q_init=q0,
+        joint_names=names, k_low=k_low, k_high=k_high, law=law,
+        scale=scale, q_init=q0,
         fixed_mask=np.array([n in fixed for n in names]),
         ranges=ranges, reference=reference,
         q0=np.zeros(len(names)))
+
+
+def _law_of(cfg, name: str) -> bool:
+    """True = linear force, False = quadratic (default quadratic)."""
+    for group in cfg.get("stiffness_groups", {}).values():
+        if name in group["joints"]:
+            return group.get("law", "quadratic") == "linear"
+    return False
 
 
 def _k_of(cfg, name: str):

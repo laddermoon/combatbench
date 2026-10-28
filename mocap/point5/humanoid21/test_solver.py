@@ -32,10 +32,16 @@ class TestSpringModel:
         assert solver.spring.energy(q) > 0.0
 
     def test_quadratic_force_soft_midrange(self, solver):
-        # quadratic: energy grows slower than linear near 0, faster near 1
-        e_small = solver.spring.energy(np.full(21, 0.1))
-        e_big = solver.spring.energy(np.full(21, 0.9))
-        assert e_small < e_big / 100.0
+        # quadratic joint (knee): soft mid-range, stiff near limits
+        i = solver.spring.joint_names.index("knee_right")
+        q1 = np.zeros(21); q1[i] = 0.1
+        q2 = np.zeros(21); q2[i] = 0.9
+        assert solver.spring.energy(q1) < solver.spring.energy(q2) / 100.0
+
+    def test_laws_assigned(self, solver):
+        law = dict(zip(solver.spring.joint_names, solver.spring.law))
+        assert law["abdomen_y"] and law["elbow_right"]     # linear
+        assert not law["knee_right"] and not law["hip_y_right"]  # quadratic
 
     def test_ankles_are_free_springs(self, solver):
         # ankles must NOT be fixed: locking them makes the leg a rigid
