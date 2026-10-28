@@ -27,18 +27,18 @@ natural_pose:
   shoulder2_left: -0.3
   elbow_left: -0.9
 
-# Joints excluded from optimization (ankles: foot pose ignored by design).
-fixed_joints:
-  - ankle_y_right
-  - ankle_x_right
-  - ankle_y_left
-  - ankle_x_left
+# Joints excluded from optimization. Ankles must stay FREE: the foot target
+# only pins the ankle CENTER position, not the ankle angle — locking them
+# makes the leg a rigid lever and produces kneeling. Keep this list empty.
+fixed_joints: []
 
 # Stiffness groups k_j (spring-prior weights, normalized by joint scale).
 stiffness_groups:
   torso:        {joints: [abdomen_z, abdomen_y, abdomen_x], k: 3.0}
   legs:         {joints: [hip_x_right, hip_z_right, hip_y_right, knee_right,
-                          hip_x_left, hip_z_left, hip_y_left, knee_left],
+                          ankle_y_right, ankle_x_right,
+                          hip_x_left, hip_z_left, hip_y_left, knee_left,
+                          ankle_y_left, ankle_x_left],
                  k: 2.0}
   arms:         {joints: [shoulder1_right, shoulder2_right, elbow_right,
                           shoulder1_left, shoulder2_left, elbow_left],

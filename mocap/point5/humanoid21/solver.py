@@ -1,11 +1,18 @@
-"""Three-stage P5 -> full-body pose solver (pure geometry, no dynamics).
+"""Mechanics model: P5 -> full-body equilibrium pose.
 
-Stage order per plan: feet -> head -> hands; earlier point constraints stay
-active (within tolerance) in later stages. Each stage minimizes a
-high-weight task residual plus a low-weight spring-prior energy toward the
-natural pose q0.
+Model: weightless rigid-body chain + joint springs (natural pose q0,
+stiffness k). The 5 P5 points are HARD constraints (pinned in space).
+Solving for force balance = constrained minimum of elastic energy:
 
-Deterministic: fixed init rule, fixed stage order, fixed solver settings.
+    min_q  E(q) = 1/2 * sum_j k_j ((q_j - q0_j)/s_j)^2
+    s.t.   landmark_i(q) = p_i   (equality, not penalty)
+
+The KKT condition grad E - J^T lambda = 0 IS the force balance: spring
+torques on constrained DOFs are absorbed by pin reaction forces (lambda).
+
+Variables = root(6) + joints(21) — root is a *technical* unknown: the two
+pinned ankles (6 eq) determine it through the leg chains. Stage order
+feet -> head -> hands; each stage warm-starts from the previous.
 """
 from __future__ import annotations
 
@@ -13,19 +20,18 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import minimize
 from scipy.spatial.transform import Rotation as _R
 
 from mocap.point5.contracts import POINT_NAMES, POINT_INDEX
 
 from .fk import Humanoid21FK
-from .landmarks import LANDMARKS
 from .spring import SpringModel, load_spring_model
 
-_FEET = ("foot_right", "foot_left")
 _STAGE_POINTS = (("foot_right", "foot_left"),
                  ("foot_right", "foot_left", "head"),
                  POINT_NAMES)
+_STAGE_NAMES = ("feet", "head", "hands")
 
 
 @dataclass(frozen=True)
@@ -33,35 +39,28 @@ class SolveResult:
     robot_id: str
     root_pos: np.ndarray
     root_quat_wxyz: np.ndarray
-    joint_pos: np.ndarray          # full controlled-joint vector (rad)
-    landmark_pos: np.ndarray       # (5,3) achieved world positions
-    point_errors: np.ndarray       # (5,) metres
+    joint_pos: np.ndarray
+    landmark_pos: np.ndarray
+    point_errors: np.ndarray
     satisfied: bool
     failed_stage: Optional[str]
-    cost: float
+    energy: float
     diagnostics: Dict = field(default_factory=dict)
 
 
 class PoseSolver:
-    """P5 -> Humanoid21 representative pose via staged optimization."""
+    """Constrained-equilibrium solver: min E(q) s.t. pinned points."""
 
     def __init__(self, fk: Optional[Humanoid21FK] = None,
                  spring: Optional[SpringModel] = None,
-                 tolerance: float = 0.02,
-                 task_weight: float = 100.0,
-                 energy_weight: float = 1.0) -> None:
+                 tolerance: float = 0.01,
+                 max_nfev: int = 800) -> None:
         self.fk = fk or Humanoid21FK()
         self.spring = spring or load_spring_model(self.fk)
         self.names = list(self.spring.joint_names)
         self.q0 = self.spring.q0
-        self.fixed = {n for n, f in zip(self.names, self.spring.fixed_mask)
-                      if f}
-        self.ranges = self.spring.ranges
         self.tolerance = float(tolerance)
-        self.task_weight = float(task_weight)
-        self.energy_weight = float(energy_weight)
-
-    # -- public API ----------------------------------------------------------
+        self.max_nfev = int(max_nfev)
 
     def solve(self, target_pos: np.ndarray,
               robot_id: str = "robot_a") -> SolveResult:
@@ -69,14 +68,12 @@ class PoseSolver:
         if target.shape != (5, 3):
             raise ValueError(f"target_pos must be (5,3), got {target.shape}")
         x = self._initial_guess(target)
-        failed_stage = None
-        for stage_idx, pts in enumerate(_STAGE_POINTS):
+        failed = None
+        for stage, pts in zip(_STAGE_NAMES, _STAGE_POINTS):
             x = self._stage_solve(x, target, robot_id, pts)
-            errs = self._point_errors(x, target, robot_id)
-            want = [POINT_INDEX[p] for p in pts]
-            if errs[want].max() > self.tolerance:
-                failed_stage = pts[-1] if len(pts) < 5 else "hands"
-                # continue anyway (best-effort), but record first failure
+            errs = self._errors(x, target, robot_id)
+            if errs[[POINT_INDEX[p] for p in pts]].max() > self.tolerance:
+                failed = stage
                 break
         lm, root_pos, quat, q = self._unpack(x, robot_id)
         errs = np.linalg.norm(lm - target, axis=1)
@@ -84,69 +81,54 @@ class PoseSolver:
             robot_id=robot_id, root_pos=root_pos, root_quat_wxyz=quat,
             joint_pos=q, landmark_pos=lm, point_errors=errs,
             satisfied=bool(errs.max() <= self.tolerance),
-            failed_stage=failed_stage, cost=float(errs.max()),
+            failed_stage=failed,
+            energy=self.spring.energy(q),
             diagnostics={"tolerance": self.tolerance})
 
     # -- internals -----------------------------------------------------------
 
     def _initial_guess(self, target: np.ndarray) -> np.ndarray:
-        """Feet line defines yaw; COM of feet/head box defines root region."""
-        fr, fl = target[POINT_INDEX["foot_right"]], \
-            target[POINT_INDEX["foot_left"]]
+        fr = target[POINT_INDEX["foot_right"]]
+        fl = target[POINT_INDEX["foot_left"]]
         mid = (fr + fl) / 2.0
         d = fl - fr
-        yaw = float(np.arctan2(-d[0], d[1])) if np.linalg.norm(d[:2]) > 1e-3 \
-            else 0.0
-        # root roughly above ankle midpoint at natural-pose height offset
-        height_off = 1.216 - 0.087
-        root_pos = np.array([mid[0], mid[1], mid[2] + height_off])
-        rot = _R.from_euler("z", yaw).as_rotvec()
-        return self._pack(root_pos, rot, self.q0)
-
-    def _pack(self, root_pos, rot_vec, q) -> np.ndarray:
-        return np.concatenate([np.asarray(root_pos, dtype=np.float64),
-                               np.asarray(rot_vec, dtype=np.float64), q])
+        yaw = float(np.arctan2(-d[0], d[1])) \
+            if np.linalg.norm(d[:2]) > 1e-3 else 0.0
+        root_pos = np.array([mid[0], mid[1], mid[2] + 1.129])
+        return np.concatenate([root_pos,
+                               _R.from_euler("z", yaw).as_rotvec(), self.q0])
 
     def _unpack(self, x, robot_id):
-        self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]), x[6:])
+        quat = _quat_of(x[3:6])
+        self.fk.set_pose(robot_id, x[0:3], quat, x[6:])
         return (self.fk.landmark_positions(robot_id),
-                x[0:3].copy(), _quat_of(x[3:6]), x[6:].copy())
+                x[0:3].copy(), quat, x[6:].copy())
 
-    def _point_errors(self, x, target, robot_id) -> np.ndarray:
+    def _errors(self, x, target, robot_id) -> np.ndarray:
         lm, *_ = self._unpack(x, robot_id)
         return np.linalg.norm(lm - target, axis=1)
 
-    def _residual(self, x, target, robot_id, point_idx):
-        self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]), x[6:])
-        lm = self.fk.landmark_positions(robot_id)
-        task = self.task_weight * (lm[point_idx] - target[point_idx]).ravel()
-        energy = self.energy_weight * self.spring.energy_residual(x[6:])
-        return np.concatenate([task, energy])
-
     def _stage_solve(self, x0, target, robot_id, pts) -> np.ndarray:
-        idx = [POINT_INDEX[p] for p in pts]
-        lo = np.full(len(x0), -np.inf)
-        hi = np.full(len(x0), np.inf)
-        # root pos loose bounds around targets
-        lo[0:3], hi[0:3] = target.min(axis=0) - 1.5, target.max(axis=0) + 1.5
-        lo[6:], hi[6:] = self.ranges[:, 0], self.ranges[:, 1]
-        # fixed joints clamped to q0 (leastsq needs lo<hi strictly)
-        for i, n in enumerate(self.names):
-            if n in self.fixed:
-                lo[6 + i] = self.q0[i] - 1e-9
-                hi[6 + i] = self.q0[i] + 1e-9
-        x0 = np.clip(x0, lo, hi)
-        sol = least_squares(self._residual, x0, bounds=(lo, hi),
-                            args=(target, robot_id, idx),
-                            method="trf", xtol=1e-10, ftol=1e-10,
-                            gtol=1e-10, max_nfev=400)
+        idx = np.array([POINT_INDEX[p] for p in pts])
+
+        def landmark_res(x):
+            self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]), x[6:])
+            return (self.fk.landmark_positions(robot_id)[idx]
+                    - target[idx]).ravel()
+
+        bounds = [(-np.inf, np.inf)] * 6 + [
+            tuple(self.spring.ranges[j]) for j in range(len(self.names))]
+        sol = minimize(
+            lambda x: self.spring.energy(x[6:]), np.asarray(x0),
+            method="SLSQP", bounds=bounds,
+            constraints=[{"type": "eq", "fun": landmark_res}],
+            options={"maxiter": self.max_nfev, "ftol": 1e-12})
         return sol.x
 
 
 def _quat_of(rot_vec) -> np.ndarray:
-    """rotvec -> wxyz quaternion (identity-safe at zero)."""
     rv = np.asarray(rot_vec, dtype=np.float64)
     if np.linalg.norm(rv) < 1e-12:
         return np.array([1.0, 0, 0, 0])
-    q = _R.from_rotvec(rv).as_quat()          # xyzw
+    q = _R.from_rotvec(rv).as_quat()
     return np.array([q[3], q[0], q[1], q[2]])

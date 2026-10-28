@@ -30,9 +30,15 @@ class TestSpringModel:
         q = solver.q0.copy(); q[0] += 0.5
         assert solver.spring.energy(q) > 0.0
 
-    def test_ankles_fixed(self, solver):
-        assert {"ankle_y_right", "ankle_x_right",
-                "ankle_y_left", "ankle_x_left"} <= solver.fixed
+    def test_ankles_are_free_springs(self, solver):
+        # ankles must NOT be fixed: locking them makes the leg a rigid
+        # lever -> kneeling artifacts. They participate as springs.
+        sm = solver.spring
+        for n in ("ankle_y_right", "ankle_x_right",
+                  "ankle_y_left", "ankle_x_left"):
+            i = sm.joint_names.index(n)
+            assert not sm.fixed_mask[i]
+            assert sm.k[i] > 0.0
 
 
 class TestSolve:
