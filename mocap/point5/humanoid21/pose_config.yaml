@@ -21,10 +21,10 @@ natural_pose:
   ankle_y_left: 0.40
   ankle_x_left: 0.0
   shoulder1_right: 0.45
-  shoulder2_right: -0.55
+  shoulder2_right: -0.25
   elbow_right: -1.0
   shoulder1_left: 0.45
-  shoulder2_left: -0.55
+  shoulder2_left: -0.25
   elbow_left: -1.0
 
 # Joints excluded from optimization (ankles: foot pose ignored by design).
