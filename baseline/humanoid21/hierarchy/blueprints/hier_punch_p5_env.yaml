@@ -1,0 +1,72 @@
+# P5 punch skill env — 66-dim CommandSimulator (v2 cmd contract).
+#
+# Episode start: PolicyInitStatePlugin rolls the S2-guard policy in an
+# internal sim for a random number of steps and injects the resulting
+# guard stance into the real env (online RSI).  StrikeTargetPlugin then
+# resolves the episode's stance-relative target params into a fixed
+# world target and issues the v2 effector command (hand strike); the
+# simulator re-expresses the target in the instantaneous ego frame
+# every step.
+#
+# Reward is computed offline by exp_punch_p5_mbs: per-episode P5 plan +
+# DeepMimic-style per-part tracking over the plan duration.
+
+parameters:
+  initial_distance:
+    default: 2.0
+  max_steps:
+    default: 12
+    description: "Task (~6) + tail steps at 20 Hz."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.hierarchy.command_simulator:CommandSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    cmd_version: "v2"
+    debug_torque: false
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.policy_init_state:PolicyInitStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      policy_dir: "baseline/runs/hier_s2_guard_96d_s1/policy_exports/u02604"
+      min_steps: 30
+      max_steps: 120
+      disturb: false
+  - cls: "baseline.humanoid21.plugins.strike_target:StrikeTargetPlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+  - cls: "envs.framework.common_plugins:TimeoutPlugin"
+    config:
+      max_steps: ${max_steps}
+
+observers:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  point5_a:
+    cls: "baseline.humanoid21.end2end.point5_observer:Point5Observer"
+    config:
+      agent_id: "robot_a"
+  point5_b:
+    cls: "baseline.humanoid21.end2end.point5_observer:Point5Observer"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
