@@ -241,3 +241,38 @@ class TestExportMp4:
         head = out.read_bytes()[:16]
         assert b"ftyp" in head          # MP4 container magic
         assert out.stat().st_size > 2000
+
+
+class TestTorsoYaw:
+    def test_yaw_linear_interpolation(self):
+        kf0 = Keyframe(specs={n: PointSpec(WorldPoint(np.zeros(3)))
+                              for n in POINT_NAMES}, torso_yaw=0.0)
+        kf1 = Keyframe(specs={n: PointSpec(WorldPoint(np.ones(3)))
+                              for n in POINT_NAMES}, torso_yaw=90.0)
+        ref = build_reference(
+            Point5Task("yaw", (kf0, kf1), (1.0,)), _world_resolver())
+        assert ref.sample(0, 0.5).torso_yaw == pytest.approx(45.0)
+
+    def test_yaw_none_when_either_end_missing(self):
+        kf0 = Keyframe(specs={n: PointSpec(WorldPoint(np.zeros(3)))
+                              for n in POINT_NAMES}, torso_yaw=0.0)
+        kf1 = Keyframe(specs={n: PointSpec(WorldPoint(np.ones(3)))
+                              for n in POINT_NAMES})
+        ref = build_reference(
+            Point5Task("yaw2", (kf0, kf1), (1.0,)), _world_resolver())
+        assert ref.sample(0, 0.5).torso_yaw is None
+
+    def test_yaw_serde_roundtrip(self):
+        kf = Keyframe(specs={n: PointSpec(WorldPoint(np.zeros(3)))
+                             for n in POINT_NAMES}, torso_yaw=30.0)
+        assert Keyframe.from_dict(kf.to_dict()).torso_yaw == \
+            pytest.approx(30.0)
+        kf2 = Keyframe(specs={n: PointSpec(WorldPoint(np.zeros(3)))
+                              for n in POINT_NAMES})
+        assert Keyframe.from_dict(kf2.to_dict()).torso_yaw is None
+
+    def test_state_yaw_validation(self):
+        with pytest.raises(TaskValidationError):
+            Point5State(pos=np.zeros((5, 3)), torso_yaw=float("nan"))
+        st = Point5State(pos=np.zeros((5, 3)), torso_yaw=15.0)
+        assert st.torso_yaw == pytest.approx(15.0)

@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation as _R
 
 from envs.humanoid21.meta import Humanoid21Meta
 from mocap.point5.contracts import (
+    POINT_INDEX,
     POINT_NAMES,
     Point5Error,
     Point5State,
@@ -69,6 +70,30 @@ def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
             vel is not None and not np.all(np.isfinite(vel))):
         raise Point5Error(f"{robot_id} has non-finite point data")
 
+    torso_yaw = _torso_yaw(view, suffix, pos)
     return Point5State(
-        pos=pos, vel=vel, frame="world",
+        pos=pos, vel=vel, torso_yaw=torso_yaw, frame="world",
         metadata={"robot_id": robot_id, "source": "derived_view"})
+
+
+def _torso_yaw(view: Mapping[str, Any], suffix: str,
+               pos: np.ndarray) -> Optional[float]:
+    """Degress of body yaw per DESIGN.md 4.6: baseline = projected
+    left->right foot line; angle of torso +x vs stance normal."""
+    tq = view.get("body_xquat", {}).get(f"torso{suffix}")
+    if tq is None:
+        return None
+    tq = np.asarray(tq, dtype=np.float64)
+    fwd = _R.from_quat([tq[1], tq[2], tq[3], tq[0]]).as_matrix()[:, 0]
+    fr = pos[POINT_INDEX["foot_right"], :2]
+    fl = pos[POINT_INDEX["foot_left"], :2]
+    b = fr - fl
+    nb = np.linalg.norm(b)
+    if nb < 1e-9:
+        return None                     # coincident feet: baseline undefined
+    b /= nb
+    n = np.array([-b[1], b[0]])         # baseline rotated +90 deg = forward
+    t = fwd[:2]
+    if np.linalg.norm(t) < 1e-9:
+        return None                     # torso axis vertical: no yaw
+    return float(np.degrees(np.arctan2(t @ b, t @ n)))

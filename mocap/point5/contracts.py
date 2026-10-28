@@ -133,12 +133,14 @@ class Point5State:
     """Positions of the five business points in a declared frame.
 
     ``vel`` is optional: v1 references never carry it, but a measured adapter
-    may fill it for downstream use.
+    may fill it for downstream use. ``torso_yaw`` is the optional body
+    orientation scalar (degrees, see DESIGN.md §4.6); ``None`` = none given.
     """
 
     pos: np.ndarray
     time: float = 0.0
     vel: Optional[np.ndarray] = None
+    torso_yaw: Optional[float] = None
     frame: str = "world"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -154,6 +156,10 @@ class Point5State:
                 raise TaskValidationError(
                     f"vel must be a finite ({N_POINTS},3) array or None")
             object.__setattr__(self, "vel", vel)
+        if self.torso_yaw is not None:
+            if not np.isfinite(self.torso_yaw):
+                raise TaskValidationError("torso_yaw must be finite or None")
+            object.__setattr__(self, "torso_yaw", float(self.torso_yaw))
         if not np.isfinite(self.time):
             raise TaskValidationError("time must be finite")
 
@@ -210,10 +216,11 @@ class PointSpec:
 
 @dataclass(frozen=True)
 class Keyframe:
-    """One boundary pose: exactly the five business points."""
+    """One boundary pose: exactly the five business points + optional yaw."""
 
     specs: Mapping[str, PointSpec]
     label: str = ""
+    torso_yaw: Optional[float] = None
 
     def __post_init__(self) -> None:
         names = set(self.specs.keys())
@@ -223,6 +230,11 @@ class Keyframe:
             raise TaskValidationError(
                 f"keyframe must cover exactly {POINT_NAMES}; "
                 f"missing={sorted(missing)} extra={sorted(extra)}")
+        if self.torso_yaw is not None:
+            if not np.isfinite(self.torso_yaw):
+                raise TaskValidationError(
+                    "torso_yaw must be finite (degrees) or None")
+            object.__setattr__(self, "torso_yaw", float(self.torso_yaw))
         object.__setattr__(self, "specs", dict(self.specs))
 
     def spec(self, point: str) -> PointSpec:
@@ -230,14 +242,18 @@ class Keyframe:
         return self.specs[point]
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"label": self.label,
-                "specs": {n: s.to_dict() for n, s in self.specs.items()}}
+        d = {"label": self.label,
+             "specs": {n: s.to_dict() for n, s in self.specs.items()}}
+        if self.torso_yaw is not None:
+            d["torso_yaw"] = float(self.torso_yaw)
+        return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Keyframe":
         return cls(specs={n: PointSpec.from_dict(s)
                           for n, s in d["specs"].items()},
-                   label=str(d.get("label", "")))
+                   label=str(d.get("label", "")),
+                   torso_yaw=d.get("torso_yaw"))
 
 
 @dataclass(frozen=True)

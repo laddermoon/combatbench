@@ -101,8 +101,12 @@ class Point5Reference:
                   + s * self.task.durations[seg])
         label = (self.task.keyframes[seg].label if s < 0.5
                  else self.task.keyframes[seg + 1].label)
+        y0 = self.task.keyframes[seg].torso_yaw
+        y1 = self.task.keyframes[seg + 1].torso_yaw
+        yaw = (1.0 - s) * y0 + s * y1 \
+            if (y0 is not None and y1 is not None) else None
         return Point5State(
-            pos=pos, time=t, vel=None, frame="world",
+            pos=pos, time=t, vel=None, torso_yaw=yaw, frame="world",
             metadata={"task": self.task.name, "seg": int(seg), "s": s,
                       "t": t, "keyframe_label": label})
 
@@ -198,6 +202,7 @@ def frames_payload(reference: Point5Reference,
              "seg": int(st.metadata["seg"]),
              "s": float(st.metadata["s"]),
              "label": st.metadata["keyframe_label"],
+             "torso_yaw": st.torso_yaw,
              "pos": st.pos.tolist()}
             for st in frames.states],
     }
