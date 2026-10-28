@@ -58,7 +58,7 @@ class PoseSolver:
         self.fk = fk or Humanoid21FK()
         self.spring = spring or load_spring_model(self.fk)
         self.names = list(self.spring.joint_names)
-        self.q0 = self.spring.q0
+        self.q0 = self.spring.q_init    # solver init only, not spring center
         self.tolerance = float(tolerance)
         self.max_nfev = int(max_nfev)
 

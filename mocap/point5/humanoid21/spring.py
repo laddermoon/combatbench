@@ -30,21 +30,27 @@ CONFIG_PATH = Path(__file__).with_name("pose_config.yaml")
 
 @dataclass(frozen=True)
 class SpringModel:
-    """Asymmetric piecewise-quadratic springs on normalized coords.
+    """Asymmetric progressive springs on normalized coords.
 
-    Per joint, the restoring force pulls toward q0 from both sides but
-    stiffness may differ:  F(q) = -k_side * (q - q0)
-      k_low  : applies when q < q0
-      k_high : applies when q > q0
+    Spring reference is the all-zero pose (mechanical midpoint for every
+    joint, limits at ±1). Force law is quadratic:
+
+        F(q) = -k_side * q * |q|      (soft mid-range, stiff near limits)
+        E(q) =  k_side * |q|^3 / 3
+
+    ``k_low`` applies when q < 0, ``k_high`` when q > 0.
+    ``q_init`` is the user-tuned natural pose — used ONLY as the solver's
+    initial guess, it is NOT the spring center.
     """
-    joint_names: tuple          # suffix-stripped CONTROLLED_JOINTS order
-    q0: np.ndarray              # (J,) natural angles, NORMALIZED [-1,1]
-    k_low: np.ndarray           # (J,) stiffness below q0
-    k_high: np.ndarray          # (J,) stiffness above q0
+    joint_names: tuple
+    k_low: np.ndarray           # (J,) stiffness below 0
+    k_high: np.ndarray          # (J,) stiffness above 0
+    q_init: np.ndarray          # (J,) natural pose (solver init only)
     fixed_mask: np.ndarray      # (J,) bool, True = excluded from optimization
     ranges: np.ndarray          # (J,2) physical rad limits
     reference: np.ndarray       # (J,) rad midpoint
     scale: np.ndarray           # (J,) rad half-range
+    q0: np.ndarray = None       # spring center, always zeros
 
     @property
     def active_idx(self) -> np.ndarray:
@@ -64,16 +70,12 @@ class SpringModel:
 
     # energy in normalized coords ---------------------------------------------
     def _k_side(self, q_norm: np.ndarray) -> np.ndarray:
-        return np.where(np.asarray(q_norm) < self.q0,
+        return np.where(np.asarray(q_norm) < 0.0,
                         self.k_low, self.k_high)
 
     def energy(self, q_norm: np.ndarray) -> float:
-        d = np.asarray(q_norm, dtype=np.float64) - self.q0
-        return 0.5 * float(np.sum(self._k_side(q_norm) * d * d))
-
-    def energy_residual(self, q_norm: np.ndarray) -> np.ndarray:
-        return (np.sqrt(self._k_side(q_norm))
-                * (np.asarray(q_norm, dtype=np.float64) - self.q0))
+        a = np.abs(np.asarray(q_norm, dtype=np.float64))
+        return float(np.sum(self._k_side(q_norm) * a * a * a / 3.0))
 
 
 def load_spring_model(fk: Optional[Humanoid21FK] = None,
@@ -93,9 +95,11 @@ def load_spring_model(fk: Optional[Humanoid21FK] = None,
     reference = (ranges[:, 0] + ranges[:, 1]) / 2.0
     scale = (ranges[:, 1] - ranges[:, 0]) / 2.0
     return SpringModel(
-        joint_names=names, q0=q0, k_low=k_low, k_high=k_high, scale=scale,
+        joint_names=names, k_low=k_low, k_high=k_high, scale=scale,
+        q_init=q0,
         fixed_mask=np.array([n in fixed for n in names]),
-        ranges=ranges, reference=reference)
+        ranges=ranges, reference=reference,
+        q0=np.zeros(len(names)))
 
 
 def _k_of(cfg, name: str):

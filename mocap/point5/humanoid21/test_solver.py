@@ -23,12 +23,19 @@ def _target_of(solver, q=None, root_pos=(0, 0, 1.216)):
 
 
 class TestSpringModel:
-    def test_energy_zero_at_natural(self, solver):
-        assert solver.spring.energy(solver.q0) == pytest.approx(0.0)
+    def test_energy_zero_at_center(self, solver):
+        # spring reference is the all-zero (midpoint) pose
+        assert solver.spring.energy(np.zeros(21)) == pytest.approx(0.0)
 
-    def test_energy_positive_off_natural(self, solver):
-        q = solver.q0.copy(); q[0] += 0.5
+    def test_energy_positive_off_center(self, solver):
+        q = np.zeros(21); q[0] = 0.5
         assert solver.spring.energy(q) > 0.0
+
+    def test_quadratic_force_soft_midrange(self, solver):
+        # quadratic: energy grows slower than linear near 0, faster near 1
+        e_small = solver.spring.energy(np.full(21, 0.1))
+        e_big = solver.spring.energy(np.full(21, 0.9))
+        assert e_small < e_big / 100.0
 
     def test_ankles_are_free_springs(self, solver):
         # ankles must NOT be fixed: locking them makes the leg a rigid
@@ -47,8 +54,6 @@ class TestSolve:
         res = solver.solve(target)
         assert res.satisfied
         assert res.point_errors.max() < solver.tolerance
-        np.testing.assert_allclose(
-            res.joint_pos, solver.spring.to_rad(solver.q0), atol=0.15)
 
     def test_shifted_target_moves_pose(self, solver):
         target = _target_of(solver)
