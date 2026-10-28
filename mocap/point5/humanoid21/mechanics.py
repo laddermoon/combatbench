@@ -83,6 +83,64 @@ LANDMARKS: Dict[str, Tuple[str, np.ndarray]] = {
 LANDMARK_ORDER: Tuple[str, ...] = (
     "head", "hand_right", "hand_left", "foot_right", "foot_left")
 
+# ------------------------------------------------- normalized coordinates --
+# q_norm = (q_rad - mid)/half_range; every joint spans [-1, 1].
+_MID = (JNT_RANGE[:, 0] + JNT_RANGE[:, 1]) / 2.0
+_HALF = (JNT_RANGE[:, 1] - JNT_RANGE[:, 0]) / 2.0
+
+
+def norm_to_rad(q_norm: np.ndarray) -> np.ndarray:
+    return np.asarray(q_norm, dtype=np.float64) * _HALF + _MID
+
+
+def rad_to_norm(q_rad: np.ndarray) -> np.ndarray:
+    return (np.asarray(q_rad, dtype=np.float64) - _MID) / _HALF
+
+
+# ---------------------------------------------------------------- springs --
+# Per-joint restoring spring in normalized coords, centered at 0
+# (unloaded configuration = the natural pose, by definition).
+#   linear:    F = -k*q     E = k*q^2/2
+#   quadratic: F = -k*q|q|  E = k*|q|^3/3   (soft mid-range, stiff near limits)
+# k = (k_low, k_high) applied for q<0 / q>0. Ratios only (knee = 1.0).
+SPRINGS: Dict[str, Tuple[str, float, float]] = {
+    # law, k_low, k_high
+    "abdomen_z":       ("linear",    20.0, 20.0),
+    "abdomen_y":       ("linear",    20.0, 20.0),
+    "abdomen_x":       ("linear",    20.0, 20.0),
+    "hip_x_right":     ("quadratic",  1.0,  1.0),
+    "hip_z_right":     ("quadratic",  1.0,  1.0),
+    "hip_y_right":     ("quadratic",  1.0,  1.0),
+    "knee_right":      ("quadratic",  1.0,  1.0),
+    "ankle_y_right":   ("quadratic",  0.7,  0.7),
+    "ankle_x_right":   ("quadratic",  0.7,  0.7),
+    "hip_x_left":      ("quadratic",  1.0,  1.0),
+    "hip_z_left":      ("quadratic",  1.0,  1.0),
+    "hip_y_left":      ("quadratic",  1.0,  1.0),
+    "knee_left":       ("quadratic",  1.0,  1.0),
+    "ankle_y_left":    ("quadratic",  0.7,  0.7),
+    "ankle_x_left":    ("quadratic",  0.7,  0.7),
+    "shoulder1_right": ("linear",     0.4,  0.4),
+    "shoulder2_right": ("linear",     0.4,  0.4),
+    "elbow_right":     ("linear",     1.0,  1.0),
+    "shoulder1_left":  ("linear",     0.4,  0.4),
+    "shoulder2_left":  ("linear",     0.4,  0.4),
+    "elbow_left":      ("linear",     1.0,  1.0),
+}
+
+_SPRING_K_LOW = np.array([SPRINGS[n][1] for n in JOINT_NAMES])
+_SPRING_K_HIGH = np.array([SPRINGS[n][2] for n in JOINT_NAMES])
+_SPRING_LIN = np.array([SPRINGS[n][0] == "linear" for n in JOINT_NAMES])
+
+
+def spring_energy(q_norm: np.ndarray) -> float:
+    """Total elastic energy of the unloaded-centered springs."""
+    q = np.asarray(q_norm, dtype=np.float64)
+    a = np.abs(q)
+    k = np.where(q < 0.0, _SPRING_K_LOW, _SPRING_K_HIGH)
+    return float(np.sum(np.where(_SPRING_LIN, 0.5 * k * q * q,
+                                 k * a * a * a / 3.0)))
+
 
 # ------------------------------------------------------------- math bits ---
 def _rot(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -151,3 +209,92 @@ class Skeleton:
         return np.stack([
             xf[b][0] + xf[b][1] @ off
             for b, off in (LANDMARKS[n] for n in LANDMARK_ORDER)])
+
+
+# -------------------------------------------------- equilibrium solving ---
+_LM_IDX = {n: i for i, n in enumerate(LANDMARK_ORDER)}
+_STAGES = (("foot_right", "foot_left"),
+           ("foot_right", "foot_left", "head"),
+           LANDMARK_ORDER)
+_STAGE_NAMES = ("feet", "head", "hands")
+
+
+def solve_equilibrium(target_pos: np.ndarray,
+                      skeleton: "Skeleton | None" = None,
+                      tolerance: float = 0.01,
+                      max_iter: int = 500,
+                      pull_step: float = 0.05) -> dict:
+    """Pure function: 5 pinned points -> equilibrium joint angles.
+
+    Start at the unloaded (all-zero) pose, pin feet -> head -> hands
+    quasi-statically (small pull steps, min-energy equilibrium at each).
+    Returns dict with root pose, q_norm, landmarks, per-point errors,
+    satisfied flag, energy, and failure stage.
+    """
+    from scipy.optimize import minimize
+    from scipy.spatial.transform import Rotation as _R
+
+    sk = skeleton or Skeleton()
+    target = np.asarray(target_pos, dtype=np.float64)
+    if target.shape != (5, 3):
+        raise ValueError(f"target_pos must be (5,3), got {target.shape}")
+
+    def quat(rv):
+        if np.linalg.norm(rv) < 1e-12:
+            return np.array([1.0, 0, 0, 0])
+        q4 = _R.from_rotvec(rv).as_quat()
+        return np.array([q4[3], q4[0], q4[1], q4[2]])
+
+    def lm(x):
+        return sk.landmarks(x[0:3], quat(x[3:6]), norm_to_rad(x[6:]))
+
+    # initial state: unloaded joints; root above ankle midpoint
+    fr = target[_LM_IDX["foot_right"]]
+    fl = target[_LM_IDX["foot_left"]]
+    mid = (fr + fl) / 2.0
+    d = fl - fr
+    yaw = float(np.arctan2(-d[0], d[1])) \
+        if np.linalg.norm(d[:2]) > 1e-3 else 0.0
+    x = np.concatenate([
+        np.array([mid[0], mid[1], mid[2] + 0.79]),
+        _R.from_euler("z", yaw).as_rotvec(),
+        np.zeros(len(JOINT_NAMES))])
+
+    bounds = [(-np.inf, np.inf)] * 6 + [(-1.0, 1.0)] * len(JOINT_NAMES)
+
+    def equilibrate(x0, idx, tgt):
+        def res(v):
+            return (lm(v)[idx] - tgt).ravel()
+        sol = minimize(lambda v: spring_energy(v[6:]), np.asarray(x0),
+                       method="SLSQP", bounds=bounds,
+                       constraints=[{"type": "eq", "fun": res}],
+                       options={"maxiter": max_iter, "ftol": 1e-12})
+        return sol.x
+
+    failed = None
+    for stage, pts in zip(_STAGE_NAMES, _STAGES):
+        idx = np.array([_LM_IDX[p] for p in pts])
+        cur = lm(x)[idx]
+        n = max(1, int(np.ceil(
+            np.linalg.norm(target[idx] - cur, axis=1).max() / pull_step)))
+        for s in range(1, n + 1):
+            x = equilibrate(x, idx, cur + (target[idx] - cur) * (s / n))
+        errs = np.linalg.norm(lm(x)[idx] - target[idx], axis=1)
+        if errs.max() > tolerance:
+            failed = stage
+            break
+
+    achieved = lm(x)
+    errs = np.linalg.norm(achieved - target, axis=1)
+    return {
+        "root_pos": x[0:3].copy(),
+        "root_quat_wxyz": quat(x[3:6]),
+        "q_norm": x[6:].copy(),
+        "q_rad": norm_to_rad(x[6:]),
+        "landmarks": achieved,
+        "point_errors": errs,
+        "satisfied": bool(errs.max() <= tolerance),
+        "failed_stage": failed,
+        "energy": spring_energy(x[6:]),
+        "joint_names": JOINT_NAMES,
+    }

@@ -13,7 +13,7 @@ import numpy as np
 from envs.humanoid21.meta import Humanoid21Meta
 from envs.humanoid21.simulator import Humanoid21Simulator
 
-from .landmarks import LANDMARKS
+from .mechanics import LANDMARKS
 
 _ROOT_DOFS = 6
 _ROOT_QPOS = 7

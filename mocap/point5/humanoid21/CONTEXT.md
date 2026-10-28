@@ -2,9 +2,23 @@
 
 ## 一句话
 
-P5 → Humanoid21 的**纯几何姿态补全**适配层：五点定义（landmarks）+
-正运动学（fk）+ 姿态渲染 + 自然姿态/刚度配置，目标是三阶段求解器
-（脚→头→手）把 P5 变成全身代表姿态。计划见 `POSE_COMPLETION_PLAN.md`。
+P5 → Humanoid21 的**纯力学姿态补全**：无重刚体链 + 铰链弹簧 +
+5点硬约束 → 平衡姿态。核心是 `mechanics.py`——自包含的机械结构
+（16刚体/21铰链/5标记点）+ 弹簧表 + `solve_equilibrium()`，
+运行时零 MuJoCo 依赖。计划见 `POSE_COMPLETION_PLAN.md`。
+
+## 力学模型（mechanics.py，权威）
+
+```
+刚体树（16节，MuJoCo 语义）+ 铰链（锚点/轴/限位）
+弹簧：中心=0（无载位形=自然姿态），law∈{linear,quadratic}，非对称k
+求解：全零出发 → 钉脚→头→手，每步5cm准静态拉 → min E(q) s.t. 硬约束
+solve_equilibrium(5点) → {q_norm, q_rad, root, landmarks, errors, ...}
+纯函数：无外部状态、无自然姿态配置、不 import mujoco
+```
+
+刚度表（验证过）：abdomen线性20、hip/knee二次1、ankle二次0.7、
+elbow线性1、shoulder线性0.4。fk.py/render.py 仅作显示工具。
 
 ## 数据切面
 

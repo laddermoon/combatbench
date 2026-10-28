@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .fk import Humanoid21FK
-from .landmarks import LANDMARKS
+from .mechanics import LANDMARKS
 
 _POINT_RGBA = {
     "head": (224, 72, 62, 255),

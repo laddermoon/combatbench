@@ -22,7 +22,7 @@ from mocap.point5.contracts import (
     Point5State,
 )
 
-from .landmarks import LANDMARKS
+from .mechanics import LANDMARKS
 
 
 def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
