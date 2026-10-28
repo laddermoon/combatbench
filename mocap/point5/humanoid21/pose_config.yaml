@@ -4,27 +4,27 @@
 
 # Natural pose q^0: visually relaxed stance. Iterated with user via renders.
 natural_pose:
-  # v3 (FK-searched arms-down + deeper knees; pending user confirmation)
+  # v4: torso lean fwd + arms hang fwd at sides + deep knee flex (user review)
   abdomen_z: 0.0
-  abdomen_y: -0.05
+  abdomen_y: -0.35
   abdomen_x: 0.0
   hip_x_right: 0.0
   hip_z_right: 0.0
-  hip_y_right: -0.25
+  hip_y_right: -0.30
   knee_right: -0.55
-  ankle_y_right: 0.35
+  ankle_y_right: 0.40
   ankle_x_right: 0.0
   hip_x_left: 0.0
   hip_z_left: 0.0
-  hip_y_left: -0.25
+  hip_y_left: -0.30
   knee_left: -0.55
-  ankle_y_left: 0.35
+  ankle_y_left: 0.40
   ankle_x_left: 0.0
-  shoulder1_right: 0.8
-  shoulder2_right: -1.1
-  elbow_right: -0.5
+  shoulder1_right: 0.6
+  shoulder2_right: -0.9
+  elbow_right: -0.75
   shoulder1_left: 0.6
-  shoulder2_left: -1.1
+  shoulder2_left: -0.9
   elbow_left: -0.75
 
 # Joints excluded from optimization (ankles: foot pose ignored by design).
