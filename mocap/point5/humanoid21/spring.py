@@ -46,7 +46,6 @@ class SpringModel:
     k_low: np.ndarray           # (J,) stiffness below 0
     k_high: np.ndarray          # (J,) stiffness above 0
     law: np.ndarray             # (J,) bool: True=linear, False=quadratic
-    q_init: np.ndarray          # (J,) natural pose (solver init only)
     fixed_mask: np.ndarray      # (J,) bool, True = excluded from optimization
     ranges: np.ndarray          # (J,2) physical rad limits
     reference: np.ndarray       # (J,) rad midpoint
@@ -90,8 +89,6 @@ def load_spring_model(fk: Optional[Humanoid21FK] = None,
     cfg = yaml.safe_load(Path(config_path or CONFIG_PATH).read_text())
     names = tuple(n.rsplit("_", 1)[0]
                   for n in fk.controlled_joints(robot_id))
-    q0 = np.array([cfg["natural_pose"][n] for n in names],
-                  dtype=np.float64)
     fixed = set(cfg.get("fixed_joints", []))
     k_low = np.array([_k_of(cfg, n)[0] for n in names], dtype=np.float64)
     k_high = np.array([_k_of(cfg, n)[1] for n in names], dtype=np.float64)
@@ -101,7 +98,7 @@ def load_spring_model(fk: Optional[Humanoid21FK] = None,
     scale = (ranges[:, 1] - ranges[:, 0]) / 2.0
     return SpringModel(
         joint_names=names, k_low=k_low, k_high=k_high, law=law,
-        scale=scale, q_init=q0,
+        scale=scale,
         fixed_mask=np.array([n in fixed for n in names]),
         ranges=ranges, reference=reference,
         q0=np.zeros(len(names)))

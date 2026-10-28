@@ -58,7 +58,10 @@ class PoseSolver:
         self.fk = fk or Humanoid21FK()
         self.spring = spring or load_spring_model(self.fk)
         self.names = list(self.spring.joint_names)
-        self.q0 = self.spring.q_init    # solver init only, not spring center
+        # Natural pose = spring zero (all-unloaded). The solve is a pure
+        # function of the 5 targets: start at zero, pin feet -> head ->
+        # hands quasi-statically, take the equilibrium.
+        self.q0 = np.zeros(len(self.names))
         self.tolerance = float(tolerance)
         self.max_nfev = int(max_nfev)
 
@@ -95,7 +98,8 @@ class PoseSolver:
         d = fl - fr
         yaw = float(np.arctan2(-d[0], d[1])) \
             if np.linalg.norm(d[:2]) > 1e-3 else 0.0
-        root_pos = np.array([mid[0], mid[1], mid[2] + 1.129])
+        # all-zero pose stands ~0.79 m above the ankle centers (deep crouch)
+        root_pos = np.array([mid[0], mid[1], mid[2] + 0.79])
         return np.concatenate([root_pos,
                                _R.from_euler("z", yaw).as_rotvec(), self.q0])
 

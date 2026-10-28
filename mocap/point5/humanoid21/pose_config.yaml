@@ -3,29 +3,8 @@
 # every joint spans [-1, 1] (project convention, same as action interface).
 # Joint order = Humanoid21Meta.CONTROLLED_JOINTS (suffix stripped).
 
-# Natural pose q0: visually relaxed stance (v9, user-confirmed).
-natural_pose:
-  abdomen_z: 0.0
-  abdomen_y: 0.167      # (-0.25 rad)
-  abdomen_x: 0.0
-  hip_x_right: 0.0
-  hip_z_right: 0.0
-  hip_y_right: 0.586    # (-0.30 rad)
-  knee_right: 0.607     # (-0.55 rad)
-  ankle_y_right: 0.444  # (+0.40 rad, compensates knee flex -> foot flat)
-  ankle_x_right: 0.0
-  hip_x_left: 0.0
-  hip_z_left: 0.0
-  hip_y_left: 0.586
-  knee_left: 0.607
-  ankle_y_left: 0.444
-  ankle_x_left: 0.0
-  shoulder1_right: 0.76
-  shoulder2_right: -0.04
-  elbow_right: -0.385
-  shoulder1_left: 0.76
-  shoulder2_left: -0.04
-  elbow_left: -0.385
+# Natural pose = spring zero (all joints at normalized 0). No config needed:
+# the unloaded configuration IS the natural pose by definition.
 
 # Joints excluded from optimization (none: ankles must stay free springs).
 fixed_joints: []
