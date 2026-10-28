@@ -45,7 +45,7 @@ plugins:
     config:
       max_steps: ${max_steps}
 
-observers:
+observer_plugins:
   standing_balance_a:
     cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
     config:
