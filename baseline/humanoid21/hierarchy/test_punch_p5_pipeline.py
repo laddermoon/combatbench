@@ -127,6 +127,12 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
         np.testing.assert_allclose(tr.channels[name].reward[:6], 1.0)
         assert tr.channels[name].actor_weight[5] > 0
         assert tr.channels[name].actor_weight[6] == 0
+        assert tr.channels[name].is_terminated is True
+    assert tr.channels["r_fall"].is_terminated is True
+    assert tr.channels["r_feet"].actor_weight[2] > (
+        tr.channels["r_strike_hand"].actor_weight[2])
+    assert tr.channels["r_strike_hand"].actor_weight[4] > (
+        tr.channels["r_feet"].actor_weight[4])
 
     # A missed punch still yields a graded signal, not a near-zero
     # Gaussian plateau at errors typical of a warm-start balance policy.
@@ -135,3 +141,36 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
     missed = PunchP5MBS()._build_agent_trajectory(
         ep, "robot_a", "foot_state_a", "standing_balance_a")[0]
     assert 0.05 < missed.channels["r_strike_hand"].reward[5] < 0.2
+
+    # In the same world frame, moving either measured point toward its
+    # forward reference must increase (not decrease) its channel reward.
+    axis = plan.diag["attack_axis"]
+    for point, channel in ((2, "r_strike_hand"),
+                           (3 if plan.diag["moving_foot"] == "foot_right"
+                            else 4, "r_feet")):
+        original = arr[4, 3 * point:3 * point + 3].copy()
+        def reward_at(offset):
+            for i, value in enumerate(original + offset * axis):
+                ep.observer_outputs["point5_a"][f"p5_{3 * point + i}"][4] = value
+            return PunchP5MBS()._build_agent_trajectory(
+                ep, "robot_a", "foot_state_a", "standing_balance_a")[0] \
+                .channels[channel].reward[4]
+        assert reward_at(-0.15) < reward_at(-0.05) < reward_at(0.0)
+        reward_at(0.0)
+
+
+def test_planned_foot_and_fist_never_reverse_attack_axis():
+    start = Point5State(pos=np.array([
+        [0, 0, 1.2], [0.15, -0.1, 1.05], [0.25, 0.1, 1.1],
+        [-0.05, -0.15, 0.02], [0.2, 0.15, 0.01],
+    ], dtype=np.float64))
+    for hand in ("left", "right"):
+        for lateral in (-0.20, 0.0, 0.20):
+            target = np.array([0.8, lateral, 1.1])
+            plan = plan_punch(start, target, hand)
+            assert plan.reachable
+            a = plan.diag["attack_axis"]
+            for name in (f"hand_{hand}", plan.diag["moving_foot"]):
+                coords = [kf.specs[name].target.pos for kf in plan.task.keyframes]
+                projection = np.array([p @ a for p in coords])
+                assert np.all(np.diff(projection) >= -1e-9)

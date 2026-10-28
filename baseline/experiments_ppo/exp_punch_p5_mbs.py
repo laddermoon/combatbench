@@ -56,8 +56,12 @@ class PunchP5MBS(HierS2BalanceMBS):
     )
     _channel_gammas = {k: 0.99 for k in _channel_names}
 
-    _AW = {"strike_hand": 3.0, "guard_hand": 1.0, "head": 1.0,
-           "feet": 1.5, "fall": 2.0}
+    # Keep the guard while loading; prioritize the fist only once the
+    # advancing foot should have landed.
+    _AW_LOAD = {"strike_hand": 0.75, "guard_hand": 1.0, "head": 1.0,
+                "feet": 3.0, "fall": 2.0}
+    _AW_STRIKE = {"strike_hand": 6.0, "guard_hand": 0.75, "head": 0.75,
+                  "feet": 1.5, "fall": 2.0}
     _SIG = {"strike_hand": 0.05, "guard_hand": 0.06, "head": 0.08,
             "feet": 0.05}
     _PLAN = PunchPlannerConfig()
@@ -165,17 +169,24 @@ class PunchP5MBS(HierS2BalanceMBS):
                                 + 0.5 / (1.0 + d2 / (9.0 * sig2)))
             win = np.arange(T) < active_steps
             ref_ch = tr.channels.get("r_fall")
-            term = bool(ref_ch.is_terminated) if ref_ch is not None else False
+            # A single punch is a finite task, not a truncated continuing
+            # balance episode: there is no value to bootstrap after impact.
+            term = True
             fall_rew = (np.asarray(ref_ch.reward, dtype=np.float32)
                         if ref_ch is not None else np.zeros(T, np.float32))
+            loading = (np.arange(T) + 1) * _DT <= self._PLAN.dur_load
             for part in _PARTS:
                 key = f"r_{part}"
+                aw = np.where(loading, self._AW_LOAD[part],
+                              self._AW_STRIKE[part])
                 tr.channels[key] = ChannelData(
                     reward=scores[part], is_terminated=term,
-                    actor_weight=(self._AW[part] * win).astype(np.float32))
+                    actor_weight=(aw * win).astype(np.float32))
+            fall_aw = np.where(loading, self._AW_LOAD["fall"],
+                               self._AW_STRIKE["fall"])
             tr.channels["r_fall"] = ChannelData(
                 reward=fall_rew, is_terminated=term,
-                actor_weight=(self._AW["fall"] * win).astype(np.float32))
+                actor_weight=(fall_aw * win).astype(np.float32))
         return trajs
 
     def on_eval(self, episodes, update):
