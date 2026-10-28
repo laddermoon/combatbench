@@ -8,26 +8,21 @@ Reads ``episode_options`` params sampled by the experiment:
     {rid}_strike_lat       lateral offset, + toward robot's left (m)
     {rid}_strike_z         absolute target height (m)
 
-Runs AFTER the state-init plugin (priority 40).  Computes the initial
+Runs AFTER the state-init plugin, before the observer dispatcher. Computes the initial
 Point5State, derives the stance forward, resolves the world target,
-converts it to pelvis-ego and issues ``set_effector`` (v2 command,
-hand strike) on the CommandSimulator — whose obs pipeline re-expresses
-the target in the instantaneous ego frame each step.  Also writes
-``ctx.metrics`` ({rid}_strike_target/hand/hand_i) for the offline
-reward builder.
+issues ``set_effector_world`` via the mutator, and stores the pre-action
+P5 and target as scalar episode metrics for the offline reward builder.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 from envs.framework import BasePlugin, SimContext
+from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
 from mocap.point5.humanoid21.adapter import point5_from_view
-from mocap.point5.punch_planner import _norm, _stance_forward, _xy
-
-_TGT_SCALE = 1.5
+from mocap.point5.punch_planner import _stance_forward
 
 
 class StrikeTargetPlugin(BasePlugin):
@@ -46,21 +41,17 @@ class StrikeTargetPlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        return 40        # after PolicyInitStatePlugin (50)
+        return OBSERVER_DISPATCHER_PRIORITY + 1
 
     def on_pre_episode(self, ctx: SimContext) -> None:
         opts = ctx.episode_options or {}
         ds = ctx.accessor.get_derived_state(list(self._targets))
-        cs = ctx.accessor.get_core_state()
         for rid in self._targets:
             hand = str(opts.get(f"{rid}_strike_hand", "left"))
             dist = float(opts.get(f"{rid}_strike_dist", 0.6))
             lat = float(opts.get(f"{rid}_strike_lat", 0.0))
             z = float(opts.get(f"{rid}_strike_z", 1.10))
-            try:
-                p5 = point5_from_view(ds[rid], rid, with_vel=False)
-            except Exception:
-                continue
+            p5 = point5_from_view(ds[rid], rid, with_vel=False)
             head = p5.point_pos("head")
             fwd = _stance_forward(p5.point_pos("foot_left"),
                                   p5.point_pos("foot_right"))
@@ -70,20 +61,10 @@ class StrikeTargetPlugin(BasePlugin):
             tgt = np.array([head[0] + fwd[0] * dist + left[0] * lat,
                             head[1] + fwd[1] * dist + left[1] * lat,
                             z])
-            # ego = Rz(-yaw) * (tgt - root_xy), z relative to root
-            root = cs[rid]
-            rpos = np.asarray(root["root_pos"], dtype=np.float64)
-            q = np.asarray(root["root_rot"], dtype=np.float64)
-            yaw = R.from_quat([q[1], q[2], q[3], q[0]]).as_euler(
-                "xyz")[2]
-            c, s = np.cos(-yaw), np.sin(-yaw)
-            d = tgt - np.array([rpos[0], rpos[1], rpos[2]])
-            ego = np.array([c * d[0] - s * d[1],
-                            s * d[0] + c * d[1], d[2]])
-            sim = ctx.mutator
-            if hasattr(sim, "set_effector"):
-                side = 1 if hand == "left" else -1
-                sim.set_effector(rid, +1, side, tuple(ego))
+            side = 1 if hand == "left" else -1
+            ctx.mutator.set_effector_world(rid, +1, side, tgt)
+            for i, value in enumerate(p5.pos.reshape(-1)):
+                ctx.metrics[f"{rid}_strike_p5_{i}"] = float(value)
             ctx.metrics[f"{rid}_strike_tx"] = float(tgt[0])
             ctx.metrics[f"{rid}_strike_ty"] = float(tgt[1])
             ctx.metrics[f"{rid}_strike_tz"] = float(tgt[2])

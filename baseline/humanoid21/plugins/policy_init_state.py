@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Sequence
 import numpy as np
 
 from envs.framework import BasePlugin, SimContext
+from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
 from envs.framework.policy import PolicyBlueprint
 
 
@@ -55,7 +56,7 @@ class PolicyInitStatePlugin(BasePlugin):
 
     @property
     def priority(self) -> int:
-        return 50        # run before target-sampling plugins
+        return OBSERVER_DISPATCHER_PRIORITY + 2
 
     def set_episode_seed(self, seed: int) -> None:
         self._rng = np.random.RandomState(int(seed))

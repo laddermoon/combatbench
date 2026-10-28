@@ -139,6 +139,7 @@ class CommandSimulator(Humanoid21Simulator):
             + (EE_OBS_DIM if self._ee_obs else 0)
         self._action_step = 0
         self._cmd: Dict[str, np.ndarray] = {}
+        self._world_effector: Dict[str, np.ndarray] = {}
         self._schedules: Dict[str, np.ndarray] = {}
         self._strike_segs: Dict[str, list] = {}
         # Anchored-target mode (precision strikes): episode option
@@ -162,6 +163,7 @@ class CommandSimulator(Humanoid21Simulator):
         self._action_step = 0
         # Fresh episode → every agent back to the all-zero command.
         self._cmd = {}
+        self._world_effector = {}
         # Optional per-episode command schedule from episode_options:
         #   options["move_schedule"] = {robot_id: [[n_steps, vx, vy, w], ...]}
         # speeds in m/s, w in rad/s (v2 semantics; h stays 0).
@@ -260,15 +262,46 @@ class CommandSimulator(Humanoid21Simulator):
         """
         self._require_v2()
         assert eff_type in (+1, -1) and eff_side in (+1, -1)
+        self._world_effector.pop(robot_id, None)
         cmd = self._current_cmd(robot_id)
         cmd[EFF_TYPE] = float(eff_type)
         cmd[EFF_SIDE] = float(eff_side)
         cmd[TGT_X:TGT_Z + 1] = np.asarray(target_xyz) / TGT_SCALE
 
+    def set_effector_world(self, robot_id: str, eff_type: int, eff_side: int,
+                           target_xyz: Any) -> None:
+        """Keep an absolute world target, re-expressed from pelvis each obs."""
+        self._require_v2()
+        if robot_id in self._schedules:
+            raise ValueError("world effector command conflicts with schedule")
+        if eff_type not in (+1, -1) or eff_side not in (+1, -1):
+            raise ValueError("invalid effector type or side")
+        target = np.asarray(target_xyz, dtype=np.float64)
+        if target.shape != (3,) or not np.isfinite(target).all():
+            raise ValueError("world effector target must be finite xyz")
+        self._world_effector[robot_id] = target.copy()
+        cmd = self._current_cmd(robot_id)
+        cmd[EFF_TYPE] = float(eff_type)
+        cmd[EFF_SIDE] = float(eff_side)
+        cmd[TGT_X:TGT_Z + 1] = self._world_target_ego(robot_id) / TGT_SCALE
+        self._data_cache.pop("_obs_cmd", None)
+
+    def _world_target_ego(self, robot_id: str) -> np.ndarray:
+        from scipy.spatial.transform import Rotation as R
+        static = self.get_static_data()[robot_id]
+        pelvis_name = static["keypoint_body_names"]["pelvis"]
+        pelvis = np.asarray(
+            self.get_derived_state([robot_id])[robot_id]["body_xpos"][pelvis_name],
+            dtype=np.float64)
+        quat = np.asarray(self.get_core_state()[robot_id]["root_rot"])
+        rot = R.from_quat(quat[[1, 2, 3, 0]])
+        return rot.inv().apply(self._world_effector[robot_id] - pelvis)
+
     def clear_effector(self, robot_id: str) -> None:
         """Release the effector task (back to default posture); motion
         channel is untouched."""
         self._require_v2()
+        self._world_effector.pop(robot_id, None)
         cmd = self._current_cmd(robot_id)
         cmd[EFF_TYPE:TGT_Z + 1] = 0.0
 
@@ -282,6 +315,7 @@ class CommandSimulator(Humanoid21Simulator):
     def reset_command(self, robot_id: str) -> None:
         """Back to the all-zero command (standard stepping)."""
         self._cmd[robot_id] = np.zeros(self.cmd_dim, dtype=np.float32)
+        self._world_effector.pop(robot_id, None)
 
     # ------------------------------------------------------------------
     # Command storage — persistent until changed.
@@ -318,6 +352,10 @@ class CommandSimulator(Humanoid21Simulator):
         carries the phase information a constant target cannot."""
         cmd = self._current_cmd(robot_id).copy()
         if cmd[EFF_TYPE] < 0.5:
+            return cmd
+        if robot_id in self._world_effector:
+            cmd[TGT_X:TGT_Z + 1] = (
+                self._world_target_ego(robot_id) / TGT_SCALE)
             return cmd
         tgt = None
         if self._tgt_anchor:

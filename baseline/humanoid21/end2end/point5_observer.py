@@ -1,8 +1,7 @@
 """Point5 measurement observer — per-step 5-point world positions.
 
 Wraps ``mocap.point5.humanoid21.adapter.point5_from_view`` and exposes
-the flat 15-float vector plus the per-point slices the strike reward
-consumes offline in ``build_trajectories``.
+15 scalar coordinates for offline strike scoring.
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from mocap.point5.humanoid21.adapter import point5_from_view
 
 
 class Point5Observer(BaseObserverPlugin):
-    """Outputs: ``pos`` (15,) world xyz x 5 points (head/hr/hl/fr/fl)."""
+    """Outputs p5_0..14 (head/hr/hl/fr/fl, xyz per point)."""
 
     def __init__(self, agent_id: str) -> None:
         self.agent_id = str(agent_id)
@@ -30,12 +29,9 @@ class Point5Observer(BaseObserverPlugin):
 
     def _update(self, ctx: ReadOnlySimContext) -> None:
         ds = ctx.accessor.get_derived_state([self.agent_id])
-        try:
-            st = point5_from_view(ds[self.agent_id], self.agent_id,
-                                  with_vel=False)
-            self._pos = st.pos.reshape(-1)
-        except Exception:
-            pass
+        st = point5_from_view(ds[self.agent_id], self.agent_id,
+                              with_vel=False)
+        self._pos = st.pos.reshape(-1)
 
     def get_output(self) -> Dict[str, float]:
         return {f"p5_{i}": float(v) for i, v in enumerate(self._pos)}

@@ -77,6 +77,15 @@ class IDataMutator(ABC):
     def set_action(self, action: Dict[str, Any]) -> None:
         pass
 
+    def set_effector_world(
+        self, robot_id: str, eff_type: int, eff_side: int,
+        target_xyz: Any,
+    ) -> None:
+        """Optional command capability for world-fixed effector targets."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support world effector commands"
+        )
+
     def apply_external_force(
         self,
         body_name: str,
