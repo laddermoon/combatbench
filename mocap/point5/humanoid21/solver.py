@@ -109,12 +109,26 @@ class PoseSolver:
         return np.linalg.norm(lm - target, axis=1)
 
     def _stage_solve(self, x0, target, robot_id, pts) -> np.ndarray:
+        """Quasi-static pull: interpolate pinned-point targets from the
+        current achieved positions to the final targets in small steps,
+        solving equilibrium at each step (continuation). Avoids jumping
+        to distant local minima (e.g. hip-fold instead of knee-bend)."""
         idx = np.array([POINT_INDEX[p] for p in pts])
+        lm_now = self._unpack(x0, robot_id)[0][idx]
+        dst = target[idx]
+        n = max(1, int(np.ceil(
+            np.linalg.norm(dst - lm_now, axis=1).max() / 0.05)))
+        x = np.asarray(x0, dtype=np.float64)
+        for s in range(1, n + 1):
+            sub = lm_now + (dst - lm_now) * (s / n)
+            x = self._equilibrium(x, idx, sub, robot_id)
+        return x
 
+    def _equilibrium(self, x0, idx, sub_target, robot_id) -> np.ndarray:
         def landmark_res(x):
             self.fk.set_pose(robot_id, x[0:3], _quat_of(x[3:6]), x[6:])
             return (self.fk.landmark_positions(robot_id)[idx]
-                    - target[idx]).ravel()
+                    - sub_target).ravel()
 
         bounds = [(-np.inf, np.inf)] * 6 + [
             tuple(self.spring.ranges[j]) for j in range(len(self.names))]
