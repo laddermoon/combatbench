@@ -338,10 +338,11 @@ def solve_equilibrium(target_pos: np.ndarray,
     b2 = [(-1.0, 1.0)] * len(_STAGE2_IDX)
     tgt2 = target[hand_idx]
 
-    # Feasibility probe: bounded least-squares onto the hand targets.
-    # Multi-start (deterministic seeds) — the arm IK has local minima;
-    # a single start under-reports reachability.  Early-exit on success
-    # so the common case stays cheap.
+    # Feasibility probe: bounded least-squares onto the hand targets
+    # from deterministic multi-starts.  The arm IK has several local
+    # minima (elbow up vs down, etc.) — collect EVERY feasible branch,
+    # then pick the lowest spring energy among them.  Selecting the
+    # first feasible start would make branch choice arbitrary.
     from scipy.optimize import least_squares
 
     def _lsq_res(v):
@@ -350,30 +351,44 @@ def solve_equilibrium(target_pos: np.ndarray,
     starts = [q_frozen[_STAGE2_IDX], np.zeros(len(_STAGE2_IDX))]
     starts += [np.random.RandomState(20240101 + k).uniform(
         -1.0, 1.0, len(_STAGE2_IDX)) for k in range(6)]
-    best_e, x2 = np.inf, starts[0]
+    feas, best_bad, best_e = [], starts[0], np.inf
     for x0 in starts:
         r = least_squares(_lsq_res, x0, bounds=(-1.0, 1.0),
                           max_nfev=max_iter * 20)
         e = np.linalg.norm(lm2(r.x)[hand_idx] - tgt2, axis=1).max()
         if e < best_e:
-            best_e, x2 = e, r.x
-        if best_e <= tolerance * 0.1:
-            break
-    e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
+            best_e, best_bad = e, r.x
+        if e <= tolerance * 0.5:
+            feas.append(r.x)
 
-    if e2.max() > tolerance:
+    if not feas:
         failed = "stage2_hands"
+        x2 = best_bad
+        e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
     else:
-        # feasible: descend spring energy along the constraint manifold
+        # cluster feasible starts into basins, one representative each
+        reps = []
+        for x in sorted(feas, key=lambda v: _energy_of(v, _STAGE2_IDX)):
+            if all(np.linalg.norm(x - r) > 0.5 for r in reps):
+                reps.append(x)
+
+        # descend energy inside each basin; keep the global minimum
         def res2(v):
             return (lm2(v)[hand_idx] - tgt2).ravel()
-        sol = minimize(lambda v: _energy_of(v, _STAGE2_IDX), x2,
-                       method="SLSQP", bounds=b2,
-                       constraints=[{"type": "eq", "fun": res2}],
-                       options={"maxiter": max_iter, "ftol": 1e-12})
-        if np.linalg.norm(
-                lm2(sol.x)[hand_idx] - tgt2, axis=1).max() <= tolerance:
-            x2 = sol.x                      # keep LSQ point otherwise
+        best = None
+        for x0 in reps:
+            sol = minimize(lambda v: _energy_of(v, _STAGE2_IDX), x0,
+                           method="SLSQP", bounds=b2,
+                           constraints=[{"type": "eq", "fun": res2}],
+                           options={"maxiter": max_iter, "ftol": 1e-12})
+            if np.linalg.norm(
+                    lm2(sol.x)[hand_idx] - tgt2,
+                    axis=1).max() <= tolerance:
+                e_sol = _energy_of(sol.x, _STAGE2_IDX)
+                if best is None or e_sol < best[0]:
+                    best = (e_sol, sol.x)
+        x2 = best[1] if best is not None else min(
+            feas, key=lambda v: _energy_of(v, _STAGE2_IDX))
         e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
 
     q_full = q_frozen.copy()
