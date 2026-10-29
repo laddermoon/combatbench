@@ -359,15 +359,19 @@ def _arm_ik(d_vec: np.ndarray, torso_mat: np.ndarray,
 
 
 def solve_equilibrium(target_pos: np.ndarray,
-                      torso_yaw: float | None = None,
                       skeleton: "Skeleton | None" = None,
                       tolerance: float = 0.01,
                       max_iter: int = 500,
                       pull_step: float = 0.05) -> dict:
-    """Pure function: 5 pinned points (+ optional yaw) -> joint angles.
+    """Pure function: 5 pinned LOCAL-frame points -> joint angles.
+
+    v2 semantics (DESIGN.md §3): the input lives in the torso-facing
+    local frame, so the torso +x axis must point along +X — that IS the
+    frame definition, no yaw parameter needed.  Torso twist relative to
+    the ankle line is encoded in the stored foot positions.
 
     Two locked stages, per design:
-      stage 1 — pin feet + head (+ torso_yaw if given), solve the BODY
+      stage 1 — pin feet + head + torso-facing=+X, solve the BODY
                 (root + legs + abdomen + ankles). Arms stay unloaded.
                 Result is FROZEN.
       stage 2 — everything frozen except abdomen_z + the 6 arm joints;
@@ -392,8 +396,6 @@ def solve_equilibrium(target_pos: np.ndarray,
         q4 = _R.from_rotvec(rv).as_quat()
         return np.array([q4[3], q4[0], q4[1], q4[2]])
 
-    yaw_rad = np.deg2rad(torso_yaw) if torso_yaw is not None else None
-
     # ---- stage 1 ---------------------------------------------------------
     def lm1(v):     # landmarks under a stage-1 variable vector
         q = np.zeros(len(JOINT_NAMES))
@@ -401,20 +403,13 @@ def solve_equilibrium(target_pos: np.ndarray,
         return sk.landmarks(v[0:3], quat(v[3:6]), norm_to_rad(q))
 
     def yaw_res(v):
-        """Signed angle between torso +x (xy proj) and target direction."""
+        """Angle of torso +x (xy proj) vs the declared frame +X axis."""
         xf = sk.body_transforms(v[0:3], quat(v[3:6]),
                                 norm_to_rad(_full_q_body(v[6:])))
         t = xf["torso"][1][:, 0][:2]
-        lmv = lm1(v)
-        b = lmv[_LM_IDX["foot_right"], :2] - lmv[_LM_IDX["foot_left"], :2]
-        nb = np.linalg.norm(b)
-        if nb < 1e-9 or np.linalg.norm(t) < 1e-9:
+        if np.linalg.norm(t) < 1e-9:
             return 0.0
-        b /= nb
-        n = np.array([-b[1], b[0]])
-        dir_t = np.cos(yaw_rad) * n + np.sin(yaw_rad) * b
-        return float(np.arctan2(t @ np.array([-dir_t[1], dir_t[0]]),
-                                t @ dir_t))
+        return float(np.arctan2(t[1], t[0]))
 
     def _full_q_body(body_q):
         q = np.zeros(len(JOINT_NAMES))
@@ -435,8 +430,6 @@ def solve_equilibrium(target_pos: np.ndarray,
     lm_idx1 = np.array([_LM_IDX[p] for p in
                         ("foot_right", "foot_left", "head")])
 
-    _P90 = np.array([[0.0, -1.0], [1.0, 0.0]])
-
     def _res1_jac(v):
         """Analytic Jacobian of the stage-1 constraint residual."""
         rp, rv = v[0:3], v[3:6]
@@ -444,9 +437,8 @@ def solve_equilibrium(target_pos: np.ndarray,
         qn[_BODY_IDX] = v[6:]
         lms, Jq = sk.landmarks_jac(rp, quat(rv), norm_to_rad(qn))
         Jr = _left_jac_so3(rv)
-        m = 3 * len(lm_idx1) + (1 if yaw_rad is not None else 0)
+        m = 3 * len(lm_idx1) + 1          # +1: torso-facing = +X
         J = np.zeros((m, len(v)))
-        rows = {}
 
         def lmrow(li):
             blk = np.zeros((3, len(v)))
@@ -455,35 +447,18 @@ def solve_equilibrium(target_pos: np.ndarray,
             blk[:, 3:6] = -_skew(rel) @ Jr
             for jj, gj in enumerate(_BODY_IDX):
                 blk[:, 6 + jj] = Jq[li, :, gj] * _HALF[gj]
-            rows[li] = blk
             return blk
 
         for r_i, li in enumerate(lm_idx1):
             J[3 * r_i:3 * r_i + 3] = lmrow(li)
-        if yaw_rad is not None:
-            rroot = _quat_mat(quat(rv))
-            tfull = rroot[:, 0]
-            t2 = tfull[:2]
-            fr_i, fl_i = _LM_IDX["foot_right"], _LM_IDX["foot_left"]
-            jfr = rows[fr_i] if fr_i in rows else lmrow(fr_i)
-            jfl = rows[fl_i] if fl_i in rows else lmrow(fl_i)
-            b2 = lms[fr_i][:2] - lms[fl_i][:2]
-            nb = np.linalg.norm(b2)
-            if nb >= 1e-9 and np.linalg.norm(t2) >= 1e-9:
-                bh = b2 / nb
-                n2 = _P90 @ bh
-                dir_t = np.cos(yaw_rad) * n2 + np.sin(yaw_rad) * bh
-                dtp = _P90 @ dir_t
-                xv, yv = float(t2 @ dir_t), float(t2 @ dtp)
-                dt = np.zeros((2, len(v)))
-                dt[:, 3:6] = (-_skew(tfull) @ Jr)[:2, :]
-                dbh = (np.eye(2) - np.outer(bh, bh)) / nb \
-                    @ (jfr[:2] - jfl[:2])
-                ddir = (np.cos(yaw_rad) * _P90
-                        + np.sin(yaw_rad) * np.eye(2)) @ dbh
-                dxv = dir_t @ dt + t2 @ ddir
-                dyv = dtp @ dt + t2 @ (_P90 @ ddir)
-                J[-1] = (xv * dyv - yv * dxv) / (xv * xv + yv * yv)
+        # yaw row: residual = atan2(t_y, t_x), torso +x xy projection
+        rroot = _quat_mat(quat(rv))
+        tfull = rroot[:, 0]
+        t2 = tfull[:2]
+        nt = t2 @ t2
+        if nt >= 1e-12:
+            dt = (-_skew(tfull) @ Jr)[:2, :]
+            J[-1, 3:6] = (t2[0] * dt[1] - t2[1] * dt[0]) / nt
         return J
 
     def _obj1(v):
@@ -505,9 +480,7 @@ def solve_equilibrium(target_pos: np.ndarray,
         nonlocal x1
         def res(v, sub=sub):
             r = (lm1(v)[lm_idx1] - sub).ravel()
-            if yaw_rad is not None:
-                r = np.append(r, yaw_res(v))
-            return r
+            return np.append(r, yaw_res(v))
         sol = minimize(_obj1, x1, jac=_obj1_jac,
                        method="SLSQP", bounds=b1,
                        constraints=[{"type": "eq", "fun": res,
@@ -517,8 +490,7 @@ def solve_equilibrium(target_pos: np.ndarray,
 
     def _ok1():
         e = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1).max()
-        y = abs(yaw_res(x1)) if yaw_rad is not None else 0.0
-        return e <= tolerance and y <= np.deg2rad(3.0)
+        return e <= tolerance and abs(yaw_res(x1)) <= np.deg2rad(3.0)
 
     # fast path: one-shot pull to the target.  On this skeleton the
     # equilibrium is a strong attractor — verified bit-identical to the
@@ -532,7 +504,7 @@ def solve_equilibrium(target_pos: np.ndarray,
         for s in range(1, n1 + 1):
             _solve1(cur + (tgt1 - cur) * (s / n1))
     e1 = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1)
-    yaw_err = abs(yaw_res(x1)) if yaw_rad is not None else 0.0
+    yaw_err = abs(yaw_res(x1))
     if e1.max() > tolerance or yaw_err > np.deg2rad(3.0):
         failed = "stage1_body"
         q_full = _full_q_body(x1[6:])
@@ -643,8 +615,7 @@ _LEGAL_BOUNDS = {
 }
 
 
-def check_legal(target_pos: np.ndarray,
-                torso_yaw: float | None = None) -> dict:
+def check_legal(target_pos: np.ndarray) -> dict:
     """Fast geometric legality screen (<1 ms, no optimisation).
 
     Returns {"legal": bool, "failed_stage": str|None, "violations": list}.
@@ -690,7 +661,6 @@ def check_legal(target_pos: np.ndarray,
         _chk("hand_head", float(np.linalg.norm(hl - h)))
         if violations:
             stage = "stage2_hands"
-    # torso_yaw alone cannot fail: the sampled envelope covers ±180 deg.
     return {"legal": not violations, "failed_stage": stage,
             "violations": violations}
 
