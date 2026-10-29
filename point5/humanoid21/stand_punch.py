@@ -98,8 +98,8 @@ class StandPunchConfig:
     guard_drop: float = 0.32      # below head = chest height (m)
 
     # --- strike ---
-    head_lean_strike: float = 0.08
-    head_sink_extra: float = 0.03  # additional sink on impact (m)
+    head_lean_strike: float = 0.20  # COM drives toward target (m)
+    head_sink_extra: float = 0.05   # additional sink on impact (m)
 
     # --- transfer duration is a schema-required placeholder only;
     #     P5 carries no timing semantics, execution timing is downstream.
