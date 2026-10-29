@@ -335,24 +335,46 @@ def solve_equilibrium(target_pos: np.ndarray,
         return sk.landmarks(root_pos, root_quat, norm_to_rad(q))
 
     hand_idx = np.array([_LM_IDX["hand_right"], _LM_IDX["hand_left"]])
-    x2 = np.zeros(len(_STAGE2_IDX))          # AZ + arms start unloaded
     b2 = [(-1.0, 1.0)] * len(_STAGE2_IDX)
     tgt2 = target[hand_idx]
-    cur2 = lm2(x2)[hand_idx]
-    n2 = max(1, int(np.ceil(
-        np.linalg.norm(tgt2 - cur2, axis=1).max() / pull_step)))
-    for s in range(1, n2 + 1):
-        sub = cur2 + (tgt2 - cur2) * (s / n2)
-        def res2(v, sub=sub):
-            return (lm2(v)[hand_idx] - sub).ravel()
+
+    # Feasibility probe: bounded least-squares onto the hand targets.
+    # Multi-start (deterministic seeds) — the arm IK has local minima;
+    # a single start under-reports reachability.  Early-exit on success
+    # so the common case stays cheap.
+    from scipy.optimize import least_squares
+
+    def _lsq_res(v):
+        return (lm2(v)[hand_idx] - tgt2).ravel()
+
+    starts = [q_frozen[_STAGE2_IDX], np.zeros(len(_STAGE2_IDX))]
+    starts += [np.random.RandomState(20240101 + k).uniform(
+        -1.0, 1.0, len(_STAGE2_IDX)) for k in range(6)]
+    best_e, x2 = np.inf, starts[0]
+    for x0 in starts:
+        r = least_squares(_lsq_res, x0, bounds=(-1.0, 1.0),
+                          max_nfev=max_iter * 20)
+        e = np.linalg.norm(lm2(r.x)[hand_idx] - tgt2, axis=1).max()
+        if e < best_e:
+            best_e, x2 = e, r.x
+        if best_e <= tolerance * 0.1:
+            break
+    e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
+
+    if e2.max() > tolerance:
+        failed = "stage2_hands"
+    else:
+        # feasible: descend spring energy along the constraint manifold
+        def res2(v):
+            return (lm2(v)[hand_idx] - tgt2).ravel()
         sol = minimize(lambda v: _energy_of(v, _STAGE2_IDX), x2,
                        method="SLSQP", bounds=b2,
                        constraints=[{"type": "eq", "fun": res2}],
                        options={"maxiter": max_iter, "ftol": 1e-12})
-        x2 = sol.x
-    e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
-    if e2.max() > tolerance:
-        failed = "stage2_hands"
+        if np.linalg.norm(
+                lm2(sol.x)[hand_idx] - tgt2, axis=1).max() <= tolerance:
+            x2 = sol.x                      # keep LSQ point otherwise
+        e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
 
     q_full = q_frozen.copy()
     q_full[_STAGE2_IDX] = x2
