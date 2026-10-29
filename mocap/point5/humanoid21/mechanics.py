@@ -541,13 +541,17 @@ def solve_equilibrium(target_pos: np.ndarray,
                        target, tolerance, failed)
 
     # ---- stage 2 ---------------------------------------------------------
-    # Feet stay pinned; abdomen_z twists the TORSO side about the world
-    # axis line of the AZ joint, swinging the shoulder anchors on an arc
-    # — that is the only channel by which arm pull affects the frozen
-    # body.  Each arm is a closed-form 3-DOF IK; the solve is a 1-D
-    # spring-energy minimisation over the AZ range (milliseconds).
-    root_pos, root_quat = x1[0:3].copy(), quat(x1[3:6])
-    q_frozen = _full_q_body(x1[6:])
+    return _stage2_core(sk, target, x1[0:3], quat(x1[3:6]),
+                        _full_q_body(x1[6:]), tolerance, failed)
+
+
+def _stage2_core(sk, target, root_pos, root_quat, q_frozen,
+                 tolerance, failed) -> dict:
+    """Stage-2 analytic solve: AZ twists the torso side, closed-form arm
+    IK, 1-D energy minimisation.  Extracted so callers can validate a
+    hand target against a frozen stage-1 body without a full solve."""
+    from scipy.spatial.transform import Rotation as _R
+
     xf = sk.body_transforms(root_pos, root_quat, norm_to_rad(q_frozen))
     t_pos, t_mat = xf["torso"]
 
