@@ -1,12 +1,23 @@
-"""Point5 business-language contracts.
+"""Point5 business-language contracts (v2: torso-facing local frame).
 
 Simulator-unaware: this module must not import mujoco, envs.*, baseline.*,
-or any simulator binding. See DESIGN.md for the full contract.
+or any simulator binding.  See DESIGN.md for the full contract.
+
+Semantics recap:
+
+- A P5 state is ``local_pos[5x3]`` expressed in the torso-facing local
+  frame: origin = ankle XY midpoint, X = torso forward, Y = torso left,
+  Z = up (ground z = 0).  No absolute position, no absolute facing, no
+  yaw field.
+- A clip is a keyframe chain; every keyframe after the first carries a
+  ``transfer`` describing its own local frame inside the previous
+  frame's local frame: ``F_k = F_{k-1} ∘ T(dx, dy, dyaw)``.
+- World placement is the consumer's choice, not part of the pose.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Protocol, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -15,10 +26,12 @@ N_POINTS = len(POINT_NAMES)
 POINT_INDEX = {name: i for i, name in enumerate(POINT_NAMES)}
 
 GROUND_Z = 0.0
-PLANT_HEIGHT_TOL = 0.02  # foot z below this counts as planted
+PLANT_HEIGHT_TOL = 0.02   # foot z below this counts as planted
+MIN_FOOT_SEP_XY = 0.02    # feet XY closer than this = degenerate origin
 
-TASK_FORMAT = "point5.task.v1"    # serialized Point5Task format tag
-FRAMES_FORMAT = "point5.frames.v1"  # serialized sampled-frames payload tag
+STATE_FORMAT = "p5.v2"          # serialized single-pose tag
+CLIP_FORMAT = "p5clip.v2"       # serialized clip tag
+FRAMES_FORMAT = "point5.frames.v2"
 
 
 class Point5Error(ValueError):
@@ -26,15 +39,11 @@ class Point5Error(ValueError):
 
 
 class TaskValidationError(Point5Error):
-    """Task/keyframe/spec structure is invalid."""
-
-
-class AnchorResolutionError(Point5Error):
-    """An anchor cannot be resolved to a world point."""
+    """Clip/keyframe/state structure is invalid."""
 
 
 class SampleOutOfRange(Point5Error):
-    """Sampling outside the task's declared domain."""
+    """Sampling outside the clip's declared domain."""
 
 
 def _vec3(value: Any, name: str) -> np.ndarray:
@@ -45,129 +54,12 @@ def _vec3(value: Any, name: str) -> np.ndarray:
     return arr
 
 
-def is_planted(pos: np.ndarray, tol: float = PLANT_HEIGHT_TOL) -> bool:
-    """Foot contact convention: pos z at/below ground + tol counts as planted."""
-    return bool(np.asarray(pos, dtype=np.float64)[2] <= GROUND_Z + tol)
-
-
-# ---------------------------------------------------------------------------
-# Anchors (all static; resolved once at build time)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class WorldPoint:
-    """Fixed world-frame point."""
-    pos: np.ndarray
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "pos", _vec3(self.pos, "pos"))
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"type": "world", "pos": self.pos.tolist()}
-
-
-@dataclass(frozen=True)
-class RootOffset:
-    """Offset in the subject's root frame at task start (rotation included)."""
-    offset: np.ndarray
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "offset",
-                         _vec3(self.offset, "offset"))
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"type": "root_offset", "offset": self.offset.tolist()}
-
-
-@dataclass(frozen=True)
-class SelfPointOffset:
-    """World-frame offset from one of the subject's own keypoints at task start."""
-    point: str
-    offset: np.ndarray
-
-    def __post_init__(self) -> None:
-        if self.point not in POINT_INDEX:
-            raise TaskValidationError(f"unknown point {self.point!r}")
-        object.__setattr__(self, "offset",
-                         _vec3(self.offset, "offset"))
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"type": "self_point", "point": self.point,
-                "offset": self.offset.tolist()}
-
-
-Anchor = Union[WorldPoint, RootOffset, SelfPointOffset]
-
-_ANCHOR_TYPES = {
-    "world": WorldPoint,
-    "root_offset": RootOffset,
-    "self_point": SelfPointOffset,
-}
-
-
-def anchor_from_dict(d: Mapping[str, Any]) -> Anchor:
-    t = d.get("type")
-    if t == "world":
-        return WorldPoint(np.asarray(d["pos"], dtype=np.float64))
-    if t == "root_offset":
-        return RootOffset(np.asarray(d["offset"], dtype=np.float64))
-    if t == "self_point":
-        return SelfPointOffset(str(d["point"]),
-                               np.asarray(d["offset"], dtype=np.float64))
-    raise TaskValidationError(f"unknown anchor type {t!r}")
-
-
-class AnchorResolver(Protocol):
-    """Injected boundary: resolves a declared anchor to a world point."""
-
-    def resolve(self, anchor: Anchor) -> np.ndarray:
-        ...
-
-
-# ---------------------------------------------------------------------------
-# Point5State (shared by measured and reference)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class Point5State:
-    """Positions of the five business points in a declared frame.
-
-    ``vel`` is optional: v1 references never carry it, but a measured adapter
-    may fill it for downstream use. ``torso_yaw`` is the optional body
-    orientation scalar (degrees, see DESIGN.md §4.6); ``None`` = none given.
-    """
-
-    pos: np.ndarray
-    time: float = 0.0
-    vel: Optional[np.ndarray] = None
-    torso_yaw: Optional[float] = None
-    frame: str = "world"
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        pos = np.asarray(self.pos, dtype=np.float64)
-        if pos.shape != (N_POINTS, 3) or not np.all(np.isfinite(pos)):
-            raise TaskValidationError(
-                f"pos must be a finite ({N_POINTS},3) array, got {pos.shape}")
-        object.__setattr__(self, "pos", pos)
-        if self.vel is not None:
-            vel = np.asarray(self.vel, dtype=np.float64)
-            if vel.shape != (N_POINTS, 3) or not np.all(np.isfinite(vel)):
-                raise TaskValidationError(
-                    f"vel must be a finite ({N_POINTS},3) array or None")
-            object.__setattr__(self, "vel", vel)
-        if self.torso_yaw is not None:
-            if not np.isfinite(self.torso_yaw):
-                raise TaskValidationError("torso_yaw must be finite or None")
-            object.__setattr__(self, "torso_yaw", float(self.torso_yaw))
-        if not np.isfinite(self.time):
-            raise TaskValidationError("time must be finite")
-
-    def point_pos(self, name: str) -> np.ndarray:
-        return self.pos[_idx(name)]
-
-    def point_vel(self, name: str) -> Optional[np.ndarray]:
-        return None if self.vel is None else self.vel[_idx(name)]
+def _pos5(value: Any, name: str = "pos") -> np.ndarray:
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.shape != (N_POINTS, 3) or not np.all(np.isfinite(arr)):
+        raise TaskValidationError(
+            f"{name} must be a finite ({N_POINTS},3) array, got {arr.shape}")
+    return arr
 
 
 def _idx(name: str) -> int:
@@ -176,167 +68,231 @@ def _idx(name: str) -> int:
     return POINT_INDEX[name]
 
 
+def is_planted(pos: np.ndarray, tol: float = PLANT_HEIGHT_TOL) -> bool:
+    """Foot contact convention: pos z at/below ground + tol counts planted."""
+    return bool(np.asarray(pos, dtype=np.float64)[2] <= GROUND_Z + tol)
+
+
 # ---------------------------------------------------------------------------
-# Task language
+# Local-frame geometry derivations (all from stored positions only)
+# ---------------------------------------------------------------------------
+
+def ankle_mid_xy(pos: np.ndarray) -> np.ndarray:
+    """Local-frame origin: XY midpoint of the two ankles, shape (2,)."""
+    p = _pos5(pos)
+    return 0.5 * (p[POINT_INDEX["foot_right"], :2]
+                  + p[POINT_INDEX["foot_left"], :2])
+
+
+def ankle_line_dir(pos: np.ndarray) -> Optional[np.ndarray]:
+    """Unit XY direction left-ankle -> right-ankle, or None if degenerate."""
+    p = _pos5(pos)
+    d = p[POINT_INDEX["foot_right"], :2] - p[POINT_INDEX["foot_left"], :2]
+    n = float(np.linalg.norm(d))
+    return d / n if n >= MIN_FOOT_SEP_XY else None
+
+
+def is_degenerate(pos: np.ndarray,
+                  min_sep: float = MIN_FOOT_SEP_XY) -> bool:
+    """Feet XY coincide: the local origin loses meaning -> illegal."""
+    return ankle_line_dir(pos) is None
+
+
+def twist_deg(pos: np.ndarray) -> Optional[float]:
+    """Torso twist relative to the ankle line (degrees).
+
+    The ankle-line normal ``n = (-b_y, b_x)`` (b = left->right ankle)
+    points along +X for a square stance; its signed angle from +X is the
+    twist.  None if feet degenerate.
+    """
+    b = ankle_line_dir(pos)
+    if b is None:
+        return None
+    n = np.array([-b[1], b[0]])
+    return float(np.degrees(np.arctan2(n[1], n[0])))
+
+
+# ---------------------------------------------------------------------------
+# Frame transforms (SE(2)-in-3D: XY rotation + translation, z passes through)
+# ---------------------------------------------------------------------------
+
+def _rot2(yaw_deg: float) -> np.ndarray:
+    r = np.deg2rad(yaw_deg)
+    c, s = np.cos(r), np.sin(r)
+    return np.array([[c, -s], [s, c]])
+
+
+def to_world(pos_local: np.ndarray, origin_xy: np.ndarray,
+             yaw_deg: float) -> np.ndarray:
+    """local -> world under frame pose (origin_xy, yaw_deg)."""
+    p = np.asarray(pos_local, dtype=np.float64).copy()
+    p[..., :2] = p[..., :2] @ _rot2(yaw_deg).T + np.asarray(origin_xy)
+    return p
+
+
+def to_local(pos_world: np.ndarray, origin_xy: np.ndarray,
+             yaw_deg: float) -> np.ndarray:
+    """world -> local under frame pose (origin_xy, yaw_deg)."""
+    p = np.asarray(pos_world, dtype=np.float64).copy()
+    p[..., :2] = (p[..., :2] - np.asarray(origin_xy)) @ _rot2(yaw_deg)
+    return p
+
+
+def compose_frame(origin: np.ndarray, yaw: float,
+                  transfer: "Transfer") -> Tuple[np.ndarray, float]:
+    """F_k = F_{k-1} ∘ T: child frame pose expressed in parent coords."""
+    o = np.asarray(origin, dtype=np.float64) + _rot2(yaw) @ np.array(
+        [transfer.dx, transfer.dy])
+    return o, yaw + transfer.dyaw
+
+
+# ---------------------------------------------------------------------------
+# Clip structure
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class PointSpec:
-    """What one business point should be at a keyframe.
+class Transfer:
+    """Frame-to-frame motion: this keyframe's local frame in the previous
+    keyframe's local frame.  dur = seconds from previous keyframe."""
 
-    ``tolerance``/``weight`` are annotations for downstream scoring/harness;
-    the synthesizer does not consume them.
-    """
-
-    target: Anchor
-    tolerance: float = 0.05
-    weight: float = 1.0
+    dx: float
+    dy: float
+    dyaw: float
+    dur: float
 
     def __post_init__(self) -> None:
-        if not isinstance(self.target, (WorldPoint, RootOffset,
-                                        SelfPointOffset)):
-            raise TaskValidationError(
-                f"unknown anchor object {type(self.target).__name__}")
-        if not np.isfinite(self.tolerance) or self.tolerance <= 0.0:
-            raise TaskValidationError("tolerance must be positive")
-        if not np.isfinite(self.weight) or self.weight < 0.0:
-            raise TaskValidationError("weight must be >= 0")
+        for n in ("dx", "dy", "dyaw", "dur"):
+            if not np.isfinite(getattr(self, n)):
+                raise TaskValidationError(f"transfer.{n} must be finite")
+        if self.dur <= 0.0:
+            raise TaskValidationError("transfer.dur must be positive")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"target": self.target.to_dict(),
-                "tolerance": float(self.tolerance),
-                "weight": float(self.weight)}
+        return {"dx": float(self.dx), "dy": float(self.dy),
+                "dyaw": float(self.dyaw), "dur": float(self.dur)}
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "PointSpec":
-        return cls(target=anchor_from_dict(d["target"]),
-                   tolerance=float(d.get("tolerance", 0.05)),
-                   weight=float(d.get("weight", 1.0)))
+    def from_dict(cls, d: Mapping[str, Any]) -> "Transfer":
+        return cls(dx=float(d["dx"]), dy=float(d["dy"]),
+                   dyaw=float(d["dyaw"]), dur=float(d["dur"]))
 
 
 @dataclass(frozen=True)
 class Keyframe:
-    """One boundary pose: exactly the five business points + optional yaw."""
+    """One clip keyframe: a local P5 pose + how its frame was reached."""
 
-    specs: Mapping[str, PointSpec]
+    pos: np.ndarray                          # local_pos[5,3]
+    transfer: Optional[Transfer] = None      # required unless first frame
     label: str = ""
-    torso_yaw: Optional[float] = None
+    meta: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        names = set(self.specs.keys())
-        if names != set(POINT_NAMES):
-            missing = set(POINT_NAMES) - names
-            extra = names - set(POINT_NAMES)
-            raise TaskValidationError(
-                f"keyframe must cover exactly {POINT_NAMES}; "
-                f"missing={sorted(missing)} extra={sorted(extra)}")
-        if self.torso_yaw is not None:
-            if not np.isfinite(self.torso_yaw):
-                raise TaskValidationError(
-                    "torso_yaw must be finite (degrees) or None")
-            object.__setattr__(self, "torso_yaw", float(self.torso_yaw))
-        object.__setattr__(self, "specs", dict(self.specs))
-
-    def spec(self, point: str) -> PointSpec:
-        _idx(point)  # validates the name
-        return self.specs[point]
+        object.__setattr__(self, "pos", _pos5(self.pos, "keyframe.pos"))
+        object.__setattr__(self, "meta", dict(self.meta))
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {"label": self.label,
-             "specs": {n: s.to_dict() for n, s in self.specs.items()}}
-        if self.torso_yaw is not None:
-            d["torso_yaw"] = float(self.torso_yaw)
+        d = {"p5": self.pos.tolist()}
+        if self.transfer is not None:
+            d["transfer"] = self.transfer.to_dict()
+        if self.label:
+            d["label"] = self.label
+        if self.meta:
+            d["meta"] = dict(self.meta)
         return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Keyframe":
-        return cls(specs={n: PointSpec.from_dict(s)
-                          for n, s in d["specs"].items()},
+        return cls(pos=np.asarray(d["p5"], dtype=np.float64),
+                   transfer=(Transfer.from_dict(d["transfer"])
+                             if "transfer" in d else None),
                    label=str(d.get("label", "")),
-                   torso_yaw=d.get("torso_yaw"))
+                   meta=dict(d.get("meta", {})))
 
 
 @dataclass(frozen=True)
-class Point5Task:
-    """A point5 trajectory intent: K keyframes + K-1 segment durations."""
+class P5Clip:
+    """A clip: >=1 keyframes forming a transfer chain."""
 
     name: str
     keyframes: Tuple[Keyframe, ...]
-    durations: Tuple[float, ...]
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         kfs = tuple(self.keyframes)
-        durs = tuple(float(d) for d in self.durations)
-        if len(kfs) < 2:
-            raise TaskValidationError("task needs at least 2 keyframes")
-        if len(durs) != len(kfs) - 1:
+        if len(kfs) < 1:
+            raise TaskValidationError("clip needs at least 1 keyframe")
+        if kfs[0].transfer is not None:
             raise TaskValidationError(
-                f"durations must have len(keyframes)-1 = {len(kfs)-1}, "
-                f"got {len(durs)}")
-        if any(not np.isfinite(d) or d <= 0.0 for d in durs):
-            raise TaskValidationError("durations must all be positive")
+                "first keyframe must not carry a transfer")
+        for i, k in enumerate(kfs[1:], start=1):
+            if k.transfer is None:
+                raise TaskValidationError(
+                    f"keyframe #{i} must carry a transfer")
         object.__setattr__(self, "keyframes", kfs)
-        object.__setattr__(self, "durations", durs)
-
-    @property
-    def duration(self) -> float:
-        return float(sum(self.durations))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
     @property
     def n_segments(self) -> int:
-        return len(self.durations)
+        return len(self.keyframes) - 1
+
+    @property
+    def duration(self) -> float:
+        return float(sum(k.transfer.dur for k in self.keyframes[1:]))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"format": TASK_FORMAT,
+        return {"type": CLIP_FORMAT,
                 "name": self.name,
                 "keyframes": [k.to_dict() for k in self.keyframes],
-                "durations": list(self.durations),
                 "metadata": dict(self.metadata)}
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "Point5Task":
-        fmt = d.get("format", TASK_FORMAT)
-        if fmt != TASK_FORMAT:
+    def from_dict(cls, d: Mapping[str, Any]) -> "P5Clip":
+        fmt = d.get("type", CLIP_FORMAT)
+        if fmt != CLIP_FORMAT:
             raise TaskValidationError(
-                f"unsupported task format {fmt!r}; expected {TASK_FORMAT!r}")
+                f"unsupported clip format {fmt!r}; expected {CLIP_FORMAT!r}")
         return cls(name=str(d.get("name", "")),
                    keyframes=tuple(Keyframe.from_dict(k)
                                    for k in d["keyframes"]),
-                   durations=tuple(d["durations"]),
                    metadata=dict(d.get("metadata", {})))
 
 
 # ---------------------------------------------------------------------------
-# Static resolver
+# Point5State: a measured/sampled local pose
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class StaticStartResolver:
-    """Resolves all v1 anchors against the task-start state.
+class Point5State:
+    """A local P5 pose.  ``vel`` is optional adapter-side data."""
 
-    ``root_rot`` maps root-frame vectors to world-frame vectors
-    (world = root_pos + root_rot @ offset).
-    """
-
-    initial: Point5State
-    root_pos: np.ndarray
-    root_rot: np.ndarray
+    pos: np.ndarray                          # local_pos[5,3]
+    time: float = 0.0
+    vel: Optional[np.ndarray] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "root_pos",
-                         _vec3(self.root_pos, "root_pos"))
-        rot = np.asarray(self.root_rot, dtype=np.float64)
-        if rot.shape != (3, 3) or not np.all(np.isfinite(rot)):
-            raise TaskValidationError("root_rot must be a finite (3,3) matrix")
-        object.__setattr__(self, "root_rot", rot)
+        object.__setattr__(self, "pos", _pos5(self.pos))
+        if self.vel is not None:
+            vel = np.asarray(self.vel, dtype=np.float64)
+            if vel.shape != (N_POINTS, 3) or not np.all(np.isfinite(vel)):
+                raise TaskValidationError(
+                    f"vel must be a finite ({N_POINTS},3) array or None")
+            object.__setattr__(self, "vel", vel)
+        if not np.isfinite(self.time):
+            raise TaskValidationError("time must be finite")
 
-    def resolve(self, anchor: Anchor) -> np.ndarray:
-        if isinstance(anchor, WorldPoint):
-            return anchor.pos.copy()
-        if isinstance(anchor, RootOffset):
-            return self.root_pos + self.root_rot @ anchor.offset
-        if isinstance(anchor, SelfPointOffset):
-            return self.initial.point_pos(anchor.point) + anchor.offset
-        raise AnchorResolutionError(
-            f"cannot resolve anchor of type {type(anchor).__name__}")
+    def point_pos(self, name: str) -> np.ndarray:
+        return self.pos[_idx(name)]
+
+    def twist_deg(self) -> Optional[float]:
+        return twist_deg(self.pos)
+
+    def is_degenerate(self) -> bool:
+        return is_degenerate(self.pos)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"type": STATE_FORMAT, "p5": self.pos.tolist()}
+
+    @classmethod
+    def from_dict(cls, d: Mapping[str, Any]) -> "Point5State":
+        return cls(pos=np.asarray(d["p5"], dtype=np.float64))

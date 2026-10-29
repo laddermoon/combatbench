@@ -1,208 +1,127 @@
-"""Reference synthesis: resolve anchors, linearly interpolate, sample.
+"""Point5 clip sampling (v2).
 
-The whole computation is a per-point piecewise-linear polyline over
-segments. No velocities anywhere (see DESIGN.md §5).
+A clip only stores local poses + per-keyframe transfers.  To get world
+positions the consumer supplies the first frame's world pose
+``f1 = (origin_xy, yaw_deg)``; subsequent frames follow by transfer
+composition ``F_k = F_{k-1} ∘ T_k``.
+
+Sampling is change-adaptive: between consecutive emitted frames no
+point moves more than ``max_step`` metres in world space — per segment
+``n = ceil(D / max_step)`` where ``D`` is the max point world
+displacement between the two keyframes (world displacement includes
+both local motion and frame motion).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .contracts import (
-    AnchorResolver,
-    N_POINTS,
-    POINT_INDEX,
-    POINT_NAMES,
-    Point5State,
-    Point5Task,
+    FRAMES_FORMAT,
+    Keyframe,
+    P5Clip,
     SampleOutOfRange,
     TaskValidationError,
+    compose_frame,
+    to_world,
 )
 
-_EPS = 1e-9
+FramePose = Tuple[np.ndarray, float]     # (origin_xy(2,), yaw_deg)
+DEFAULT_F1: FramePose = (np.zeros(2), 0.0)
+
+
+def keyframe_frames(clip: P5Clip,
+                    f1: FramePose = DEFAULT_F1) -> List[FramePose]:
+    """World pose of every keyframe's local frame, by transfer chain."""
+    out: List[FramePose] = [f1]
+    for k in clip.keyframes[1:]:
+        assert k.transfer is not None
+        out.append(compose_frame(*out[-1], k.transfer))
+    return out
+
+
+def keyframe_world(clip: P5Clip,
+                   f1: FramePose = DEFAULT_F1) -> np.ndarray:
+    """World positions of every keyframe, shape (K, 5, 3)."""
+    frames = keyframe_frames(clip, f1)
+    return np.stack([to_world(k.pos, o, y)
+                     for k, (o, y) in zip(clip.keyframes, frames)])
 
 
 @dataclass(frozen=True)
-class ResolvedTask:
-    """A task whose anchors are all resolved to world-frame positions."""
+class FrameSample:
+    """One sampled clip frame: local pose + its world frame pose."""
 
-    task: Point5Task
-    positions: np.ndarray    # (K, N_POINTS, 3) resolved targets
-    tolerances: np.ndarray   # (K, N_POINTS)
-    weights: np.ndarray      # (K, N_POINTS)
-    seg_starts: np.ndarray   # (K,) cumulative start times; [-1] == duration
+    pos: np.ndarray            # local_pos (5,3), already segment-blended
+    origin_xy: np.ndarray      # world origin of this frame
+    yaw_deg: float
+    time: float
+    seg: int
+    s: float
 
-    def __post_init__(self) -> None:
-        pos = np.asarray(self.positions, dtype=np.float64)
-        k = len(self.task.keyframes)
-        if pos.shape != (k, N_POINTS, 3) or not np.all(np.isfinite(pos)):
-            raise TaskValidationError(
-                f"positions must be finite ({k},{N_POINTS},3), got {pos.shape}")
+    def world_pos(self) -> np.ndarray:
+        return to_world(self.pos, self.origin_xy, self.yaw_deg)
 
 
-def resolve_task(task: Point5Task, resolver: AnchorResolver) -> ResolvedTask:
-    """Resolve every spec's anchor into world-frame target positions."""
-    k = len(task.keyframes)
-    positions = np.zeros((k, N_POINTS, 3), dtype=np.float64)
-    tolerances = np.zeros((k, N_POINTS), dtype=np.float64)
-    weights = np.zeros((k, N_POINTS), dtype=np.float64)
-    for ki, kf in enumerate(task.keyframes):
-        for name, spec in kf.specs.items():
-            j = POINT_INDEX[name]
-            positions[ki, j] = np.asarray(resolver.resolve(spec.target),
-                                          dtype=np.float64)
-            tolerances[ki, j] = spec.tolerance
-            weights[ki, j] = spec.weight
-    if not np.all(np.isfinite(positions)):
-        raise TaskValidationError("resolver returned non-finite positions")
-    seg_starts = np.concatenate(
-        [[0.0], np.cumsum(np.asarray(task.durations))])
-    return ResolvedTask(task=task, positions=positions,
-                        tolerances=tolerances, weights=weights,
-                        seg_starts=seg_starts)
+def _blend(p0: np.ndarray, p1: np.ndarray, s: float) -> np.ndarray:
+    return p0 + (p1 - p0) * s
 
 
-@dataclass(frozen=True)
-class ReferenceFrames:
-    """Dense sampling of a reference along time."""
+def sample_clip(clip: P5Clip,
+                f1: FramePose = DEFAULT_F1,
+                max_step: float = 0.01) -> List[FrameSample]:
+    """Change-adaptive sampling in world space.
 
-    pos: np.ndarray       # (T, N_POINTS, 3)
-    times: np.ndarray     # (T,)
-    segs: np.ndarray      # (T,) int
-    s: np.ndarray         # (T,)
-    states: tuple         # (T,) Point5State, one per sample
-
-
-class Point5Reference:
-    """Sampleable linear reference built from a resolved task."""
-
-    def __init__(self, resolved: ResolvedTask):
-        self.resolved = resolved
-        self.task = resolved.task
-        self.duration = self.task.duration
-
-    # -- sampling ----------------------------------------------------------
-
-    def sample(self, seg: int, s: float) -> Point5State:
-        """Sample normalized position ``s`` within segment ``seg``."""
-        n_seg = self.task.n_segments
-        if not (0 <= seg < n_seg):
-            raise SampleOutOfRange(
-                f"seg {seg} out of range [0,{n_seg - 1}]")
-        if not (0.0 - _EPS <= s <= 1.0 + _EPS) or not np.isfinite(s):
-            raise SampleOutOfRange(f"s {s} out of range [0,1]")
-        s = min(max(float(s), 0.0), 1.0)
-        p0 = self.resolved.positions[seg]
-        p1 = self.resolved.positions[seg + 1]
-        pos = (1.0 - s) * p0 + s * p1
-        t = float(self.resolved.seg_starts[seg]
-                  + s * self.task.durations[seg])
-        label = (self.task.keyframes[seg].label if s < 0.5
-                 else self.task.keyframes[seg + 1].label)
-        y0 = self.task.keyframes[seg].torso_yaw
-        y1 = self.task.keyframes[seg + 1].torso_yaw
-        yaw = (1.0 - s) * y0 + s * y1 \
-            if (y0 is not None and y1 is not None) else None
-        return Point5State(
-            pos=pos, time=t, vel=None, torso_yaw=yaw, frame="world",
-            metadata={"task": self.task.name, "seg": int(seg), "s": s,
-                      "t": t, "keyframe_label": label})
-
-    def sample_time(self, t: float) -> Point5State:
-        """Sample absolute time. Out of range raises, never clamps."""
-        if not np.isfinite(t):
-            raise SampleOutOfRange(f"t {t} is not finite")
-        if t < -_EPS or t > self.duration + _EPS:
-            raise SampleOutOfRange(
-                f"t {t} out of range [0,{self.duration}] for task "
-                f"{self.task.name!r}")
-        t = min(max(float(t), 0.0), self.duration)
-        seg = int(np.searchsorted(self.resolved.seg_starts[1:], t,
-                                  side="right"))
-        seg = min(seg, self.task.n_segments - 1)
-        d = self.task.durations[seg]
-        s = (t - self.resolved.seg_starts[seg]) / d if d > 0 else 0.0
-        return self.sample(seg, s)
-
-    def frames(self, dt: float) -> ReferenceFrames:
-        """Dense sampling at fixed ``dt``; last sample lands on duration."""
-        if not np.isfinite(dt) or dt <= 0.0:
-            raise TaskValidationError("dt must be positive")
-        n = int(np.floor(self.duration / dt)) + 1
-        times = np.arange(n, dtype=np.float64) * dt
-        if times[-1] < self.duration - _EPS:
-            times = np.append(times, self.duration)
-        else:
-            times[-1] = self.duration
-        states = tuple(self.sample_time(t) for t in times)
-        return ReferenceFrames(
-            pos=np.stack([st.pos for st in states]),
-            times=times,
-            segs=np.asarray([st.metadata["seg"] for st in states],
-                            dtype=np.int32),
-            s=np.asarray([st.metadata["s"] for st in states]),
-            states=states)
-
-    # -- convenience -------------------------------------------------------
-
-    def target_at(self, keyframe: int) -> np.ndarray:
-        """Resolved world targets at keyframe boundary (K,5,3) row."""
-        return self.resolved.positions[keyframe]
-
-
-def build_reference(task: Point5Task,
-                    resolver: AnchorResolver) -> Point5Reference:
-    """Resolve + wrap. ``initial`` (if needed) lives inside the resolver."""
-    return Point5Reference(resolve_task(task, resolver))
-
-
-def adaptive_sample(reference: Point5Reference,
-                    max_step: float = 0.01) -> ReferenceFrames:
-    """Sample so every point's per-frame displacement stays <= ``max_step``.
-
-    Per segment ``i`` the polyline is linear, so ``n_i = ceil(D_i/max_step)``
-    equal ``s`` subdivisions (D_i = max per-point endpoint distance) give the
-    guarantee exactly — including across segment boundaries. Static segments
-    (D_i == 0) collapse to a single frame.
+    n_seg subdivisions per segment bound the max per-point world
+    displacement between emitted frames by ``max_step`` (linear
+    interpolation of both local positions and the frame transfer).
     """
     if not np.isfinite(max_step) or max_step <= 0.0:
         raise TaskValidationError("max_step must be positive")
-    task = reference.task
-    P = reference.resolved.positions
-    n_seg = task.n_segments
-    pairs = []
-    for seg in range(n_seg):
-        d = float(np.linalg.norm(P[seg + 1] - P[seg], axis=1).max())
+    frames = keyframe_frames(clip, f1)
+    times = np.concatenate([[0.0],
+                            np.cumsum([k.transfer.dur
+                                       for k in clip.keyframes[1:]])])
+    out: List[FrameSample] = [FrameSample(clip.keyframes[0].pos,
+                                          np.asarray(frames[0][0]),
+                                          frames[0][1], 0.0, -1, 0.0)]
+    for seg in range(clip.n_segments):
+        k0, k1 = clip.keyframes[seg], clip.keyframes[seg + 1]
+        tr = k1.transfer
+        assert tr is not None
+        o0, y0 = frames[seg]
+        # max per-point world displacement over the whole segment
+        w0 = to_world(k0.pos, o0, y0)
+        w1 = to_world(k1.pos, *frames[seg + 1])
+        d = float(np.linalg.norm(w1 - w0, axis=1).max())
         n = max(1, int(np.ceil(d / max_step)))
-        stop = n if seg < n_seg - 1 else n + 1  # boundary shared with next seg
-        for k in range(stop):
-            pairs.append((seg, k / n))
-    states = tuple(reference.sample(seg, s) for seg, s in pairs)
-    return ReferenceFrames(
-        pos=np.stack([st.pos for st in states]),
-        times=np.asarray([st.time for st in states]),
-        segs=np.asarray([st.metadata["seg"] for st in states],
-                        dtype=np.int32),
-        s=np.asarray([st.metadata["s"] for st in states]),
-        states=states)
+        for j in range(1, n + 1):
+            s = j / n
+            pos = _blend(k0.pos, k1.pos, s)
+            # progressive frame motion: the transfer displacement is in
+            # F_{seg} coords, so rotate it by y0 before adding
+            do = np.array([tr.dx, tr.dy]) * s
+            o_s = o0 + np.array(
+                [np.cos(np.deg2rad(y0)) * do[0]
+                 - np.sin(np.deg2rad(y0)) * do[1],
+                 np.sin(np.deg2rad(y0)) * do[0]
+                 + np.cos(np.deg2rad(y0)) * do[1]])
+            out.append(FrameSample(pos, o_s, y0 + tr.dyaw * s,
+                                   float(times[seg] + tr.dur * s), seg, s))
+    return out
 
 
-def frames_payload(reference: Point5Reference,
-                   frames: ReferenceFrames) -> Dict[str, Any]:
-    """JSON-safe sampled-trajectory payload (``point5.frames.v1``)."""
+def frames_payload(clip: P5Clip, samples: List[FrameSample]) -> Dict[str, Any]:
+    """JSON-safe sampled-clip payload."""
     return {
-        "format": "point5.frames.v1",
-        "task": reference.task.name,
-        "duration": reference.duration,
-        "point_names": list(POINT_NAMES),
-        "frames": [
-            {"t": float(st.time),
-             "seg": int(st.metadata["seg"]),
-             "s": float(st.metadata["s"]),
-             "label": st.metadata["keyframe_label"],
-             "torso_yaw": st.torso_yaw,
-             "pos": st.pos.tolist()}
-            for st in frames.states],
+        "format": FRAMES_FORMAT,
+        "clip": clip.name,
+        "n_frames": len(samples),
+        "frames": [{"pos": sm.pos.tolist(),
+                    "origin": list(map(float, sm.origin_xy)),
+                    "yaw": float(sm.yaw_deg),
+                    "t": sm.time, "seg": sm.seg, "s": sm.s}
+                   for sm in samples],
     }
