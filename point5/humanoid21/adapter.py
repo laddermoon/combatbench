@@ -16,7 +16,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as _R
 
 from envs.humanoid21.meta import Humanoid21Meta
-from mocap.point5.contracts import (
+from point5.contracts import (
     POINT_INDEX,
     POINT_NAMES,
     Point5Error,

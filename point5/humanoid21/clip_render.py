@@ -5,7 +5,7 @@ bounded), run the two-stage equilibrium solve for the joint pose, render
 front + side views with the real model geoms, and overlay the five target
 points on top of the image (always visible, even inside the body).
 
-    MUJOCO_GL=egl PYTHONPATH=. python3 -m mocap.point5.humanoid21.clip_render \
+    MUJOCO_GL=egl PYTHONPATH=. python3 -m point5.humanoid21.clip_render \
         --clip clip.json --out clip.mp4 [--max-step 0.01] [--robot robot_a]
 
 Illegal frames keep their best-effort pose and get a red label.
@@ -25,11 +25,11 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from mocap.point5.contracts import POINT_NAMES  # noqa: E402
-from mocap.point5.humanoid21.fk import Humanoid21FK  # noqa: E402
-from mocap.point5.humanoid21.mechanics import (  # noqa: E402
+from point5.contracts import POINT_NAMES  # noqa: E402
+from point5.humanoid21.fk import Humanoid21FK  # noqa: E402
+from point5.humanoid21.mechanics import (  # noqa: E402
     Skeleton, solve_equilibrium)
-from mocap.point5.humanoid21.render import _project  # noqa: E402
+from point5.humanoid21.render import _project  # noqa: E402
 
 PT_COLOR = {"head": (224, 72, 62), "hand_right": (59, 165, 59),
             "hand_left": (59, 127, 212), "foot_right": (224, 160, 42),

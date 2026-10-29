@@ -216,7 +216,7 @@ class TestFramesPayload:
 
 class TestExportHtml:
     def test_writes_player(self, tmp_path):
-        from mocap.point5 import export_html
+        from point5 import export_html
         ref = build_reference(
             Point5Task(name="t", durations=(0.5,), keyframes=(
                 _kf(lambda i, n: (0, 0, i)),
@@ -231,7 +231,7 @@ class TestExportHtml:
 
 class TestExportMp4:
     def test_writes_video(self, tmp_path):
-        from mocap.point5 import export_mp4
+        from point5 import export_mp4
         ref = build_reference(
             Point5Task(name="t", durations=(0.5,), keyframes=(
                 _kf(lambda i, n: (0, 0, i)),

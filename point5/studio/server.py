@@ -1,6 +1,6 @@
 """P5 studio: web-based Point5 viewer/editor.
 
-    PYTHONPATH=. python3 mocap/point5/studio/server.py --dir <workdir> [--port 8901]
+    PYTHONPATH=. python3 point5/studio/server.py --dir <workdir> [--port 8901]
 
 JSON API under /api; the SPA lives in static/.  Dragging a point talks to
 the two-stage mechanics solver: head/foot drags hit check_legal live and
@@ -21,7 +21,7 @@ from flask import Flask, jsonify, request, send_from_directory
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from mocap.point5.humanoid21.mechanics import (  # noqa: E402
+from point5.humanoid21.mechanics import (  # noqa: E402
     LANDMARK_ORDER, Skeleton, _stage2_core, check_legal,
     norm_to_rad, solve_equilibrium)
 
@@ -103,7 +103,7 @@ def _commit_solve():
     if S["res"]["satisfied"]:
         q = S["res"]["q_norm"].copy()
         q[[i for i, n in enumerate(
-            __import__('mocap.point5.humanoid21.mechanics',
+            __import__('point5.humanoid21.mechanics',
                        fromlist=['JOINT_NAMES']).JOINT_NAMES)
             if 'shoulder' in n or 'elbow' in n]] = 0.0
         S["frozen"] = {"root_pos": S["res"]["root_pos"],

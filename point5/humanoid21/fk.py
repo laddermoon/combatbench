@@ -79,5 +79,5 @@ class Humanoid21FK:
 
 
 def _lm_order():
-    from mocap.point5.contracts import POINT_NAMES
+    from point5.contracts import POINT_NAMES
     return POINT_NAMES

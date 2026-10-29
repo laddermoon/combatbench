@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mocap.point5 import Point5Error, is_planted
-from mocap.point5.humanoid21 import point5_from_view
+from point5 import Point5Error, is_planted
+from point5.humanoid21 import point5_from_view
 
 
 @pytest.fixture(scope="module")

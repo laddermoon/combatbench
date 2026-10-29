@@ -1,6 +1,6 @@
 """Point5 measurement observer — per-step 5-point world positions.
 
-Wraps ``mocap.point5.humanoid21.adapter.point5_from_view`` and exposes
+Wraps ``point5.humanoid21.adapter.point5_from_view`` and exposes
 15 scalar coordinates for offline strike scoring.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ from typing import Any, Dict
 import numpy as np
 
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
-from mocap.point5.humanoid21.adapter import point5_from_view
+from point5.humanoid21.adapter import point5_from_view
 
 
 class Point5Observer(BaseObserverPlugin):

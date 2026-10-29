@@ -10,8 +10,8 @@ frames no point moves more than ``max_step`` metres.
 
 CLI::
 
-    PYTHONPATH=. python3 -m mocap.point5.viz --task t.json --out t.mp4
-    PYTHONPATH=. python3 -m mocap.point5.viz --task t.json --ctx start.json \
+    PYTHONPATH=. python3 -m point5.viz --task t.json --out t.mp4
+    PYTHONPATH=. python3 -m point5.viz --task t.json --ctx start.json \
         --out t.mp4 --fps 30
 """
 from __future__ import annotations

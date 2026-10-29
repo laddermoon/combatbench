@@ -28,10 +28,10 @@ import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
-from mocap.point5.contracts import Point5State, StaticStartResolver
-from mocap.point5.punch_planner import (
+from point5.contracts import Point5State, StaticStartResolver
+from point5.punch_planner import (
     PunchPlannerConfig, plan_punch)
-from mocap.point5.trajectory import build_reference
+from point5.trajectory import build_reference
 
 from .exp_hier_s2_balance_mbs import HierS2BalanceMBS
 

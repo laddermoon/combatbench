@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mocap.point5.humanoid21.mechanics import (
+from point5.humanoid21.mechanics import (
     JOINT_NAMES, JNT_RANGE, LANDMARK_ORDER, Skeleton,
     norm_to_rad, rad_to_norm, spring_energy, solve_equilibrium)
 
@@ -45,7 +45,7 @@ class TestStructure:
 class TestSprings:
     def test_laws(self):
         # spring table sanity: stiff linear core, quadratic absorbers
-        from mocap.point5.humanoid21.mechanics import SPRINGS
+        from point5.humanoid21.mechanics import SPRINGS
         assert SPRINGS["abdomen_y"][0] == "linear"
         assert SPRINGS["knee_right"][0] == "quadratic"
         assert SPRINGS["elbow_right"][0] == "linear"

@@ -41,7 +41,7 @@ def main() -> None:
     sys.path.insert(0, str(root))
 
     from envs.humanoid21.simulator import Humanoid21Simulator
-    from mocap.point5.humanoid21.adapter import point5_from_view
+    from point5.humanoid21.adapter import point5_from_view
 
     d = np.load(args.states, allow_pickle=False)
     n = len(d["steps"]) if args.max <= 0 else min(

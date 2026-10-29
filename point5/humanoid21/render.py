@@ -73,7 +73,7 @@ def render_pose(fk: Humanoid21FK, out_path,
         im = Image.fromarray(img)
         if mark_points:
             dr = ImageDraw.Draw(im)
-            from mocap.point5.contracts import POINT_NAMES
+            from point5.contracts import POINT_NAMES
             # hollow = target, filled = achieved
             if target_pos is not None:
                 tp = np.asarray(target_pos, dtype=np.float64)

@@ -41,11 +41,11 @@ def main() -> None:
 
     from scipy.spatial.transform import Rotation as R
 
-    from mocap.point5.contracts import Point5State, StaticStartResolver
-    from mocap.point5.punch_planner import (
+    from point5.contracts import Point5State, StaticStartResolver
+    from point5.punch_planner import (
         PunchPlannerConfig, _stance_forward, plan_punch)
-    from mocap.point5.trajectory import build_reference
-    from mocap.point5.viz import export_mp4
+    from point5.trajectory import build_reference
+    from point5.viz import export_mp4
 
     d = np.load(args.p5, allow_pickle=False)
     cfg = PunchPlannerConfig(max_step=args.max_step)

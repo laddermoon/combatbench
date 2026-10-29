@@ -11,10 +11,10 @@ from baseline.humanoid21.hierarchy.command_simulator import (
     CommandSimulator, TGT_SCALE,
 )
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from mocap.point5.contracts import Point5State, StaticStartResolver
-from mocap.point5.humanoid21.adapter import point5_from_view
-from mocap.point5.punch_planner import plan_punch
-from mocap.point5.trajectory import build_reference
+from point5.contracts import Point5State, StaticStartResolver
+from point5.humanoid21.adapter import point5_from_view
+from point5.punch_planner import plan_punch
+from point5.trajectory import build_reference
 
 
 def _world_target_seen_by_policy(sim, rid):

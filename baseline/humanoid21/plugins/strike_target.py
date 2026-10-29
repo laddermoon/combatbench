@@ -21,10 +21,10 @@ import numpy as np
 
 from envs.framework import BasePlugin, SimContext
 from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
-from mocap.point5.contracts import POINT_INDEX, StaticStartResolver
-from mocap.point5.humanoid21.adapter import point5_from_view
-from mocap.point5.punch_planner import _stance_forward, plan_punch
-from mocap.point5.trajectory import build_reference
+from point5.contracts import POINT_INDEX, StaticStartResolver
+from point5.humanoid21.adapter import point5_from_view
+from point5.punch_planner import _stance_forward, plan_punch
+from point5.trajectory import build_reference
 
 
 class StrikeTargetPlugin(BasePlugin):
