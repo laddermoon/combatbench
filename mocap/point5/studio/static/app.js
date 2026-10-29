@@ -26,22 +26,38 @@ const ptGroup = new THREE.Group(); scene.add(ptGroup);       // p5 spheres
 
 let state = null, vis = {}, meshes = {}, spheres = {}, names = [];
 
+const _Y2Z = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(1, 0, 0), Math.PI / 2);   // three capsules sit on Y
 function mkBodyMeshes() {
   for (const c of bodyGroup.children.slice()) bodyGroup.remove(c);
   meshes = {};
-  for (const [n, v] of Object.entries(vis)) {
+  for (const [n, geoms] of Object.entries(vis)) {
     const g = new THREE.Group();
-    if (v[0] === 'sphere') {
-      g.add(new THREE.Mesh(new THREE.SphereGeometry(v[3], 18, 14),
-        new THREE.MeshStandardMaterial({color: 0x8a8f98, roughness: 0.7})));
-    } else {
-      const a = new THREE.Vector3(...v[1]), b = new THREE.Vector3(...v[2]);
-      const len = a.distanceTo(b), mid = a.clone().add(b).multiplyScalar(0.5);
-      const m = new THREE.Mesh(new THREE.CapsuleGeometry(v[3], len, 4, 10),
-        new THREE.MeshStandardMaterial({color: 0x8a8f98, roughness: 0.7}));
-      m.position.copy(mid);
-      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
-        b.clone().sub(a).normalize());
+    for (const v of geoms) {
+      const col = new THREE.Color(v.rgba[0], v.rgba[1], v.rgba[2]);
+      const mat = new THREE.MeshStandardMaterial(
+        {color: col, roughness: 0.7, transparent: v.rgba[3] < 1,
+         opacity: v.rgba[3]});
+      let geo = null;
+      const s = v.size;
+      if (v.type === 'sphere') geo = new THREE.SphereGeometry(s[0], 20, 14);
+      else if (v.type === 'capsule')
+        geo = new THREE.CapsuleGeometry(s[0], 2 * s[1], 4, 12);
+      else if (v.type === 'cylinder')
+        geo = new THREE.CylinderGeometry(s[0], s[0], 2 * s[1], 14);
+      else if (v.type === 'box')
+        geo = new THREE.BoxGeometry(2 * s[0], 2 * s[1], 2 * s[2]);
+      else if (v.type === 'ellipsoid') {
+        geo = new THREE.SphereGeometry(1, 16, 12);
+        geo.scale(s[0], s[1], s[2]);
+      }
+      if (!geo) continue;
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(...v.pos);
+      const q = new THREE.Quaternion(v.quat[1], v.quat[2], v.quat[3], v.quat[0]);
+      if (v.type === 'capsule' || v.type === 'cylinder')
+        q.multiply(_Y2Z);
+      m.quaternion.copy(q);
       g.add(m);
     }
     bodyGroup.add(g); meshes[n] = g;

@@ -30,25 +30,35 @@ app = Flask(__name__, static_folder=str(Path(__file__).parent / "static"),
             static_url_path="/static")
 WORK = Path.cwd()
 
-# body capsule specs: (kind, a, b, r) in body-local frame
-VIS = {
-    "torso": ("capsule", (0, 0, -0.13), (0, 0, 0.14), 0.11),
-    "head": ("sphere", (0, 0, 0), None, 0.105),
-    "waist_lower": ("capsule", (0, 0, -0.14), (0, 0, 0.05), 0.095),
-    "pelvis": ("capsule", (0, -0.12, -0.03), (0, 0.12, -0.03), 0.10),
-    "thigh_right": ("capsule", (0, 0, 0), (0, 0.01, -0.38), 0.06),
-    "shin_right": ("capsule", (0, 0, 0), (0, 0, -0.37), 0.048),
-    "foot_right": ("capsule", (0, -0.05, 0.02), (0, 0.15, 0.02), 0.035),
-    "upper_arm_right": ("capsule", (0, 0, 0), (0.18, -0.18, -0.18), 0.042),
-    "lower_arm_right": ("capsule", (0, 0, 0), (0.18, 0.18, 0.18), 0.038),
-    "hand_right": ("sphere", (0, 0, 0), None, 0.055),
-    "thigh_left": ("capsule", (0, 0, 0), (0, -0.01, -0.38), 0.06),
-    "shin_left": ("capsule", (0, 0, 0), (0, 0, -0.37), 0.048),
-    "foot_left": ("capsule", (0, -0.15, 0.02), (0, 0.05, 0.02), 0.035),
-    "upper_arm_left": ("capsule", (0, 0, 0), (0.18, 0.18, -0.18), 0.042),
-    "lower_arm_left": ("capsule", (0, 0, 0), (0.18, -0.18, 0.18), 0.038),
-    "hand_left": ("sphere", (0, 0, 0), None, 0.055),
-}
+def _extract_geoms():
+    """Real Humanoid21 geoms from the MuJoCo model, per mechanics body.
+
+    Returns {body: [{"type","size","pos","quat","rgba"}]} — spheres,
+    capsules, cylinders, boxes only.
+    """
+    import mujoco
+    xml = ROOT / "envs/humanoid21/battle_circular_v2.xml"
+    m = mujoco.MjModel.from_xml_path(str(xml))
+    tmap = {0: "plane", 2: "sphere", 3: "capsule", 4: "ellipsoid",
+            5: "cylinder", 6: "box"}
+    out = {}
+    for gi in range(m.ngeom):
+        bid = int(m.geom_bodyid[gi])
+        bname = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+        if not bname.endswith("_a"):
+            continue
+        g = {"type": tmap.get(int(m.geom_type[gi])),
+             "size": m.geom_size[gi].tolist(),
+             "pos": m.geom_pos[gi].tolist(),
+             "quat": m.geom_quat[gi].tolist(),
+             "rgba": m.geom_rgba[gi].tolist()}
+        if g["type"] is None:
+            continue
+        out.setdefault(bname[:-2], []).append(g)
+    return out
+
+
+VIS = _extract_geoms()
 POINT_COLOR = {"head": "#e0483e", "hand_right": "#3ba53b",
                "hand_left": "#3b7fd4", "foot_right": "#e0a02a",
                "foot_left": "#b56ae0"}
