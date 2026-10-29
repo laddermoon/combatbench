@@ -143,6 +143,22 @@ def spring_energy(q_norm: np.ndarray) -> float:
 
 
 # ------------------------------------------------------------- math bits ---
+def _skew(v: np.ndarray) -> np.ndarray:
+    x, y, z = v
+    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+
+
+def _left_jac_so3(rv: np.ndarray) -> np.ndarray:
+    """Left Jacobian J_l of SO(3): d(exp(rv)v)/drv = -[Rv]x J_l."""
+    th = float(np.linalg.norm(rv))
+    if th < 1e-9:
+        return np.eye(3)
+    u = rv / th
+    return (np.sin(th) / th) * np.eye(3) \
+        + (1.0 - np.sin(th) / th) * np.outer(u, u) \
+        + ((1.0 - np.cos(th)) / th) * _skew(u)
+
+
 def _rot(axis: np.ndarray, angle: float) -> np.ndarray:
     """Rodrigues rotation matrix."""
     axis = np.asarray(axis, dtype=np.float64)
@@ -209,6 +225,42 @@ class Skeleton:
         return np.stack([
             xf[b][0] + xf[b][1] @ off
             for b, off in (LANDMARKS[n] for n in LANDMARK_ORDER)])
+
+    def landmarks_jac(self, root_pos, root_quat_wxyz,
+                      q) -> Tuple[np.ndarray, np.ndarray]:
+        """FK landmarks (5,3) plus Jacobian (5,3,21) wrt q (rad).
+
+        Hinge-joint columns:  d lm/d q_j = axis_world x (lm - anchor_world),
+        nonzero only for joints on the landmark body's ancestor chain.
+        """
+        q = np.asarray(q, dtype=np.float64)
+        xf = {"__root__": (np.asarray(root_pos, dtype=np.float64),
+                           _quat_mat(root_quat_wxyz))}
+        a_w, k_w = {}, {}
+        for name in self.order:
+            parent = self.parent[name] or "__root__"
+            ppos, pmat = xf[parent]
+            pos = ppos + pmat @ self.bpos[name]
+            mat = pmat.copy()
+            for jidx, anchor, axis in self.joints_on[name]:
+                a_w[jidx] = pos + mat @ anchor
+                k_w[jidx] = mat @ axis
+                R = _rot(axis, q[jidx])
+                pos = pos + mat @ (anchor - R @ anchor)
+                mat = mat @ R
+            xf[name] = (pos, mat)
+        lms = np.stack([
+            xf[b][0] + xf[b][1] @ off
+            for b, off in (LANDMARKS[n] for n in LANDMARK_ORDER)])
+        jac = np.zeros((len(LANDMARK_ORDER), 3, len(JOINT_NAMES)))
+        for li, lname in enumerate(LANDMARK_ORDER):
+            b = LANDMARKS[lname][0]
+            while b is not None:
+                for jidx, _, _ in self.joints_on[b]:
+                    jac[li, :, jidx] = np.cross(
+                        k_w[jidx], lms[li] - a_w[jidx])
+                b = self.parent[b]
+        return lms, jac
 
 
 # -------------------------------------------------- equilibrium solving ---
@@ -383,6 +435,69 @@ def solve_equilibrium(target_pos: np.ndarray,
     lm_idx1 = np.array([_LM_IDX[p] for p in
                         ("foot_right", "foot_left", "head")])
 
+    _P90 = np.array([[0.0, -1.0], [1.0, 0.0]])
+
+    def _res1_jac(v):
+        """Analytic Jacobian of the stage-1 constraint residual."""
+        rp, rv = v[0:3], v[3:6]
+        qn = np.zeros(len(JOINT_NAMES))
+        qn[_BODY_IDX] = v[6:]
+        lms, Jq = sk.landmarks_jac(rp, quat(rv), norm_to_rad(qn))
+        Jr = _left_jac_so3(rv)
+        m = 3 * len(lm_idx1) + (1 if yaw_rad is not None else 0)
+        J = np.zeros((m, len(v)))
+        rows = {}
+
+        def lmrow(li):
+            blk = np.zeros((3, len(v)))
+            rel = lms[li] - rp
+            blk[:, 0:3] = np.eye(3)
+            blk[:, 3:6] = -_skew(rel) @ Jr
+            for jj, gj in enumerate(_BODY_IDX):
+                blk[:, 6 + jj] = Jq[li, :, gj] * _HALF[gj]
+            rows[li] = blk
+            return blk
+
+        for r_i, li in enumerate(lm_idx1):
+            J[3 * r_i:3 * r_i + 3] = lmrow(li)
+        if yaw_rad is not None:
+            rroot = _quat_mat(quat(rv))
+            tfull = rroot[:, 0]
+            t2 = tfull[:2]
+            fr_i, fl_i = _LM_IDX["foot_right"], _LM_IDX["foot_left"]
+            jfr = rows[fr_i] if fr_i in rows else lmrow(fr_i)
+            jfl = rows[fl_i] if fl_i in rows else lmrow(fl_i)
+            b2 = lms[fr_i][:2] - lms[fl_i][:2]
+            nb = np.linalg.norm(b2)
+            if nb >= 1e-9 and np.linalg.norm(t2) >= 1e-9:
+                bh = b2 / nb
+                n2 = _P90 @ bh
+                dir_t = np.cos(yaw_rad) * n2 + np.sin(yaw_rad) * bh
+                dtp = _P90 @ dir_t
+                xv, yv = float(t2 @ dir_t), float(t2 @ dtp)
+                dt = np.zeros((2, len(v)))
+                dt[:, 3:6] = (-_skew(tfull) @ Jr)[:2, :]
+                dbh = (np.eye(2) - np.outer(bh, bh)) / nb \
+                    @ (jfr[:2] - jfl[:2])
+                ddir = (np.cos(yaw_rad) * _P90
+                        + np.sin(yaw_rad) * np.eye(2)) @ dbh
+                dxv = dir_t @ dt + t2 @ ddir
+                dyv = dtp @ dt + t2 @ (_P90 @ ddir)
+                J[-1] = (xv * dyv - yv * dxv) / (xv * xv + yv * yv)
+        return J
+
+    def _obj1(v):
+        return _energy_of(v[6:], _BODY_IDX)
+
+    def _obj1_jac(v):
+        g = np.zeros(len(v))
+        q = v[6:]
+        k = np.where(q < 0.0, _SPRING_K_LOW[_BODY_IDX],
+                     _SPRING_K_HIGH[_BODY_IDX])
+        g[6:] = np.where(_SPRING_LIN[_BODY_IDX], k * q,
+                         k * q * np.abs(q))
+        return g
+
     failed = None
     tgt1 = target[lm_idx1]
     cur = lm1(x1)[lm_idx1]
@@ -395,9 +510,10 @@ def solve_equilibrium(target_pos: np.ndarray,
             if yaw_rad is not None:
                 r = np.append(r, yaw_res(v))
             return r
-        sol = minimize(lambda v: _energy_of(v[6:], _BODY_IDX), x1,
+        sol = minimize(_obj1, x1, jac=_obj1_jac,
                        method="SLSQP", bounds=b1,
-                       constraints=[{"type": "eq", "fun": res}],
+                       constraints=[{"type": "eq", "fun": res,
+                                     "jac": _res1_jac}],
                        options={"maxiter": max_iter, "ftol": 1e-12})
         x1 = sol.x
     e1 = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1)
