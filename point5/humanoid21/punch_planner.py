@@ -46,7 +46,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from .contracts import (
+from ..contracts import (
     POINT_INDEX,
     PointSpec,
     Keyframe,

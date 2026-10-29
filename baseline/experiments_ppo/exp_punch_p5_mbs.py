@@ -29,7 +29,7 @@ import numpy as np
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
 from point5.contracts import Point5State, StaticStartResolver
-from point5.punch_planner import (
+from point5.humanoid21.punch_planner import (
     PunchPlannerConfig, plan_punch)
 from point5.trajectory import build_reference
 

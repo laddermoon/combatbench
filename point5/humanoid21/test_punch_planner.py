@@ -1,11 +1,11 @@
-"""Tests for point5.punch_planner (v2 two-phase planner)."""
+"""Tests for point5.humanoid21.punch_planner (v2 two-phase planner)."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
 from point5.contracts import POINT_INDEX, Point5State, WorldPoint
-from point5.punch_planner import (
+from point5.humanoid21.punch_planner import (
     PunchPlannerConfig,
     plan_punch,
 )

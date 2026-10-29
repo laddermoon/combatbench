@@ -13,7 +13,7 @@ from baseline.humanoid21.hierarchy.command_simulator import (
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
 from point5.contracts import Point5State, StaticStartResolver
 from point5.humanoid21.adapter import point5_from_view
-from point5.punch_planner import plan_punch
+from point5.humanoid21.punch_planner import plan_punch
 from point5.trajectory import build_reference
 
 
