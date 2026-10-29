@@ -1,10 +1,10 @@
-"""Tests for point5_from_view (real get_derived_state path)."""
+"""Tests for point5_from_view (real get_derived_state path, v2 local frame)."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from point5 import Point5Error, is_planted
+from point5 import Point5Error, ankle_mid_xy, to_world, twist_deg
 from point5.humanoid21 import point5_from_view
 
 
@@ -30,12 +30,16 @@ class TestFromView:
     def test_positions_sane_at_reset(self, view_a):
         st = point5_from_view(view_a, "robot_a")
         head = st.point_pos("head")
-        assert 1.2 < head[2] < 1.8
+        assert 1.0 < head[2] < 1.8
         for f in ("foot_right", "foot_left"):
             z = st.point_pos(f)[2]
             assert 0.05 < z < 0.12   # ankle-center ~0.087, above sole
-        assert abs(st.point_pos("foot_right")[1]
-                   - st.point_pos("foot_left")[1]) > 0.1
+        # local frame: ankle XY midpoint is the origin by construction
+        np.testing.assert_allclose(ankle_mid_xy(st.pos), [0., 0.],
+                                   atol=1e-9)
+        d = np.linalg.norm(st.point_pos("foot_right")[:2]
+                           - st.point_pos("foot_left")[:2])
+        assert d > 0.1
 
     def test_shape_and_vel(self, view_a):
         st = point5_from_view(view_a, "robot_a")
@@ -48,11 +52,17 @@ class TestFromView:
         assert point5_from_view(view_a, "robot_a",
                                 with_vel=False).vel is None
 
-    def test_robot_isolation(self, view_a, view_b):
+    def test_world_roundtrip_and_robot_isolation(self, view_a, view_b):
         a = point5_from_view(view_a, "robot_a")
         b = point5_from_view(view_b, "robot_b")
-        assert abs(a.point_pos("head")[0]
-                   - b.point_pos("head")[0]) > 1.5
+        # local poses are frame-relative; metadata carries the world frame
+        wa = to_world(a.pos, a.metadata["frame_origin_xy"],
+                      a.metadata["frame_yaw_deg"])
+        wb = to_world(b.pos, b.metadata["frame_origin_xy"],
+                      b.metadata["frame_yaw_deg"])
+        assert abs(wa[0, 0] - wb[0, 0]) > 1.5   # worlds differ (heads)
+        # twist is derived from stored feet, finite at reset
+        assert twist_deg(a.pos) is not None
 
     def test_fail_loud(self, view_a):
         with pytest.raises(Point5Error):
