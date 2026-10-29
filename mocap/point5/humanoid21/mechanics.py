@@ -500,11 +500,9 @@ def solve_equilibrium(target_pos: np.ndarray,
 
     failed = None
     tgt1 = target[lm_idx1]
-    cur = lm1(x1)[lm_idx1]
-    n1 = max(1, int(np.ceil(
-        np.linalg.norm(tgt1 - cur, axis=1).max() / pull_step)))
-    for s in range(1, n1 + 1):
-        sub = cur + (tgt1 - cur) * (s / n1)
+
+    def _solve1(sub):
+        nonlocal x1
         def res(v, sub=sub):
             r = (lm1(v)[lm_idx1] - sub).ravel()
             if yaw_rad is not None:
@@ -516,6 +514,23 @@ def solve_equilibrium(target_pos: np.ndarray,
                                      "jac": _res1_jac}],
                        options={"maxiter": max_iter, "ftol": 1e-12})
         x1 = sol.x
+
+    def _ok1():
+        e = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1).max()
+        y = abs(yaw_res(x1)) if yaw_rad is not None else 0.0
+        return e <= tolerance and y <= np.deg2rad(3.0)
+
+    # fast path: one-shot pull to the target.  On this skeleton the
+    # equilibrium is a strong attractor — verified bit-identical to the
+    # full continuation on the strike-start set.  Fall back to the
+    # quasi-static continuation only when the direct solve misses.
+    _solve1(tgt1)
+    if not _ok1():
+        cur = lm1(x1)[lm_idx1]
+        n1 = max(1, int(np.ceil(
+            np.linalg.norm(tgt1 - cur, axis=1).max() / pull_step)))
+        for s in range(1, n1 + 1):
+            _solve1(cur + (tgt1 - cur) * (s / n1))
     e1 = np.linalg.norm(lm1(x1)[lm_idx1] - tgt1, axis=1)
     yaw_err = abs(yaw_res(x1)) if yaw_rad is not None else 0.0
     if e1.max() > tolerance or yaw_err > np.deg2rad(3.0):
