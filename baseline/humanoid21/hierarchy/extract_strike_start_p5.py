@@ -50,7 +50,8 @@ def main() -> None:
     sim = Humanoid21Simulator()
     sim.reset(seed=0)
 
-    p5s, rpos, rrot, pdist, robot_idx, src_step = [], [], [], [], [], []
+    p5s, yaws, rpos, rrot, pdist, robot_idx, src_step = (
+        [], [], [], [], [], [], [])
     for i in range(n):
         cs = {}
         for rid in ("robot_a", "robot_b"):
@@ -60,6 +61,7 @@ def main() -> None:
         for ri, rid in enumerate(("robot_a", "robot_b")):
             p5 = point5_from_view(ds[rid], rid, with_vel=False)
             p5s.append(p5.pos)
+            yaws.append(np.nan if p5.torso_yaw is None else p5.torso_yaw)
             rpos.append(cs[rid]["root_pos"])
             rrot.append(cs[rid]["root_rot"])
             robot_idx.append(ri)
@@ -73,6 +75,7 @@ def main() -> None:
     np.savez(
         out,
         p5=np.stack(p5s),
+        torso_yaw=np.asarray(yaws, dtype=np.float32),
         root_pos=np.stack(rpos),
         root_rot=np.stack(rrot),
         pair_dist=np.asarray(pdist, dtype=np.float32),
