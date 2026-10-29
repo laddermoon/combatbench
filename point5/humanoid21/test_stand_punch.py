@@ -49,11 +49,31 @@ def test_load_chambers_and_sinks():
     assert w[1, i, 2] < w[1, 0, 2]                 # at/below chin
 
 
-def test_feet_never_move():
+def test_feet_never_move_in_range():
+    """In-range target: no stepping needed, feet stay planted."""
     p = plan_stand_punch(FRONT, "right", CFG)
     w = keyframe_world(p.task)
+    assert p.diag["step_len"] == 0.0
     for k in range(3):
         np.testing.assert_allclose(w[k, 3:], w[0, 3:], atol=1e-9)
+
+
+def test_far_target_steps_and_sinks():
+    """Far target: lead foot steps, COM drops + transfers, anchor stays."""
+    far = np.array([0.95, 0.0, 1.15])
+    p = plan_stand_punch(far, "right", CFG)
+    assert p.reachable
+    w = keyframe_world(p.task)
+    move = POINT_INDEX[p.diag["moving_foot"]]
+    anchor = POINT_INDEX[p.diag["anchor_foot"]]
+    a = p.diag["attack_axis"]
+    adv = (w[1, move] - w[0, move]) @ a
+    assert adv == pytest.approx(p.diag["step_len"], abs=0.01)
+    np.testing.assert_allclose(w[1, anchor], w[0, anchor], atol=1e-9)
+    assert w[1, 0, 2] < w[0, 0, 2] - 0.05      # COM drops deeper
+    # strike hand reaches target after stepping
+    i = POINT_INDEX["hand_right"]
+    assert np.linalg.norm(w[2, i] - far) < 0.15
 
 
 def test_twist_schedule():

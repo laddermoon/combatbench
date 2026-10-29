@@ -77,6 +77,12 @@ class StandPunchConfig:
     sector_cos_min: float = 0.17  # target within ~80° of +X forward
     penetration: float = 0.08     # overshoot past the target (m)
 
+    # --- step (重心转移) for far targets ---
+    max_step: float = 0.40        # lead-foot advance cap (m)
+    head_step_share: float = 0.6  # head follows this fraction of step
+    foot_swing_clearance: float = 0.06
+    step_sink_extra: float = 0.05  # extra COM sink driven by the step (m)
+
     # --- load (发力姿态) ---
     head_sink_load: float = 0.05  # crouch while coiling (m)
     chamber_back: float = 0.10    # fist pulled behind head along -X (m)
@@ -165,27 +171,48 @@ def plan_stand_punch(target: np.ndarray,
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_sector", diag=diag)
 
-    # --- reach check (no stepping) -------------------------------------
+    # --- reach -> step length (重心转移: lead foot steps, COM follows) --
     gap = float(np.linalg.norm(target - hp)) - cfg.arm_reach
     diag["reach_gap"] = gap
-    if gap > 0.05:                          # small slack beyond envelope
+    step_need = max(gap, 0.0) / cfg.head_step_share
+    if step_need > cfg.max_step:
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_reach", diag=diag)
+    step_len = min(step_need, cfg.max_step)
+    diag["step_len"] = step_len
+
+    # lead foot = the one ahead along the attack axis; it steps
+    proj = {i_fr: float((pos[i_fr] - head) @ a),
+            i_fl: float((pos[i_fl] - head) @ a)}
+    move_i = max(proj, key=proj.get)
+    anchor_i = i_fl if move_i == i_fr else i_fr
+    move_name = ("foot_right" if move_i == i_fr else "foot_left")
+    diag["moving_foot"] = move_name
+    diag["anchor_foot"] = ("foot_right" if anchor_i == i_fr
+                           else "foot_left")
+    f_move = pos[move_i].copy()
+    f_anchor = pos[anchor_i]
+    f_landed = f_move + a * step_len
 
     sgn = 1.0 if hand == "right" else -1.0  # + = toward the right side
     right = np.array([a[1], -a[0], 0.0])
 
-    # --- phase 1: load (发力姿态) ---------------------------------------
-    body_sink = np.array([0.0, 0.0, -cfg.head_sink_load])
-    head_load = head + body_sink
+    # --- phase 1: load (发力姿态: 迈步 + 降重心 + 重心转移) --------------
+    body_shift = (a * (cfg.head_step_share * step_len)
+                  + np.array([0, 0, -(cfg.head_sink_load
+                                     + cfg.step_sink_extra
+                                     * (step_len / cfg.max_step))]))
+    head_load = head + body_shift
     hp_load = (head_load
                - a * cfg.chamber_back
                + right * (sgn * cfg.chamber_side))
     hp_load[2] = head_load[2] - cfg.chamber_drop
-    hg_load = hg + body_sink * cfg.guard_ride
-    feet_load_r, feet_load_l = pos[i_fr], pos[i_fl]     # never move
+    hg_load = hg + body_shift * cfg.guard_ride
+    feet_load = {i_fr: pos[i_fr].copy(), i_fl: pos[i_fl].copy()}
+    feet_load[move_i] = f_landed                          # lead foot lands
+    feet_load[anchor_i] = f_anchor                        # anchor planted
     t_load = _rotz(np.array([1.0, 0.0, 0.0]),
-                   sgn * cfg.coil_deg)                  # counter-rotation
+                   sgn * cfg.coil_deg)                    # counter-rotation
 
     # --- phase 2: strike ------------------------------------------------
     punch_dir = _norm(target - hp_load)
@@ -214,8 +241,10 @@ def plan_stand_punch(target: np.ndarray,
         pos5[POINT_INDEX["head"]] = head_t
         pos5[i_hp] = hp_t
         pos5[i_hg] = hg_t
-        pos5[i_fr] = feet_load_r if label != "start" else pos[i_fr]
-        pos5[i_fl] = feet_load_l if label != "start" else pos[i_fl]
+        if label == "start":
+            pos5[i_fr], pos5[i_fl] = pos[i_fr], pos[i_fl]
+        else:
+            pos5[i_fr], pos5[i_fl] = feet_load[i_fr], feet_load[i_fl]
         o_k = ankle_mid_xy(pos5)
         yaw_k = float(np.degrees(np.arctan2(t_dir[1], t_dir[0])))
         tr = None
