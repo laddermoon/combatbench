@@ -46,8 +46,8 @@ def load_clip(path: str):
             kfs.append((np.asarray(k["pos"], float), k.get("torso_yaw")))
     else:                                   # Point5Task serde
         for k in d["keyframes"]:
-            pos = np.stack([np.asarray(k["specs"][n]["pos"], float)
-                            for n in POINT_NAMES])
+            pos = np.stack([np.asarray(k["specs"][n]["target"]["pos"],
+                                       float) for n in POINT_NAMES])
             kfs.append((pos, k.get("torso_yaw")))
     if len(kfs) < 1:
         raise ValueError("clip has no keyframes")
