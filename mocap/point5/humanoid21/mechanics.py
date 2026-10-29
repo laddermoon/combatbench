@@ -221,6 +221,90 @@ _BODY_IDX = np.array([i for i, n in enumerate(JOINT_NAMES)
 _STAGE2_IDX = np.array([_JIDX[n] for n in
                        ("abdomen_z",) + _ARM_JOINTS])    # AZ + arms = 7
 
+_BODY_OFF = {b[0]: np.asarray(b[2], dtype=np.float64) for b in BODIES}
+_ANCHOR = {j[0]: np.asarray(j[2], dtype=np.float64) for j in JOINTS}
+
+
+def _mk_arm(side: str) -> dict:
+    """Closed-form-IK constants for one arm (right/left)."""
+    ua, la, ha = f"upper_arm_{side}", f"lower_arm_{side}", f"hand_{side}"
+    js = {j[0]: j for j in JOINTS}
+    s1, s2, eb = (js[f"{n}_{side}"] for n in
+                  ("shoulder1", "shoulder2", "elbow"))
+    return {
+        "s_off": _BODY_OFF[ua],              # shoulder anchor in torso
+        "u": _BODY_OFF[la],                  # elbow anchor in upper arm
+        "w": _BODY_OFF[ha],                  # hand offset in lower arm
+        "k1": np.asarray(s1[3], dtype=np.float64),
+        "k2": np.asarray(s2[3], dtype=np.float64),
+        "ke": np.asarray(eb[3], dtype=np.float64),
+        "ji": np.array([_JIDX[s1[0]], _JIDX[s2[0]], _JIDX[eb[0]]]),
+        "rng": np.array([s1[4], s2[4], eb[4]], dtype=np.float64),
+    }
+
+
+_ARM = {"right": _mk_arm("right"), "left": _mk_arm("left")}
+
+
+def _wrap(a: float) -> float:
+    """Angle wrapped to (-pi, pi]."""
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _arm_ik(d_vec: np.ndarray, torso_mat: np.ndarray,
+            sp: dict) -> List[dict]:
+    """Closed-form 3-DOF IK: hand = S + T·(u + R_e·w), T = tm·R1·R2.
+
+    Returns up to 4 candidates {rad, qn, e, vio}: joint angles (rad),
+    normalized values, spring energy, total range/reach violation.
+    """
+    d = float(np.linalg.norm(d_vec))
+    d_loc = torso_mat.T @ d_vec
+    u, w, ke, k1, k2 = sp["u"], sp["w"], sp["ke"], sp["k1"], sp["k2"]
+    rng = sp["rng"]
+
+    # elbow angle from |h| = d:  P cos(th) + Q sin(th) = R
+    uk, kw = float(u @ ke), float(ke @ w)
+    p = float(u @ w) - uk * kw
+    q = float(u @ np.cross(ke, w))
+    rhs = (d * d - float(u @ u) - float(w @ w)) / 2.0 - uk * kw
+    amp = float(np.hypot(p, q))
+    if amp < 1e-12:
+        return []
+    vio_reach = max(0.0, abs(rhs) - amp) / max(amp, 1e-12)
+    th0, beta = np.arctan2(q, p), np.arccos(np.clip(rhs / amp, -1.0, 1.0))
+
+    out = []
+    for th in (_wrap(th0 + beta), _wrap(th0 - beta)):
+        h = u + _rot(ke, th) @ w
+        # shoulder2 from axis preservation:  k1·R2(φ2)h = k1·d_loc
+        k1k2, k2h = float(k1 @ k2), float(k2 @ h)
+        p2 = float(k1 @ h) - k1k2 * k2h
+        q2 = float(k1 @ np.cross(k2, h))
+        r2 = float(k1 @ d_loc) - k1k2 * k2h
+        amp2 = float(np.hypot(p2, q2))
+        if amp2 < 1e-12:
+            continue
+        f20, g2 = np.arctan2(q2, p2), \
+            np.arccos(np.clip(r2 / amp2, -1.0, 1.0))
+        for f2 in (_wrap(f20 + g2), _wrap(f20 - g2)):
+            v = _rot(k2, f2) @ h
+            vp = v - (v @ k1) * k1
+            dp = d_loc - (d_loc @ k1) * k1
+            nv, nd = np.linalg.norm(vp), np.linalg.norm(dp)
+            if nv < 1e-9 or nd < 1e-9:
+                continue
+            f1 = np.arctan2(float(k1 @ np.cross(vp, dp)) / (nv * nd),
+                            float(vp @ dp) / (nv * nd))
+            rads = np.array([f1, f2, th])
+            vio = vio_reach + float(
+                np.maximum(rads - rng[:, 1], 0.0).sum()
+                + np.maximum(rng[:, 0] - rads, 0.0).sum())
+            qn = (rads - _MID[sp["ji"]]) / _HALF[sp["ji"]]
+            out.append({"rad": rads, "qn": qn,
+                        "e": _energy_of(qn, sp["ji"]), "vio": vio})
+    return out
+
 
 def solve_equilibrium(target_pos: np.ndarray,
                       torso_yaw: float | None = None,
@@ -326,73 +410,84 @@ def solve_equilibrium(target_pos: np.ndarray,
                        target, tolerance, failed)
 
     # ---- stage 2 ---------------------------------------------------------
+    # Feet stay pinned; abdomen_z twists the TORSO side about the world
+    # axis line of the AZ joint, swinging the shoulder anchors on an arc
+    # — that is the only channel by which arm pull affects the frozen
+    # body.  Each arm is a closed-form 3-DOF IK; the solve is a 1-D
+    # spring-energy minimisation over the AZ range (milliseconds).
     root_pos, root_quat = x1[0:3].copy(), quat(x1[3:6])
     q_frozen = _full_q_body(x1[6:])
+    xf = sk.body_transforms(root_pos, root_quat, norm_to_rad(q_frozen))
+    t_pos, t_mat = xf["torso"]
 
-    def lm2(v):
-        q = q_frozen.copy()
-        q[_STAGE2_IDX] = v
-        return sk.landmarks(root_pos, root_quat, norm_to_rad(q))
+    az_i = _JIDX["abdomen_z"]
+    az0 = float(q_frozen[az_i])
+    half_az = float(_HALF[az_i])
+    # world AZ axis line: through the joint anchor, along torso z
+    a_ax = t_pos + t_mat @ (_BODY_OFF["waist_lower"]
+                            + _ANCHOR["abdomen_z"])
+    k_ax = t_mat @ np.array((0.0, 0.0, 1.0))
 
-    hand_idx = np.array([_LM_IDX["hand_right"], _LM_IDX["hand_left"]])
-    b2 = [(-1.0, 1.0)] * len(_STAGE2_IDX)
-    tgt2 = target[hand_idx]
+    tgt_h = {"right": target[_LM_IDX["hand_right"]],
+             "left": target[_LM_IDX["hand_left"]]}
+    az_arr = np.array([az_i])
 
-    # Feasibility probe: bounded least-squares onto the hand targets
-    # from deterministic multi-starts.  The arm IK has several local
-    # minima (elbow up vs down, etc.) — collect EVERY feasible branch,
-    # then pick the lowest spring energy among them.  Selecting the
-    # first feasible start would make branch choice arbitrary.
-    from scipy.optimize import least_squares
+    def _eval_a(a):
+        """(energy, per-arm pick, feasible, deficit) at AZ norm a."""
+        rm = _rot(k_ax, -(a - az0) * half_az)   # torso counter-rotates
+        tm = rm @ t_mat
+        e_tot = _energy_of(np.array([a]), az_arr)
+        pick, deficit = {}, 0.0
+        for side in ("right", "left"):
+            sp = _ARM[side]
+            s0 = t_pos + t_mat @ sp["s_off"]
+            s = a_ax + rm @ (s0 - a_ax)
+            cand = _arm_ik(tgt_h[side] - s, tm, sp)
+            c = min(cand, key=lambda c: (c["vio"], c["e"])) \
+                if cand else None
+            if c is not None:
+                deficit += c["vio"]
+            if c is not None and c["vio"] <= 1e-9:
+                pick[side] = c
+                e_tot += c["e"]
+            else:
+                pick[side] = c      # best-effort, not feasible
+        ok = all(pick[s] is not None and pick[s]["vio"] <= 1e-9
+                 for s in ("right", "left"))
+        return e_tot, pick, ok, deficit
 
-    def _lsq_res(v):
-        return (lm2(v)[hand_idx] - tgt2).ravel()
+    feas_best = alt_best = None
+    for a in np.linspace(-1.0, 1.0, 201):
+        e_tot, pick, ok, deficit = _eval_a(float(a))
+        if ok and (feas_best is None or e_tot < feas_best[0]):
+            feas_best = (e_tot, float(a), pick)
+        if alt_best is None or deficit < alt_best[0]:
+            alt_best = (deficit, float(a), pick)
+    if feas_best is not None:
+        lo = max(-1.0, feas_best[1] - 0.02)
+        hi = min(1.0, feas_best[1] + 0.02)
+        for a in np.linspace(lo, hi, 21):
+            e_tot, pick, ok, deficit = _eval_a(float(a))
+            if ok and e_tot < feas_best[0]:
+                feas_best = (e_tot, float(a), pick)
 
-    starts = [q_frozen[_STAGE2_IDX], np.zeros(len(_STAGE2_IDX))]
-    starts += [np.random.RandomState(20240101 + k).uniform(
-        -1.0, 1.0, len(_STAGE2_IDX)) for k in range(6)]
-    feas, best_bad, best_e = [], starts[0], np.inf
-    for x0 in starts:
-        r = least_squares(_lsq_res, x0, bounds=(-1.0, 1.0),
-                          max_nfev=max_iter * 20)
-        e = np.linalg.norm(lm2(r.x)[hand_idx] - tgt2, axis=1).max()
-        if e < best_e:
-            best_e, best_bad = e, r.x
-        if e <= tolerance * 0.5:
-            feas.append(r.x)
-
-    if not feas:
-        failed = "stage2_hands"
-        x2 = best_bad
-        e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
+    if feas_best is not None:
+        a_sel, pick = feas_best[1], feas_best[2]
     else:
-        # cluster feasible starts into basins, one representative each
-        reps = []
-        for x in sorted(feas, key=lambda v: _energy_of(v, _STAGE2_IDX)):
-            if all(np.linalg.norm(x - r) > 0.5 for r in reps):
-                reps.append(x)
+        failed = "stage2_hands"
+        a_sel, pick = alt_best[1], alt_best[2]
 
-        # descend energy inside each basin; keep the global minimum
-        def res2(v):
-            return (lm2(v)[hand_idx] - tgt2).ravel()
-        best = None
-        for x0 in reps:
-            sol = minimize(lambda v: _energy_of(v, _STAGE2_IDX), x0,
-                           method="SLSQP", bounds=b2,
-                           constraints=[{"type": "eq", "fun": res2}],
-                           options={"maxiter": max_iter, "ftol": 1e-12})
-            if np.linalg.norm(
-                    lm2(sol.x)[hand_idx] - tgt2,
-                    axis=1).max() <= tolerance:
-                e_sol = _energy_of(sol.x, _STAGE2_IDX)
-                if best is None or e_sol < best[0]:
-                    best = (e_sol, sol.x)
-        x2 = best[1] if best is not None else min(
-            feas, key=lambda v: _energy_of(v, _STAGE2_IDX))
-        e2 = np.linalg.norm(lm2(x2)[hand_idx] - tgt2, axis=1)
-
+    rm = _rot(k_ax, -(a_sel - az0) * half_az)
+    root_pos = a_ax + rm @ (t_pos - a_ax)
+    root_mat = rm @ t_mat
+    q4 = _R.from_matrix(root_mat).as_quat()
+    root_quat = np.array([q4[3], q4[0], q4[1], q4[2]])
     q_full = q_frozen.copy()
-    q_full[_STAGE2_IDX] = x2
+    q_full[az_i] = a_sel
+    for side in ("right", "left"):
+        c = pick.get(side)
+        if c is not None:
+            q_full[np.asarray(_ARM[side]["ji"])] = c["qn"]
     achieved = sk.landmarks(root_pos, root_quat, norm_to_rad(q_full))
     return _result(root_pos, root_quat, q_full, achieved,
                    target, tolerance, failed)
@@ -415,7 +510,7 @@ def _result(root_pos, root_quat, q_norm, achieved, target,
         "q_rad": norm_to_rad(q_norm),
         "landmarks": achieved,
         "point_errors": errs,
-        "satisfied": bool(errs.max() <= tolerance),
+        "satisfied": failed is None and bool(errs.max() <= tolerance),
         "failed_stage": failed,
         "energy": spring_energy(q_norm),
         "joint_names": JOINT_NAMES,
