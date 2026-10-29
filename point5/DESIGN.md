@@ -24,7 +24,7 @@ P5 层只表达**几何意图**：位置、朝向关系。不含速度、力、�
 |---|---|---|
 | `head` | 头部中心（身体球心） | head body 中心 |
 | `hand_right` / `hand_left` | 手部中心 | hand body 中心 |
-| `foot_right` / `foot_left` | 脚踝中心 | foot body + 局部偏移 [0,0,0.06] |
+| `foot_right` / `foot_left` | 脚踝中心 | foot body 上的踝中心 |
 
 五个点的顺序即上表顺序，`POINT_INDEX` 在 contracts.py 定义。
 
