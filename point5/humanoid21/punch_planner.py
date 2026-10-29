@@ -48,11 +48,12 @@ import numpy as np
 
 from ..contracts import (
     POINT_INDEX,
-    PointSpec,
     Keyframe,
+    P5Clip,
     Point5State,
-    Point5Task,
-    WorldPoint,
+    Transfer,
+    ankle_mid_xy,
+    to_local,
 )
 
 _UP = np.array([0.0, 0.0, 1.0])
@@ -91,7 +92,7 @@ class PunchPlannerConfig:
     mid_frac_rear: float = 0.35   # rear hand stays back longer (rotation)
     mid_side_off: float = 0.04    # rear hand: bias to its own side (m)
 
-    # --- torso twist (torso_yaw, deg; sign = toward punching-hand side) ---
+    # --- torso twist (frame yaw deg; sign = toward punching-hand side) ---
     jab_twist_deg: float = 15.0    # lead-hand jab: small shoulder turn
     cross_twist_deg: float = 40.0  # rear-hand cross: hip drives shoulder
     twist_extend_share: float = 0.6  # fraction applied by the extend frame
@@ -121,7 +122,7 @@ class PunchPlannerConfig:
 class PunchPlan:
     """Planning verdict.  ``task is None`` iff unreachable."""
 
-    task: Optional[Point5Task]
+    task: Optional[P5Clip]
     reachable: bool
     reason: str = ""
     diag: Dict[str, object] = field(default_factory=dict)
@@ -147,34 +148,15 @@ def _stance_forward(foot_l: np.ndarray, foot_r: np.ndarray) -> np.ndarray:
     return _norm(_xy(np.cross(_UP, foot_r - foot_l)))
 
 
-def _yaw_of(t_des: np.ndarray, foot_r: np.ndarray,
-            foot_l: np.ndarray) -> Optional[float]:
-    """torso_yaw (deg, DESIGN.md 4.6) for a desired torso-forward world
-    direction, expressed against THIS keyframe's ankle-line basis."""
-    b = _xy(foot_r - foot_l)
-    nb = np.linalg.norm(b)
-    if nb < 1e-3:
-        return None
-    b /= nb
-    n = np.array([-b[1], b[0]])
-    t = _xy(t_des)[:2]
-    if np.linalg.norm(t) < 1e-9:
-        return None
-    return float(np.degrees(np.arctan2(t @ b[:2], t @ n)))
+def _yaw_deg_of(t_dir: np.ndarray) -> float:
+    """Frame yaw (deg) of a planned torso direction — the v2 local frame
+    IS the torso facing, so the frame yaw is just its XY angle."""
+    return float(np.degrees(np.arctan2(t_dir[1], t_dir[0])))
 
 
-def _yaw_dir(yaw_deg: float, foot_r: np.ndarray,
-             foot_l: np.ndarray) -> np.ndarray:
-    """Inverse of _yaw_of: world torso-forward direction for a yaw."""
-    b = _norm(_xy(foot_r - foot_l))
-    n = np.array([-b[1], b[0], 0.0])
-    r = np.deg2rad(yaw_deg)
-    return np.cos(r) * n + np.sin(r) * b
-
-
-def _spec(target: np.ndarray, w: float, tol: float) -> PointSpec:
-    return PointSpec(target=WorldPoint(np.asarray(target, dtype=np.float64)),
-                     tolerance=tol, weight=w)
+def _spec_meta(w: float, tol: float) -> Dict[str, float]:
+    """Per-point annotations for the downstream scorer (P5 ignores them)."""
+    return {"w": float(w), "tol": float(tol)}
 
 
 def plan_punch(initial: Point5State,
@@ -277,53 +259,73 @@ def plan_punch(initial: Point5State,
     hg_mid = hg_load + (hg_hit - hg_load) * 0.5
     head_mid = head_load + (head_hit - head_load) * 0.5
 
-    # --- torso yaw schedule -------------------------------------------
-    # Phase A keeps the initial world torso direction (no telegraphing);
-    # the twist fires through extend->strike toward the punching side.
-    # yaw is re-expressed per keyframe against THAT frame's ankle line —
-    # the baseline rotates when the lead foot steps.
-    yaw0 = initial.torso_yaw if initial.torso_yaw is not None else 0.0
-    t0_dir = _yaw_dir(yaw0, feet[fp_r], feet[fp_l])
+    # --- torso twist schedule -------------------------------------------
+    # In the initial local frame X IS the torso facing, so the start
+    # direction is +X; the strike twist rotates it toward the punch side
+    # (CCW-positive: a right-hand twist is a clockwise = negative turn).
+    t0_dir = np.array([1.0, 0.0, 0.0])
     twist_deg = cfg.cross_twist_deg if rear_hand else cfg.jab_twist_deg
-    # +yaw twists toward the right foot: the (b,n) basis is left-handed,
-    # so a positive yaw delta is a CLOCKWISE world rotation.
     sgn = 1.0 if hand == "right" else -1.0
     twist_rad = np.deg2rad(-sgn * twist_deg)
     c, s = np.cos(twist_rad), np.sin(twist_rad)
-    t_hit = np.array([c * t0_dir[0] - s * t0_dir[1],
-                      s * t0_dir[0] + c * t0_dir[1], 0.0])
+    t_hit = np.array([c, s, 0.0])
     t_ext = t0_dir + (t_hit - t0_dir) * cfg.twist_extend_share
     diag["strike_yaw_twist_deg"] = sgn * twist_deg
 
-    # --- keyframes ---------------------------------------------------
-    def kf(label: str, hp_t, hg_t, head_t, fm_t,
-           t_dir: np.ndarray) -> Keyframe:
-        feet_k = {move_name: fm_t, anchor_name: f_anchor}
-        specs = {
-            hp_name: _spec(hp_t, cfg.w_strike_hand,
-                           cfg.tol_strike_hand if label == "strike"
-                           else cfg.tol_generic),
-            hg_name: _spec(hg_t, cfg.w_guard, cfg.tol_guard),
-            "head": _spec(head_t, cfg.w_head, cfg.tol_head),
-            move_name: _spec(fm_t, cfg.w_feet, cfg.tol_feet),
-            anchor_name: _spec(f_anchor, cfg.w_feet, cfg.tol_feet),
-        }
-        return Keyframe(specs=specs, label=label,
-                        torso_yaw=_yaw_of(t_dir, feet_k[fp_r],
-                                          feet_k[fp_l]))
+    # --- keyframes ----------------------------------------------------
+    # Planned positions live in the initial frame F0.  Each keyframe is
+    # re-expressed in its OWN natural local frame (origin = that frame's
+    # ankle XY mid, X = that frame's torso direction); the frame-to-frame
+    # delta becomes the stored transfer.
+    dur_half = cfg.dur_load * 0.5
+    rows = [
+        ("start",  hp, hg, head, f_move, t0_dir, 0.0),
+        ("swing",  hp + body_shift * 0.4, hg + body_shift * 0.4,
+         head + body_shift * 0.4, f_swing, t0_dir, dur_half),
+        ("load",   hp_load, hg_load, head_load, f_landed, t0_dir,
+         dur_half),
+        ("extend", hp_mid, hg_mid, head_mid, f_landed, t_ext,
+         cfg.dur_reach),
+        ("strike", hp_hit, hg_hit, head_hit, f_landed, t_hit,
+         cfg.dur_snap),
+    ]
 
-    kf0 = kf("start", hp, hg, head, f_move, t0_dir)
-    kf1 = kf("swing", hp + body_shift * 0.4, hg + body_shift * 0.4,
-             head + body_shift * 0.4, f_swing, t0_dir)
-    kf2 = kf("load", hp_load, hg_load, head_load, f_landed, t0_dir)
-    kf3 = kf("extend", hp_mid, hg_mid, head_mid, f_landed, t_ext)
-    kf4 = kf("strike", hp_hit, hg_hit, head_hit, f_landed, t_hit)
+    kfs, prev_o, prev_yaw = [], None, None
+    for label, hp_t, hg_t, head_t, fm_t, t_dir, dur in rows:
+        pos5 = np.empty((5, 3))
+        pos5[POINT_INDEX["head"]] = head_t
+        pos5[POINT_INDEX[hp_name]] = hp_t
+        pos5[POINT_INDEX[hg_name]] = hg_t
+        pos5[POINT_INDEX[move_name]] = fm_t
+        pos5[POINT_INDEX[anchor_name]] = f_anchor
+        o_k = ankle_mid_xy(pos5)
+        yaw_k = _yaw_deg_of(t_dir)
+        tr = None
+        if prev_o is not None:
+            do = o_k - prev_o
+            r0 = np.deg2rad(prev_yaw)
+            c0, s0 = np.cos(r0), np.sin(r0)
+            tr = Transfer(dx=c0 * do[0] + s0 * do[1],
+                          dy=-s0 * do[0] + c0 * do[1],
+                          dyaw=yaw_k - prev_yaw, dur=dur)
+        kfs.append(Keyframe(
+            pos=to_local(pos5, o_k, yaw_k),
+            transfer=tr, label=label,
+            meta={"specs": {
+                hp_name: _spec_meta(cfg.w_strike_hand,
+                                    cfg.tol_strike_hand
+                                    if label == "strike"
+                                    else cfg.tol_generic),
+                hg_name: _spec_meta(cfg.w_guard, cfg.tol_guard),
+                "head": _spec_meta(cfg.w_head, cfg.tol_head),
+                move_name: _spec_meta(cfg.w_feet, cfg.tol_feet),
+                anchor_name: _spec_meta(cfg.w_feet, cfg.tol_feet),
+            }}))
+        prev_o, prev_yaw = o_k, yaw_k
 
-    task = Point5Task(
+    task = P5Clip(
         name=f"punch_{hand}",
-        keyframes=(kf0, kf1, kf2, kf3, kf4),
-        durations=(cfg.dur_load * 0.5, cfg.dur_load * 0.5,
-                   cfg.dur_reach, cfg.dur_snap),
+        keyframes=tuple(kfs),
         metadata={
             "hand": hand,
             "target": target.tolist(),
