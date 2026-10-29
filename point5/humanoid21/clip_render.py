@@ -25,52 +25,30 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from point5.contracts import POINT_NAMES  # noqa: E402
+from point5.contracts import (  # noqa: E402
+    POINT_NAMES, P5Clip, to_world)
+from point5.trajectory import sample_clip  # noqa: E402
 from point5.humanoid21.fk import Humanoid21FK  # noqa: E402
 from point5.humanoid21.mechanics import (  # noqa: E402
     Skeleton, solve_equilibrium)
 from point5.humanoid21.render import _project  # noqa: E402
+from scipy.spatial.transform import Rotation as _R  # noqa: E402
 
 PT_COLOR = {"head": (224, 72, 62), "hand_right": (59, 165, 59),
             "hand_left": (59, 127, 212), "foot_right": (224, 160, 42),
             "foot_left": (181, 106, 224)}
 
 
-def load_clip(path: str):
-    """[(pos(5,3), yaw|None)] in keyframe order.  Accepts the studio
-    p5clip format and the Point5Task serde."""
-    d = json.loads(Path(path).read_text())
-    kfs = []
-    if d.get("type") == "p5clip" or "current" in d:
-        for k in d["keyframes"]:
-            kfs.append((np.asarray(k["pos"], float), k.get("torso_yaw")))
-    else:                                   # Point5Task serde
-        for k in d["keyframes"]:
-            pos = np.stack([np.asarray(k["specs"][n]["target"]["pos"],
-                                       float) for n in POINT_NAMES])
-            kfs.append((pos, k.get("torso_yaw")))
-    if len(kfs) < 1:
-        raise ValueError("clip has no keyframes")
-    return kfs
-
-
-def sample_frames(kfs, max_step: float):
-    """Change-adaptive: ceil(max point displacement / max_step) equal
-    substeps per segment.  Returns [(pos, yaw|None)]."""
-    if len(kfs) == 1:
-        return [kfs[0]]
-    out = []
-    for seg in range(len(kfs) - 1):
-        (p0, y0), (p1, y1) = kfs[seg], kfs[seg + 1]
-        d = float(np.linalg.norm(p1 - p0, axis=1).max())
-        n = max(1, int(np.ceil(d / max_step)))
-        stop = n if seg < len(kfs) - 2 else n + 1
-        for k in range(stop):
-            s = k / n
-            yaw = y0 + (y1 - y0) * s \
-                if (y0 is not None and y1 is not None) else None
-            out.append((p0 + (p1 - p0) * s, yaw))
-    return out
+def _world_pose(res, origin_xy, yaw_deg):
+    """Lift a local-frame solve result into world under the frame pose."""
+    rz = _R.from_euler("z", np.deg2rad(yaw_deg))
+    rp = np.asarray(res["root_pos"], float).copy()
+    rp[:2] = rz.as_matrix()[:2, :2] @ rp[:2] + np.asarray(origin_xy)
+    ql = res["root_quat_wxyz"]          # wxyz
+    qw = (rz * _R.from_quat([ql[1], ql[2], ql[3], ql[0]])).as_quat()
+    return {"root_pos": rp,
+            "root_quat_wxyz": np.array([qw[3], qw[0], qw[1], qw[2]]),
+            "q_rad": res["q_rad"]}
 
 
 def render_one(fk, rd, cam, img_size, pose, target, sat, failed, fidx):
@@ -105,9 +83,10 @@ def main():
 
     global robot
     robot = args.robot
-    kfs = load_clip(args.clip)
-    frames = sample_frames(kfs, args.max_step)
-    print(f"{len(kfs)} keyframes -> {len(frames)} frames", flush=True)
+    clip = P5Clip.from_dict(json.loads(Path(args.clip).read_text()))
+    frames = sample_clip(clip, max_step=args.max_step)
+    print(f"{len(clip.keyframes)} keyframes -> {len(frames)} frames",
+          flush=True)
 
     fk = Humanoid21FK()
     sk = Skeleton()
@@ -129,12 +108,14 @@ def main():
          "-i", "-", "-pix_fmt", "yuv420p", "-crf", "20", args.out],
         stdin=subprocess.PIPE)
 
-    for fi, (pos, yaw) in enumerate(frames):
-        res = solve_equilibrium(pos, torso_yaw=yaw, skeleton=sk)
+    for fi, sm in enumerate(frames):
+        res = solve_equilibrium(sm.pos, skeleton=sk)
+        wp = _world_pose(res, sm.origin_xy, sm.yaw_deg)
+        target = sm.world_pos()
         cells = []
         for cam in cams:
-            cam.lookat[:] = res["root_pos"] + np.array([0, 0, -0.35])
-            cells.append(render_one(fk, rd, cam, size, res, pos,
+            cam.lookat[:] = wp["root_pos"] + np.array([0, 0, -0.35])
+            cells.append(render_one(fk, rd, cam, size, wp, target,
                                     res["satisfied"],
                                     res["failed_stage"], fi))
         img = Image.new("RGB", (args.w * 2, args.h))

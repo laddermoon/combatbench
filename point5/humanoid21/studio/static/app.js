@@ -148,7 +148,9 @@ function refreshClip() {
   (state.clip || []).forEach((k, i) => {
     const d = document.createElement('div');
     d.className = 'kf' + (i === state.sel ? ' sel' : '');
-    d.innerHTML = `#${i} t=<input value="${k.t}" style="width:45px"> <span class="dim">del</span>`;
+    const dur = k.transfer ? k.transfer.dur : '';
+    const tr = k.transfer ? ` dx${k.transfer.dx} dy${k.transfer.dy} dyaw${k.transfer.dyaw}` : '';
+    d.innerHTML = `#${i} t=<input value="${dur}" style="width:45px"><span class="dim">${tr} del</span>`;
     d.querySelector('input').onchange = ev =>
       api('/api/clip/time', {i, t: parseFloat(ev.target.value)});
     d.onclick = ev => { if (ev.target.tagName !== 'INPUT') api('/api/clip/sel', {i}).then(applySel); };
@@ -159,12 +161,12 @@ function refreshClip() {
 function applySel(r) {
   state.sel = r.sel;
   if (r.res) { setPose(r.res.bodies); showRes(r.res); }
-  api('/api/init').then(s => { setPoints(s.p5); el('yawin').value = s.yaw ?? ''; });
+  api('/api/init').then(s => { setPoints(s.p5); });
   refreshClip();
 }
 el('badd').onclick = () => api('/api/clip/add').then(r => { state.clip = r.clip; state.sel = r.sel; refreshClip(); });
 el('bcom').onclick = () => api('/api/clip/commit').then(r => { state.clip = r.clip; refreshClip(); });
-el('byaw').onclick = () => api('/api/set_yaw', {yaw: el('yawin').value === '' ? null : parseFloat(el('yawin').value)}).then(r => { if (r.res) { setPose(r.res.bodies); showRes(r.res); } });
+
 el('bsave').onclick = () => { const n = el('fname').value || 'clip.json'; api('/api/save', {name: n}).then(refreshFiles); };
 
 function refreshFiles() {
@@ -187,7 +189,7 @@ async function api_boot() {
   el('wdir').textContent = s.workdir;
   mkBodyMeshes(); mkPoints(); setPoints(s.p5);
   if (s.res) { setPose(s.res.bodies); showRes(s.res); }
-  if (s.yaw != null) el('yawin').value = s.yaw.toFixed(1);
+
   refreshClip(); refreshFiles();
   (function loop() { requestAnimationFrame(loop); ctl.update(); renderer.render(scene, cam); })();
 }

@@ -64,7 +64,7 @@ POINT_COLOR = {"head": "#e0483e", "hand_right": "#3ba53b",
                "foot_left": "#b56ae0"}
 
 # ---- state ------------------------------------------------------------
-S = {"p5": None, "yaw": None, "res": None, "frozen": None,
+S = {"p5": None, "res": None, "frozen": None,
      "clip": [], "sel": -1}
 
 
@@ -73,7 +73,7 @@ def _initial_p5():
         "/strike_start_v1/strike_start_p5.npz"
     if npz.exists():
         d = np.load(npz)
-        return d["p5"][0].astype(np.float64), float(d["torso_yaw"][0])
+        return d["p5"][0].astype(np.float64)
     q = np.zeros(21)
     lm = sk.landmarks(np.array([0.0, 0.0, 0.79]), np.array([1., 0, 0, 0]),
                       norm_to_rad(q))
@@ -99,7 +99,7 @@ def _res_payload(res):
 
 
 def _commit_solve():
-    S["res"] = solve_equilibrium(S["p5"], torso_yaw=S["yaw"], skeleton=sk)
+    S["res"] = solve_equilibrium(S["p5"], skeleton=sk)
     if S["res"]["satisfied"]:
         q = S["res"]["q_norm"].copy()
         q[[i for i, n in enumerate(
@@ -112,7 +112,7 @@ def _commit_solve():
 
 
 def _state_payload():
-    out = {"p5": S["p5"].tolist(), "yaw": S["yaw"],
+    out = {"p5": S["p5"].tolist(),
            "clip": S["clip"], "sel": S["sel"],
            "point_names": list(LANDMARK_ORDER),
            "point_colors": POINT_COLOR}
@@ -161,7 +161,7 @@ def api_drag():
 
     # head/foot: fast envelope on move, full solve on end
     if phase == "move":
-        c = check_legal(cand, S["yaw"])
+        c = check_legal(cand)
         return jsonify({"ok": c["legal"], "violations": c["violations"]})
     t0 = time.time()
     old_p5, old_res = S["p5"], S["res"]
@@ -180,12 +180,6 @@ def api_drag():
     return jsonify(pay)
 
 
-@app.post("/api/set_yaw")
-def api_yaw():
-    S["yaw"] = request.get_json(force=True).get("yaw")
-    return jsonify({"ok": True, "res": _commit_solve()})
-
-
 @app.get("/api/files")
 def api_files():
     return jsonify([{"name": p.name, "size": p.stat().st_size}
@@ -196,10 +190,10 @@ def api_files():
 def api_save():
     d = request.get_json(force=True)
     name = Path(d["name"]).name
-    data = {"type": "p5clip",
-            "point_names": list(LANDMARK_ORDER),
+    data = {"type": "p5clip.v2",
+            "name": d.get("name", name),
             "keyframes": S["clip"],
-            "current": {"pos": S["p5"].tolist(), "torso_yaw": S["yaw"]}}
+            "metadata": {"current": S["p5"].tolist()}}
     (WORK / name).write_text(json.dumps(data, indent=1))
     return jsonify({"ok": True, "name": name})
 
@@ -208,24 +202,27 @@ def api_save():
 def api_load():
     d = request.get_json(force=True)
     data = json.loads((WORK / Path(d["name"]).name).read_text())
-    if data.get("type") == "p5clip":
+    if data.get("type") == "p5clip.v2":
         S["clip"] = data["keyframes"]
-        cur = data.get("current") or {}
-        if cur.get("pos") is not None:
-            S["p5"] = np.asarray(cur["pos"], float)
-            S["yaw"] = cur.get("torso_yaw")
-    elif "pos" in data:
-        S["p5"] = np.asarray(data["pos"], float)
-        S["yaw"] = data.get("torso_yaw")
+        cur = (data.get("metadata") or {}).get("current")
+        if cur is not None:
+            S["p5"] = np.asarray(cur, float)
+        elif S["clip"]:
+            S["p5"] = np.asarray(S["clip"][0]["p5"], float)
+    elif "p5" in data:
+        S["p5"] = np.asarray(data["p5"], float)
     return jsonify({"ok": True, "res": _commit_solve(),
                     **_state_payload()})
 
 
 @app.post("/api/clip/add")
 def clip_add():
-    t = (S["clip"][-1]["t"] + 1.0) if S["clip"] else 0.0
-    S["clip"].append({"t": t, "pos": S["p5"].tolist(),
-                      "torso_yaw": S["yaw"]})
+    """Append a keyframe duplicating the current pose; its transfer
+    defaults to identity (edit dx/dy/dyaw/dur afterwards)."""
+    kf = {"p5": S["p5"].tolist()}
+    if S["clip"]:
+        kf["transfer"] = {"dx": 0.0, "dy": 0.0, "dyaw": 0.0, "dur": 0.5}
+    S["clip"].append(kf)
     S["sel"] = len(S["clip"]) - 1
     return jsonify({"clip": S["clip"], "sel": S["sel"]})
 
@@ -234,8 +231,7 @@ def clip_add():
 def clip_commit():
     """Write the editor's current p5 into the selected keyframe."""
     if 0 <= S["sel"] < len(S["clip"]):
-        S["clip"][S["sel"]]["pos"] = S["p5"].tolist()
-        S["clip"][S["sel"]]["torso_yaw"] = S["yaw"]
+        S["clip"][S["sel"]]["p5"] = S["p5"].tolist()
     return jsonify({"clip": S["clip"], "sel": S["sel"]})
 
 
@@ -244,11 +240,23 @@ def clip_sel():
     i = int(request.get_json(force=True)["i"])
     if 0 <= i < len(S["clip"]):
         S["sel"] = i
-        kf = S["clip"][i]
-        S["p5"] = np.asarray(kf["pos"], float)
-        S["yaw"] = kf.get("torso_yaw")
+        S["p5"] = np.asarray(S["clip"][i]["p5"], float)
         return jsonify({"res": _commit_solve(), "sel": i})
     return jsonify({"error": "bad index"}), 400
+
+
+@app.post("/api/clip/transfer")
+def clip_transfer():
+    """Edit the selected keyframe's transfer fields."""
+    d = request.get_json(force=True)
+    i = int(d.get("i", S["sel"]))
+    if 0 < i < len(S["clip"]):
+        tr = S["clip"][i].setdefault(
+            "transfer", {"dx": 0.0, "dy": 0.0, "dyaw": 0.0, "dur": 0.5})
+        for f in ("dx", "dy", "dyaw", "dur"):
+            if f in d:
+                tr[f] = float(d[f])
+    return jsonify({"clip": S["clip"]})
 
 
 @app.post("/api/clip/del")
@@ -263,7 +271,9 @@ def clip_del():
 @app.post("/api/clip/time")
 def clip_time():
     d = request.get_json(force=True)
-    S["clip"][int(d["i"])]["t"] = float(d["t"])
+    i = int(d["i"])
+    if "transfer" in S["clip"][i]:
+        S["clip"][i]["transfer"]["dur"] = float(d["t"])
     return jsonify({"clip": S["clip"]})
 
 
@@ -274,7 +284,7 @@ def main():
     ap.add_argument("--port", type=int, default=8901)
     a = ap.parse_args()
     WORK = Path(a.dir).resolve()
-    S["p5"], S["yaw"] = _initial_p5()
+    S["p5"] = _initial_p5()
     _commit_solve()
     app.run(host="0.0.0.0", port=a.port, threaded=True)
 
