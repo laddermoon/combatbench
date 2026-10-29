@@ -493,6 +493,73 @@ def solve_equilibrium(target_pos: np.ndarray,
                    target, tolerance, failed)
 
 
+# -------------------------------------------------- fast legality filter --
+# Necessary-condition envelope measured by sweeping the skeleton over the
+# full normalized joint box (200k uniform samples).  Violating any bound is
+# DEFINITELY illegal; passing only means "not obviously illegal" — the full
+# two-stage solve remains the definitive test.
+_LEGAL_BOUNDS = {
+    "foot_sep":   (0.0, 1.60),        # |foot_r - foot_l|
+    "head_mid":   (0.03, 1.42),       # |head - ankle midpoint|
+    "head_b":     (-1.32, 1.32),      # head rel mid, along ankle line
+    "head_n":     (-1.00, 0.95),      # head rel mid, stance-forward
+    "head_up":    (-0.85, 1.42),      # head rel mid, perpendicular
+    "hand_head":  (0.0, 0.88),        # |hand - head|, each hand
+}
+
+
+def check_legal(target_pos: np.ndarray,
+                torso_yaw: float | None = None) -> dict:
+    """Fast geometric legality screen (<1 ms, no optimisation).
+
+    Returns {"legal": bool, "failed_stage": str|None, "violations": list}.
+    legal=False is definitive — the point set cannot be reconstructed.
+    legal=True means the target survives necessary conditions; run
+    ``solve_equilibrium`` for the definitive verdict.
+    """
+    p = np.asarray(target_pos, dtype=np.float64)
+    names = LANDMARK_ORDER
+    h, hr, hl = p[names.index("head")], p[names.index("hand_right")], \
+        p[names.index("hand_left")]
+    fr, fl = p[names.index("foot_right")], p[names.index("foot_left")]
+    mid = (fr + fl) / 2.0
+    b = fr - fl
+    nb = float(np.linalg.norm(b))
+
+    violations, stage = [], None
+
+    def _chk(name, v):
+        lo, hi = _LEGAL_BOUNDS[name]
+        if not (lo <= v <= hi):
+            violations.append(f"{name}={v:.3f} not in [{lo},{hi}]")
+
+    # ---- stage-1 geometry ----
+    _chk("foot_sep", nb)
+    _chk("head_mid", float(np.linalg.norm(h - mid)))
+    if nb > 1e-3:
+        bh = b / nb
+        n = np.array([-bh[1], bh[0], 0.0])
+        nn = np.linalg.norm(n)
+        if nn > 1e-9:
+            n /= nn
+            up = np.cross(bh, n)
+            v = h - mid
+            _chk("head_b", float(v @ bh))
+            _chk("head_n", float(v @ n))
+            _chk("head_up", float(v @ up))
+    if violations:
+        stage = "stage1_body"
+    else:
+        # ---- stage-2 geometry ----
+        _chk("hand_head", float(np.linalg.norm(hr - h)))
+        _chk("hand_head", float(np.linalg.norm(hl - h)))
+        if violations:
+            stage = "stage2_hands"
+    # torso_yaw alone cannot fail: the sampled envelope covers ±180 deg.
+    return {"legal": not violations, "failed_stage": stage,
+            "violations": violations}
+
+
 def _energy_of(q_partial, idx) -> float:
     """Spring energy of a subset of normalized joint values."""
     q = np.zeros(len(JOINT_NAMES))
