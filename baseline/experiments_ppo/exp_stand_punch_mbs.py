@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from point5.contracts import Point5State
+from point5.contracts import P5Clip, Point5State
 from point5.humanoid21.stand_punch import (
     StandPunchConfig, plan_stand_punch, stand_p5)
 
@@ -72,15 +72,22 @@ class StandPunchMBS(PunchP5MBS):
         rng = np.random.default_rng(base_seed + 555)
         for job in jobs:
             for rid in self._AGENT_IDS:
-                hand, tgt = self._sample_target(rng)
+                hand, tgt, clip_d = self._sample_target(rng)
                 job.episode_options[f"{rid}_sp_hand"] = hand
+                job.episode_options[f"{rid}_sp_clip"] = clip_d
                 for a, v in zip("xyz", tgt):
                     job.episode_options[f"{rid}_sp_t{a}"] = float(v)
         return jobs
 
     @staticmethod
     def _sample_target(rng, max_tries: int = 64):
-        """Rejection-sample a reachable (hand, local target) pair."""
+        """Rejection-sample a reachable (hand, target, clip) triple.
+
+        The plan runs ONCE here — the serialized clip travels inside
+        episode_options to both the command plugin and the scorer, so
+        nothing downstream re-plans or silently falls back.
+        """
+        st0 = Point5State(pos=stand_p5())
         for _ in range(max_tries):
             hand = "left" if rng.random() < 0.5 else "right"
             tgt = np.array([rng.uniform(*_TGT_X),
@@ -88,21 +95,21 @@ class StandPunchMBS(PunchP5MBS):
                             rng.uniform(*_TGT_Z)])
             # stand_p5() == the arena spawn pose (root z=1.282), the
             # same pose the plugin/scorer measure at reset.
-            if plan_stand_punch(
-                    tgt, hand,
-                    initial=Point5State(pos=stand_p5())).reachable:
-                return hand, tgt
+            plan = plan_stand_punch(tgt, hand, initial=st0)
+            if plan.reachable:
+                return hand, tgt, plan.task.to_dict()
         # Fallback to a known-good central target.
-        return "left", np.array([1.05, 0.0, 1.10])
+        tgt = np.array([1.05, 0.0, 1.10])
+        return "left", tgt, plan_stand_punch(
+            tgt, "left", initial=st0).task.to_dict()
 
     # --- scoring -------------------------------------------------------
 
-    def _plan_reference(self, st0, target_local, hand, f1):
-        plan = plan_stand_punch(target_local, hand, self._STAND_PLAN,
-                                initial=st0)
-        if not plan.reachable:
+    def _plan_reference(self, st0, target_local, hand, f1,
+                        clip_dict=None):
+        if clip_dict is None:
             return None
-        clip = timed_stand_clip(plan.task, st0.pos)
+        clip = timed_stand_clip(P5Clip.from_dict(clip_dict), st0.pos)
         return clip_frame_samples(clip, f1, _DT)
 
     @property

@@ -102,7 +102,8 @@ class PunchP5MBS(HierS2BalanceMBS):
 
     # --- trajectories ---------------------------------------------------
 
-    def _plan_reference(self, st0, target_local, hand, f1):
+    def _plan_reference(self, st0, target_local, hand, f1,
+                        clip_dict=None):
         """(world_pos (T,5,3), frame_yaws (T,)) for scoring, or None.
 
         Sample t is the pose + torso-facing yaw the robot should reach
@@ -166,7 +167,10 @@ class PunchP5MBS(HierS2BalanceMBS):
                     pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
                 # ref_world[t] = world P5 pose the robot should reach
                 # after action t (time min((t+1)*dt, duration)).
-                ref = self._plan_reference(st0, target, hand, f1)
+                ref = self._plan_reference(
+                    st0, target, hand, f1,
+                    clip_dict=(episode.episode_options or {}).get(
+                        f"{agent_id}_sp_clip"))
                 if ref is not None:
                     ref_world, ref_yaws = ref
                     active_steps = min(T, len(ref_world))

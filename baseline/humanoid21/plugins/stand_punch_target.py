@@ -9,13 +9,13 @@ pre-validated offline against ``plan_stand_punch``):
     {rid}_sp_tx/ty/tz     target point in the robot's initial local frame
                           (+X = torso facing, +Y = torso left)
 
-Runs after episode reset, before the observer dispatcher.  Measures the
-post-reset Point5State (v2 local frame), re-plans with the measured
-state as ``initial`` (equivalent to the offline stand_p5 assumption as
-long as the reset pose is the standard standing pose), resolves the
-strike-hand world track under f1, and stores the start P5 / f1 /
-local+world targets as scalar episode metrics — same key names as
-StrikeTargetPlugin so the punch scorer works unchanged.
+Runs after episode reset, before the observer dispatcher.  Measures
+the post-reset Point5State (v2 local frame), resolves the pre-planned
+clip under the measured frame pose f1 (the plan runs once, offline, in
+``build_jobs`` — no re-planning here and no silent fallback), and
+stores the start P5 / f1 / local+world targets as scalar episode
+metrics — same key names as StrikeTargetPlugin so the punch scorer
+works unchanged.
 """
 from __future__ import annotations
 
@@ -28,10 +28,8 @@ from baseline.humanoid21.hierarchy.p5_world import (
     retime_clip)
 from envs.framework import BasePlugin, SimContext
 from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
-from point5.contracts import POINT_INDEX
+from point5.contracts import P5Clip, POINT_INDEX
 from point5.humanoid21.adapter import point5_from_view
-from point5.humanoid21.stand_punch import (
-    StandPunchConfig, plan_stand_punch)
 
 # Per-segment real-time assignment (P5 clip dur is a schema placeholder):
 # stand->coil, coil->swing, swing->land, land->strike.
@@ -76,16 +74,17 @@ class StandPunchTargetPlugin(BasePlugin):
             f1 = f1_from_state(p5)
             tgt = p5_to_world(tgt_local, f1)
             side = 1 if hand == "left" else -1
-            plan = plan_stand_punch(tgt_local, hand,
-                                    StandPunchConfig(), initial=p5)
-            if plan.reachable:
-                hidx = POINT_INDEX[f"hand_{hand}"]
-                clip = timed_stand_clip(plan.task, p5.pos)
-                track = clip_world_samples(clip, f1, DT)[:, hidx]
-                ctx.mutator.set_effector_world_track(
-                    rid, +1, side, track)
-            else:
-                ctx.mutator.set_effector_world(rid, +1, side, tgt)
+            clip_d = opts.get(f"{rid}_sp_clip")
+            if clip_d is None:
+                raise ValueError(
+                    f"{rid}_sp_clip missing from episode_options — "
+                    "stand-punch plans are validated offline in "
+                    "build_jobs; there is no reset-time fallback")
+            hidx = POINT_INDEX[f"hand_{hand}"]
+            clip = timed_stand_clip(P5Clip.from_dict(clip_d), p5.pos)
+            track = clip_world_samples(clip, f1, DT)[:, hidx]
+            ctx.mutator.set_effector_world_track(
+                rid, +1, side, track)
             for i, value in enumerate(p5.pos.reshape(-1)):
                 ctx.metrics[f"{rid}_strike_p5_{i}"] = float(value)
             ctx.metrics[f"{rid}_strike_f1_ox"] = float(f1[0][0])
@@ -98,8 +97,7 @@ class StandPunchTargetPlugin(BasePlugin):
                 ctx.metrics[f"{rid}_strike_lt{'xyz'[i]}"] = float(value)
             ctx.metrics[f"{rid}_strike_hand_i"] = (
                 0.0 if hand == "left" else 1.0)
-            ctx.metrics[f"{rid}_strike_ok"] = (
-                1.0 if plan.reachable else 0.0)
+            ctx.metrics[f"{rid}_strike_ok"] = 1.0
 
     def to_blueprint(self) -> Dict[str, Any]:
         return {"target_robots": list(self._targets)}

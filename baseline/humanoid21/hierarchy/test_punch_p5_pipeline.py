@@ -214,8 +214,14 @@ def test_stand_punch_env_issues_track_and_metrics():
         "hier_stand_punch_env.yaml")
     runtime = bp.materialize(max_steps=13).build()
     try:
+        from point5.contracts import Point5State
+        from point5.humanoid21.stand_punch import plan_stand_punch, stand_p5
+        tgt = np.array([1.05, 0.0, 1.10])
+        plan = plan_stand_punch(tgt, "left",
+                                initial=Point5State(pos=stand_p5()))
         runtime.reset(seed=4242, options={
             "robot_a_sp_hand": "left",
+            "robot_a_sp_clip": plan.task.to_dict(),
             "robot_a_sp_tx": 1.05, "robot_a_sp_ty": 0.0,
             "robot_a_sp_tz": 1.10,
         })
