@@ -17,7 +17,7 @@ from point5.humanoid21.stand_punch import (
 )
 
 CFG = StandPunchConfig()
-FRONT = np.array([0.55, 0.0, 1.15])
+FRONT = np.array([1.05, 0.0, 1.15])
 
 
 def test_stand_p5_is_valid_local():
@@ -44,6 +44,8 @@ def test_verdicts():
                             CFG).reason == "out_of_sector"
     assert plan_stand_punch(np.array([1.5, 0., 1.1]), "right",
                             CFG).reason == "out_of_reach"
+    assert plan_stand_punch(np.array([0.8, 0., 1.1]), "right",
+                            CFG).reason == "too_close"
 
 
 def test_coil_sinks_without_moving():
@@ -59,7 +61,7 @@ def test_coil_sinks_without_moving():
 
 def test_swing_lifts_lead_foot():
     """kf1: lead foot is airborne mid-step along the attack axis."""
-    far = np.array([1.0, 0.0, 1.15])
+    far = np.array([1.2, 0.0, 1.15])
     p = plan_stand_punch(far, "right", CFG)
     w = keyframe_world(p.task)
     move = POINT_INDEX[p.diag["moving_foot"]]
@@ -71,22 +73,22 @@ def test_swing_lifts_lead_foot():
     np.testing.assert_allclose(w[1, anchor], w[0, anchor], atol=1e-9)
 
 
-def test_feet_never_move_in_range():
-    """In-range target: no stepping, feet planted through all frames."""
+def test_min_step_commits_for_all_targets():
+    """Every strike steps at least min_step — near targets included."""
     p = plan_stand_punch(FRONT, "right", CFG)
     w = keyframe_world(p.task)
-    assert p.diag["step_len"] == 0.0
-    for k in range(1, 4):
-        # anchor + lead feet planted (swing lifts by clearance*0 too)
-        np.testing.assert_allclose(
-            w[k, 3:, :2], w[0, 3:, :2], atol=1e-9)
-        np.testing.assert_allclose(
-            w[k, 3:, 2], w[0, 3:, 2], atol=1e-9)
+    assert p.diag["step_len"] >= CFG.min_step
+    move = POINT_INDEX[p.diag["moving_foot"]]
+    anchor = POINT_INDEX[p.diag["anchor_foot"]]
+    a = p.diag["attack_axis"]
+    adv = (w[2, move] - w[0, move]) @ a
+    assert adv == pytest.approx(p.diag["step_len"], abs=0.01)
+    np.testing.assert_allclose(w[2, anchor], w[0, anchor], atol=1e-9)
 
 
 def test_far_target_lands_step_and_transfers():
     """kf2: lead foot lands a full parallel step, anchor stays, COM drops."""
-    far = np.array([1.0, 0.0, 1.15])
+    far = np.array([1.2, 0.0, 1.15])
     p = plan_stand_punch(far, "right", CFG)
     assert p.reachable
     w = keyframe_world(p.task)
