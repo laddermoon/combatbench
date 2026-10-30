@@ -204,3 +204,52 @@ def test_planned_foot_and_fist_never_reverse_attack_axis():
                          plan.task.metadata["moving_foot"]):
                 projection = kw[:, POINT_INDEX[name]] @ a
                 assert np.all(np.diff(projection) >= -1e-9)
+
+
+def test_stand_punch_env_issues_track_and_metrics():
+    """Stand-punch env: no state injection, 13-step track, metrics set."""
+    import numpy as np
+    bp = ParameterizedEnvBlueprint.load(
+        "baseline/humanoid21/hierarchy/blueprints/"
+        "hier_stand_punch_env.yaml")
+    runtime = bp.materialize(max_steps=13).build()
+    try:
+        runtime.reset(seed=4242, options={
+            "robot_a_sp_hand": "left",
+            "robot_a_sp_tx": 1.05, "robot_a_sp_ty": 0.0,
+            "robot_a_sp_tz": 1.10,
+        })
+        sim = runtime.simulator
+        track = sim._world_effector_track.get("robot_a")
+        assert track is not None and len(track) == 13
+        m = runtime.ctx.metrics
+        for k in ("strike_f1_ox", "strike_f1_oy", "strike_f1_yaw",
+                  "strike_tx", "strike_ltx", "strike_ok"):
+            assert f"robot_a_{k}" in m
+        # Guidance track ends at the world strike point.
+        np.testing.assert_allclose(
+            track[-1], [m["robot_a_strike_tx"], m["robot_a_strike_ty"],
+                        m["robot_a_strike_tz"]], atol=0.12)
+    finally:
+        runtime.close()
+
+
+def test_retime_and_prepend_start():
+    """retime/prepend produce a 5-kf clip whose first world pose is the
+    measured stand pose and whose last is the strike pose."""
+    import numpy as np
+    from point5.humanoid21.stand_punch import plan_stand_punch, stand_p5
+    from baseline.humanoid21.hierarchy.p5_world import (
+        prepend_start, retime_clip)
+    from point5.trajectory import keyframe_world
+    plan = plan_stand_punch(np.array([1.05, 0.0, 1.1]), "left")
+    assert plan.reachable
+    clip = prepend_start(plan.task, stand_p5(), 0.10)
+    clip = retime_clip(clip, (0.10, 0.20, 0.20, 0.15))
+    kw = keyframe_world(clip, _F1_IDENTITY)
+    np.testing.assert_allclose(kw[0], stand_p5(), atol=1e-9)
+    assert abs(sum(k.transfer.dur for k in clip.keyframes[1:])
+               - 0.65) < 1e-9
+    # Strike frame must be preserved from the original plan.
+    np.testing.assert_allclose(
+        kw[-1], keyframe_world(plan.task, _F1_IDENTITY)[-1], atol=1e-9)

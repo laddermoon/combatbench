@@ -100,6 +100,27 @@ class PunchP5MBS(HierS2BalanceMBS):
 
     # --- trajectories ---------------------------------------------------
 
+    def _plan_reference(self, st0, target_local, hand, f1):
+        """World-frame (T,5,3) reference samples for scoring, or None.
+
+        Sample t is the pose the robot should reach after action t.
+        """
+        plan = plan_punch(st0, target_local, hand, self._PLAN)
+        if not plan.reachable:
+            return None
+        return clip_world_samples(plan.task, f1, _DT)
+
+    @property
+    def _load_seconds(self) -> float:
+        """End of the "loading" phase (actor weights switch to strike)."""
+        return self._PLAN.dur_load
+
+    @property
+    def _task_seconds(self) -> float:
+        """Total planned task duration (eval impact frame index)."""
+        return (self._PLAN.dur_load + self._PLAN.dur_reach
+                + self._PLAN.dur_snap)
+
     def _build_agent_trajectory(self, episode, agent_id, foot_key,
                                 phi_key):
         trajs = super()._build_agent_trajectory(
@@ -139,11 +160,10 @@ class PunchP5MBS(HierS2BalanceMBS):
                 pos = np.asarray(pos).reshape(len(pos), 5, 3)
                 st0 = Point5State(
                     pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
-                plan = plan_punch(st0, target, hand, self._PLAN)
-                if plan.reachable:
-                    # ref_world[t] = world P5 pose the robot should reach
-                    # after action t (time min((t+1)*dt, duration)).
-                    ref_world = clip_world_samples(plan.task, f1, _DT)
+                # ref_world[t] = world P5 pose the robot should reach
+                # after action t (time min((t+1)*dt, duration)).
+                ref_world = self._plan_reference(st0, target, hand, f1)
+                if ref_world is not None:
                     active_steps = min(T, len(ref_world))
                     pn = POINT_INDEX
                     mp = {
@@ -176,7 +196,7 @@ class PunchP5MBS(HierS2BalanceMBS):
             term = True
             fall_rew = (np.asarray(ref_ch.reward, dtype=np.float32)
                         if ref_ch is not None else np.zeros(T, np.float32))
-            loading = (np.arange(T) + 1) * _DT <= self._PLAN.dur_load
+            loading = (np.arange(T) + 1) * _DT <= self._load_seconds
             for part in _PARTS:
                 key = f"r_{part}"
                 aw = np.where(loading, self._AW_LOAD[part],
@@ -204,8 +224,7 @@ class PunchP5MBS(HierS2BalanceMBS):
                 hand_idx = (2 if metrics.get(f"{rid}_strike_hand_i", 0)
                             < 0.5 else 1)
                 t_full = ep.num_frames
-                duration = (self._PLAN.dur_load + self._PLAN.dur_reach
-                            + self._PLAN.dur_snap)
+                duration = self._task_seconds
                 hit_idx = min(round(duration / _DT) - 1,
                               ep.agent_frame_boundary.get(rid, t_full) - 1)
                 if hit_idx < 0:

@@ -18,10 +18,11 @@ from typing import Tuple
 
 import numpy as np
 
-from point5.contracts import P5Clip, to_world
+from point5.contracts import Keyframe, P5Clip, Transfer, to_world
 from point5.trajectory import FramePose, keyframe_frames
 
-__all__ = ["f1_from_state", "clip_world_samples", "p5_to_world"]
+__all__ = ["f1_from_state", "clip_world_samples", "p5_to_world",
+           "retime_clip", "prepend_start", "world_track_for_point"]
 
 
 def f1_from_state(state) -> FramePose:
@@ -78,3 +79,51 @@ def world_track_for_point(clip: P5Clip, f1: FramePose, dt: float,
     """(T,3) world trajectory of one P5 point — the command guidance
     track handed to ``set_effector_world_track``."""
     return clip_world_samples(clip, f1, dt)[:, point_index]
+
+
+# ---------------------------------------------------------------------------
+# Clip retiming / start prepend (experiment-side time assignment)
+# ---------------------------------------------------------------------------
+
+def retime_clip(clip: P5Clip, durations) -> P5Clip:
+    """Return a copy of ``clip`` with per-segment durations replaced.
+
+    Planners may emit schema-placeholder ``dur`` values (P5 itself is
+    timeless); the experiment owns the real-time assignment.  ``len``
+    must equal ``clip.n_segments``.
+    """
+    durations = list(durations)
+    if len(durations) != clip.n_segments:
+        raise ValueError(
+            f"need {clip.n_segments} durations, got {len(durations)}")
+    kfs = [clip.keyframes[0]]
+    for k, d in zip(clip.keyframes[1:], durations):
+        tr = k.transfer
+        kfs.append(Keyframe(
+            pos=k.pos, transfer=Transfer(
+                dx=tr.dx, dy=tr.dy, dyaw=tr.dyaw, dur=float(d)),
+            label=k.label, meta=dict(k.meta)))
+    return P5Clip(name=clip.name, keyframes=tuple(kfs),
+                  metadata=dict(clip.metadata))
+
+
+def prepend_start(clip: P5Clip, start_local_pos: np.ndarray,
+                  dur: float) -> P5Clip:
+    """Prepend the measured start pose as a new first keyframe.
+
+    Some planners (e.g. stand_punch) begin the clip at an already-posed
+    first frame — the robot's transition INTO that frame is implicit.
+    Prepending the measured start with an identity transfer (dx=dy=
+    dyaw=0: coil moves neither feet nor facing) turns the implicit
+    transition into a scored segment.  ``start_local_pos`` is expressed
+    in the same frame as ``clip.keyframes[0].pos``.
+    """
+    from point5.contracts import Keyframe as _Kf  # local import, same module deps
+    first = clip.keyframes[0]
+    kf0 = _Kf(pos=np.asarray(start_local_pos, dtype=np.float64),
+              label="start")
+    kf1 = _Kf(pos=first.pos,
+              transfer=Transfer(dx=0.0, dy=0.0, dyaw=0.0, dur=float(dur)),
+              label=first.label, meta=dict(first.meta))
+    return P5Clip(name=clip.name, keyframes=(kf0, kf1) + clip.keyframes[1:],
+                  metadata=dict(clip.metadata))
