@@ -65,3 +65,4 @@ obsolete/
 # Skill-eval 视频产物（render_skill_videos.py 生成，勿入库）
 baseline/humanoid21/hierarchy/videos/
 !mocap/point5/humanoid21/joints/*.png
+baseline/humanoid21/hierarchy/assets/STAND_PUNCH.md
