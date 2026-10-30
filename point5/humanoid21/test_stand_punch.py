@@ -59,7 +59,7 @@ def test_coil_sinks_without_moving():
 
 def test_swing_lifts_lead_foot():
     """kf1: lead foot is airborne mid-step along the attack axis."""
-    far = np.array([1.1, 0.0, 1.15])
+    far = np.array([1.0, 0.0, 1.15])
     p = plan_stand_punch(far, "right", CFG)
     w = keyframe_world(p.task)
     move = POINT_INDEX[p.diag["moving_foot"]]
@@ -86,7 +86,7 @@ def test_feet_never_move_in_range():
 
 def test_far_target_lands_step_and_transfers():
     """kf2: lead foot lands a full parallel step, anchor stays, COM drops."""
-    far = np.array([1.1, 0.0, 1.15])
+    far = np.array([1.0, 0.0, 1.15])
     p = plan_stand_punch(far, "right", CFG)
     assert p.reachable
     w = keyframe_world(p.task)
