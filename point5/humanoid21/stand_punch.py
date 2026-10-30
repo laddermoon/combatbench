@@ -100,6 +100,8 @@ class StandPunchConfig:
     # --- strike ---
     head_lean_strike: float = 0.20  # COM drives toward target (m)
     head_sink_extra: float = 0.05   # additional sink on impact (m)
+    guard_swing_back: float = 0.15  # guard hand swings behind torso (m)
+    guard_swing_drop: float = 0.42  # drops to hip level at impact (m)
 
     # --- transfer duration is a schema-required placeholder only;
     #     P5 carries no timing semantics, execution timing is downstream.
@@ -265,9 +267,10 @@ def plan_stand_punch(target: np.ndarray,
         cfg.arm_reach)
     head_hit = (head_load + a * cfg.head_lean_strike
                 + np.array([0, 0, -cfg.head_sink_extra]))
-    hg_hit = head_hit + a * cfg.guard_fwd \
+    # guard hand counter-swings backward as the punch extends
+    hg_hit = head_hit - a * cfg.guard_swing_back \
         + right * ((-sgn) * cfg.guard_side)
-    hg_hit[2] = head_hit[2] - cfg.guard_drop
+    hg_hit[2] = head_hit[2] - cfg.guard_swing_drop
 
     # --- keyframes: re-express each in its own local frame --------------
     feet_swing = {i_fr: pos[i_fr].copy(), i_fl: pos[i_fl].copy()}
