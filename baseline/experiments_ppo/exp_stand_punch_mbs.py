@@ -22,11 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
-from functools import lru_cache
-
 from point5.contracts import Point5State
 from point5.humanoid21.stand_punch import (
-    StandPunchConfig, plan_stand_punch)
+    StandPunchConfig, plan_stand_punch, stand_p5)
 
 from baseline.humanoid21.hierarchy.p5_world import clip_world_samples
 from baseline.humanoid21.plugins.stand_punch_target import (
@@ -36,30 +34,6 @@ from .exp_punch_p5_mbs import PunchP5MBS
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DT = 0.05
-
-
-@lru_cache(maxsize=1)
-def _measured_stand_p5() -> Point5State:
-    """The actual post-reset local P5 pose — deterministic for this env.
-
-    ``stand_p5()`` uses sole landmarks (~8 cm lower ankles than the
-    adapter's ankle centres), so offline reachability checks must run
-    against the pose the plugin/scorer will actually see at reset.
-    """
-    from envs.framework.parameterized_blueprint import (
-        ParameterizedEnvBlueprint)
-    from point5.humanoid21.adapter import point5_from_view
-    bp = ParameterizedEnvBlueprint.load(
-        _ROOT / "baseline" / "humanoid21" / "hierarchy"
-        / "blueprints" / "hier_stand_punch_env.yaml")
-    rt = bp.materialize(max_steps=13).build()
-    try:
-        rt.reset(seed=0, options={})
-        return point5_from_view(
-            rt.simulator.get_derived_state(["robot_a"])["robot_a"],
-            "robot_a", with_vel=False)
-    finally:
-        rt.close()
 
 # Tight reachable box from STAND_PUNCH.md (~59% plan acceptance).
 _TGT_X = (0.95, 1.30)
@@ -112,8 +86,11 @@ class StandPunchMBS(PunchP5MBS):
             tgt = np.array([rng.uniform(*_TGT_X),
                             rng.uniform(*_TGT_Y),
                             rng.uniform(*_TGT_Z)])
-            if plan_stand_punch(tgt, hand,
-                                initial=_measured_stand_p5()).reachable:
+            # stand_p5() == the arena spawn pose (root z=1.282), the
+            # same pose the plugin/scorer measure at reset.
+            if plan_stand_punch(
+                    tgt, hand,
+                    initial=Point5State(pos=stand_p5())).reachable:
                 return hand, tgt
         # Fallback to a known-good central target.
         return "left", np.array([1.05, 0.0, 1.10])
