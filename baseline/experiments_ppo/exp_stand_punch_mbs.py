@@ -26,7 +26,7 @@ from point5.contracts import Point5State
 from point5.humanoid21.stand_punch import (
     StandPunchConfig, plan_stand_punch, stand_p5)
 
-from baseline.humanoid21.hierarchy.p5_world import clip_world_samples
+from baseline.humanoid21.hierarchy.p5_world import clip_frame_samples
 from baseline.humanoid21.plugins.stand_punch_target import (
     SEGMENT_DURATIONS, timed_stand_clip)
 
@@ -103,7 +103,7 @@ class StandPunchMBS(PunchP5MBS):
         if not plan.reachable:
             return None
         clip = timed_stand_clip(plan.task, st0.pos)
-        return clip_world_samples(clip, f1, _DT)
+        return clip_frame_samples(clip, f1, _DT)
 
     @property
     def _load_seconds(self) -> float:

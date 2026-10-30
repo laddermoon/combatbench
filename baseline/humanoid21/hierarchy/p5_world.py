@@ -21,7 +21,8 @@ import numpy as np
 from point5.contracts import Keyframe, P5Clip, Transfer, to_world
 from point5.trajectory import FramePose, keyframe_frames
 
-__all__ = ["f1_from_state", "clip_world_samples", "p5_to_world",
+__all__ = ["f1_from_state", "clip_world_samples", "clip_frame_samples",
+           "clip_world_yaws", "p5_to_world",
            "retime_clip", "prepend_start", "world_track_for_point"]
 
 
@@ -37,15 +38,17 @@ def p5_to_world(pos_local: np.ndarray, f1: FramePose) -> np.ndarray:
     return to_world(np.asarray(pos_local, dtype=np.float64), *f1)
 
 
-def clip_world_samples(clip: P5Clip, f1: FramePose,
-                       dt: float) -> np.ndarray:
-    """Uniform-dt world samples of a clip, shape ``(T, 5, 3)``.
+def clip_frame_samples(clip: P5Clip, f1: FramePose,
+                       dt: float) -> Tuple[np.ndarray, np.ndarray]:
+    """Uniform-dt world samples + frame yaws, ``((T,5,3), (T,))``.
 
-    Sample ``i`` is the world pose at time ``min((i+1)*dt, duration)``
-    — i.e. the pose the robot should reach after action ``i``.  Local
-    positions blend linearly between keyframes while the carrying frame
-    advances through the segment transfer proportionally (same scheme
-    as ``point5.trajectory.sample_clip`` but at fixed time steps).
+    Sample ``i`` is the world pose and the world yaw of the carrying
+    local frame at time ``min((i+1)*dt, duration)`` — i.e. the state
+    the robot should reach after action ``i``.  Local positions blend
+    linearly between keyframes while the frame advances through the
+    segment transfer proportionally (same scheme as
+    ``point5.trajectory.sample_clip`` but at fixed time steps).  The
+    returned yaw (deg) is the planned torso-facing azimuth.
     """
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError("dt must be positive")
@@ -55,6 +58,7 @@ def clip_world_samples(clip: P5Clip, f1: FramePose,
     duration = float(times[-1])
     n_out = max(1, int(np.ceil((duration - 1e-9) / dt)))
     out = np.empty((n_out, 5, 3), dtype=np.float64)
+    yaws = np.empty(n_out, dtype=np.float64)
     for i in range(n_out):
         t = min((i + 1) * dt, duration)
         seg = int(np.searchsorted(times, t, side="right") - 1)
@@ -70,8 +74,21 @@ def clip_world_samples(clip: P5Clip, f1: FramePose,
         o_s = np.asarray(o0, dtype=np.float64) + np.array(
             [np.cos(rad) * do[0] - np.sin(rad) * do[1],
              np.sin(rad) * do[0] + np.cos(rad) * do[1]])
-        out[i] = to_world(pos, o_s, y0 + tr.dyaw * s)
-    return out
+        yaws[i] = y0 + tr.dyaw * s
+        out[i] = to_world(pos, o_s, yaws[i])
+    return out, yaws
+
+
+def clip_world_samples(clip: P5Clip, f1: FramePose,
+                       dt: float) -> np.ndarray:
+    """World positions of :func:`clip_frame_samples` (back-compat)."""
+    return clip_frame_samples(clip, f1, dt)[0]
+
+
+def clip_world_yaws(clip: P5Clip, f1: FramePose,
+                    dt: float) -> np.ndarray:
+    """Planned torso-facing yaw (deg) per dt sample."""
+    return clip_frame_samples(clip, f1, dt)[1]
 
 
 def world_track_for_point(clip: P5Clip, f1: FramePose, dt: float,

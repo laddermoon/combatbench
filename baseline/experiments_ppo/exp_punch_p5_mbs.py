@@ -32,14 +32,15 @@ from point5.contracts import POINT_INDEX, Point5State
 from point5.humanoid21.punch_planner import (
     PunchPlannerConfig, plan_punch)
 
-from baseline.humanoid21.hierarchy.p5_world import clip_world_samples
+from baseline.humanoid21.hierarchy.p5_world import (
+    clip_frame_samples, clip_world_samples)
 
 from .exp_hier_s2_balance_mbs import HierS2BalanceMBS
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DT = 0.05      # seconds per action step
 
-_PARTS = ("strike_hand", "guard_hand", "head", "feet")
+_PARTS = ("strike_hand", "guard_hand", "head", "feet", "torso_yaw")
 
 
 class PunchP5MBS(HierS2BalanceMBS):
@@ -54,17 +55,18 @@ class PunchP5MBS(HierS2BalanceMBS):
 
     _channel_names = (
         "r_strike_hand", "r_guard_hand", "r_head", "r_feet", "r_fall",
+        "r_torso_yaw",
     )
     _channel_gammas = {k: 0.99 for k in _channel_names}
 
     # Keep the guard while loading; prioritize the fist only once the
     # advancing foot should have landed.
     _AW_LOAD = {"strike_hand": 0.75, "guard_hand": 1.0, "head": 1.0,
-                "feet": 3.0, "fall": 2.0}
+                "feet": 3.0, "fall": 2.0, "torso_yaw": 2.0}
     _AW_STRIKE = {"strike_hand": 6.0, "guard_hand": 0.75, "head": 0.75,
-                  "feet": 1.5, "fall": 2.0}
+                  "feet": 1.5, "fall": 2.0, "torso_yaw": 2.0}
     _SIG = {"strike_hand": 0.05, "guard_hand": 0.06, "head": 0.08,
-            "feet": 0.05}
+            "feet": 0.05, "torso_yaw": 0.30}  # rad ~17 deg
     _PLAN = PunchPlannerConfig()
     _best_strike_success = -1.0
     _best_strike_error = float("inf")
@@ -101,14 +103,15 @@ class PunchP5MBS(HierS2BalanceMBS):
     # --- trajectories ---------------------------------------------------
 
     def _plan_reference(self, st0, target_local, hand, f1):
-        """World-frame (T,5,3) reference samples for scoring, or None.
+        """(world_pos (T,5,3), frame_yaws (T,)) for scoring, or None.
 
-        Sample t is the pose the robot should reach after action t.
+        Sample t is the pose + torso-facing yaw the robot should reach
+        after action t.
         """
         plan = plan_punch(st0, target_local, hand, self._PLAN)
         if not plan.reachable:
             return None
-        return clip_world_samples(plan.task, f1, _DT)
+        return clip_frame_samples(plan.task, f1, _DT)
 
     @property
     def _load_seconds(self) -> float:
@@ -135,6 +138,7 @@ class PunchP5MBS(HierS2BalanceMBS):
                     for i in range(15)]
             if all(c is not None for c in cols):
                 pos = np.stack([np.asarray(c) for c in cols], axis=1)
+            yaw_col = extract_per_step_field(oo, p5_key, "p5_yaw", Tep)
         # v2: the stored start P5 and ``strike_lt*`` target are LOCAL-
         # frame; ``strike_f1_*`` is the world pose of that frame.  The
         # clip resolves back to world under f1 for scoring.
@@ -162,8 +166,9 @@ class PunchP5MBS(HierS2BalanceMBS):
                     pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
                 # ref_world[t] = world P5 pose the robot should reach
                 # after action t (time min((t+1)*dt, duration)).
-                ref_world = self._plan_reference(st0, target, hand, f1)
-                if ref_world is not None:
+                ref = self._plan_reference(st0, target, hand, f1)
+                if ref is not None:
+                    ref_world, ref_yaws = ref
                     active_steps = min(T, len(ref_world))
                     pn = POINT_INDEX
                     mp = {
@@ -178,6 +183,17 @@ class PunchP5MBS(HierS2BalanceMBS):
                         # The final action crosses the impact time: score
                         # that post-action pose against the impact keyframe.
                         ref_pos = ref_world[t]
+                        if yaw_col is not None:
+                            # Torso facing vs the plan's frame yaw
+                            # schedule; same peak+broad-tail shape, in rad.
+                            err = np.deg2rad(float(
+                                (yaw_col[t] - ref_yaws[t] + 180.0)
+                                % 360.0 - 180.0))
+                            sig2 = self._SIG["torso_yaw"] ** 2
+                            scores["torso_yaw"][t] = (
+                                0.5 * np.exp(-(err * err) / sig2)
+                                + 0.5 / (1.0 + (err * err)
+                                         / (9.0 * sig2)))
                         for part, idxs in mp.items():
                             d2 = sum(
                                 np.sum((pos[t][i] - ref_pos[i]) ** 2)
