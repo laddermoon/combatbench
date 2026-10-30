@@ -55,23 +55,20 @@ FOOT_POINT = {"left": "foot_left", "right": "foot_right"}
 def stand_p5() -> np.ndarray:
     """Standard standing pose as v2 local coordinates (5,3).
 
-    Landmarks of the unloaded skeleton with the root height bisected so
-    the ankles rest at their planted height — the same reset pose the
-    arena spawns, expressed in the torso-facing local frame (the
-    skeleton's own frame already faces +X).
+    Landmarks of the unloaded skeleton at the arena's spawn pose
+    (``Humanoid21Meta.INITIAL_POSES['standing']``, root z = 1.282,
+    joints zero — ankles rest exactly at 0.087), expressed in the
+    torso-facing local frame.
     """
+    from envs.humanoid21.meta import Humanoid21Meta
     from .mechanics import Skeleton
-    sk = Skeleton()
-    lo, hi = 0.2, 1.2
-    for _ in range(25):
-        m = (lo + hi) / 2
-        lm = sk.landmarks([0, 0, m], [1, 0, 0, 0], np.zeros(21))
-        if lm[3:, 2].min() < 0.087:
-            lo = m
-        else:
-            hi = m
-    return sk.landmarks([0, 0, (lo + hi) / 2], [1, 0, 0, 0],
-                        np.zeros(21))
+    rp = Humanoid21Meta.INITIAL_POSES["standing"]
+    lm = Skeleton().landmarks(np.asarray(rp["root_pos"], np.float64),
+                              np.asarray(rp["root_quat"], np.float64),
+                              np.asarray(rp["joint_pos"], np.float64))
+    assert abs(lm[3:, 2].min() - 0.087) < 0.01, \
+        f"spawn pose no longer plants ankles at 0.087 ({lm[3:,2].min()})"
+    return lm
 
 
 @dataclass(frozen=True)
@@ -86,7 +83,7 @@ class StandPunchConfig:
                                   # are rejected by punch_elev_max_deg)
     sector_cos_min: float = 0.17  # target within ~80° of +X forward
     punch_elev_max_deg: float = 35.0  # max punch elevation above horizontal
-    head_max_z: float = 1.40      # IK-verified head-height ceiling
+    head_max_z: float = 1.48      # IK-verified head-height ceiling
     strike_head_margin: float = 0.02  # strike head rises to target_z+margin
 
     # --- step (重心转移) for far targets ---
@@ -110,7 +107,7 @@ class StandPunchConfig:
     head_fwd_cap: float = 0.20    # max head XY advance past the stepped
                                   # ankle midpoint — keeps risen+leaning
                                   # strikes inside leg-chain reach
-    head_rise_z0: float = 1.30    # above this strike-head height the
+    head_rise_z0: float = 1.38    # above this strike-head height the
     head_rise_pen: float = 2.0    # forward cap shrinks: high heads
                                   # cannot also be far forward
     guard_swing_back: float = 0.15  # guard hand swings behind torso (m)
@@ -214,7 +211,7 @@ def plan_stand_punch(target: np.ndarray,
         # depression range (~-22 deg) instead of reaching steeply down
         l_xy = max(0.15, float(np.linalg.norm((target - head)[:2]))
                    - cfg.head_step_share * step - cfg.guard_fwd)
-        ch_z_max = target[2] + np.tan(np.deg2rad(22.0)) * l_xy \
+        ch_z_max = target[2] + np.tan(np.deg2rad(10.0)) * l_xy \
             + cfg.guard_drop
         hz = min(hz, ch_z_max)
         # head advance is capped relative to the stepped ankle midpoint
@@ -271,7 +268,9 @@ def plan_stand_punch(target: np.ndarray,
     diag["step_len"] = step_len
     diag["head_lean_strike"] = lean
     diag["punch_elev_deg"] = elev
-    if elev > cfg.punch_elev_max_deg:
+    # arm depression limit at full extension is only ~-8 deg under the
+    # 60-deg blade twist — deep-sink cannot rescue steeper targets
+    if elev > cfg.punch_elev_max_deg or elev < -8.0:
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_reach", diag=diag)
     strike_head_z = head_hit[2]
