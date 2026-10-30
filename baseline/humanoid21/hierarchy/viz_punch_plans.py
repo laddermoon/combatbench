@@ -39,12 +39,11 @@ def main() -> None:
     root = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(root))
 
-    from scipy.spatial.transform import Rotation as R
-
-    from point5.contracts import Point5State, StaticStartResolver
+    from point5.contracts import (
+        Point5State, ankle_mid_xy, to_local)
     from point5.humanoid21.punch_planner import (
         PunchPlannerConfig, _stance_forward, plan_punch)
-    from point5.trajectory import build_reference
+    from point5.trajectory import sample_clip
     from point5.viz import export_mp4
 
     d = np.load(args.p5, allow_pickle=False)
@@ -62,8 +61,13 @@ def main() -> None:
     for k in range(args.scenarios):
         i = int(rng.integers(n))
         p5 = np.asarray(d["p5"][i], dtype=np.float64)
-        st = Point5State(pos=p5)
+        # The npz stores world-frame P5.  Re-derive a local frame
+        # (ankle mid + stance-forward yaw) and plan inside it.
         fwd = stance_fwd(p5)
+        origin = ankle_mid_xy(p5)
+        yaw = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
+        f1 = (np.asarray(origin, dtype=np.float64), yaw)
+        st = Point5State(pos=to_local(p5, origin, yaw))
         right = np.array([fwd[1], -fwd[0], 0.0])
         head = p5[0]
         dist = float(rng.uniform(*args.dist))
@@ -72,15 +76,16 @@ def main() -> None:
         tgt = np.array([head[0] + fwd[0] * dist + right[0] * lat,
                         head[1] + fwd[1] * dist + right[1] * lat,
                         head[2] - zdrop])
+        tgt_local = to_local(tgt, origin, yaw)
         hand = "left" if rng.random() < 0.5 else "right"
-        plan = plan_punch(st, tgt, hand, cfg)
+        plan = plan_punch(st, tgt_local, hand, cfg)
         if plan.reachable:
             key = "in_range" if plan.diag["step_len"] <= 1e-6 else "step"
         else:
             key = plan.reason
         buckets.setdefault(key, []).append(dict(
             state=i, hand=hand, dist=dist, lat=lat, zdrop=zdrop,
-            target=tgt, plan=plan))
+            target=tgt, plan=plan, f1=f1))
 
     print(f"== {args.scenarios} sampled scenarios ==", flush=True)
     for key, items in sorted(buckets.items(),
@@ -98,16 +103,13 @@ def main() -> None:
             i, plan = rec["state"], rec["plan"]
             if not plan.reachable:
                 continue
-            st = Point5State(pos=np.asarray(d["p5"][i], np.float64))
-            q = np.asarray(d["root_rot"][i], np.float64)
-            rot_m = R.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
-            ref = build_reference(plan.task, StaticStartResolver(
-                st, np.asarray(d["root_pos"][i]), rot_m))
+            world = np.stack([fs.world_pos() for fs in sample_clip(
+                plan.task, rec["f1"], max_step=0.02)])
             tag = (f"{key}_s{i:04d}_{rec['hand'][0]}"
                    f"_d{rec['dist']:.2f}l{rec['lat']:+.2f}"
                    f"z{rec['zdrop']:.2f}")
             mp4 = out / f"{tag}.mp4"
-            export_mp4(ref, mp4, measured=st.pos)
+            export_mp4(world, str(mp4))
             dg = plan.diag
             print(f"[{tag}] step={dg['step_len']:.3f} "
                   f"move={dg['moving_foot']}", flush=True)
