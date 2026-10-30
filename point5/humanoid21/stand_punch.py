@@ -210,6 +210,13 @@ def plan_stand_punch(target: np.ndarray,
         hz = max(head[2] - sink,
                  min(target[2] + cfg.strike_head_margin,
                      cfg.head_max_z))
+        # low targets: sink deeper so the punch stays inside the arm's
+        # depression range (~-22 deg) instead of reaching steeply down
+        l_xy = max(0.15, float(np.linalg.norm((target - head)[:2]))
+                   - cfg.head_step_share * step - cfg.guard_fwd)
+        ch_z_max = target[2] + np.tan(np.deg2rad(22.0)) * l_xy \
+            + cfg.guard_drop
+        hz = min(hz, ch_z_max)
         # head advance is capped relative to the stepped ankle midpoint
         # (the front foot covers step/2 of it) — risen strikes stay
         # inside leg-chain reach
@@ -330,7 +337,7 @@ def plan_stand_punch(target: np.ndarray,
     punch_dir = _norm(target - ch_hit)
     if not np.any(punch_dir):
         punch_dir = a
-    ext = min(float(np.linalg.norm(target - ch_hit)) * 1.10,
+    ext = min(float(np.linalg.norm(target - ch_hit)) * 1.02,
               cfg.arm_strike)
     hp_hit = ch_hit + punch_dir * ext
     # guard hand counter-swings backward as the punch extends
