@@ -79,9 +79,12 @@ class StandPunchConfig:
     """Tunables for the standing jab planner."""
 
     # --- reach / sector ---
-    arm_reach: float = 0.55       # fist travel from guard to impact (m)
-                                  # (skeleton max ~0.62; margin keeps
-                                  # stage-2 arm IK off the boundary)
+    arm_reach: float = 0.55       # conservative reach used for step sizing
+    arm_strike: float = 0.60      # fist extension at impact — near the
+                                  # ~0.62 skeleton max so the arm ends
+                                  # visibly straight (horizontal punches
+                                  # stay IK-legible; high-elevation ones
+                                  # are rejected by punch_elev_max_deg)
     sector_cos_min: float = 0.17  # target within ~80° of +X forward
     penetration: float = 0.08     # overshoot past the target (m)
     punch_elev_max_deg: float = 30.0  # max punch elevation above horizontal
@@ -270,10 +273,9 @@ def plan_stand_punch(target: np.ndarray,
     if elev > cfg.punch_elev_max_deg:
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_reach", diag=diag)
-    # penetration capped so the fist stays within arm reach (IK-legible)
-    hp_hit = hp_load + punch_dir * min(
-        float(np.linalg.norm(target - hp_load)) + cfg.penetration,
-        cfg.arm_reach)
+    # the fist always drives to arm_strike: near-straight arm at impact,
+    # the target lies on the punch path and is driven through
+    hp_hit = hp_load + punch_dir * cfg.arm_strike
     head_hit = (head_load + a * cfg.head_lean_strike
                 + np.array([0, 0, -cfg.head_sink_extra]))
     # guard hand counter-swings backward as the punch extends

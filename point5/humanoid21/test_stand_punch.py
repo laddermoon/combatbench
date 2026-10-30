@@ -130,12 +130,15 @@ def test_guard_hands_at_chest_on_land():
         assert w[2, i, 2] < w[2, 0, 2] - 0.15     # chest, not chin-high
 
 
-def test_strike_hand_reaches_target_with_penetration():
+def test_strike_hand_fully_extends_through_target():
+    """The fist always travels arm_strike from the chamber — a
+    near-straight arm at impact with the target on its path."""
     p = plan_stand_punch(FRONT, "right", CFG)
     w = keyframe_world(p.task)
     i = POINT_INDEX["hand_right"]
-    d = np.linalg.norm(w[3, i] - FRONT)
-    assert d == pytest.approx(CFG.penetration, abs=0.03)
+    ext = np.linalg.norm(w[3, i] - w[2, i])
+    assert ext == pytest.approx(CFG.arm_strike, abs=0.02)
+    assert np.linalg.norm(w[3, i] - FRONT) < 0.35   # past/at target
 
 
 def test_initial_state_override():
