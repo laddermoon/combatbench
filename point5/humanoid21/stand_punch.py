@@ -87,7 +87,9 @@ class StandPunchConfig:
                                   # are rejected by punch_elev_max_deg)
     sector_cos_min: float = 0.17  # target within ~80° of +X forward
     penetration: float = 0.08     # overshoot past the target (m)
-    punch_elev_max_deg: float = 30.0  # max punch elevation above horizontal
+    punch_elev_max_deg: float = 35.0  # max punch elevation above horizontal
+    head_max_z: float = 1.40      # IK-verified head-height ceiling
+    strike_head_margin: float = 0.02  # strike head rises to target_z+margin
 
     # --- step (重心转移) for far targets ---
     max_step: float = 0.60        # lead-foot advance cap (m)
@@ -105,7 +107,6 @@ class StandPunchConfig:
 
     # --- strike ---
     head_lean_strike: float = 0.20  # COM drives toward target (m)
-    head_sink_extra: float = 0.05   # additional sink on impact (m)
     guard_swing_back: float = 0.15  # guard hand swings behind torso (m)
     guard_swing_drop: float = 0.42  # drops to hip level at impact (m)
 
@@ -191,10 +192,14 @@ def plan_stand_punch(target: np.ndarray,
     for _ in range(3):
         sink = (cfg.head_sink_load
                 + cfg.step_sink_extra * (step_len / cfg.max_step))
+        strike_head_z = max(
+            head[2] - sink,
+            min(target[2] + cfg.strike_head_margin, cfg.head_max_z))
         hp_est = (head + a * (cfg.head_step_share * step_len)
                   + a * cfg.guard_fwd
                   + right * (sgn * cfg.guard_side)
-                  + np.array([0, 0, -(sink + cfg.guard_drop)]))
+                  + np.array([0, 0, strike_head_z - head[2]
+                              - cfg.guard_drop]))
         gap = float(np.linalg.norm(target - hp_est)) - cfg.arm_reach
         if gap <= 0.0:
             break
@@ -263,21 +268,31 @@ def plan_stand_punch(target: np.ndarray,
     feet_load[anchor_i] = f_anchor
 
     # kf3 strike: COM drives forward, fist to target+penetration,
-    # torso keeps rotating to 60°; guard hand holds the chamber
-    punch_dir = _norm(target - hp_load)
-    if not np.any(punch_dir):
-        punch_dir = a
-    # high-elevation punches exceed the shoulder range — honest verdict
-    elev = float(np.degrees(np.arcsin(np.clip(punch_dir[2], -1, 1))))
+    # torso keeps rotating to 60°; guard hand holds the chamber.
+    # The forward lean is dialed back until the punch elevation fits —
+    # leaning hard under a high target just steepens the launch angle.
+    lean = cfg.head_lean_strike
+    for _ in range(5):
+        head_hit = head_load + a * lean
+        head_hit[2] = strike_head_z    # rises for high targets
+        ch_hit = head_hit + a * cfg.guard_fwd \
+            + right * (sgn * cfg.guard_side) \
+            + np.array([0, 0, -cfg.guard_drop])
+        punch_dir = _norm(target - ch_hit)
+        if not np.any(punch_dir):
+            punch_dir = a
+        elev = float(np.degrees(np.arcsin(np.clip(punch_dir[2], -1, 1))))
+        if elev <= cfg.punch_elev_max_deg - 2.0 or lean < 0.02:
+            break
+        lean *= 0.5
+    diag["head_lean_strike"] = lean
     diag["punch_elev_deg"] = elev
     if elev > cfg.punch_elev_max_deg:
         return PunchPlan(task=None, reachable=False,
                          reason="out_of_reach", diag=diag)
     # the fist always drives to arm_strike: near-straight arm at impact,
     # the target lies on the punch path and is driven through
-    hp_hit = hp_load + punch_dir * cfg.arm_strike
-    head_hit = (head_load + a * cfg.head_lean_strike
-                + np.array([0, 0, -cfg.head_sink_extra]))
+    hp_hit = ch_hit + punch_dir * cfg.arm_strike
     # guard hand counter-swings backward as the punch extends
     hg_hit = head_hit - a * cfg.guard_swing_back \
         + right * ((-sgn) * cfg.guard_side)
