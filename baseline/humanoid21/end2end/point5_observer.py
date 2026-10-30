@@ -9,6 +9,8 @@ from typing import Any, Dict
 
 import numpy as np
 
+from baseline.humanoid21.hierarchy.p5_world import (
+    f1_from_state, p5_to_world)
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 from point5.humanoid21.adapter import point5_from_view
 
@@ -31,7 +33,9 @@ class Point5Observer(BaseObserverPlugin):
         ds = ctx.accessor.get_derived_state([self.agent_id])
         st = point5_from_view(ds[self.agent_id], self.agent_id,
                               with_vel=False)
-        self._pos = st.pos.reshape(-1)
+        # Adapter output is local-frame; publish world coordinates so
+        # reward/diagnostic consumers stay frame-agnostic.
+        self._pos = p5_to_world(st.pos, f1_from_state(st)).reshape(-1)
 
     def get_output(self) -> Dict[str, float]:
         return {f"p5_{i}": float(v) for i, v in enumerate(self._pos)}

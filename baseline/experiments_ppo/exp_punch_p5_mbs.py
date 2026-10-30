@@ -28,10 +28,11 @@ import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
-from point5.contracts import Point5State, StaticStartResolver
+from point5.contracts import POINT_INDEX, Point5State
 from point5.humanoid21.punch_planner import (
     PunchPlannerConfig, plan_punch)
-from point5.trajectory import build_reference
+
+from baseline.humanoid21.hierarchy.p5_world import clip_world_samples
 
 from .exp_hier_s2_balance_mbs import HierS2BalanceMBS
 
@@ -113,20 +114,26 @@ class PunchP5MBS(HierS2BalanceMBS):
                     for i in range(15)]
             if all(c is not None for c in cols):
                 pos = np.stack([np.asarray(c) for c in cols], axis=1)
-        txyz = [em.get(f"{agent_id}_strike_t{ax}") for ax in "xyz"]
-        target = (np.asarray(txyz, dtype=np.float64)
-                  if all(v is not None for v in txyz) else None)
+        # v2: the stored start P5 and ``strike_lt*`` target are LOCAL-
+        # frame; ``strike_f1_*`` is the world pose of that frame.  The
+        # clip resolves back to world under f1 for scoring.
+        lxyz = [em.get(f"{agent_id}_strike_lt{ax}") for ax in "xyz"]
+        target = (np.asarray(lxyz, dtype=np.float64)
+                  if all(v is not None for v in lxyz) else None)
+        f1v = [em.get(f"{agent_id}_strike_f1_{k}")
+               for k in ("ox", "oy", "yaw")]
+        f1 = ((np.asarray(f1v[:2], dtype=np.float64), float(f1v[2]))
+              if all(v is not None for v in f1v) else None)
         hand = ("left" if em.get(f"{agent_id}_strike_hand_i", 0.0) < 0.5
                 else "right")
         start_xyz = [em.get(f"{agent_id}_strike_p5_{i}") for i in range(15)]
-        if trajs and (pos is None or target is None
+        if trajs and (pos is None or target is None or f1 is None
                       or any(v is None for v in start_xyz)):
             raise ValueError(
                 f"Missing P5 observations or punch start/target for {agent_id}")
         for tr in trajs:
             T = tr.obs.shape[0]
             scores = {p: np.zeros(T, np.float32) for p in _PARTS}
-            t_task = 0.0
             active_steps = 0
             if len(pos) >= 2:
                 pos = np.asarray(pos).reshape(len(pos), 5, 3)
@@ -134,19 +141,15 @@ class PunchP5MBS(HierS2BalanceMBS):
                     pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
                 plan = plan_punch(st0, target, hand, self._PLAN)
                 if plan.reachable:
-                    ref = build_reference(plan.task, StaticStartResolver(
-                        st0, np.zeros(3), np.eye(3)))
-                    t_task = ref.duration
-                    active_steps = min(T, int(np.ceil((t_task - 1e-9) / _DT)))
-                    pn = {p: i for i, p in
-                          enumerate(("head", "hand_right", "hand_left",
-                                     "foot_right", "foot_left"))}
-                    hp_idx = pn[f"hand_{hand}"]
-                    hg_idx = pn["hand_right" if hand == "left"
-                                else "hand_left"]
+                    # ref_world[t] = world P5 pose the robot should reach
+                    # after action t (time min((t+1)*dt, duration)).
+                    ref_world = clip_world_samples(plan.task, f1, _DT)
+                    active_steps = min(T, len(ref_world))
+                    pn = POINT_INDEX
                     mp = {
-                        "strike_hand": [hp_idx],
-                        "guard_hand": [hg_idx],
+                        "strike_hand": [pn[f"hand_{hand}"]],
+                        "guard_hand": [pn["hand_right" if hand == "left"
+                                          else "hand_left"]],
                         "head": [pn["head"]],
                         "feet": [pn["foot_left"], pn["foot_right"]],
                     }
@@ -154,8 +157,7 @@ class PunchP5MBS(HierS2BalanceMBS):
                         # Observer frame t is measured AFTER action t.
                         # The final action crosses the impact time: score
                         # that post-action pose against the impact keyframe.
-                        t_s = min((t + 1) * _DT, t_task)
-                        ref_pos = ref.sample_time(t_s).pos
+                        ref_pos = ref_world[t]
                         for part, idxs in mp.items():
                             d2 = sum(
                                 np.sum((pos[t][i] - ref_pos[i]) ** 2)

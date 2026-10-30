@@ -9,9 +9,12 @@ Reads ``episode_options`` params sampled by the experiment:
     {rid}_strike_z         absolute target height (m)
 
 Runs AFTER the state-init plugin, before the observer dispatcher. Computes the initial
-Point5State, derives the stance forward, resolves the world target,
-issues ``set_effector_world`` via the mutator, and stores the pre-action
-P5 and target as scalar episode metrics for the offline reward builder.
+Point5State (v2 local frame), samples the target in that frame (local
++X is the torso facing, +Y the torso left), converts it to world via
+the frame pose ``f1`` stored in the adapter metadata, and issues
+``set_effector_world[_track]`` via the mutator.  The start P5, f1 and
+both target frames are stored as scalar episode metrics for the
+offline reward builder.
 """
 from __future__ import annotations
 
@@ -19,12 +22,13 @@ from typing import Any, Dict
 
 import numpy as np
 
+from baseline.humanoid21.hierarchy.p5_world import (
+    clip_world_samples, f1_from_state, p5_to_world)
 from envs.framework import BasePlugin, SimContext
 from envs.framework.observer_plugin import OBSERVER_DISPATCHER_PRIORITY
-from point5.contracts import POINT_INDEX, StaticStartResolver
+from point5.contracts import POINT_INDEX
 from point5.humanoid21.adapter import point5_from_view
-from point5.humanoid21.punch_planner import _stance_forward, plan_punch
-from point5.trajectory import build_reference
+from point5.humanoid21.punch_planner import plan_punch
 
 
 class StrikeTargetPlugin(BasePlugin):
@@ -54,41 +58,37 @@ class StrikeTargetPlugin(BasePlugin):
             lat = float(opts.get(f"{rid}_strike_lat", 0.0))
             z = float(opts.get(f"{rid}_strike_z", 1.10))
             p5 = point5_from_view(ds[rid], rid, with_vel=False)
+            f1 = f1_from_state(p5)
+            # Local frame IS the stance frame: +X = torso facing,
+            # +Y = torso left, z untouched by the frame transform.
             head = p5.point_pos("head")
-            fwd = _stance_forward(p5.point_pos("foot_left"),
-                                  p5.point_pos("foot_right"))
-            if not np.any(fwd):
-                fwd = np.array([1.0, 0.0, 0.0])
-            left = np.array([-fwd[1], fwd[0], 0.0])
-            tgt = np.array([head[0] + fwd[0] * dist + left[0] * lat,
-                            head[1] + fwd[1] * dist + left[1] * lat,
-                            z])
+            tgt_local = np.array([head[0] + dist, head[1] + lat, z],
+                                 dtype=np.float64)
+            tgt = p5_to_world(tgt_local, f1)
             side = 1 if hand == "left" else -1
             # Plan the punch here too: the reference's striking-hand
             # path becomes a moving guidance target (one world waypoint
             # per action step, ending at the fixed strike point).  A
             # static endpoint leaves the load->extend->snap timing
             # invisible to the policy — the proven s4 mechanism.
-            plan = plan_punch(p5, tgt, hand)
+            plan = plan_punch(p5, tgt_local, hand)
             if plan.reachable:
-                ref = build_reference(
-                    plan.task,
-                    StaticStartResolver(p5, np.zeros(3), np.eye(3)))
                 hidx = POINT_INDEX[f"hand_{hand}"]
-                n = int(np.ceil((ref.duration - 1e-9) / 0.05))
-                track = np.stack([
-                    ref.sample_time(min((i + 1) * 0.05,
-                                      ref.duration)).pos[hidx]
-                    for i in range(n)])
+                track = clip_world_samples(plan.task, f1, 0.05)[:, hidx]
                 ctx.mutator.set_effector_world_track(
                     rid, +1, side, track)
             else:
                 ctx.mutator.set_effector_world(rid, +1, side, tgt)
             for i, value in enumerate(p5.pos.reshape(-1)):
                 ctx.metrics[f"{rid}_strike_p5_{i}"] = float(value)
+            ctx.metrics[f"{rid}_strike_f1_ox"] = float(f1[0][0])
+            ctx.metrics[f"{rid}_strike_f1_oy"] = float(f1[0][1])
+            ctx.metrics[f"{rid}_strike_f1_yaw"] = float(f1[1])
             ctx.metrics[f"{rid}_strike_tx"] = float(tgt[0])
             ctx.metrics[f"{rid}_strike_ty"] = float(tgt[1])
             ctx.metrics[f"{rid}_strike_tz"] = float(tgt[2])
+            for i, value in enumerate(tgt_local):
+                ctx.metrics[f"{rid}_strike_lt{'xyz'[i]}"] = float(value)
             ctx.metrics[f"{rid}_strike_hand_i"] = (
                 0.0 if hand == "left" else 1.0)
             ctx.metrics[f"{rid}_strike_ok"] = 1.0

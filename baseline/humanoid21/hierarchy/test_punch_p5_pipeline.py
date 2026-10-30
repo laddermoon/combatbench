@@ -11,10 +11,15 @@ from baseline.humanoid21.hierarchy.command_simulator import (
     CommandSimulator, TGT_SCALE,
 )
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from point5.contracts import Point5State, StaticStartResolver
+from point5.contracts import Point5State, to_world
 from point5.humanoid21.adapter import point5_from_view
 from point5.humanoid21.punch_planner import plan_punch
-from point5.trajectory import build_reference
+from point5.trajectory import keyframe_world
+
+from baseline.humanoid21.hierarchy.p5_world import (
+    clip_world_samples, f1_from_state)
+
+_F1_IDENTITY = (np.zeros(2), 0.0)
 
 
 def _world_target_seen_by_policy(sim, rid):
@@ -64,12 +69,16 @@ def test_policy_init_and_target_precede_initial_p5_observation():
         })
         rid = "robot_a"
         observed = runtime.get_observer_output("point5_a")
-        measured = point5_from_view(
+        st = point5_from_view(
             runtime.simulator.get_derived_state([rid])[rid],
-            rid, with_vel=False).pos.reshape(-1)
-        for i, actual in enumerate(measured):
-            assert observed[f"p5_{i}"] == actual
-            assert runtime.ctx.metrics[f"{rid}_strike_p5_{i}"] == actual
+            rid, with_vel=False)
+        measured_local = st.pos.reshape(-1)
+        measured_world = to_world(st.pos, *f1_from_state(st)).reshape(-1)
+        for i in range(15):
+            # Observer publishes world; metrics keep the local start P5.
+            assert observed[f"p5_{i}"] == measured_world[i]
+            assert runtime.ctx.metrics[
+                f"{rid}_strike_p5_{i}"] == measured_local[i]
         obs, _ = runtime.get_observation()
         assert obs[61] == 1.0
         assert obs[62] == 1.0
@@ -108,17 +117,19 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
     target = np.array([0.7, 0.0, 1.1])
     plan = plan_punch(start, target, "left")
     assert plan.reachable
-    ref = build_reference(
-        plan.task, StaticStartResolver(start, np.zeros(3), np.eye(3)))
-    n_steps = int(np.ceil((ref.duration - 1e-9) / 0.05))
-    states = [ref.sample_time(min((i + 1) * 0.05, ref.duration)).pos
-              for i in range(n_steps)]
+    # Identity f1: synthetic positions double as "world" coordinates.
+    ref_world = clip_world_samples(plan.task, _F1_IDENTITY, 0.05)
+    n_steps = len(ref_world)
+    states = [ref_world[i] for i in range(n_steps)]
     states.append(states[-1] + 1.0)  # unscored tail for this unit test
     arr = np.stack(states).reshape(n_steps + 1, 15)
     metrics = {f"robot_a_strike_p5_{i}": float(v)
                for i, v in enumerate(pos.reshape(-1))}
-    metrics.update({f"robot_a_strike_t{ax}": float(v)
+    metrics.update({f"robot_a_strike_lt{ax}": float(v)
                     for ax, v in zip("xyz", target)})
+    metrics.update({"robot_a_strike_f1_ox": 0.0,
+                    "robot_a_strike_f1_oy": 0.0,
+                    "robot_a_strike_f1_yaw": 0.0})
     metrics["robot_a_strike_hand_i"] = 0.0
     ep = SimpleNamespace(
         episode_metrics=metrics,
@@ -187,7 +198,9 @@ def test_planned_foot_and_fist_never_reverse_attack_axis():
             plan = plan_punch(start, target, hand)
             assert plan.reachable
             a = plan.diag["attack_axis"]
-            for name in (f"hand_{hand}", plan.diag["moving_foot"]):
-                coords = [kf.specs[name].target.pos for kf in plan.task.keyframes]
-                projection = np.array([p @ a for p in coords])
+            kw = keyframe_world(plan.task, _F1_IDENTITY)
+            from point5.contracts import POINT_INDEX
+            for name in (f"hand_{hand}",
+                         plan.task.metadata["moving_foot"]):
+                projection = kw[:, POINT_INDEX[name]] @ a
                 assert np.all(np.diff(projection) >= -1e-9)
