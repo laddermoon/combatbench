@@ -169,7 +169,7 @@ class PunchP5MBS(HierS2BalanceMBS):
                 # after action t (time min((t+1)*dt, duration)).
                 ref = self._plan_reference(
                     st0, target, hand, f1,
-                    clip_dict=(episode.episode_options or {}).get(
+                    clip_dict=(getattr(episode, "episode_options", None) or {}).get(
                         f"{agent_id}_sp_clip"))
                 if ref is not None:
                     ref_world, ref_yaws = ref

@@ -65,6 +65,11 @@ class StandPunchTargetPlugin(BasePlugin):
         opts = ctx.episode_options or {}
         ds = ctx.accessor.get_derived_state(list(self._targets))
         for rid in self._targets:
+            assigned = (f"{rid}_sp_clip" in opts
+                        or f"{rid}_sp_hand" in opts
+                        or any(f"{rid}_sp_t{a}" in opts for a in "xyz"))
+            if not assigned:
+                continue
             hand = str(opts.get(f"{rid}_sp_hand", "left"))
             tgt_local = np.array(
                 [float(opts.get(f"{rid}_sp_t{a}", d))
