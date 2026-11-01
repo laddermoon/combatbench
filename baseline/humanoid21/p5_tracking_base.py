@@ -102,6 +102,7 @@ class P5TrackingBase(CombatExperimentPPOBase):
     _AW_STRIKE_HAND = None       # role override for the punch hand
     _AW_PHASE = None             # {ch: (load_aw, strike_aw)} overrides
     _EXTRAS: Tuple[str, ...] = ()  # "torso_yaw" | "geom"
+    _FALL_MODE = "onset"       # onset: step-penalty | potential: continuous phi
     _FALL_AW = 2.0
     _FALL_PEN = 1.0
     _STAND_PLAN = StandPunchConfig()
@@ -114,7 +115,8 @@ class P5TrackingBase(CombatExperimentPPOBase):
     def _channel_names(self) -> Tuple[str, ...]:
         names = [f"r_{p}" for p in POINT_CHANNELS]
         names += [f"r_{e}" for e in self._EXTRAS]
-        names.append("r_fall")
+        names.append("r_fall" if self._FALL_MODE == "onset"
+                     else "r_balance")
         return tuple(names)
 
     _gae_lambda = 0.95
@@ -263,8 +265,12 @@ class P5TrackingBase(CombatExperimentPPOBase):
         phi_arr = (np.clip(np.asarray(phi_arr[:T], dtype=np.float32),
                            0.0, 1.0) if phi_arr is not None
                    else np.zeros(T, dtype=np.float32))
-        fall_rew = (-self._FALL_PEN
-                    * _fall_onset_mask(phi_arr)).astype(np.float32)
+        if self._FALL_MODE == "onset":
+            bal_rew = (-self._FALL_PEN
+                       * _fall_onset_mask(phi_arr)).astype(np.float32)
+        else:  # "potential": reward the balance quality itself — a
+               # progressive tip-over bleeds reward every frame
+            bal_rew = np.clip(phi_arr, 0.0, 1.0).astype(np.float32)
 
         em = dict(getattr(episode, "episode_metrics", None) or {})
         oo = getattr(episode, "observer_outputs", None) or {}
@@ -353,8 +359,10 @@ class P5TrackingBase(CombatExperimentPPOBase):
             channels[f"r_{c}"] = ChannelData(
                 reward=scores[c], is_terminated=True,
                 actor_weight=_aw(c))
-        channels["r_fall"] = ChannelData(
-            reward=fall_rew, is_terminated=True,
+        bal_name = ("r_fall" if self._FALL_MODE == "onset"
+                    else "r_balance")
+        channels[bal_name] = ChannelData(
+            reward=bal_rew, is_terminated=True,
             actor_weight=(np.full(T, self._FALL_AW, np.float32)
                           * win).astype(np.float32))
 
