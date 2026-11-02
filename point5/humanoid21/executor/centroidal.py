@@ -2,7 +2,7 @@
 
 Core state (per the meta-design's single useful line):
 
-    z = (c, l, L)          # 9 continuous world-frame quantities
+    z = (c, l, L)          # 9 continuous quantities, robot local frame
     com_vel = l / MASS_KG  # linear momentum gives COM velocity
 
 Contact mode, footstep positions, phase timing, whole-body config
@@ -24,9 +24,9 @@ MASS_KG = 40.844
 class CentroidalState:
     """z = (c, l, L)."""
 
-    com: np.ndarray                      # c, (3,) world
-    lin_mom: np.ndarray                  # l, (3,) world
-    ang_mom: np.ndarray                  # L, (3,) world
+    com: np.ndarray                      # c, (3,) local (P5 frame)
+    lin_mom: np.ndarray                  # l, (3,) local
+    ang_mom: np.ndarray                  # L, (3,) local
 
     @property
     def com_vel(self) -> np.ndarray:
