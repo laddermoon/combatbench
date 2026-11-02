@@ -10,21 +10,20 @@ are *accompanying* information — not part of z.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 
 
 @dataclass
 class CentroidalState:
-    """z = (c, l, L) + total mass + accompanying info."""
+    """z = (c, l, L) + total mass.  Contact mode, footsteps,
+    phase timing etc. are accompanying info — tracked elsewhere."""
 
     com: np.ndarray                      # c, (3,) world
     lin_mom: np.ndarray                  # l, (3,) world
     ang_mom: np.ndarray                  # L, (3,) world
     mass: float
-    contacts: Dict[str, Any] = field(default_factory=dict)  # 伴随信息
 
     @property
     def com_vel(self) -> np.ndarray:
