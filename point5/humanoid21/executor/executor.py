@@ -20,6 +20,8 @@ import numpy as np
 from .contracts import (Action, AnchorError, CentroidalPlan, Context,
                         ExecutorError, Observation, PlanError)
 
+ActionT = Action  # (21,) normalized PD target — the sim input
+
 
 class Executor:
     """Stateless servo: ``gen_action`` is a pure per-call computation."""
@@ -51,19 +53,27 @@ class Executor:
     # -- pipeline steps ------------------------------------------------------
     def _verify_anchor(self, ctx: Context) -> None:
         """Step 0: clip frame0 must equal the current local P5."""
+        p5 = ctx.observation.derived["p5"] if "p5" in \
+            ctx.observation.derived else ctx.observation.derived
+        pos = getattr(p5, "pos", p5)
         dev = np.linalg.norm(
             np.asarray(ctx.clip.keyframes[0].pos)
-            - np.asarray(ctx.observation.p5.pos), axis=1)
+            - np.asarray(pos), axis=1)
         if float(dev.max()) > self.anchor_atol:
             raise AnchorError(
                 f"clip frame0 not anchored to current "
                 f"(max dev {dev.max():.4g} > {self.anchor_atol})")
 
     def _centroidal_state(self, obs: Observation) -> np.ndarray:
-        """Step 1: true COM position/velocity/ang-mom — the plan's
-        starting state (already measured in Observation)."""
-        return np.concatenate([obs.com_pos, obs.com_vel,
-                               obs.ang_mom])
+        """Step 1: extract COM motion state from the observation —
+        the centroidal plan's starting state.
+
+        Source: the derived-state view's structured fields (subtree
+        COM / body kinematics); the 96-dim flat vector alone is not
+        sufficient for planning.
+
+        TODO: implement real extraction."""
+        raise PlanError("centroidal-state extraction not implemented")
 
     def _plan_centroidal(self, ctx: Context,
                          c0: np.ndarray) -> CentroidalPlan:

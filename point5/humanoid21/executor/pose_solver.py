@@ -1,4 +1,4 @@
-"""Tool 1: P5 local pose -> Humanoid21 reference pose + action.
+"""Tool 2: P5 local pose -> Humanoid21 reference pose + action.
 
 Interface for the pose-completion prior.  Implementation options:
 
