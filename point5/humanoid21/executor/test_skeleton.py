@@ -61,3 +61,17 @@ def test_extract_centroidal_standing():
     assert 0.7 < z.com[2] < 1.0 and abs(z.com[1]) < 0.1
     assert np.linalg.norm(z.lin_mom) < 1.0
     assert np.linalg.norm(z.ang_mom) < 1.0
+
+
+def test_capability_physics():
+    from point5.humanoid21.executor.capability_solver import capability
+    c = capability(stand_p5())
+    assert c.static_ok and not c.single_support
+    # lateral margin > forward (feet side by side)
+    assert c.margin([0, 1]) > c.margin([1, 0]) > 0
+    # authority positive and capped by friction cone
+    assert 0 < c.a_max([0, 1]) <= 0.6 * 9.81 + 1e-9
+    # lifted-foot pose: COM not over the support foot -> unstable
+    p5 = stand_p5().copy(); p5[4, 2] = 0.3
+    c2 = capability(p5)
+    assert c2.single_support and not c2.static_ok
