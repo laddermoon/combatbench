@@ -164,9 +164,13 @@ class CentroidalPlanner:
             dist = float(np.linalg.norm(c_to - c_from))
             d_hat = (c_to - c_from) / (dist + 1e-12)
             v_cap = capability(cap_p5).v_max(d_hat)
+            # statically-unreachable pose (margin<=0) still needs a
+            # sane pace, not a zero-cap bypass -> conservative default
+            v_eff = v_cap if v_cap > 0 else 0.5
             need = dist / (n * CTRL_DT) * 1.875      # min-jerk peak
-            if v_cap > 0 and need > v_cap:
-                n = int(np.ceil(dist / (v_cap / 1.875) / CTRL_DT))
+            if need > v_eff:
+                n = int(np.ceil(dist / (v_eff / 1.875) / CTRL_DT))
+                n = int(np.ceil(dist / (v_eff / 1.875) / CTRL_DT))
             T = n * CTRL_DT
             for i in range(1, n + 1):
                 t = i * CTRL_DT

@@ -38,13 +38,17 @@ def test_anchor_accepts_exact():
 
 
 def test_pipeline_stubs_raise():
+    from point5.humanoid21.executor.action_computer import (
+        ActionComputer)
     from point5.humanoid21.executor.centroidal_planner import (
         CentroidalPlanner)
     ex = Executor.__new__(Executor)
     ex.centroidal = CentroidalPlanner()
-    ex.action_computer = None
+    ex.action_computer = ActionComputer()
+    ex.wsim = None
     _patched(ex, stand_p5())
-    with pytest.raises(PlanError):
+    # algo 1 now works; algo 2 is the remaining stub
+    with pytest.raises(PlanError, match="algorithm 2"):
         ex.gen_action(_ctx())
 
 
