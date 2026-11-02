@@ -362,3 +362,13 @@ PYTHONPATH=. python3 -m pytest point5/ -q
 **下一步杠杆（未试）：**更长 horizon 覆盖落地、摆动段再细分
 （加"预转移"子关键帧）、支撑期踝/髋 reflex 底层、CEM 预算加大、
 com_support 权重/容差标定、用 pose_init 给摆动脚目标初值。
+
+**集成诊断迭代（v4-v6，教训：卡点要逐层用数据定位）：**
+- v4/v5：COM 漂向**摆动脚**并倾倒。先误判为 com_support 索引 bug
+  （确实存在并已修），但修复后方向依旧——说明 com_support 不是主因。
+- 真因：support_tol=0.25 太松 + w_com 过小，侧移几乎不扣分，
+  CEM 把重心转移当可选项 → 收紧到 tol=0.10、w_com_support=6.0 后
+  **COM 正确压向支撑脚、不倾倒、单支撑段存活**。
+- 现状卡点：摆动腿到不了位（fl_xy 0.24 < 需 ~0.35；fl_z 峰值 0.135），
+  horizon=6 (0.3s) 看不到落地，属于**动作层 horizon/采样不足**，
+  下一步杠杆：H=10+、摆动脚 pose_init 初值、摆动段细分子关键帧。

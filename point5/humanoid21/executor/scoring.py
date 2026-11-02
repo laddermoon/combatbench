@@ -53,7 +53,8 @@ def score_landed(cur_like: Dict[str, Any], ref: RefFrame,
     c["slip"] = slip
     c["contact"] = float(cur_like["contacts"].get("extra", 0))
     if not (ref.support[0] and ref.support[1]):
-        anchor = FOOT[1] if not ref.support[1] else FOOT[0]
+        # anchor = the PLANTED foot (the one still supporting)
+        anchor = FOOT[0] if ref.support[0] else FOOT[1]
         d = np.linalg.norm(np.asarray(cur_like["com_pos"])[:2]
                            - ref.p5_world[anchor, :2])
         c["com_support"] = float(max(0.0, d - cfg.support_tol))

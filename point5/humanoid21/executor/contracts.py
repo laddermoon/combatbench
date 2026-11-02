@@ -154,8 +154,8 @@ class ExecutorConfig:
     w_com_vel: float = 0.4
     w_yaw: float = 0.8
     w_slip: float = 3.0
-    w_com_support: float = 1.2       # COM over anchor during swing
-    support_tol: float = 0.25        # allowed COM-anchor offset (m)
+    w_com_support: float = 6.0       # COM over anchor during swing
+    support_tol: float = 0.10        # allowed COM-anchor offset (m)
     w_extra_contact: float = 4.0
     w_action: float = 0.02
     w_action_delta: float = 0.05
