@@ -28,6 +28,14 @@ from .contracts import (
     to_world,
     twist_deg,
 )
+from .mass_model import (
+    DEFAULT_MASSES,
+    SEG_NAMES,
+    MassModelConfig,
+    MassProxy,
+    mass_proxy,
+    virtual_body,
+)
 from .trajectory import (
     FrameSample,
     frames_payload,
@@ -38,11 +46,14 @@ from .trajectory import (
 
 __all__ = [
     "CLIP_FORMAT",
+    "DEFAULT_MASSES",
     "FRAMES_FORMAT",
     "FrameSample",
     "GROUND_Z",
     "Keyframe",
     "MIN_FOOT_SEP_XY",
+    "MassModelConfig",
+    "MassProxy",
     "N_POINTS",
     "P5Clip",
     "PLANT_HEIGHT_TOL",
@@ -50,6 +61,7 @@ __all__ = [
     "POINT_NAMES",
     "Point5Error",
     "Point5State",
+    "SEG_NAMES",
     "STATE_FORMAT",
     "SampleOutOfRange",
     "TaskValidationError",
@@ -62,8 +74,10 @@ __all__ = [
     "is_planted",
     "keyframe_frames",
     "keyframe_world",
+    "mass_proxy",
     "sample_clip",
     "to_local",
     "to_world",
     "twist_deg",
+    "virtual_body",
 ]

@@ -42,6 +42,10 @@
   （`task` 为 `P5Clip` 或 None：out_of_sector/out_of_reach）
 - `humanoid21.plan_stand_punch(target, hand, cfg)` —— 站姿前手拳 4 帧
   （coil→swing→land→strike，最近迭代热点）
+- `mass_proxy(p5, cfg)`（`mass_model.py`）—— model-free 质量分布代理：
+  5 点 → 虚拟身体（列式骨盆/直腿弦/弯肘）→ COM 代理 + 质量归一化
+  惯量张量。RMSE ~4cm 自然姿态 / ~2cm 打拳关键帧（对
+  `humanoid21/eval_com_model.py` 的 equilibrium 真值评估）
 - `viz.py`：`PYTHONPATH=. python3 -m point5.viz --clip c.json --out c.mp4 [--html]`
 
 ## 测试
