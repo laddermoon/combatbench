@@ -16,9 +16,13 @@ from typing import Any, Optional
 
 import numpy as np
 
+from .capability_solver import capability
 from .centroidal import MASS_KG, CentroidalState, CentroidalTrajectory
 from .com_solver import com_estimate, mass_estimate
 from .contracts import Context, PlanError
+
+CTRL_DT = 0.05                # simulator control period (20 Hz)
+_SETTLE_T = 0.6               # hold/settle horizon for 1-kf clips
 
 
 def _level_rot(g_body: np.ndarray) -> np.ndarray:
@@ -137,5 +141,50 @@ class CentroidalPlanner:
            l 由曲线速度*MASS 给出，L 初版可为 0
            （角动量后补 yaw 旋转需求）。
         """
-        raise PlanError("algorithm 1 (centroidal planning) "
-                        "not implemented")
+        clip = ctx.clip
+        kfs = clip.keyframes
+        from point5.contracts import compose_frame, to_world
+
+        # 1) frame poses + COM targets, all expressed in frame0
+        poses = [(np.zeros(2), 0.0)]
+        for k in range(1, len(kfs)):
+            poses.append(compose_frame(*poses[-1], kfs[k].transfer))
+        com_t = []
+        for k, kf in enumerate(kfs):
+            cl = com_estimate(kf.pos)
+            w = to_world(np.asarray(cl)[None, :],
+                         poses[k][0], poses[k][1])[0]
+            com_t.append(w)
+
+        states = []
+
+        def emit(c_from, v_from, c_to, dur, cap_p5):
+            n = max(1, int(round(dur / CTRL_DT)))
+            # capability stretch: required peak vel must fit envelope
+            dist = float(np.linalg.norm(c_to - c_from))
+            d_hat = (c_to - c_from) / (dist + 1e-12)
+            v_cap = capability(cap_p5).v_max(d_hat)
+            need = dist / (n * CTRL_DT) * 1.875      # min-jerk peak
+            if v_cap > 0 and need > v_cap:
+                n = int(np.ceil(dist / (v_cap / 1.875) / CTRL_DT))
+            T = n * CTRL_DT
+            for i in range(1, n + 1):
+                t = i * CTRL_DT
+                h = (t / T)
+                s_ = (10 * h**3 - 15 * h**4 + 6 * h**5)
+                sd = (30 * h**2 - 60 * h**3 + 30 * h**4) / T
+                c = c_from + (c_to - c_from) * s_
+                v = (c_to - c_from) * sd + v_from * (1 - s_)
+                states.append(CentroidalState(
+                    com=c, lin_mom=MASS_KG * v,
+                    ang_mom=np.zeros(3)))
+
+        if len(kfs) == 1:
+            emit(c0.com, c0.com_vel, com_t[0], _SETTLE_T, kfs[0].pos)
+        else:
+            for k in range(1, len(kfs)):
+                src = (c0.com, c0.com_vel) if k == 1 \
+                    else (com_t[k - 1], np.zeros(3))
+                emit(src[0], src[1], com_t[k], kfs[k].transfer.dur,
+                     kfs[k].pos)
+        return CentroidalTrajectory(states=states)
