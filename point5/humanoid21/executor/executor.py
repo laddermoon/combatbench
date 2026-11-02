@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from .action_computer import ActionComputer
+from .centroidal_planner import CentroidalPlanner
 from .contracts import (Action, AnchorError, CentroidalPlan, Context,
                         ExecutorError, Observation, PlanError)
 
@@ -41,14 +43,16 @@ class Executor:
                                        initial_pose_a="standing")
             wsim.reset(seed=0)
         self.wsim = wsim
+        self.centroidal = CentroidalPlanner()
+        self.action_computer = ActionComputer()
 
     # -- public API ----------------------------------------------------------
     def gen_action(self, ctx: Context) -> Action:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
-        c0 = self._centroidal_state(ctx.observation)
-        plan = self._plan_centroidal(ctx, c0)
-        return self._compute_action(ctx, plan)
+        c0 = self.centroidal.extract_centroidal_state(ctx.observation)
+        plan = self.centroidal.plan(ctx, c0)
+        return self.action_computer.compute(ctx, plan, self.wsim)
 
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
@@ -70,43 +74,4 @@ class Executor:
                 f"clip frame0 not anchored to current "
                 f"(max dev {dev.max():.4g} > {self.anchor_atol})")
 
-    def _centroidal_state(self, obs: Observation) -> np.ndarray:
-        """Step 1: extract COM motion state from the observation —
-        the centroidal plan's starting state.
 
-        Source: the derived-state view's structured fields (subtree
-        COM / body kinematics); the 96-dim flat vector alone is not
-        sufficient for planning.
-
-        TODO: implement real extraction."""
-        raise PlanError("centroidal-state extraction not implemented")
-
-    def _plan_centroidal(self, ctx: Context,
-                         c0: np.ndarray) -> CentroidalPlan:
-        """Step 2 (algorithm 1): centroidal motion planning.
-
-        From current COM kinematics + remaining P5 clip produce a
-        timed centroidal trajectory (position/velocity per step,
-        contact phases, keyframe event times) and the next step's
-        required centroidal state CNext.
-
-        Priors available: mass_proxy per keyframe (P5->COM estimate),
-        support-phase detection, capability caps for timing.
-
-        TODO: implement.
-        """
-        raise PlanError("algorithm 1 (centroidal planning) "
-                        "not implemented")
-
-    def _compute_action(self, ctx: Context,
-                        plan: CentroidalPlan) -> Action:
-        """Step 3 (algorithm 2): next action from plan + observation.
-
-        CNext -> P5Next (progress-consistent next-frame P5)
-              -> optional Humanoid21RefNext (pose_solver)
-              -> Action via MPC/simulation search.
-
-        TODO: implement.
-        """
-        raise PlanError("algorithm 2 (action computation) "
-                        "not implemented")
