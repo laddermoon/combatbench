@@ -11,8 +11,8 @@ sim 内部结构；只持有自己的内部仿真器，不维护任何执行进�
 ```
 gen_action(ctx)
   0  _verify_anchor      clip 首帧必须锚定 obs 解出的当前 P5（已实现）
-  1  obs -> P5            _extract_p5（stub，obs 解码器）
-  2  obs -> 质心状态      CentroidalPlanner.extract_centroidal_state（stub）
+  1  obs -> P5            _extract_p5（stub：锚定校验用的解码）
+  2  obs -> 质心状态      extract_centroidal_state（已实现：FK解码+工具1/3）
   3  算法1 centroidal     CentroidalPlanner.plan（stub）
   4  算法2 action         ActionComputer.compute（stub）
       CNext -> P5Next -> [可选 Humanoid21RefNext(工具2)] -> Action
@@ -20,13 +20,14 @@ gen_action(ctx)
 
 | 件 | 文件 | 状态 |
 |---|---|---|
-| 算法1 质心规划 | `centroidal_planner.py` | stub |
-| 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 9维 + `com_vel=l/m` |
+| 算法1 质心规划 | `centroidal_planner.py` | obs→z=(c,l,L) 提取已实现；plan() stub（由果推因设计注释已写） |
 | 算法2 动作计算 | `action_computer.py` | stub |
-| 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | 已实现 |
-| 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve 已接通；LUT 加速 stub |
+| 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | ✅ |
+| 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve ✅；LUT 加速 stub |
 | 工具3 P5→转动惯量 | `inertia_solver.py` → `mass_model` | ✅ 关于质心的 (3,3) 惯量/回转半径 |
-| obs→P5 解码 | `executor._extract_p5` | stub（按 OBSERVATION_zh 布局） |
+| 工具4 P5→能力预期 | `capability_solver.py` | ✅ 经验包络 v_xy/v_z/single_support |
+| 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 局部系 + `CentroidalTrajectory` |
+| obs→P5 解码 | `centroidal_planner._decode_p5_local` | ✅ FK 重建（观测无自身关键点） |
 
 ## 契约（contracts.py）
 
