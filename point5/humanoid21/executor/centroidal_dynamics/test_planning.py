@@ -7,7 +7,7 @@ import pytest
 from envs.humanoid21.simulator import Humanoid21Simulator
 from mocap.humanoid21.clip.objective_evaluator import ReclipObjectiveConfig
 from mocap.humanoid21.clip.target_path import TargetPath
-from mocap.humanoid21.centroidal_dynamics.planning import (
+from point5.humanoid21.executor.centroidal_dynamics.planning import (
     build_centroidal_plan,
     direct_reclip_solver,
     make_plan_context,

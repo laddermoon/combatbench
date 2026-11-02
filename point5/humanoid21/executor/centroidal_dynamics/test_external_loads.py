@@ -4,14 +4,14 @@ import numpy as np
 import pytest
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     SOURCE_CONTACT_GROUND,
     SOURCE_XFRC_APPLIED,
     OutOfDomainContact,
     UnknownExternalSource,
     UnsupportedGeneralizedLoad,
 )
-from mocap.humanoid21.centroidal_dynamics.external_loads import (
+from point5.humanoid21.executor.centroidal_dynamics.external_loads import (
     ExternalLoadNormalizer,
 )
 
@@ -125,7 +125,7 @@ def test_unmapped_contact_geom_fails_loud(sim, normalizer):
 def test_contact_torque_is_out_of_domain(sim, normalizer, monkeypatch):
     sim.reset(seed=0)
     assert sim.data.ncon > 0
-    import mocap.humanoid21.centroidal_dynamics.external_loads as mod
+    import point5.humanoid21.executor.centroidal_dynamics.external_loads as mod
     real = mujoco.mj_contactForce
 
     def fake_contact_force(model, data, contact_id, out):

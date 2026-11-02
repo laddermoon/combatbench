@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.model_spec import (
+from point5.humanoid21.executor.centroidal_dynamics.model_spec import (
     build_model_spec,
 )
 

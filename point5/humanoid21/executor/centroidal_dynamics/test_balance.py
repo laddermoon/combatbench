@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from mocap.humanoid21.centroidal_dynamics.balance import momentum_balance
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.balance import momentum_balance
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     CentroidalState,
     ExternalLoad,
     GeneralizedLoad,

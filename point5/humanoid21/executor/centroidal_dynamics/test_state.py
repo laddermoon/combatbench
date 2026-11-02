@@ -5,8 +5,8 @@ import pytest
 from scipy.spatial.transform import Rotation as R
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.model_spec import build_model_spec
-from mocap.humanoid21.centroidal_dynamics.state import (
+from point5.humanoid21.executor.centroidal_dynamics.model_spec import build_model_spec
+from point5.humanoid21.executor.centroidal_dynamics.state import (
     CentroidalStateExtractor,
     extract_centroidal_state,
 )

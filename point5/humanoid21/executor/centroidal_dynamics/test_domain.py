@@ -5,20 +5,20 @@ import pytest
 from scipy.spatial.transform import Rotation as R
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     ExternalLoad,
     GeneralizedLoad,
     LoadSnapshot,
     SOURCE_CONTACT_GROUND,
 )
-from mocap.humanoid21.centroidal_dynamics.domain import (
+from point5.humanoid21.executor.centroidal_dynamics.domain import (
     CentroidalDomainChecker,
     _point_to_convex_margin,
 )
-from mocap.humanoid21.centroidal_dynamics.external_loads import (
+from point5.humanoid21.executor.centroidal_dynamics.external_loads import (
     ExternalLoadNormalizer,
 )
-from mocap.humanoid21.centroidal_dynamics.state import CentroidalStateExtractor
+from point5.humanoid21.executor.centroidal_dynamics.state import CentroidalStateExtractor
 
 
 @pytest.fixture()

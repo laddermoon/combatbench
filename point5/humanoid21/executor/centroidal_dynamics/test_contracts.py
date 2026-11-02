@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     CentroidalState,
     DomainIssue,
     DomainReport,

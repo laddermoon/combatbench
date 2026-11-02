@@ -3,11 +3,11 @@ import numpy as np
 import pytest
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     SOURCE_XFRC_APPLIED,
     UnsupportedGeneralizedLoad,
 )
-from mocap.humanoid21.centroidal_dynamics.probe import PhysicsStepProbe
+from point5.humanoid21.executor.centroidal_dynamics.probe import PhysicsStepProbe
 
 
 @pytest.fixture()

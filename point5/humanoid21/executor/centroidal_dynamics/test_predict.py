@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from envs.humanoid21.simulator import Humanoid21Simulator
-from mocap.humanoid21.centroidal_dynamics.contracts import (
+from point5.humanoid21.executor.centroidal_dynamics.contracts import (
     CentroidalState,
     ExternalLoad,
     GeneralizedLoad,
@@ -12,11 +12,11 @@ from mocap.humanoid21.centroidal_dynamics.contracts import (
     SOURCE_CONTACT_WALL,
     SOURCE_XFRC_APPLIED,
 )
-from mocap.humanoid21.centroidal_dynamics.model_spec import build_model_spec
-from mocap.humanoid21.centroidal_dynamics.predict import (
+from point5.humanoid21.executor.centroidal_dynamics.model_spec import build_model_spec
+from point5.humanoid21.executor.centroidal_dynamics.predict import (
     DiscreteCentroidalPredictor,
 )
-from mocap.humanoid21.centroidal_dynamics.probe import PhysicsStepProbe
+from point5.humanoid21.executor.centroidal_dynamics.probe import PhysicsStepProbe
 
 
 @pytest.fixture()
