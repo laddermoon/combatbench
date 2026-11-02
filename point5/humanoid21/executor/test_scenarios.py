@@ -232,3 +232,17 @@ def test_nan_free_random_targets():
         assert tr.n_steps > 0
         assert all(np.all(np.isfinite(s.z)) for s in tr.states)
         assert np.linalg.norm(tr[-1].com_vel) < 1e-6
+
+
+def test_unstable_kf_anchor_projected_into_support():
+    """Single-support kf whose implied COM is outside the polygon gets
+    projected inside -> plan shifts COM onto the support foot."""
+    plan = plan_stand_punch(np.array([1.05, 0, 1.15]), "left")
+    raw = list(plan.task.keyframes)
+    kfs = [Keyframe(pos=stand_p5()),
+           Keyframe(pos=raw[0].pos,
+                    transfer=Transfer(0, 0, 0, 0.5))] + raw[1:]
+    tr = _plan(P5Clip(name="p", keyframes=tuple(kfs)))
+    ys = [s.com[1] for s in tr.states]
+    assert min(ys) < -0.04         # weight moved onto right foot
+    assert tr[-1].com[1] > -0.05   # returns near center by strike

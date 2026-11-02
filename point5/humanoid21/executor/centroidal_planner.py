@@ -42,6 +42,27 @@ def _level_rot(g_body: np.ndarray) -> np.ndarray:
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
 
 
+def _project_inside(c: np.ndarray, poly: np.ndarray,
+                    eps: float = 0.02) -> np.ndarray:
+    """Nearest point on/inside polygon, nudged eps toward centroid."""
+    c = np.asarray(c, np.float64)
+    best, bd = None, np.inf
+    m = len(poly)
+    for i in range(m):
+        a, b = poly[i], poly[(i + 1) % m]
+        e = b - a
+        t = np.clip(np.dot(c - a, e) / max(np.dot(e, e), 1e-12),
+                    0.0, 1.0)
+        p = a + t * e
+        d = float(np.linalg.norm(c - p))
+        if d < bd:
+            best, bd = p, d
+    center = poly.mean(axis=0)
+    v = center - best
+    n = np.linalg.norm(v)
+    return best + v / n * min(eps, n) if n > 1e-9 else best
+
+
 def _quat_wxyz(R: np.ndarray) -> np.ndarray:
     tr = R[0, 0] + R[1, 1] + R[2, 2]
     if tr > 0:
@@ -151,7 +172,13 @@ class CentroidalPlanner:
             poses.append(compose_frame(*poses[-1], kfs[k].transfer))
         com_t = []
         for k, kf in enumerate(kfs):
-            cl = com_estimate(kf.pos)
+            cap = capability(kf.pos)
+            cl = cap.com_local.copy()
+            # business constraint: a held keyframe must be statically
+            # consistent — pull COM xy inside the support polygon
+            if not cap.static_ok and len(cap.support_polygon):
+                cl[:2] = _project_inside(cap.com_local[:2],
+                                         cap.support_polygon)
             w = to_world(np.asarray(cl)[None, :],
                          poses[k][0], poses[k][1])[0]
             com_t.append(w)
