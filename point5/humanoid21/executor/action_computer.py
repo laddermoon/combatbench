@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from .contracts import CentroidalPlan, Context, PlanError
+from .centroidal import CentroidalTrajectory
+from .contracts import Context, PlanError
 
 
 class ActionComputer:
     """Stateless action computation used by Executor.gen_action."""
 
-    def compute(self, ctx: Context, plan: CentroidalPlan,
+    def compute(self, ctx: Context, plan: CentroidalTrajectory,
                 wsim) -> np.ndarray:
         """Return the next (21,) action.
 

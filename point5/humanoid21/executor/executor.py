@@ -19,7 +19,7 @@ import numpy as np
 
 from .action_computer import ActionComputer
 from .centroidal_planner import CentroidalPlanner
-from .contracts import (Action, AnchorError, CentroidalPlan, Context,
+from .contracts import (Action, AnchorError, Context,
                         ExecutorError, Observation, PlanError)
 
 ActionT = Action  # (21,) normalized PD target — the sim input

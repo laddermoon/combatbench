@@ -48,20 +48,6 @@ class Context:
 
 
 @dataclass
-class CentroidalPlan:
-    """Output of algorithm 1 — the centroidal motion plan.
-
-    ``frames`` are timed references; ``c_next`` is the next control
-    step's required centroidal state.  Concrete fields TBD.
-    """
-
-    c_next: Optional[Dict[str, np.ndarray]] = None
-    frames: list = field(default_factory=list)
-    events: list = field(default_factory=list)
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class PoseResult:
     """A solved Humanoid21 reference pose for one local P5."""
 

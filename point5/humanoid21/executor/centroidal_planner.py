@@ -16,7 +16,8 @@ from typing import Any
 
 import numpy as np
 
-from .contracts import CentroidalPlan, Context, PlanError
+from .centroidal import CentroidalTrajectory
+from .contracts import Context, PlanError
 
 
 class CentroidalPlanner:
@@ -31,7 +32,8 @@ class CentroidalPlanner:
         """
         raise PlanError("centroidal-state extraction not implemented")
 
-    def plan(self, ctx: Context, c0: np.ndarray) -> CentroidalPlan:
+    def plan(self, ctx: Context, c0: np.ndarray
+             ) -> CentroidalTrajectory:
         """Centroidal plan from current state + remaining clip.
 
         TODO: implement.
