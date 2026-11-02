@@ -21,7 +21,7 @@ gen_action(ctx)
 | 件 | 文件 | 状态 |
 |---|---|---|
 | 算法1 质心规划 | `centroidal_planner.py` | stub |
-| 质心动力学模型 | `centroidal_dynamics/`（从 mocap 迁入） | ✅ 39 tests：state/model_spec/domain/external_loads/balance/predict/planning |
+| 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 9维 + `com_vel=l/m` |
 | 算法2 动作计算 | `action_computer.py` | stub |
 | 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | 已实现 |
 | 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve 已接通；LUT 加速 stub |
@@ -36,10 +36,11 @@ gen_action(ctx)
 - 锚定校验容差 `anchor_atol = 1e-6`；不一致抛 `AnchorError`，
   Executor 不补接。
 
-## 质心动力学（centroidal_dynamics/）
+## 质心状态（centroidal.py）
 
-算法1 的地基：centroidal 状态/外力/可行域/动量平衡/一步预测/规划
-接口，见 `HUMANOID21_CENTROIDAL_DYNAMICS_META_DESIGN.md`。
+唯一保留的核心表示：`z = (c, l, L)`（质心位置/线动量/角动量，
+`com_vel = l/m`）。接触模式、落脚点、阶段时间属伴随信息。
+旧 centroidal_dynamics 包的其余实现全部删除——过度复杂。
 
 ## 已证结论（前一轮失败迭代，勿重踩）
 
