@@ -326,3 +326,14 @@ PYTHONPATH=. python3 -m pytest point5/ -q
   不动旧缓存）；`update_head` 用实测首帧接续且世界目标误差 <1e-12；
   `remaining_transfer` 用 SE(2) 逆合成算"内部首帧→下一关键帧"转移。
 - 测试覆盖：拼帧、锚定拒绝、跟偏 8cm+12° 下世界目标不变、SE2 数学、CLEAR。
+
+### E3 完成（reference.py + 6 项断言全过）
+
+- 支撑判定：脚世界位移>3cm 或抬升>2cm 判定摆动，另一脚为唯一支撑；
+  修复 numpy 布尔标量索引陷阱（`arr[True]` 是轴索引非下标，曾导致支撑全错）。
+- 配时：各段取 hand/head/foot/com/yaw/下限的最大需求；com 峰值加速度
+  超过 1.5g 判不可行并按 1.25× 重试（≤6），总时长超 6s 预算 → PlanError。
+- 标准出拳配时（w_yaw 调到 2.5 rad/s 后）：总 ~1.8-3.5s，各段 limiter 可解释
+  （yaw/com/land_settle 主导）。
+- RefFrame：局部点 smooth 混合 + frame 渐进旋转，世界速度解析求导；
+  与有限差分一致；关键帧到达事件标在最近的控制帧上（kf_idx 记录）。

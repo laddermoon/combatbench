@@ -129,7 +129,7 @@ class ExecutorConfig:
     a_foot: float = 25.0
     v_com: float = 0.6
     a_com: float = 6.0
-    w_yaw: float = 3.0               # rad/s
+    w_yaw: float = 2.5               # rad/s
     min_seg_dur: float = 0.10
     land_settle: float = 0.20
     mu: float = 0.7                  # friction estimate
