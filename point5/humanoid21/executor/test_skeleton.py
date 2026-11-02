@@ -38,7 +38,11 @@ def test_anchor_accepts_exact():
 
 
 def test_pipeline_stubs_raise():
+    from point5.humanoid21.executor.centroidal_planner import (
+        CentroidalPlanner)
     ex = Executor.__new__(Executor)
+    ex.centroidal = CentroidalPlanner()
+    ex.action_computer = None
     _patched(ex, stand_p5())
     with pytest.raises(PlanError):
         ex.gen_action(_ctx())
