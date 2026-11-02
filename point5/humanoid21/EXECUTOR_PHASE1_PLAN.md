@@ -317,3 +317,12 @@ PYTHONPATH=. python3 -m pytest point5/ -q
   - 短窗口仿真搜索（此前验证）→ 10 步内 tilt<0.2rad 可稳。
   **结论：本机器人站立必须由主动控制维持，E1 不承诺被动/单关节基线；
   "无指令保持 3s"验收随 E5/E6 的搜索控制器一并验证。**
+
+### E2 完成（clip_cache.py + 5 项断言全过）
+
+- `build_stand_punch_clip`：调用方专用——校验 coil 相对站姿原点/yaw 不动
+  （踝中点漂移 >1e-6 就拒绝，防生成器行为漂移），显式拼 start 帧。
+- `InstructionCache`：submit 硬校验（首帧局部坐标 max 偏差 >1e-6 → AnchorError，
+  不动旧缓存）；`update_head` 用实测首帧接续且世界目标误差 <1e-12；
+  `remaining_transfer` 用 SE(2) 逆合成算"内部首帧→下一关键帧"转移。
+- 测试覆盖：拼帧、锚定拒绝、跟偏 8cm+12° 下世界目标不变、SE2 数学、CLEAR。
