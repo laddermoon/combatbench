@@ -1,7 +1,8 @@
-# P5 通用伺服控制器：目标与方案
+# Executor：P5 通用伺服控制器目标与方案
 
 > 状态：设计草案，尚未实现完整闭环。用户意图见 [bootstrip.md](bootstrip.md)。
 > 本文区分确定的接口要求与可以尝试的算法，不将现有原子能力视为完整控制器。
+> 第一阶段的可执行任务分解见 [EXECUTOR_PHASE1_PLAN.md](EXECUTOR_PHASE1_PLAN.md)。
 
 ## 1. 项目目标与原则
 
