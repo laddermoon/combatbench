@@ -103,11 +103,39 @@ class CentroidalPlanner:
         return CentroidalState(com=c, lin_mom=MASS_KG * v_loc,
                                ang_mom=I_loc @ w_loc)
 
-    def plan(self, ctx: Context, c0: np.ndarray
-             ) -> CentroidalTrajectory:
+    def plan(self, ctx: Context,
+             c0: CentroidalState) -> CentroidalTrajectory:
         """Centroidal trajectory from current state + remaining clip.
 
-        TODO: implement.
+        大逻辑（设计意图，先注释后实现）：
+
+        1. 由果推因——直接从 P5Clip 设计质心轨迹这个"果"，
+           不做支撑相位/落脚点级别的因果规划；物理上能不能
+           实现这个果是算法2 要解决的问题。
+
+        2. 轨迹由"业务约束"生成，而非动力学优化：
+           - 锚点：每个关键帧经工具1 com_estimate 得到局部系
+             推荐质心（世界系锚定由 clip frame 链给出）。
+           - 曲线模板：按段类型套简单有效的经验曲线——
+             e.g. 换步支撑段：质心横向滑移为 S 曲线，
+             先加速离脚、中途恒速、落地前减速；
+             单脚段：质心向支撑脚收敛后保持；
+             出手段：z 维持，xy 微前送。
+           - 速度约束：相邻段速度连续（或受控跳变），
+             单段内 |v| 不超过该段能力预期。
+
+        3. 能力预期（经验函数，P5->capability）：
+           - capability(p5) -> 该姿态下质心可改变的速率/
+             加速度包络（随姿态而异：宽站距 vs 窄站距、
+             蹲姿 vs 立姿、单脚 vs 双脚）。
+           - 用于定每段时长：dur = f(质心位移需求, capability)。
+           - 初版可以是几个粗糙查表/分段线性经验值，
+             90% 信息量即可。
+
+        4. 输出 CentroidalTrajectory：
+           states[k] = 第 k 个控制步之后的 z=(c,l,L)；
+           l 由曲线速度*MASS 给出，L 初版可为 0
+           （角动量后补 yaw 旋转需求）。
         """
         raise PlanError("algorithm 1 (centroidal planning) "
                         "not implemented")
