@@ -6,11 +6,23 @@ table: (head, feet) -> stage-1 body solution, then closed-form arm IK.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 
-from .contracts import PoseResult
+
+@dataclass
+class PoseResult:
+    """A solved Humanoid21 reference pose for one local P5."""
+
+    root_pos: np.ndarray
+    root_quat_wxyz: np.ndarray
+    q_rad: np.ndarray                    # (21,) joint radians
+    action: np.ndarray                   # (21,) normalized PD target
+    satisfied: bool
+    failed_stage: str = ""
+    energy: float = 0.0
 
 
 class Humanoid21PoseSolver:
