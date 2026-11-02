@@ -3,7 +3,7 @@
 Core state (per the meta-design's single useful line):
 
     z = (c, l, L)          # 9 continuous world-frame quantities
-    com_vel = l / mass     # linear momentum gives COM velocity
+    com_vel = l / MASS_KG  # linear momentum gives COM velocity
 
 Contact mode, footstep positions, phase timing, whole-body config
 are *accompanying* information — not part of z.
@@ -14,20 +14,23 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# Humanoid21 total body mass (kg) — from
+# envs.humanoid21.meta.Humanoid21Meta.build_runtime_tables
+# ['robot_a']['total_mass'].  Constant for this robot.
+MASS_KG = 40.844
+
 
 @dataclass
 class CentroidalState:
-    """z = (c, l, L) + total mass.  Contact mode, footsteps,
-    phase timing etc. are accompanying info — tracked elsewhere."""
+    """z = (c, l, L)."""
 
     com: np.ndarray                      # c, (3,) world
     lin_mom: np.ndarray                  # l, (3,) world
     ang_mom: np.ndarray                  # L, (3,) world
-    mass: float
 
     @property
     def com_vel(self) -> np.ndarray:
-        return self.lin_mom / self.mass
+        return self.lin_mom / MASS_KG
 
     @property
     def z(self) -> np.ndarray:
