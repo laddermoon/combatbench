@@ -284,3 +284,23 @@ PYTHONPATH=. python3 -m pytest point5/ -q
 遇阻先按层定位：恢复不一致先修 E1；首帧/世界目标错误先修 E2；
 参考冲突先修 E3；评分不敏感或奖励相互冲突先修 E4；
 最后才调 E5 搜索预算。不能通过放松锚定、丢掉阶段、替换目标或只保留成功样本绕过问题。
+
+---
+
+## 执行日志（按工作包追加）
+
+### E0 完成（contracts.py + sim_iface.py + 6 项断言）
+
+实现中发现的精确语义（后续包必须遵守）：
+
+- **Action = 归一化 PD 位置目标**：`target_rad = action*scale + reference`，
+  torque=`KP*(target-q) - KD*qd` 经 gear/ctrlrange 限幅。`action=0` 指向
+  关节中位，**不是站姿**；站姿 action = `INITIAL_POSES['standing']['action']`
+  ≈ `(0 - ref)/scale`（非零向量，测试已固化）。
+- 站姿 `joint_pos_norm == standing_action`（非零）；robot_a 初始 root x = -dist/2。
+- `_target_pos_norm` 存在 simulator 对象上（非 mjData）——快照恢复时 E1 必须
+  另行恢复该字段（或保证恢复后先 set_action 再 step）。
+- `physical_step` 每子步后清 `xfrc_applied`/`qfrc_applied`——外部力不计入快照。
+- 站姿 PD 开环保持是**不稳定平衡点**（实测 2s 内 tilt→1.34rad 跌倒），
+  E1 的"保持"验收必须靠主动控制，不能只用 PD。
+- 6 项断言：`pytest point5/humanoid21/executor/test_executor_contracts.py` 全过。
