@@ -35,3 +35,28 @@ class CentroidalState:
     @property
     def z(self) -> np.ndarray:
         return np.concatenate([self.com, self.lin_mom, self.ang_mom])
+
+
+@dataclass
+class CentroidalTrajectory:
+    """A planned centroidal rollout: states[k] is the z AFTER step k.
+
+    Two access modes:
+      - ``n_steps`` (or len) -> number of steps
+      - ``state_after(k)`` / ``traj[k]`` -> CentroidalState after step k
+    """
+
+    states: list                       # List[CentroidalState]
+
+    @property
+    def n_steps(self) -> int:
+        return len(self.states)
+
+    def __len__(self) -> int:
+        return self.n_steps
+
+    def state_after(self, k: int) -> CentroidalState:
+        return self.states[k]
+
+    def __getitem__(self, k: int) -> CentroidalState:
+        return self.states[k]
