@@ -337,3 +337,12 @@ PYTHONPATH=. python3 -m pytest point5/ -q
   （yaw/com/land_settle 主导）。
 - RefFrame：局部点 smooth 混合 + frame 渐进旋转，世界速度解析求导；
   与有限差分一致；关键帧到达事件标在最近的控制帧上（kf_idx 记录）。
+
+### E4 完成（scoring.py + 5 项断言全过）
+
+- `score_landed`：点位置 deadzone+0.25 残差、点速度、COM 位置/速度、
+  yaw、支撑脚滑移（按 ref.support）、非足接触数、动作及变化正则、
+  可选自然姿态偏好；倾斜/低头 → 跌倒硬罚。
+- `pose_init`：`solve_equilibrium` → q_rad → 经 sim_iface 归一化为动作
+  初值；关节序已验证与执行器序 1:1 相同；不满足则返回 None 走回退。
+- 测试：deadzone/单通道敏感/跌倒硬罚/支撑滑移/初值映射。
