@@ -25,6 +25,7 @@ gen_action(ctx)
 | 算法2 动作计算 | `action_computer.py` | stub |
 | 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | 已实现 |
 | 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve 已接通；LUT 加速 stub |
+| 工具3 P5→转动惯量 | `inertia_solver.py` → `mass_model` | ✅ 关于质心的 (3,3) 惯量/回转半径 |
 | obs→P5 解码 | `executor._extract_p5` | stub（按 OBSERVATION_zh 布局） |
 
 ## 契约（contracts.py）
