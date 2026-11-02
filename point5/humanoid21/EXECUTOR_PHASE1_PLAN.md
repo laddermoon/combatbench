@@ -304,3 +304,16 @@ PYTHONPATH=. python3 -m pytest point5/ -q
 - 站姿 PD 开环保持是**不稳定平衡点**（实测 2s 内 tilt→1.34rad 跌倒），
   E1 的"保持"验收必须靠主动控制，不能只用 PD。
 - 6 项断言：`pytest point5/humanoid21/executor/test_executor_contracts.py` 全过。
+
+### E1 完成（state.py + test_state.py，3 项断言全过）
+
+- `capture_current`：真实 P5（含 frame_pose）、世界五点、质心位置/速度/角动量、
+  躯干倾斜、足部法向力（每脚 2 个 geom）与非足接触计数、全量快照。
+- `snapshot`/`restore`：8 个 mjData 动力场 + `_target_pos_norm` + time + step_count，
+  **逐位确定**（同快照+同动作 2 步落点差 <1e-12，双 sim sync 等价）。
+- 站立基线实测（重要，修正原验收假设）：
+  - 纯 PD 站姿保持（零动作或 standing action）→ ~2s 内跌倒；
+  - 踝 pitch 单关节 reflex（COM 投影误差 PD，两个方向、gains 0.8/0.15）→ 均失败；
+  - 短窗口仿真搜索（此前验证）→ 10 步内 tilt<0.2rad 可稳。
+  **结论：本机器人站立必须由主动控制维持，E1 不承诺被动/单关节基线；
+  "无指令保持 3s"验收随 E5/E6 的搜索控制器一并验证。**
