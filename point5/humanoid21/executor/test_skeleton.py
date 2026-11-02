@@ -11,17 +11,17 @@ from point5.humanoid21.executor.executor import Executor
 
 def _ctx():
     pos = stand_p5()
-    p5 = Point5State(pos=pos)
-    object.__setattr__(p5, "metadata", dict(p5.metadata) | {
-        "frame_origin_xy": [0.0, 0.0], "frame_yaw_deg": 0.0})
-    obs = Observation(robot_id="robot_a", time=0.0,
-                      derived={"p5": p5})
     clip = P5Clip(name="t", keyframes=(Keyframe(pos=pos),))
-    return Context(observation=obs, clip=clip)
+    return Context(observation=np.zeros(96), clip=clip)
+
+
+def _patched(ex, pos):
+    ex._extract_p5 = lambda obs: np.asarray(pos)
 
 
 def test_anchor_rejects_mismatch():
     ex = Executor.__new__(Executor)          # skip sim init for speed
+    _patched(ex, stand_p5())
     ctx = _ctx()
     moved = ctx.clip.keyframes[0].pos.copy()
     moved[0, 2] += 0.05
@@ -33,10 +33,12 @@ def test_anchor_rejects_mismatch():
 
 def test_anchor_accepts_exact():
     ex = Executor.__new__(Executor)
+    _patched(ex, stand_p5())
     ex._verify_anchor(_ctx())                # must not raise
 
 
 def test_pipeline_stubs_raise():
     ex = Executor.__new__(Executor)
+    _patched(ex, stand_p5())
     with pytest.raises(PlanError):
         ex.gen_action(_ctx())

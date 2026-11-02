@@ -51,11 +51,17 @@ class Executor:
         return self._compute_action(ctx, plan)
 
     # -- pipeline steps ------------------------------------------------------
+    def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
+        """Reconstruct the local P5 (5,3) from the 96-dim policy
+        observation.  The obs vector carries keypoint positions in its
+        own layout — parsing them is itself a decoder algorithm.
+
+        TODO: implement from OBSERVATION_zh layout."""
+        raise PlanError("obs->P5 extraction not implemented")
+
     def _verify_anchor(self, ctx: Context) -> None:
         """Step 0: clip frame0 must equal the current local P5."""
-        p5 = ctx.observation.derived["p5"] if "p5" in \
-            ctx.observation.derived else ctx.observation.derived
-        pos = getattr(p5, "pos", p5)
+        pos = self._extract_p5(ctx.observation)
         dev = np.linalg.norm(
             np.asarray(ctx.clip.keyframes[0].pos)
             - np.asarray(pos), axis=1)

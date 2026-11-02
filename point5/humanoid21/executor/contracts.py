@@ -26,20 +26,12 @@ class PlanError(ExecutorError):
     """Centroidal/reference planner found no acceptable plan."""
 
 
-@dataclass
-class Observation:
-    """The Humanoid21 simulator's own observation, verbatim.
-
-    ``derived`` is exactly ``sim.get_derived_state()[robot_id]``
-    (the structured per-robot view incl. the 96-dim flat
-    ``observation``); ``core`` is ``get_core_state()[robot_id]``
-    when the caller also supplies it.
-    """
-
-    robot_id: str
-    time: float
-    derived: Dict[str, Any]
-    core: Optional[Dict[str, np.ndarray]] = None
+# The policy's observation — the flat 96-dim vector that a policy
+# receives (get_derived_state()[robot_id]['observation']).  The
+# Executor is a policy backend: this is ALL it may see.  Everything
+# it needs (P5, centroidal state estimate, support cues) must be
+# reconstructed from this vector — no core state, no sim handles.
+Observation = np.ndarray
 
 
 # simulator input: the (21,) normalized PD target for one control step
