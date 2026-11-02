@@ -1,6 +1,6 @@
 """P5 studio: web-based Point5 viewer/editor.
 
-    PYTHONPATH=. python3 point5/studio/server.py --dir <workdir> [--port 8901]
+    PYTHONPATH=. python3 point5/humanoid21/studio/server.py --dir <workdir> [--port 8901]
 
 JSON API under /api; the SPA lives in static/.  Dragging a point talks to
 the two-stage mechanics solver: head/foot drags hit check_legal live and

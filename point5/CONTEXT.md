@@ -1,51 +1,56 @@
-# CONTEXT.md — mocap/point5/
+# CONTEXT.md — point5/
 
 ## 一句话
 
-5 点（头/双手/双脚）**业务动作意图语言**的核心库：人/战术模型写稀疏关键帧任务，
-本库把 anchor 解析成世界点并做**纯线性分段插值**，输出可采样的参考信号。
+5 点（头/双手/双脚）**业务动作意图语言**的核心库（v2：躯干朝向局部系）：
+人/战术模型写稀疏关键帧 clip，本库做分段线性插值 + 自适应采样，
+输出可采样的参考信号。
 
 ## 心智模型
 
 - 业务语言 ≠ 机器人状态 ≠ 规划器。建筑设计 → 结构设计 → 施工 的"建筑设计"层。
-- **Simulator-Unaware**：绝不 import mujoco / envs.* / baseline.* / centroidal_dynamics。
-  提取、评分、PPO 插件全是目录外的 adapter。
+- **Simulator-Unaware**：本包（`humanoid21/` 除外）禁止 import mujoco /
+  envs.* / baseline.*。提取、评分、PPO 插件全是目录外的 adapter；
+  `humanoid21/` 是唯一允许碰 sim 代码的子包。
+- v2 局部系（DESIGN.md §3）：原点 = 双踝 XY 中点，X = 躯干前向，Z = 上
+  （地面 z=0）。P5 状态只有 `local_pos[5×3]`，无绝对位置/朝向/yaw 字段。
+- Clip = keyframes[]；第 k 帧带 `transfer{dx,dy,dyaw,dur}` 记录
+  `F_k = F_{k-1} ∘ T`（transfer 记在到达帧上，第一帧没有）。
+  世界放置 `f1=(origin_xy, yaw_deg)` 是消费端的选择，不是姿态属性。
 - 实测与参考共用 `Point5State`，下游对称比较。
 
 ## 关键约定（改代码前必读）
 
-- 词表固定 5 点；每个 keyframe **必须恰好覆盖 5 点**（没有 free/mask/先验）。
-- 任务 = `keyframes[K] + durations[K-1]`，段时长+段内归一化 s；
-  采样 `sample(seg,s)` / `sample_time(t)`，**出界报错不钳制**。
-- v1 无速度：spec 无 velocity、插值无切向量、参考 `vel` 恒 None；
-  静止段靠"相邻 kf 写相同 target"表达（没有 hold 字段）。
-- anchor 全静态，build 时经 `Resolver` 一次解析；`initial` 仅供解析/诊断，
-  kf0 的 target 才是参考起点。无动态锚点（不看对手）。
-- 脚 z≈0 即触地（`is_planted`）；`tolerance`/`weight` 是给下游读的标注，
-  合成器不消费。
-- 校验只做结构层（点集/时长/容差），fail-loud。
+- 词表固定 5 点；每帧恰好覆盖 5 点，无 free/mask/先验。
+- 插值纯线性；`sample_clip` 按世界位移自适应细分（每帧 ≤ max_step），
+  出界/非法 fail-loud（`TaskValidationError`/`SampleOutOfRange`）。
+- 脚点 = 踝关节中心（`LANDMARKS` +0.06z），站姿实测 z≈0.087 而非 0；
+  `is_planted` 语义 = "接近地面"标注。
+- `transfer.dur` 是 schema 必需字段，但 P5 不承诺执行时序语义
+  （stand_punch 直接填 0.1 占位）。
+- 每帧 `meta["specs"]` 存 `{w,tol}` 评分注解给下游读，P5 不消费。
+- 校验只做结构层（形状/有限性/transfer 归属），不做可达性判断——
+  可达性归 humanoid21/mechanics。
 
 ## 入口
 
-- `build_reference(task, resolver)` → `Point5Reference`
-- `StaticStartResolver(initial, root_pos, root_rot)` —— adapter 构造它
-- `punch_planner.plan_punch(initial_p5, target, hand, cfg)` → `PunchPlan`
-  —— v1 几何打击规划器（一脚锚定、前脚进步、经验编码关键帧）；
-  `PunchPlan.task` 为 `Point5Task` 或 `None`（out_of_sector/out_of_reach）
-- serde：`task.to_dict()/from_dict()`（JSON-safe）
+- `P5Clip.from_dict()/to_dict()` —— JSON-safe serde（`type=p5clip.v2`）
+- `sample_clip(clip, f1, max_step)` → `List[FrameSample]`，`.world_pos()` 取世界系
+- `keyframe_world(clip, f1)` / `keyframe_frames(clip, f1)` —— 关键帧世界位姿
+- `Point5State(pos, vel=None, metadata)` —— 实测/参考共用
+- `humanoid21.plan_punch(initial_p5, target, hand, cfg)` → `PunchPlan`
+  （`task` 为 `P5Clip` 或 None：out_of_sector/out_of_reach）
+- `humanoid21.plan_stand_punch(target, hand, cfg)` —— 站姿前手拳 4 帧
+  （coil→swing→land→strike，最近迭代热点）
+- `viz.py`：`PYTHONPATH=. python3 -m point5.viz --clip c.json --out c.mp4 [--html]`
 
 ## 测试
 
-`PYTHONPATH=<combatbench> python3 -m pytest mocap/point5/`
+`cd things/combatbench && PYTHONPATH=. python3 -m pytest point5/`（57 passed）
 
 ## 下游怎么用（本目录不负责）
 
-- `point5/humanoid21/`：**唯一的数据切面**——`point5_from_view(view, robot_id)`
-  一个函数，输入是 `get_derived_state()['robot_x']` 的 view dict
-  （`body_xpos`/`body_linvel_world` 按全名索引）→ 实测 `Point5State`。
-  为 observer 插件内嵌使用设计，不依赖 sim 对象。
-- `point5/viz.py`：sim 无关的离线可视化。
-  `python3 -m mocap.point5.viz --task t.json --out t.mp4 [--ctx start.json]`，
-  `--ctx` 提供 {initial, root_pos, root_rot} 供非 world anchor 解析。
+- `humanoid21/adapter.point5_from_view(view, robot_id)`：唯一数据切面——
+  `get_derived_state()['robot_x']` 的 view dict → 实测 `Point5State`（局部系）。
+  为 observer 插件内嵌设计，不依赖 sim 对象。
 - 评分/观测/PPO 插件等 harness 仍在目录外（baseline/、envs/）。
-- v2 候选：动态 anchor、先验填充、评分模块、编辑运算——见 DESIGN.md §8。

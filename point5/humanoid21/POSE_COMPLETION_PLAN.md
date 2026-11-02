@@ -1,9 +1,10 @@
 # P5 → Humanoid21 全身姿态补全：实施计划
 
 > 类型：实施计划  
-> 状态：方案已定，未实现  
-> 目录：`mocap/point5/humanoid21/`  
-> 上游契约：`mocap/point5/DESIGN.md`
+> 状态：**已实现**（实际落地以 `mechanics.py` 为准；本文保留为设计记录，
+> 与实现有出入处以代码/CONTEXT.md 为准）  
+> 目录：`point5/humanoid21/`（原 `mocap/point5/`）  
+> 上游契约：`point5/DESIGN.md`（现为 v2 局部系契约）
 
 ## 0. 定位与边界
 
@@ -119,19 +120,20 @@ E_pose(q) = ½ Σ_j k_j · ((q_j − q^0_j) / s_j)²
 ## 7. 模块与文件
 
 ```text
-mocap/point5/humanoid21/
+point5/humanoid21/            # 实际落地（与计划略有出入）
 ├── POSE_COMPLETION_PLAN.md   # 本文
-├── adapter.py                # 已有：derived view → Point5State
-├── landmarks.py              # 五点定义表：(point → body, local_offset)
-├── pose_config.yaml          # 自然姿态 q^0 + 刚度分组 + 踝固定角
-├── fk.py                     # Humanoid21 正向运动学（root+joint → 5点位置）
-├── solver.py                 # 三阶段优化补全 + 诊断
-├── render.py                 # 全身姿态渲染（自然姿态图/结果叠加图）
+├── adapter.py                # derived view → 局部系 Point5State
+├── mechanics.py              # 实际：骨架常量+LANDMARKS+SPRINGS+两阶段求解
+│                             #   （landmarks/pose_config/solver 均合入此文件；
+│                             #    自然姿态=弹簧零位=全零，踝参与 stage1 优化，
+│                             #    stage2 为 AZ+闭式臂 IK 解析解）
+├── fk.py                     # MuJoCo 正向运动学（仅显示/校验用）
+├── render.py                 # 全身姿态渲染
 └── test_*.py
 ```
 
-依赖：正向运动学用 MuJoCo `mj_kinematics`/`mj_jacSite` 级别计算
-（只读 model，不 step）；渲染可复用 envs 侧现有渲染能力。
+依赖：FK 为 mechanics.py 内纯 numpy 实现（运行时零 MuJoCo）；
+渲染/校验用 envs 侧 MuJoCo 模型。
 
 ## 8. 分阶段实施与验收
 
