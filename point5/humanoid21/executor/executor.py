@@ -192,6 +192,21 @@ class Executor:
             if on:
                 free += [ANKLE_Y[side], ANKLE_X[side],
                          HIP_X[side], HIP_Y[side]]
+        # during a mover segment the swinging leg's joints are also
+        # free — the foot target cannot be reached if the leg is
+        # frozen to an imperfect IK guide
+        mv = refs[0].mover if refs else -1
+        if mv >= 0:
+            from point5.contracts import POINT_INDEX
+            mside = ("right" if mv == POINT_INDEX["foot_right"]
+                     else "left")
+            from .reflex import HIP_X as HX, HIP_Y as HY
+            free += [ {"right": 3, "left": 9}[mside],
+                      {"right": 4, "left": 10}[mside],   # hip_z
+                      {"right": 5, "left": 11}[mside],   # hip_y
+                      {"right": 6, "left": 12}[mside],   # knee
+                      {"right": 7, "left": 13}[mside],   # ankle_y
+                      {"right": 8, "left": 14}[mside] ]  # ankle_x
         free_idx = np.array(sorted(set(free)))
         # guide rail: for each window ref, blend prev action -> the
         # IK action of that ref's target keyframe by segment progress

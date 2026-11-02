@@ -133,7 +133,7 @@ class ExecutorConfig:
     a_com: float = 6.0
     w_yaw: float = 0.8               # rad/s
     min_seg_dur: float = 0.10
-    land_settle: float = 0.30
+    land_settle: float = 0.45
     mu: float = 0.7                  # friction estimate
     total_mass: float = 40.84        # kg
     # -- planner retries

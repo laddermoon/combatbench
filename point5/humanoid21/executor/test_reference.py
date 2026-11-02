@@ -71,7 +71,7 @@ def test_tighter_capability_needs_more_time():
     fast = plan_reference(clip, _fp(cur), np.zeros(3), np.zeros(3),
                           ExecutorConfig()).total_s
     slow = plan_reference(clip, _fp(cur), np.zeros(3), np.zeros(3),
-                          ExecutorConfig(v_com=0.4)).total_s
+                          ExecutorConfig(v_com=0.4, task_budget_s=12.0)).total_s
     assert slow > fast
 
 
