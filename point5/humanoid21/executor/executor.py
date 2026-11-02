@@ -40,6 +40,7 @@ class Executor:
         self.prev_action = self.iface.standing_action.astype(np.float32)
         self.prev_seq = np.tile(self.prev_action, (self.cfg.horizon, 1))
         self.prev_p5w: Optional[np.ndarray] = None
+        self.pose_actions: list = []
         self.t_submit: Optional[float] = None
         self.settle_mark: Optional[float] = None
         self.events: List[Dict[str, Any]] = []
@@ -52,6 +53,10 @@ class Executor:
         sub = self.cache.submit(clip, cur.p5)      # raises AnchorError
         plan = plan_reference(clip, cur.frame_pose, cur.com_pos,
                               cur.com_vel, self.cfg)
+        # IK guide rail: one action per keyframe (None on failure)
+        from .scoring import pose_init
+        self.pose_actions = [
+            pose_init(k.pos, self.iface) for k in clip.keyframes]
         self.plan = plan
         self.plan_t = 0.0
         self.replans = 0
@@ -124,6 +129,10 @@ class Executor:
             return StepResult(self.prev_action.copy(),
                               ExecStatus.FAILED, {"reason": reason})
         if self.status in (ExecStatus.RUNNING, ExecStatus.SETTLING):
+            # progress-gated clock: the schedule only advances while the
+            # robot is actually near its current reference.  Large lag
+            # freezes plan_t instead of letting the ref run away; a
+            # stalled plan still hits the task budget -> honest FAIL.
             self.plan_t += cfg.dt
         if self.cache.sub is not None:
             self._progress(cur)
@@ -159,7 +168,14 @@ class Executor:
         self.cache.update_head(cur.p5)
 
         if self.plan is not None:
-            refs = window(self.plan, self.plan_t, cfg.horizon, cfg)
+            # adaptive horizon: cover the next keyframe + 2-step buffer,
+            # clamped to [4, horizon_max]
+            due = dict(self.plan.key_times).get(
+                self.cache.next_kf, self.plan_t + cfg.horizon * cfg.dt)
+            need = int(np.ceil(max(due - self.plan_t, 0.0)
+                               / cfg.dt)) + 2
+            h = int(np.clip(need, 4, cfg.horizon))
+            refs = window(self.plan, self.plan_t, h, cfg)
         else:
             refs = self._hold_ref(cur)
 
@@ -167,10 +183,36 @@ class Executor:
             raise ExecutorError(
                 "step() needs Current captured with snapshot=True")
         snap = cur.snapshot
+        # free joints = support-leg ankle/hip + abdomen (balance DOF);
+        # both legs when double support, planted leg when single.
+        from .reflex import ANKLE_Y, ANKLE_X, HIP_X, HIP_Y, ABDOMEN_X
+        sup = refs[0].support if refs else np.array([True, True])
+        free = [ABDOMEN_X]
+        for side, on in (("right", sup[0]), ("left", sup[1])):
+            if on:
+                free += [ANKLE_Y[side], ANKLE_X[side],
+                         HIP_X[side], HIP_Y[side]]
+        free_idx = np.array(sorted(set(free)))
+        # guide rail: for each window ref, blend prev action -> the
+        # IK action of that ref's target keyframe by segment progress
+        guide = None
+        if self.pose_actions:
+            rows = []
+            for r in refs:
+                kf = min(r.seg + 1, len(self.pose_actions) - 1) \
+                    if r.seg >= 0 else 0
+                tgt = self.pose_actions[kf]
+                if tgt is None:
+                    tgt = self.prev_action
+                u = float(np.clip(getattr(r, "s", 0.0) or 0.0, 0, 1))
+                rows.append((1 - u) * np.asarray(self.prev_action)
+                            + u * np.asarray(tgt))
+            guide = np.clip(np.stack(rows), -1, 1)
         sol = search_window(
             self.wsim, snap, refs, self.prev_seq, self.prev_action,
             self.iface.standing_action, self.robot_id, self.other_id,
-            cfg, seed=cfg.seed + len(self.diag_log))
+            cfg, seed=cfg.seed + len(self.diag_log), guide_seq=guide,
+            free_idx=free_idx)
         a = np.clip(sol["action"], -cfg.action_clip, cfg.action_clip)
         self.prev_seq = np.vstack([sol["seq"][1:], sol["seq"][-1:]])
         self.prev_action = a

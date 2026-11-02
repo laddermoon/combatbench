@@ -51,20 +51,42 @@ def search_window(wsim, snap, refs: List[RefFrame],
                   init_seq: np.ndarray, prev_action: np.ndarray,
                   standing_action: np.ndarray,
                   robot_id: str, other_id: str,
-                  cfg: ExecutorConfig, seed: int = 0) -> Dict[str, Any]:
-    """CEM over (H,21); always includes warm-start baselines."""
+                  cfg: ExecutorConfig, seed: int = 0,
+                  guide_seq: Optional[np.ndarray] = None,
+                  free_idx: Optional[np.ndarray] = None
+                  ) -> Dict[str, Any]:
+    """CEM over (H,21); always includes warm-start baselines.
+
+    ``guide_seq``: optional (H,21) IK-derived action guide rail; when
+    provided it becomes the CEM mean AND a baseline candidate, so the
+    sampler refines a kinematically-informed trajectory instead of
+    exploring blindly.
+    """
     rng = np.random.default_rng(seed)
     H = len(refs)
-    mu = np.asarray(init_seq, np.float64)[:H]
-    if len(mu) < H:
-        pad = mu[-1] if len(mu) else np.asarray(prev_action, np.float64)
-        mu = np.vstack([mu, np.tile(pad, (H - len(mu), 1))])
+    if guide_seq is not None:
+        mu = np.asarray(guide_seq, np.float64)[:H]
+        if len(mu) < H:
+            mu = np.vstack([mu, np.tile(mu[-1], (H - len(mu), 1))])
+    else:
+        mu = np.asarray(init_seq, np.float64)[:H]
+        if len(mu) < H:
+            pad = mu[-1] if len(mu) else np.asarray(prev_action,
+                                                  np.float64)
+            mu = np.vstack([mu, np.tile(pad, (H - len(mu), 1))])
     mu = np.clip(mu, -1, 1)
     sigma = np.full((H, 21), cfg.sigma0)
+    if free_idx is not None:
+        # big-logic decomposition: only balance joints vary; the rest
+        # are frozen to the guide rail (much smaller search space)
+        mask = np.ones(21, dtype=bool)
+        mask[np.asarray(free_idx)] = False
+        sigma[:, mask] = 0.0
     best = {"seq": mu.copy(), "score": np.inf, "details": None}
     baselines = [mu.copy(),
                  np.tile(np.asarray(prev_action, np.float64), (H, 1)),
-                 np.tile(np.asarray(standing_action, np.float64), (H, 1))]
+                 np.tile(np.asarray(standing_action, np.float64),
+                         (H, 1))]
     for cand in baselines:
         r = rollout_score(wsim, snap, cand, refs, prev_action,
                           robot_id, other_id, cfg)
@@ -74,6 +96,8 @@ def search_window(wsim, snap, refs: List[RefFrame],
     for it in range(cfg.n_iters):
         cand = np.clip(rng.normal(mu, sigma,
                                   (cfg.n_samples, H, 21)), -1, 1)
+        if free_idx is not None:
+            cand[:, :, mask] = mu[None, :, mask]
         scores = []
         for c in cand:
             r = rollout_score(wsim, snap, c, refs, prev_action,

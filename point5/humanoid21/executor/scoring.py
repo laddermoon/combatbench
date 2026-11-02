@@ -58,8 +58,16 @@ def score_landed(cur_like: Dict[str, Any], ref: RefFrame,
         d = np.linalg.norm(np.asarray(cur_like["com_pos"])[:2]
                            - ref.p5_world[anchor, :2])
         c["com_support"] = float(max(0.0, d - cfg.support_tol))
+        c["com_vel_sup"] = float(np.linalg.norm(
+            np.asarray(cur_like["com_vel"])[:2]))
     else:
         c["com_support"] = 0.0
+        c["com_vel_sup"] = 0.0
+    if ref.mover >= 0:
+        c["mover"] = float(max(0.0, perr[ref.mover]
+                               - ref.tol_point[ref.mover]))
+    else:
+        c["mover"] = 0.0
     c["action"] = float(np.mean(np.square(action)))
     c["delta"] = float(np.mean(np.square(action - prev_action)))
     if pose_target_norm is not None and joint_pos_norm is not None:
@@ -69,10 +77,12 @@ def score_landed(cur_like: Dict[str, Any], ref: RefFrame,
         c["pose"] = 0.0
     total = (cfg.w_point * c["point"]
              + cfg.w_point_vel * c["point_vel"]
-             + cfg.w_com * c["com"] + cfg.w_com_vel * c["com_vel"] * 0.1
+             + cfg.w_com * c["com"] + cfg.w_com_vel * c["com_vel"]
              + cfg.w_yaw * c["yaw"] + cfg.w_slip * c["slip"]
              + cfg.w_extra_contact * c["contact"]
              + cfg.w_com_support * c["com_support"]
+             + cfg.w_mover * c["mover"]
+             + cfg.w_com_vel_sup * c.get("com_vel_sup", 0.0)
              + cfg.w_action * c["action"]
              + cfg.w_action_delta * c["delta"]
              + cfg.w_pose_pref * c["pose"])

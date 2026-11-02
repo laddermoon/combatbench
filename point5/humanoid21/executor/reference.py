@@ -35,6 +35,10 @@ class Segment:
     support: np.ndarray               # (2,) bool right,left
     mover: Optional[int]              # POINT_INDEX of swinging foot
     limiter: str = ""
+    dwell_at: int = -1               # hold this keyframe's pose
+    com0: Optional[np.ndarray] = None   # override com start
+    com1: Optional[np.ndarray] = None   # override com end
+    hold_pose: int = -1              # freeze this kf pose (com still moves)
 
 
 def segment_support(p0: np.ndarray, p1: np.ndarray
@@ -115,6 +119,12 @@ def plan_reference(clip: P5Clip, f1: FramePose,
             tgt = 0.6 * wpts[k + 1, anchor, :2] \
                 + 0.4 * coms[k + 1, :2]
             coms[k + 1, :2] = tgt
+    # double-support keyframes: the proxy ignores the support polygon;
+    # blend its XY toward the planted-feet midpoint so the COM
+    # reference stays physically anchored between the feet.
+    for ki in range(1, K):
+        mid = 0.5 * (wpts[ki, FOOT[0], :2] + wpts[ki, FOOT[1], :2])
+        coms[ki, :2] = 0.5 * coms[ki, :2] + 0.5 * mid
     tols = np.full((K, 5), cfg.tol_default)
     for i, kf in enumerate(clip.keyframes):
         for name, idx in POINT_INDEX.items():
@@ -130,16 +140,43 @@ def plan_reference(clip: P5Clip, f1: FramePose,
         for k in range(K - 1):
             sup, mv = segment_support(wpts[k], wpts[k + 1])
             tr = clip.keyframes[k + 1].transfer
+            com_a, com_b = coms[k], coms[k + 1]
+            if mv is not None:
+                # big-logic: explicit pre-shift phase — hold the pose,
+                # slide COM over the anchor foot, THEN the foot may move
+                anchor = FOOT[1] if mv == FOOT[0] else FOOT[0]
+                shifted = coms[k].copy()
+                shifted[:2] = (0.6 * wpts[k + 1, anchor, :2]
+                               + 0.4 * coms[k, :2])
+                dsh = float(np.linalg.norm(shifted - coms[k]))
+                Tsh = max(_S1 * dsh / cfg.v_com,
+                          np.sqrt(_S2 * dsh / cfg.a_com),
+                          cfg.min_seg_dur) * scale
+                # support during the shift reflects whether the mover
+                # is already airborne (landing shift) or still planted
+                # (pre-lift shift)
+                airborne = wpts[k, mv, 2] > 0.11
+                sh_sup = sup if airborne else np.array([True, True])
+                segs.append(Segment(k, Tsh, sh_sup,
+                                    None, "shift", com0=coms[k],
+                                    com1=shifted, hold_pose=k))
+                com_a = shifted
             T, lim = needed_duration(
-                wpts[k + 1] - wpts[k], coms[k + 1] - coms[k],
+                wpts[k + 1] - wpts[k], com_b - com_a,
                 tr.dyaw, mv is not None, cfg)
             T *= scale
-            # crude force check: required peak COM accel vs gravity
-            a_req = _S2 * np.linalg.norm(
-                coms[k + 1] - coms[k]) / (T * T)
+            a_req = _S2 * np.linalg.norm(com_b - com_a) / (T * T)
             if a_req > 9.81 * 1.5:
                 feasible, limiter = False, "com_accel"
-            segs.append(Segment(k, T, sup, mv, lim))
+            segs.append(Segment(k, T, sup, mv, lim,
+                                com0=com_a, com1=com_b))
+            # dwell only after a segment that LANDS the foot (target z
+            # back on the ground), not after the airborne swing peak
+            if mv is not None and wpts[k + 1, mv, 2] < 0.11:
+                segs.append(Segment(k, cfg.land_settle * 1.5,
+                                    np.array([True, True]), None,
+                                    "dwell", dwell_at=k + 1,
+                                    com0=coms[k + 1], com1=coms[k + 1]))
         if feasible:
             break
         scale *= cfg.duration_growth
@@ -151,7 +188,16 @@ def plan_reference(clip: P5Clip, f1: FramePose,
             f"budget {cfg.task_budget_s}s")
 
     times = np.concatenate([[0.0], np.cumsum([s.dur for s in segs])])
-    key_times = [(k + 1, float(times[k + 1])) for k in range(K - 1)]
+    # a keyframe's due time = end of the LAST segment reaching it
+    # (motion end or, when present, its post-land dwell end)
+    _due: dict = {}
+    for si, sg in enumerate(segs):
+        kf_end = sg.dwell_at if sg.dwell_at >= 0 else (
+            sg.i + 1 if sg.hold_pose < 0 else -1)
+        if kf_end < 0:
+            continue
+        _due[kf_end] = float(times[si + 1])
+    key_times = sorted(_due.items())
     frames: List[RefFrame] = []
     n = int(np.ceil((times[-1] - 1e-9) / cfg.dt)) + 1
     for i in range(n):
@@ -162,7 +208,23 @@ def plan_reference(clip: P5Clip, f1: FramePose,
         T = max(seg.dur, 1e-9)
         s = min((t - times[seg_i]) / T, 1.0)
         u, du, _ = smooth(s)
-        k0, k1 = clip.keyframes[seg_i], clip.keyframes[seg_i + 1]
+        if seg.hold_pose >= 0:
+            ki = seg.hold_pose
+            kf_d = clip.keyframes[ki]
+            pw_d = to_world(kf_d.pos, *wf[ki])
+            cw = seg.com0 + (seg.com1 - seg.com0) * u
+            cv = (seg.com1 - seg.com0) * (du / T)
+            tol_h = tols[ki].copy()
+            tol_h[FOOT[0]] = tol_h[FOOT[1]] = cfg.tol_hold_foot
+            frames.append(RefFrame(
+                t=float(t), p5_world=pw_d,
+                p5_vel_world=np.zeros((5, 3)),
+                com_pos=cw, com_vel=cv,
+                yaw=float(np.deg2rad(wf[ki][1])), yaw_rate=0.0,
+                support=seg.support,
+                tol_point=tol_h, seg=seg_i, s=1.0))
+            continue
+        k0, k1 = clip.keyframes[seg.i], clip.keyframes[seg.i + 1]
         tr = k1.transfer
         loc = k0.pos + (k1.pos - k0.pos) * u
         loc_v = (k1.pos - k0.pos) * (du / T)
@@ -176,7 +238,7 @@ def plan_reference(clip: P5Clip, f1: FramePose,
             loc[mv] = k0.pos[mv] + (k1.pos[mv] - k0.pos[mv]) * uf
             loc_v[mv] = (k1.pos[mv] - k0.pos[mv]) * (duf * (1 / 0.7)
                                                      / T)
-        o0, y0 = wf[seg_i]
+        o0, y0 = wf[seg.i]
         if tr is None:
             o_s, y_s = np.asarray(o0, dtype=np.float64), float(y0)
             o_dot, y_dot = np.zeros(2), 0.0
@@ -199,16 +261,19 @@ def plan_reference(clip: P5Clip, f1: FramePose,
         pv[:, :2] = loc_v[:, :2] @ R.T + o_dot \
             + y_dot * np.stack([-rel[:, 1], rel[:, 0]], axis=1)
         pv[:, 2] = loc_v[:, 2]
-        cw = coms[seg_i] + (coms[seg_i + 1] - coms[seg_i]) * u
-        cv = (coms[seg_i + 1] - coms[seg_i]) * (du / T)
+        ca = seg.com0 if seg.com0 is not None else coms[seg.i]
+        cb = seg.com1 if seg.com1 is not None else coms[seg.i + 1]
+        cw = ca + (cb - ca) * u
+        cv = (cb - ca) * (du / T)
         frames.append(RefFrame(
             t=float(t), p5_world=pw, p5_vel_world=pv,
             com_pos=cw, com_vel=cv,
             yaw=float(np.deg2rad(y_s)),
             yaw_rate=float(y_dot),
             support=seg.support,
-            tol_point=tols[min(seg_i + 1, K - 1)],
-            seg=seg_i))
+            tol_point=tols[min(seg.i + 1, K - 1)],
+            seg=seg_i, s=float(s),
+            mover=seg.mover if seg.mover is not None else -1))
     # mark keyframe arrivals on nearest frames
     for kf_i, tk in key_times:
         j = int(np.argmin([abs(fr.t - tk) for fr in frames]))

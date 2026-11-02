@@ -62,8 +62,10 @@ class RefFrame:
     support: np.ndarray            # (2,) bool [right, left] planted
     tol_point: np.ndarray          # (5,) position tolerances (m)
     seg: int = -1                  # source clip segment
+    s: float = 0.0                 # progress inside that segment
     event: str = ""                # keyframe label when boundary hit
     kf_idx: int = -1               # keyframe index confirmed at boundary
+    mover: int = -1                # POINT_INDEX of swinging foot, or -1
 
 
 @dataclass
@@ -129,19 +131,19 @@ class ExecutorConfig:
     a_foot: float = 25.0
     v_com: float = 0.6
     a_com: float = 6.0
-    w_yaw: float = 2.5               # rad/s
+    w_yaw: float = 0.8               # rad/s
     min_seg_dur: float = 0.10
-    land_settle: float = 0.20
+    land_settle: float = 0.30
     mu: float = 0.7                  # friction estimate
     total_mass: float = 40.84        # kg
     # -- planner retries
     max_retries: int = 6
     duration_growth: float = 1.25
-    task_budget_s: float = 6.0
+    task_budget_s: float = 8.0
     max_replans: int = 2
     replan_wait_s: float = 0.30
     # -- MPC budget
-    horizon: int = 6
+    horizon: int = 12            # max window (steps); adaptive shorter
     n_samples: int = 32
     n_iters: int = 2
     n_elite: int = 8
@@ -152,10 +154,12 @@ class ExecutorConfig:
     w_point_vel: float = 0.3
     w_com: float = 1.5
     w_com_vel: float = 0.4
-    w_yaw: float = 0.8
+    w_com_vel_sup: float = 2.0       # COM-vel damping on single support
+    w_yaw: float = 0.8               # rad/s torso twist rate
     w_slip: float = 3.0
     w_com_support: float = 6.0       # COM over anchor during swing
-    support_tol: float = 0.10        # allowed COM-anchor offset (m)
+    w_mover: float = 6.0             # swing-foot arrival during its seg
+    support_tol: float = 0.05        # COM must sit ON the anchor (m)
     w_extra_contact: float = 4.0
     w_action: float = 0.02
     w_action_delta: float = 0.05
@@ -164,6 +168,7 @@ class ExecutorConfig:
     fall_penalty: float = 50.0
     # -- tolerances / safety
     tol_default: float = 0.10        # point tol when no keyframe specs
+    tol_hold_foot: float = 0.025     # planted-foot tol inside hold segs
     tol_com: float = 0.08
     tol_yaw: float = 0.35            # rad
     slip_v: float = 0.10             # m/s allowed for a planted foot
