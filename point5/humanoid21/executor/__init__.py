@@ -1,4 +1,5 @@
 """Executor — stateless P5 servo.  See DESIGN notes in module docs."""
+from .capability_solver import Capability, capability
 from .com_solver import com_estimate, mass_estimate
 from .inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (
@@ -11,5 +12,6 @@ __all__ = [
     "Action", "AnchorError", "Context",
     "Executor", "ExecutorError", "Humanoid21PoseSolver",
     "Observation", "PlanError", "com_estimate", "mass_estimate",
-    "inertia_estimate", "inertia_per_mass",
+    "inertia_estimate", "inertia_per_mass", "Capability",
+    "capability",
 ]
