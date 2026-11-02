@@ -166,6 +166,16 @@ def plan_reference(clip: P5Clip, f1: FramePose,
         tr = k1.transfer
         loc = k0.pos + (k1.pos - k0.pos) * u
         loc_v = (k1.pos - k0.pos) * (du / T)
+        # big-logic sequencing inside a swing segment: the moving foot
+        # stays down during the first 30% (COM transfer) then lifts on
+        # the remaining 70% — humans do not lift and shift together.
+        if seg.mover is not None:
+            sf = min(max((s - 0.3) / 0.7, 0.0), 1.0)
+            uf, duf, _ = smooth(sf)
+            mv = seg.mover
+            loc[mv] = k0.pos[mv] + (k1.pos[mv] - k0.pos[mv]) * uf
+            loc_v[mv] = (k1.pos[mv] - k0.pos[mv]) * (duf * (1 / 0.7)
+                                                     / T)
         o0, y0 = wf[seg_i]
         if tr is None:
             o_s, y_s = np.asarray(o0, dtype=np.float64), float(y0)

@@ -346,3 +346,19 @@ PYTHONPATH=. python3 -m pytest point5/ -q
 - `pose_init`：`solve_equilibrium` → q_rad → 经 sim_iface 归一化为动作
   初值；关节序已验证与执行器序 1:1 相同；不满足则返回 None 走回退。
 - 测试：deadzone/单通道敏感/跌倒硬罚/支撑滑移/初值映射。
+
+### E5-E7 完成（search.py/executor.py/demo.py + 1 项搜索断言）
+
+- `search_window`：(H,21) CEM，含 warm-start/上一动作/站姿三个基线；
+  8 步站立保持测试通过（E5 主动平衡能力验证）。
+- `Executor`：submit(锚定)→step→进度确认（实测到达才 confirm）→
+  收势/保持；预算/跌倒/replan 上限都有明确 FAILED 分支。
+- `demo.py`：完整 CLI，产出 report.json + traj.npz。
+
+**集成现状（如实记录）：** coil 到达（6cm）；swing 段失败——
+先后尝试 COM-参考向支撑脚侧移（0.6 混合）+ com_support 通道、
+摆动脚延迟进度（前30%转重心后70%抬脚），仍在抬脚期跌倒
+（tilt>1.05 约 t=1.3-1.6s）。单支撑段是已知的动态难点。
+**下一步杠杆（未试）：**更长 horizon 覆盖落地、摆动段再细分
+（加"预转移"子关键帧）、支撑期踝/髋 reflex 底层、CEM 预算加大、
+com_support 权重/容差标定、用 pose_init 给摆动脚目标初值。
