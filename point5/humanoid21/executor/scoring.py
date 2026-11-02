@@ -52,6 +52,13 @@ def score_landed(cur_like: Dict[str, Any], ref: RefFrame,
                         - cfg.slip_v)
     c["slip"] = slip
     c["contact"] = float(cur_like["contacts"].get("extra", 0))
+    if not (ref.support[0] and ref.support[1]):
+        anchor = FOOT[1] if not ref.support[1] else FOOT[0]
+        d = np.linalg.norm(np.asarray(cur_like["com_pos"])[:2]
+                           - ref.p5_world[anchor, :2])
+        c["com_support"] = float(max(0.0, d - cfg.support_tol))
+    else:
+        c["com_support"] = 0.0
     c["action"] = float(np.mean(np.square(action)))
     c["delta"] = float(np.mean(np.square(action - prev_action)))
     if pose_target_norm is not None and joint_pos_norm is not None:
@@ -64,6 +71,7 @@ def score_landed(cur_like: Dict[str, Any], ref: RefFrame,
              + cfg.w_com * c["com"] + cfg.w_com_vel * c["com_vel"] * 0.1
              + cfg.w_yaw * c["yaw"] + cfg.w_slip * c["slip"]
              + cfg.w_extra_contact * c["contact"]
+             + cfg.w_com_support * c["com_support"]
              + cfg.w_action * c["action"]
              + cfg.w_action_delta * c["delta"]
              + cfg.w_pose_pref * c["pose"])

@@ -126,7 +126,20 @@ def _tilt(core: Dict[str, np.ndarray]) -> float:
     return float(np.arccos(uz))
 
 
-def capture_current(sim, robot_id: str = "robot_a") -> Current:
+_EXTRACTORS: Dict[int, Any] = {}
+
+
+def _extractor(sim):
+    from mocap.humanoid21.centroidal_dynamics.state import (
+        CentroidalStateExtractor)
+    key = id(sim)
+    if key not in _EXTRACTORS:
+        _EXTRACTORS[key] = CentroidalStateExtractor(sim)
+    return _EXTRACTORS[key]
+
+
+def capture_current(sim, robot_id: str = "robot_a",
+                    with_snapshot: bool = True) -> Current:
     """Full measured state at the current instant."""
     core = {k: np.asarray(v).copy()
             for k, v in sim.get_core_state()[robot_id].items()}
@@ -137,15 +150,15 @@ def capture_current(sim, robot_id: str = "robot_a") -> Current:
     p5w = to_world(p5.pos, origin, yaw)
     p5vw = np.zeros((5, 3)) if p5.vel is None else \
         to_world(p5.vel, np.zeros(2), yaw)
-    st = _com(sim, robot_id)
+    st = _extractor(sim).state(robot_id)
     return Current(
         time=float(sim.data.time), robot_id=robot_id, core=core, p5=p5,
         frame_pose=(origin, yaw), p5_world=p5w, p5_vel_world=p5vw,
-        com_pos=np.asarray(st.com_pos), 
+        com_pos=np.asarray(st.com_pos),
         com_vel=np.asarray(st.lin_mom) / st.mass,
         ang_mom=np.asarray(st.ang_mom), mass=float(st.mass),
         torso_tilt=_tilt(core), contacts=_contacts(sim, robot_id),
-        snapshot=snapshot(sim))
+        snapshot=snapshot(sim) if with_snapshot else None)
 
 
 def fall_check(cur: Current, cfg) -> Optional[str]:

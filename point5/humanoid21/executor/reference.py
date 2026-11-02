@@ -105,6 +105,16 @@ def plan_reference(clip: P5Clip, f1: FramePose,
         for i, k in enumerate(clip.keyframes)])
     coms = coms.copy()
     coms[0] = np.asarray(com0, np.float64)
+    # big-logic: when a foot swings, the support base is the anchor
+    # foot -> shift the COM reference laterally over the anchor so the
+    # plan does not ask for a swing the body cannot balance on.
+    for k in range(K - 1):
+        _, mv = segment_support(wpts[k], wpts[k + 1])
+        if mv is not None:
+            anchor = FOOT[1] if mv == FOOT[0] else FOOT[0]
+            tgt = 0.6 * wpts[k + 1, anchor, :2] \
+                + 0.4 * coms[k + 1, :2]
+            coms[k + 1, :2] = tgt
     tols = np.full((K, 5), cfg.tol_default)
     for i, kf in enumerate(clip.keyframes):
         for name, idx in POINT_INDEX.items():
