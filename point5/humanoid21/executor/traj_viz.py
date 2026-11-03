@@ -94,6 +94,27 @@ def _mat2quat(R):
     return _R2q(R)
 
 
+def _project(cam, fovy_deg, world, size):
+    """World -> pixel under an mjvCamera."""
+    a = np.radians(cam.azimuth)
+    e = np.radians(cam.elevation)
+    fwd = np.array([np.cos(e) * np.cos(a),
+                    np.cos(e) * np.sin(a), np.sin(e)])
+    campos = cam.lookat - cam.distance * fwd
+    right = np.cross(fwd, np.array([0, 0, 1.0]))
+    right = right / (np.linalg.norm(right) + 1e-12)
+    up = np.cross(right, fwd)
+    rel = np.asarray(world) - campos
+    z = float(np.dot(rel, fwd))
+    if z <= 0.01:
+        return None
+    f = 1.0 / np.tan(np.radians(fovy_deg) / 2)
+    w, h = size
+    nx = np.dot(rel, right) * f / z / (w / h)
+    ny = np.dot(rel, up) * f / z
+    return int((nx + 1) * 0.5 * w), int((1 - ny) * 0.5 * h)
+
+
 def render_traj(traj_json: str, out_mp4: str) -> Path:
     """Render a saved CentroidalTrajectory JSON to MP4."""
     traj = load_traj(traj_json)
@@ -178,9 +199,18 @@ def render_traj(traj_json: str, out_mp4: str) -> Path:
                 except Exception:
                     font = ImageFont.load_default()
                 dr.text((22, _SIZE[1] - 44),
-                        f"t={k * CTRL_DT:.2f}s   z={c[2]:.2f}m",
+                        f"t={k * CTRL_DT:.2f}s",
                         fill=(30, 30, 30), font=font,
                         stroke_width=2, stroke_fill=(255, 255, 255))
+                # height label next to the ball (projected to screen)
+                px = _project(cam, model.vis.global_.fovy,
+                              c + np.array([0, 0, _BALL_R + 0.04]),
+                              _SIZE)
+                if px:
+                    dr.text((px[0], px[1] - 14),
+                            f"z={c[2]:.2f}m", fill=(20, 20, 60),
+                            font=font, stroke_width=2,
+                            stroke_fill=(255, 255, 255))
                 frame = np.asarray(img)
             except ImportError:
                 pass
