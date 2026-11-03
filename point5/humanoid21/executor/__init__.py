@@ -2,6 +2,7 @@
 from .capability_solver import Capability, capability
 from .com_solver import com_estimate, mass_estimate
 from .cop_solver import cop_ranges, foot_cop_range
+from .support_solver import support_transitions, SupportTransition
 from .inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (
     Action, AnchorError, Context, ExecutorError,
@@ -15,4 +16,5 @@ __all__ = [
     "Observation", "PlanError", "com_estimate", "mass_estimate",
     "inertia_estimate", "inertia_per_mass", "Capability",
     "capability", "cop_ranges", "foot_cop_range",
+    "support_transitions", "SupportTransition",
 ]
