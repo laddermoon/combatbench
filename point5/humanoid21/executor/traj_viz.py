@@ -38,6 +38,24 @@ def _sphere_pts(c, Rm, r=_BALL_R, n=16):
     return pts[..., 0], pts[..., 1], pts[..., 2]
 
 
+def _cap_pts(c, Rm, direction, r=_BALL_R * 1.005, cap_deg=28, n=8):
+    """A small spherical cap patch ON the ball surface around direction."""
+    d = np.asarray(Rm @ np.asarray(direction, np.float64))
+    d = d / np.linalg.norm(d)
+    # local basis around d
+    a = np.array([1.0, 0, 0]) if abs(d[0]) < 0.9 else np.array([0, 1.0, 0])
+    u1 = np.cross(d, a); u1 /= np.linalg.norm(u1)
+    u2 = np.cross(d, u1)
+    th = np.linspace(0, np.radians(cap_deg), 3)
+    ph = np.linspace(0, 2 * np.pi, n)
+    TH, PH = np.meshgrid(th, ph)
+    dirs = (np.sin(TH) * np.cos(PH))[..., None] * u1 + \
+           (np.sin(TH) * np.sin(PH))[..., None] * u2 + \
+           (np.cos(TH))[..., None] * d
+    pts = np.asarray(c) + r * dirs
+    return pts[..., 0], pts[..., 1], pts[..., 2]
+
+
 def _rot(axis, ang):
     a = np.asarray(axis, np.float64)
     n = np.linalg.norm(a)
@@ -123,19 +141,21 @@ def render_traj(traj_json: str, out_mp4: str) -> Path:
             ax.scatter(c[0], c[1], 0.001, s=60, color="black",
                        alpha=0.35, marker="o")
 
-            # ball + surface anchors
+            # solid ball with surface anchor dots (rotation = L)
             xs, ys, zs = _sphere_pts(c, R_orient)
-            ax.plot_wireframe(xs, ys, zs, color="tab:blue",
-                              alpha=0.55, linewidths=0.5)
+            ax.plot_surface(xs, ys, zs, color="tab:blue",
+                            alpha=0.85, linewidth=0,
+                            antialiased=True, shade=True)
+            # spots painted ON the ball surface (rotation = L) —
+            # a dense disc of tiny points reads as a painted patch
+            # (mpl3d sorts surfaces wrongly; scatter draws on top)
             for dvec, col in zip(marker_dirs, marker_colors):
-                p = c + R_orient @ (dvec * _BALL_R * 1.25)
-                ax.scatter(*p, s=55, color=col, depthshade=False)
+                px, py, pz = _cap_pts(c, R_orient, dvec,
+                                      r=_BALL_R * 1.02,
+                                      cap_deg=30, n=14)
+                ax.scatter(px.ravel(), py.ravel(), pz.ravel(),
+                           s=14, color=col, depthshade=False)
 
-            v = states[k].com_vel
-            if np.linalg.norm(v) > 1e-3:
-                ax.quiver(*c, *v, length=0.3, normalize=True,
-                          color="orange", linewidth=2.2,
-                          arrow_length_ratio=0.3)
             ax.text(c[0], c[1], c[2] + 0.12, f"z={c[2]:.2f}m",
                     fontsize=9, ha="center")
             ax.set_title(f"centroidal traj  t={k * CTRL_DT:.2f}s "
