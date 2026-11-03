@@ -17,11 +17,11 @@ from typing import Any, Optional
 import numpy as np
 
 from .capability_solver import capability
-from .centroidal import MASS_KG, CentroidalState, CentroidalTrajectory
+from .centroidal import (CTRL_DT, MASS_KG, CentroidalState,
+                         CentroidalTrajectory)
 from .com_solver import com_estimate, mass_estimate
 from .contracts import Context, PlanError
 
-CTRL_DT = 0.05                # simulator control period (20 Hz)
 _SETTLE_T = 0.6               # hold/settle horizon for 1-kf clips
 
 

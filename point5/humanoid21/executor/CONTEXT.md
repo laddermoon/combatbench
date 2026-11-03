@@ -25,7 +25,8 @@ gen_action(ctx)
 | 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | ✅ |
 | 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve ✅；LUT 加速 stub |
 | 工具3 P5→转动惯量 | `inertia_solver.py` → `mass_model` | ✅ 关于质心的 (3,3) 惯量/回转半径 |
-| 工具4 P5→能力预期 | `capability_solver.py` | ✅ 经验包络 v_xy/v_z/single_support |
+| 工具4 P5→能力预期 | `capability_solver.py` | ✅ LIP 包络：多边形 margin→a/v(d) |
+| 工具5 轨迹可视化 | `traj_viz.py` | ✅ JSON→MP4：球自转=L、拖尾、高度标注 |
 | 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 局部系 + `CentroidalTrajectory` |
 | obs→P5 解码 | `centroidal_planner._decode_p5_local` | ✅ FK 重建（观测无自身关键点） |
 
