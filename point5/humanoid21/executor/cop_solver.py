@@ -1,36 +1,94 @@
-"""Tool 6: P5 foot point -> CoP (center of pressure) range.
+"""Tool 6: P5 foot point -> CoP (center of pressure) feasible set.
 
-If the foot is grounded, its distributed pressure can be equivalently
-summarized at one point on the ground — the CoP — which must stay
-inside the foot's contact patch.  Returns that patch as a polygon in
-the P5 local frame (around the ankle landmark).  An airborne foot
-has no CoP -> ``None``.
+The CoP must lie inside whatever part of the foot still touches the
+ground.  The ankle landmark height tells us which configuration is
+possible — foot geoms from the arena XML: patch x in [-0.07, +0.14],
+half-width 0.057 about the landmark.
 
-Foot patch dims from the arena foot geoms: each foot spans
-x in [-0.07, +0.14], y in [-0.057, +0.057] around its landmark.
+- flat contact (z <= FLAT_Z): the whole patch polygon
+- tilted (翘起来): pitching about an edge raises the ankle by
+  edge_distance * sin(pitch).  The CoP degenerates to the edge(s)
+  still in contact — direction of tilt unknown, so return every
+  edge whose pivot can explain the current height
+  (pitch_max ~50 deg):
+      toe edge   reach z <= 0.06 + 0.14*sin50 = 0.167
+      heel edge  reach z <= 0.06 + 0.07*sin50 = 0.114
+      side edges reach z <= 0.06 + 0.057*sin50 = 0.104
+- airborne: no edge reaches -> None
+
+Return value: (N,2) list of polygon vertices, or a FootCoP for the
+edge-level detail.
 """
 from __future__ import annotations
 
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 import numpy as np
 
-LIFT_Z = 0.12            # ankle landmark airborne threshold (m)
-_FOOT_XMIN, _FOOT_XMAX = -0.07, 0.14
-_FOOT_Y = 0.057
+FLAT_Z = 0.07                    # ankle landmark resting height
+PITCH_MAX = np.radians(50.0)
+_XMIN, _XMAX = -0.07, 0.14       # heel / toe reach (local x)
+_HALF_Y = 0.057                  # side reach (local y)
+
+
+@dataclass
+class FootCoP:
+    """CoP feasible set for one foot."""
+
+    contact: bool                # any contact possible
+    flat: bool                   # full sole on ground
+    polygons: List[np.ndarray] = field(default_factory=list)
+    edges: List[np.ndarray] = field(default_factory=list)
+
+    @property
+    def region(self) -> Optional[np.ndarray]:
+        """Single polygon covering the feasible CoP locus:
+        flat -> patch; tilted -> convex hull of feasible edges."""
+        if self.flat and self.polygons:
+            return self.polygons[0]
+        if not self.edges:
+            return None
+        return np.vstack(self.edges)
+
+
+def _patch(xy) -> np.ndarray:
+    return np.array([xy + [_XMIN, -_HALF_Y], xy + [_XMAX, -_HALF_Y],
+                     xy + [_XMAX, _HALF_Y], xy + [_XMIN, _HALF_Y]])
+
+
+def foot_cop(foot_pos: np.ndarray) -> FootCoP:
+    """Full result: flat patch, tilted edges, or airborne."""
+    f = np.asarray(foot_pos, np.float64)
+    xy, z = f[:2], f[2]
+    if z <= FLAT_Z:
+        return FootCoP(contact=True, flat=True,
+                       polygons=[_patch(xy)])
+    # tilted: edges whose pivot distance can produce this height
+    reach = {"toe": _XMAX, "heel": -_XMIN, "side": _HALF_Y}
+    edge_map = {
+        "toe": [xy + [_XMAX, -_HALF_Y], xy + [_XMAX, _HALF_Y]],
+        "heel": [xy + [_XMIN, -_HALF_Y], xy + [_XMIN, _HALF_Y]],
+        "side_r": [xy + [_XMIN, -_HALF_Y], xy + [_XMAX, -_HALF_Y]],
+        "side_l": [xy + [_XMIN, _HALF_Y], xy + [_XMAX, _HALF_Y]],
+    }
+    edges = []
+    rise = z - FLAT_Z
+    if rise <= _XMAX * np.sin(PITCH_MAX):
+        edges.append(np.asarray(edge_map["toe"]))
+    if rise <= -_XMIN * np.sin(PITCH_MAX):
+        edges.append(np.asarray(edge_map["heel"]))
+    if rise <= _HALF_Y * np.sin(PITCH_MAX):
+        edges.append(np.asarray(edge_map["side_r"]))
+        edges.append(np.asarray(edge_map["side_l"]))
+    if not edges:
+        return FootCoP(contact=False, flat=False)
+    return FootCoP(contact=True, flat=False, edges=edges)
 
 
 def foot_cop_range(foot_pos: np.ndarray) -> Optional[np.ndarray]:
-    """CoP feasible polygon (4,2) in local frame, or None if airborne."""
-    f = np.asarray(foot_pos, np.float64)
-    if f[2] > LIFT_Z:
-        return None
-    xy = f[:2]
-    return np.array([
-        xy + [_FOOT_XMIN, -_FOOT_Y],
-        xy + [_FOOT_XMAX, -_FOOT_Y],
-        xy + [_FOOT_XMAX, _FOOT_Y],
-        xy + [_FOOT_XMIN, _FOOT_Y]])
+    """CoP feasible polygon/edges, or None if airborne."""
+    return foot_cop(foot_pos).region
 
 
 def cop_ranges(local_p5: np.ndarray) -> list:
