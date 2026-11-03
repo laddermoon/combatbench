@@ -27,7 +27,7 @@ gen_action(ctx)
 | 工具3 P5→转动惯量 | `inertia_solver.py` → `mass_model` | ✅ 关于质心的 (3,3) 惯量/回转半径 |
 | 工具4 P5→能力预期 | `capability_solver.py` | ✅ LIP 包络：多边形 margin→a/v(d) |
 | 工具5 轨迹可视化 | `traj_viz.py` | ✅ JSON→MP4：球自转=L、拖尾、高度标注 |
-| 工具6 脚→CoP 范围 | `cop_solver.py` | ✅ 着地→接触面多边形；腾空→None |
+| 工具6 脚→CoP 范围 | `cop_solver.py` | ✅ 平贴→多边形；翘起→接触边集合；离地→None |
 | 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 局部系 + `CentroidalTrajectory` |
 | obs→P5 解码 | `centroidal_planner._decode_p5_local` | ✅ FK 重建（观测无自身关键点） |
 
