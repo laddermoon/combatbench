@@ -1,10 +1,11 @@
-"""Tool 5: CentroidalTrajectory -> 3D MP4 animation.
+"""Tool 5: CentroidalTrajectory -> 3D MP4 animation (MuJoCo render).
 
-A ball follows com c(t); linear momentum shows as motion + an arrow.
-Three surface anchor markers make spin visible: the sphere integrates
-w = L / I_REF about the world L axis, so angular momentum reads as
-rotation.  A fading trail keeps the recent past; a vertical drop line
-+ ground shadow show height; the whole planned path is a faint guide.
+A shaded ball follows com c(t); linear momentum shows as motion.
+Three surface spot geoms are attached to the ball body — they are
+physically part of it — and the ball integrates w = L / I_REF about
+the L axis, so angular momentum reads as spin.  A fading trail, a
+drop line to the ground, a ground shadow and a z-height caption
+complete the picture.
 
     render_traj(traj_json, out_mp4)
 
@@ -12,48 +13,53 @@ Caller supplies both paths.  Fixed style — nothing user-adjustable.
 """
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+import mujoco
 import numpy as np
-from matplotlib.animation import FFMpegWriter
 
 from .centroidal import CTRL_DT, load_traj
 
 I_REF = 0.53            # kg·m^2 nominal inertia (standing Izz)
 _TRAIL = 40             # steps kept in the fading trail
+_BALL_R = 0.06
 _FPS = 20
-_BALL_R = 0.07
+_SIZE = (960, 720)
 
-
-def _sphere_pts(c, Rm, r=_BALL_R, n=16):
-    u = np.linspace(0, np.pi, n)
-    v = np.linspace(0, 2 * np.pi, n)
-    x = r * np.outer(np.sin(u), np.cos(v))
-    y = r * np.outer(np.sin(u), np.sin(v))
-    z = r * np.outer(np.cos(u), np.ones_like(v))
-    pts = np.stack([x, y, z], -1) @ Rm.T + np.asarray(c)
-    return pts[..., 0], pts[..., 1], pts[..., 2]
-
-
-def _cap_pts(c, Rm, direction, r=_BALL_R * 1.005, cap_deg=28, n=8):
-    """A small spherical cap patch ON the ball surface around direction."""
-    d = np.asarray(Rm @ np.asarray(direction, np.float64))
-    d = d / np.linalg.norm(d)
-    # local basis around d
-    a = np.array([1.0, 0, 0]) if abs(d[0]) < 0.9 else np.array([0, 1.0, 0])
-    u1 = np.cross(d, a); u1 /= np.linalg.norm(u1)
-    u2 = np.cross(d, u1)
-    th = np.linspace(0, np.radians(cap_deg), 3)
-    ph = np.linspace(0, 2 * np.pi, n)
-    TH, PH = np.meshgrid(th, ph)
-    dirs = (np.sin(TH) * np.cos(PH))[..., None] * u1 + \
-           (np.sin(TH) * np.sin(PH))[..., None] * u2 + \
-           (np.cos(TH))[..., None] * d
-    pts = np.asarray(c) + r * dirs
-    return pts[..., 0], pts[..., 1], pts[..., 2]
+_XML = """<mujoco>
+  <option gravity="0 0 -9.81"/>
+  <visual>
+    <quality shadowsize="2048" offsamples="4"/>
+    <rgba haze="0.15 0.15 0.15 1"/>
+  </visual>
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" mark="edge"
+             markrgb=".2 .2 .2" width="300" height="300"
+             rgb1="0.9 0.9 0.9" rgb2="0.7 0.7 0.7"/>
+    <material name="grid" texture="grid" texrepeat="1 1"
+              texuniform="true" reflectance="0.15"/>
+  </asset>
+  <worldbody>
+    <light directional="true" diffuse=".8 .8 .8" specular=".2 .2 .2"
+           pos="0.4 -0.6 2.2" dir="-0.3 0.4 -1"/>
+    <light directional="true" diffuse=".35 .35 .4"
+           pos="-0.6 0.4 1.8" dir="0.4 -0.3 -1"/>
+    <geom type="plane" size="0 0 .05" material="grid"/>
+    <body name="ball" pos="0 0 1">
+      <freejoint/>
+      <geom type="sphere" size="{r}" rgba="0.15 0.45 0.95 1"/>
+      <geom type="sphere" size="{s}" pos="{r} 0 0"
+            rgba="1 0.15 0.15 1"/>
+      <geom type="sphere" size="{s}" pos="0 {r} 0"
+            rgba="0.1 0.8 0.2 1"/>
+      <geom type="sphere" size="{s}" pos="0 0 {r}"
+            rgba="0.1 0.1 0.9 1"/>
+      <geom type="sphere" size="{s}" pos="-{r} 0 0"
+            rgba="1 0.55 0.05 1"/>
+    </body>
+  </worldbody>
+</mujoco>"""
 
 
 def _rot(axis, ang):
@@ -66,21 +72,26 @@ def _rot(axis, ang):
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
 
 
-def _style(ax, xr, yr, zr):
-    ax.set_xlim(*xr); ax.set_ylim(*yr); ax.set_zlim(*zr)
-    ax.set_box_aspect((xr[1] - xr[0], yr[1] - yr[0], zr[1] - zr[0]))
-    ax.view_init(elev=16, azim=-125)
-    ax.grid(False)
-    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
-        pane.fill = False
-        pane.set_edgecolor((0, 0, 0, 0.08))
-    from matplotlib.ticker import MaxNLocator
-    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-        axis.set_major_locator(MaxNLocator(3, prune="both"))
-    ax.tick_params(labelsize=7, pad=0)
-    ax.set_xlabel("x fwd", fontsize=9)
-    ax.set_ylabel("y left", fontsize=9)
-    ax.set_zlabel("z", fontsize=9)
+def _R2q(R):
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1) * 2
+        q = np.array([s / 4, (R[2, 1] - R[1, 2]) / s,
+                      (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s])
+    else:
+        i = int(np.argmax(np.diag(R)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = np.sqrt(R[i, i] - R[j, j] - R[k, k] + 1) * 2
+        q = np.empty(4)
+        q[i + 1] = s / 4
+        q[0] = (R[k, j] - R[j, k]) / s
+        q[j + 1] = (R[j, i] + R[i, j]) / s
+        q[k + 1] = (R[k, i] + R[i, k]) / s
+    return q / np.linalg.norm(q)
+
+
+def _mat2quat(R):
+    return _R2q(R)
 
 
 def render_traj(traj_json: str, out_mp4: str) -> Path:
@@ -90,76 +101,91 @@ def render_traj(traj_json: str, out_mp4: str) -> Path:
     cs = np.array([s.com for s in states])
     Ls = np.array([s.ang_mom for s in states])
 
-    # tight view box around the path (+ margins)
-    m = 0.25
-    xr = (min(cs[:, 0].min(), 0) - m, max(cs[:, 0].max(), 0.1) + m)
-    yr = (min(cs[:, 1].min(), -0.1) - m, max(cs[:, 1].max(), 0.1) + m)
-    zr = (0.0, max(1.05, cs[:, 2].max() + 0.15))
+    spot_r = _BALL_R * 0.28
+    model = mujoco.MjModel.from_xml_string(
+        _XML.format(r=_BALL_R, s=spot_r))
+    data = mujoco.MjData(model)
+    model.vis.global_.offwidth, model.vis.global_.offheight = _SIZE
 
-    fig = plt.figure(figsize=(9, 7), dpi=120)
-    ax = fig.add_subplot(111, projection="3d")
+    cam = mujoco.MjvCamera()
+    cx = cs.mean(axis=0)
+    cam.lookat[:] = [cx[0], cx[1], max(0.55, cx[2] - 0.15)]
+    cam.distance = 1.25
+    cam.azimuth = 145
+    cam.elevation = -22
 
-    marker_dirs = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-    marker_colors = ["red", "green", "blue"]
+    w, h = _SIZE
+    ffmpeg = subprocess.Popen(
+        ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+         "-s", f"{w}x{h}", "-r", str(_FPS), "-i", "-",
+         "-vcodec", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+         out_mp4], stdin=subprocess.PIPE)
+
     R_orient = np.eye(3)
+    ball_qpos = model.jnt_qposadr[
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT,
+                          "ball")]
 
-    writer = FFMpegWriter(fps=_FPS)
-    out = Path(out_mp4)
-    with writer.saving(fig, str(out), dpi=120):
-        for k in range(len(states)):
+    with mujoco.Renderer(model, h, w) as rd:
+        for k, s in enumerate(states):
             L = Ls[k]
-            w = np.linalg.norm(L) / I_REF
-            if w > 1e-9:
-                R_orient = _rot(L, w * CTRL_DT) @ R_orient
+            wv = np.linalg.norm(L) / I_REF
+            if wv > 1e-9:
+                R_orient = _rot(L, wv * CTRL_DT) @ R_orient
 
-            ax.cla()
-            _style(ax, xr, yr, zr)
-
-            # full plan as faint guide
-            ax.plot(cs[:, 0], cs[:, 1], cs[:, 2], ":",
-                    color="gray", alpha=0.5, linewidth=1.0)
-            # goal marker
-            ax.scatter(*cs[-1], marker="*", s=140, color="gold",
-                       edgecolor="darkgoldenrod")
-
-            # fading trail (line + dots)
-            lo = max(0, k - _TRAIL)
-            seg = cs[lo:k + 1]
-            for i in range(len(seg) - 1):
-                a = (i + 1) / max(len(seg), 1)
-                ax.plot(seg[i:i + 2, 0], seg[i:i + 2, 1],
-                        seg[i:i + 2, 2], color="tab:blue",
-                        alpha=a * 0.9, linewidth=2.0)
-            ax.scatter(seg[:-1, 0], seg[:-1, 1], seg[:-1, 2],
-                       s=10, color="tab:blue", alpha=0.35)
-
-            # height drop line + ground shadow
             c = cs[k]
-            ax.plot([c[0], c[0]], [c[1], c[1]], [0, c[2]],
-                    color="black", alpha=0.35, linewidth=1.0,
-                    linestyle="--")
-            ax.scatter(c[0], c[1], 0.001, s=60, color="black",
-                       alpha=0.35, marker="o")
+            data.qpos[ball_qpos:ball_qpos + 3] = c
+            data.qpos[ball_qpos + 3:ball_qpos + 7] = _R2q(R_orient)
+            mujoco.mj_forward(model, data)
 
-            # solid ball with surface anchor dots (rotation = L)
-            xs, ys, zs = _sphere_pts(c, R_orient)
-            ax.plot_surface(xs, ys, zs, color="tab:blue",
-                            alpha=0.85, linewidth=0,
-                            antialiased=True, shade=True)
-            # spots painted ON the ball surface (rotation = L) —
-            # a dense disc of tiny points reads as a painted patch
-            # (mpl3d sorts surfaces wrongly; scatter draws on top)
-            for dvec, col in zip(marker_dirs, marker_colors):
-                px, py, pz = _cap_pts(c, R_orient, dvec,
-                                      r=_BALL_R * 1.02,
-                                      cap_deg=30, n=14)
-                ax.scatter(px.ravel(), py.ravel(), pz.ravel(),
-                           s=14, color=col, depthshade=False)
+            rd.update_scene(data, camera=cam)
+            scn = rd.scene
+            # fading trail
+            lo = max(0, k - _TRAIL)
+            for i in range(lo, k):
+                if scn.ngeom >= scn.maxgeom:
+                    break
+                a = 0.15 + 0.55 * (i - lo + 1) / max(k - lo, 1)
+                g = scn.geoms[scn.ngeom]
+                mujoco.mjv_initGeom(
+                    g, mujoco.mjtGeom.mjGEOM_SPHERE,
+                    np.array([0.022, 0, 0]),
+                    cs[i].astype(np.float32),
+                    np.eye(3).flatten().astype(np.float32),
+                    np.array([0.2, 0.5, 1.0, a], np.float32))
+                scn.ngeom += 1
+            # drop line: thin capsule ground -> ball
+            g = scn.geoms[scn.ngeom]
+            mujoco.mjv_initGeom(
+                g, mujoco.mjtGeom.mjGEOM_CAPSULE,
+                np.array([0.004, c[2] / 2, 0]),
+                np.array([c[0], c[1], c[2] / 2], np.float32),
+                np.eye(3).flatten().astype(np.float32),
+                np.array([0, 0, 0, 0.45], np.float32))
+            scn.ngeom += 1
+            frame = rd.render()
 
-            ax.text(c[0], c[1], c[2] + 0.12, f"z={c[2]:.2f}m",
-                    fontsize=9, ha="center")
-            ax.set_title(f"centroidal traj  t={k * CTRL_DT:.2f}s "
-                         f"({k + 1}/{len(states)})", fontsize=10)
-            writer.grab_frame()
-    plt.close(fig)
-    return out
+            # caption overlay via PIL
+            try:
+                from PIL import Image, ImageDraw
+                img = Image.fromarray(frame)
+                dr = ImageDraw.Draw(img)
+                try:
+                    from PIL import ImageFont
+                    font = ImageFont.truetype(
+                        "/usr/share/fonts/truetype/dejavu/"
+                        "DejaVuSans.ttf", 26)
+                except Exception:
+                    font = ImageFont.load_default()
+                dr.text((22, _SIZE[1] - 44),
+                        f"t={k * CTRL_DT:.2f}s   z={c[2]:.2f}m",
+                        fill=(30, 30, 30), font=font,
+                        stroke_width=2, stroke_fill=(255, 255, 255))
+                frame = np.asarray(img)
+            except ImportError:
+                pass
+            ffmpeg.stdin.write(frame.tobytes())
+
+    ffmpeg.stdin.close()
+    ffmpeg.wait()
+    return Path(out_mp4)
