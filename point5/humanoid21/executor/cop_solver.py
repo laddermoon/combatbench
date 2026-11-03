@@ -26,7 +26,7 @@ from typing import List, Optional
 
 import numpy as np
 
-FLAT_Z = 0.07                    # ankle landmark resting height
+FLAT_Z = 0.10                    # ankle landmark resting height (~0.087)
 PITCH_MAX = np.radians(50.0)
 _XMIN, _XMAX = -0.07, 0.14       # heel / toe reach (local x)
 _HALF_Y = 0.057                  # side reach (local y)
