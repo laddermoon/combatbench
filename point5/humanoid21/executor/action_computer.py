@@ -128,7 +128,10 @@ class ActionComputer:
         g = np.asarray(o[42:45], np.float64)
         tilt = float(np.arccos(np.clip(-g[2]
                       / (np.linalg.norm(g) + 1e-9), -1, 1)))
-        b += 6.0 * tilt * tilt
+        b += 9.0 * tilt * tilt
+        # hard gate: beyond ~25deg the margin for error collapses —
+        # candidates must pay heavily to pass through these states
+        b += 40.0 * max(0.0, tilt - 0.45) ** 2
         z = float(o[45])
         # root-height floor: crouching is "free" in tilt terms — make it
         # expensive or the score trades height for stability every step
