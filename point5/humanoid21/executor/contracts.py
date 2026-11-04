@@ -45,3 +45,35 @@ class Context:
     observation: Observation
     clip: Any                            # P5Clip — remaining instruction
     meta: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FootSupport:
+    """One foot's support state inside a LandMark.
+
+    ``force_ratio`` is normal load divided by total body weight
+    (matches obs[52:54]); ``cop`` is the equivalent pressure point
+    in the local frame (inside the foot's CoP patch, tool6).
+    """
+
+    contact: bool
+    pos: np.ndarray                    # (3,) foot landmark position
+    force_ratio: float = 0.0
+    cop: Optional[np.ndarray] = None   # (2,) local; None if airborne
+
+
+@dataclass
+class LandMark:
+    """Algorithm 1 output unit — a self-consistent target state.
+
+    No time index: describes WHAT state to reach (support + COM +
+    torso facing), not when.  ``vel=None`` means free arrival speed;
+    a given vector (incl. zeros) is the desired COM velocity.
+    """
+
+    com: np.ndarray                    # (3,) target COM, local frame
+    feet: Dict[str, FootSupport]       # 'right'/'left'
+    vel: Optional[np.ndarray] = None   # (3,) desired arrival COM vel
+    torso_yaw: float = 0.0             # rad, torso facing target
+    time_hint: float = 0.0             # soft duration expectation (s)
+    label: str = ""
