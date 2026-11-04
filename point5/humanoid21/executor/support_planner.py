@@ -190,7 +190,13 @@ def plan_footsteps(start_landmark, clip,
             vel = np.zeros(3)
             n_fix += 1
 
-        # feasibility note on the mover step
+        # mover target only becomes a footstep if that keyframe's
+        # foot is GROUNDED — a lifted z is a mid-air swing waypoint,
+        # not a support point
+        m_z = clip.keyframes[t.seg].pos[_FIDX[t.mover], 2]
+        grounded = m_z <= LIFT_Z
+        if not grounded:
+            continue
         reach = np.linalg.norm(tgt_xy - feet_xy[sup])
         reason = f"seg{t.seg} mover"
         if reach > 2 * step_max:

@@ -46,7 +46,9 @@ def _shift_clip(dy=0.3):
 def test_still_no_corrective():
     steps = plan_footsteps(_mk(), _punch())
     assert all(s.kind == "move" for s in steps)
-    assert [s.foot for s in steps] == ["left", "left"]
+    # swing is a mid-air waypoint (z>0) -> skipped; only the
+    # LAND frame emits a footstep
+    assert [(s.foot, s.kind) for s in steps] == [("left", "move")]
 
 
 def test_no_transition_no_steps():
