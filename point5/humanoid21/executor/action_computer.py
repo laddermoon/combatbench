@@ -89,12 +89,11 @@ class ActionComputer:
         return (np.asarray(pts_xy) - origin) @ R.T
 
     def _landmark_error(self, lm_world, origin, yaw0, target,
-                        vel_w=None) -> float:
+                        vel_w=None, obs=None) -> float:
         """D_LM between decoded rollout state and a LandMark."""
         from .com_solver import com_estimate
         err = 0.0
         com_t = com_estimate(lm_world)
-        # express in frame0 (origin/yaw of the injected start pose)
         com_f = np.concatenate([self._to_frame0(com_t[:2], origin,
                                               yaw0), com_t[2:3]])
         err += 6.0 * float(np.sum((com_f - target.com) ** 2))
@@ -106,6 +105,11 @@ class ActionComputer:
                 d = (self._to_frame0(lm_world[fi, :2], origin, yaw0)
                      - f.foot_pos)
                 err += 4.0 * float(np.sum(d * d))
+            # foot LOAD matching — obs[52:54] carries measured
+            # force ratios; a liftoff anchor is mostly about this
+            if obs is not None:
+                actual = (obs[52] if side == "right" else obs[53])
+                err += 3.0 * float((actual - f.force_ratio) ** 2)
         return err
 
     # -- rollout ------------------------------------------------------------
@@ -156,7 +160,7 @@ class ActionComputer:
                     .repeat(_CHUNK, axis=0))
                 costs[i] = min(
                     self._landmark_error(
-                        lm_w, origin0, yaw0, target)
+                        lm_w, origin0, yaw0, target, obs=o)
                     for o in seq
                     for lm_w, _, _ in
                     [self._fk_decode(wsim, o)])

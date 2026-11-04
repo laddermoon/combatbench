@@ -144,16 +144,17 @@ def gen_landmarks(lm0: "LandMark", clip, steps
                       if feet_xy[s] is not None else None))
             for s in FIDX}
 
-    def _liftoff(foot):
+    def _liftoff(foot, frame=0):
         nonlocal com
         loaded[foot] = False
         com_t = com.copy()
         cops = [feet_xy[s] for s in FIDX if loaded[s]]
         if len(cops) == 1:                 # single support left
             com_t[:2] = cops[0]
-        lms.append(LandMark(com=com_t, feet=_feet(), vel=None))
+        lms.append(LandMark(com=com_t, feet=_feet(), vel=None,
+                            frame=frame))
 
-    def _touchdown(foot, target):
+    def _touchdown(foot, target, frame=0):
         nonlocal com
         feet_xy[foot] = np.asarray(target, np.float64).copy()
         loaded[foot] = True
@@ -161,7 +162,8 @@ def gen_landmarks(lm0: "LandMark", clip, steps
         cops = [feet_xy[s] for s in FIDX if loaded[s]]
         if cops:
             com_t[:2] = np.mean(cops, axis=0)
-        lms.append(LandMark(com=com_t, feet=_feet(), vel=None))
+        lms.append(LandMark(com=com_t, feet=_feet(), vel=None,
+                            frame=frame))
 
     def _project(pt, poly):
         if _inside(pt, poly):
@@ -202,23 +204,24 @@ def gen_landmarks(lm0: "LandMark", clip, steps
         com = com_t.copy()
         settle = (k == len(kfs) - 1) or not for_k.get(k + 1)
         lms.append(LandMark(com=com_t, feet=feet,
-                            vel=np.zeros(3) if settle else None))
+                            vel=np.zeros(3) if settle else None,
+                            frame=k))
 
     for k in range(1, len(kfs)):
         for st in before[k]:
             if loaded.get(st.foot):
-                _liftoff(st.foot)
-            _touchdown(st.foot, st.target)
+                _liftoff(st.foot, k)
+            _touchdown(st.foot, st.target, k)
         # frame foot-state diff: loaded -> airborne (no step covers)
         for s, fi in FIDX.items():
             was = kfs[k - 1].pos[fi, 2] <= LIFT_Z
             now = kfs[k].pos[fi, 2] <= LIFT_Z
             if was and not now and loaded[s]:
-                _liftoff(s)
+                _liftoff(s, k)
         for st in for_k[k]:
             if loaded.get(st.foot):
-                _liftoff(st.foot)
-            _touchdown(st.foot, st.target)
+                _liftoff(st.foot, k)
+            _touchdown(st.foot, st.target, k)
         _posture(k)
     return lms
 

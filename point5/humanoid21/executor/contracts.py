@@ -76,3 +76,4 @@ class LandMark:
     feet: Dict[str, FootSupport]       # 'right'/'left'
     vel: Optional[np.ndarray] = None   # (3,) desired arrival COM vel
     torso_yaw: Optional[float] = None  # rad; None = not handled (v1)
+    frame: int = 0                     # source clip frame (metadata)
