@@ -223,6 +223,36 @@ def plan_footsteps(start_landmark, clip,
                for s in loaded if s and feet_xy[s] is not None]
         return _hull2d(np.vstack(pts)) if pts else None
 
+    # ---- initial capture check (rule 10): the start state is
+    # already falling -> brace BEFORE frame 1, then (rule 11)
+    # recover ONLY if clip frame 1 requires that foot planted
+    xi = com[:2] + vel[:2] / np.sqrt(_G / max(com[2], 0.1))
+    h = hull()
+    if h is not None and not _inside(xi, h) \
+            and len(clip.keyframes) > 1:
+        foot = _nearest_foot(xi, start_landmark.feet)
+        d = xi - feet_xy[foot]
+        n = np.linalg.norm(d)
+        tgt = feet_xy[foot] + d / n * min(n, step_max)
+        steps.append(Footstep(
+            foot=foot, target=tgt, kind="corrective",
+            reason=(f"initial capture overshoot {n:.2f}m"),
+            before_frame=1))
+        feet_xy[foot] = tgt
+        loaded[foot] = True
+        vel = np.zeros(3)
+        # recover only when kf1 requires this foot planted and
+        # the brace displaced it (rule 11)
+        w1 = to_world(clip.keyframes[1].pos, *poses[1])
+        if (clip.keyframes[1].pos[_FIDX[foot], 2] <= LIFT_Z
+                and np.linalg.norm(
+                    w1[_FIDX[foot], :2] - feet_xy[foot]) > 0.05):
+            steps.append(Footstep(
+                foot=foot, target=w1[_FIDX[foot], :2].copy(),
+                kind="recover", for_frame=1,
+                reason="restore kf1-required stance"))
+            feet_xy[foot] = w1[_FIDX[foot], :2].copy()
+
     for t in trans:
         sup = t.support
         tgt_xy = to_world(
