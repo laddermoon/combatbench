@@ -177,61 +177,10 @@ class CentroidalPlanner:
                 *poses[-1], clip.keyframes[k].transfer))
 
         for i, st in enumerate(steps):
-            if st.kind != "move":
-                lms.append(design_next_target(
-                    st, steps[i + 1:], lms[-1]))
-            else:
-                lms.append(self._shift_landmark(st, lms[-1]))
-                lms.append(design_next_target(
-                    st, steps[i + 1:], lms[-1]))
+            lms.append(design_next_target(
+                st, steps[i + 1:], lms[-1]))
         # TODO(algo1): terminal hold landmark from the clip's last
         # keyframe — COM target via tool1 on the kf P5 (frame0),
         # both feet loaded per the kf's support pattern
         return lms
 
-    # -- per-footstep landmark constructors ---------------------------------
-    def _shift_landmark(self, st, prev: "LandMark") -> "LandMark":
-        """Weight transfer onto the support foot before the mover lifts."""
-        from .contracts import FootSupport, LandMark
-        other = "left" if st.foot == "right" else "right"
-        sup_f = prev.feet[other]
-        # TODO(90% prior): COM target = over the support foot's CoP,
-        # smoothed from prev.com; z keep current height
-        com_t = prev.com.copy()
-        if sup_f.cop is not None:
-            com_t[:2] = sup_f.cop
-        return LandMark(
-            com=com_t,
-            feet={other: FootSupport(1.0, sup_f.cop,
-                                     sup_f.foot_pos),
-                  st.foot: FootSupport(0.0, None, st.target)},
-            vel=np.zeros(3))                 # arrive settled
-
-    def _land_landmark(self, st, prev: "LandMark") -> "LandMark":
-        """Mover lands on the step target; double support resumes."""
-        from .contracts import FootSupport, LandMark
-        other = "left" if st.foot == "right" else "right"
-        feet = dict(prev.feet)
-        feet[st.foot] = FootSupport(0.5, st.target.copy(),
-                                    st.target.copy())
-        feet[other] = FootSupport(
-            0.5, feet[other].cop, feet[other].foot_pos)
-        # TODO(90% prior): COM target after landing — geometric
-        # midpoint of the two CoPs is a placeholder; the clip kf's
-        # com_estimate (frame0) is the real anchor, wire tool1 here
-        cops = [f.cop for f in feet.values() if f.cop is not None]
-        com_t = prev.com.copy()
-        if cops:
-            com_t[:2] = np.mean(cops, axis=0)
-        return LandMark(com=com_t, feet=feet, vel=np.zeros(3))
-
-    def _step_landmark(self, st, prev: "LandMark") -> "LandMark":
-        """Corrective/recover step: foot placed at st.target."""
-        from .contracts import FootSupport, LandMark
-        feet = dict(prev.feet)
-        feet[st.foot] = FootSupport(0.5, st.target.copy(),
-                                    st.target.copy())
-        # TODO: force split + COM during a brace step — currently a
-        # 50/50 placeholder; real ratio should reflect the capture
-        return LandMark(com=prev.com.copy(), feet=feet,
-                        vel=np.zeros(3))
