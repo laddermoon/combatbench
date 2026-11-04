@@ -230,50 +230,41 @@ if __name__ == "__main__":
         steps = plan_footsteps(lm, clip)
         fig, ax = plt.subplots(figsize=(7, 6))
         ax.set_aspect("equal")
-        # foot patches + hull
-        pts = []
+
+        # 1) clip keyframe feet: gray circles, labeled "k<i>:<R/L>"
+        for i, kf in enumerate(clip.keyframes):
+            for side, fi, col in (("R", 3, "tab:red"),
+                                  ("L", 4, "tab:blue")):
+                ax.scatter(*kf.pos[fi, :2], s=180, facecolor="none",
+                           edgecolor="gray", linewidth=1.2)
+                ax.annotate(f"k{i}:{side}", kf.pos[fi, :2],
+                            xytext=(4, 4), textcoords="offset points",
+                            fontsize=8, color="gray")
+
+        # 2) current support: black circles, "now:<R/L>"
         for side, f in lm.feet.items():
             if f.foot_pos is not None:
-                col = "tab:red" if side == "right" else "tab:blue"
-                poly = np.asarray(f.foot_pos) + \
-                    np.array([[-0.07, -0.057], [0.14, -0.057],
-                              [0.14, 0.057], [-0.07, 0.057]])
-                ax.add_patch(MpPoly(poly, alpha=0.25, fc=col,
-                                    ec=col, lw=1))
-                if f.force_ratio > 0.05:
-                    pts.append(poly)
-        if pts:
-            from .capability_solver import _hull2d
-            hull = _hull2d(np.vstack(pts))
-            ax.add_patch(MpPoly(hull, fill=False, ec="black",
-                                lw=1.5, ls="--",
-                                label="support hull"))
-        # capture point
-        v = np.asarray(lm.vel)
-        xi = lm.com[:2] + v[:2] / np.sqrt(_G / max(lm.com[2], .1))
-        ax.scatter(*lm.com[:2], s=120, c="black", marker="o",
-                   label="com", zorder=5)
-        ax.scatter(*xi, s=90, c="orange", marker="x",
-                   label="capture pt", zorder=5)
-        # clip foot targets
-        for kf in clip.keyframes[1:]:
-            ax.scatter(kf.pos[3, 0], kf.pos[3, 1], marker="s",
-                       c="tab:red", alpha=0.4)
-            ax.scatter(kf.pos[4, 0], kf.pos[4, 1], marker="s",
-                       c="tab:blue", alpha=0.4)
-        # footsteps
-        for i, s in enumerate(steps):
-            col = "tab:orange" if s.kind == "corrective" else "green"
-            ax.scatter(*s.target, marker="*", s=220, c=col,
-                       edgecolor="black", zorder=6)
-            ax.annotate(f"{i + 1}:{s.foot[0].upper()}",
-                        s.target + [0.02, 0.02], fontsize=8)
-            cur = (lm.feet[s.foot].foot_pos if s.foot in lm.feet
-                   else s.target)
-            ax.annotate("", xy=s.target, xytext=cur,
-                        arrowprops=dict(arrowstyle="->",
-                                        color=col, lw=1.4))
-        ax.legend(loc="upper left", fontsize=8)
+                ax.scatter(*f.foot_pos, s=200, c="black", zorder=5)
+                ax.annotate(f"now:{side[0].upper()}", f.foot_pos,
+                            xytext=(4, -14),
+                            textcoords="offset points", fontsize=9)
+
+        # 3) planned steps: colored circles, numbered + R/L
+        for i, st in enumerate(steps):
+            col = ("tab:orange" if st.kind == "corrective"
+                   else "tab:green")
+            ax.scatter(*st.target, s=220, facecolor="none",
+                       edgecolor=col, linewidth=2.2, zorder=6)
+            ax.annotate(f"{i + 1}:{st.foot[0].upper()}",
+                        st.target, xytext=(5, 5),
+                        textcoords="offset points", fontsize=10,
+                        color=col, weight="bold")
+            cur = lm.feet[st.foot].foot_pos
+            if cur is not None:
+                ax.annotate("", xy=st.target, xytext=cur,
+                            arrowprops=dict(arrowstyle="->",
+                                            color=col, lw=1.2,
+                                            alpha=0.6))
         ax.set_title(name)
         ax.set_xlabel("x fwd"); ax.set_ylabel("y left")
         fig.tight_layout()
