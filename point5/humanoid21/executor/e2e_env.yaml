@@ -4,8 +4,8 @@
 
 parameters:
   initial_distance:
-    default: 6.0
-    description: "Spawn distance between robots (m); far enough that the punch never reaches B."
+    default: 1.5
+    description: "Spawn distance between robots (m); punch reach ~1.05m + step-in."
   max_steps:
     default: 120
     description: "Max control frames (20 Hz, 6 s)."
