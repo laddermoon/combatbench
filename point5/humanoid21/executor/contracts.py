@@ -52,14 +52,13 @@ class FootSupport:
     """One foot's support state inside a LandMark.
 
     ``force_ratio`` is normal load divided by total body weight
-    (matches obs[52:54]); ``cop`` is the equivalent pressure point
-    in the local frame (inside the foot's CoP patch, tool6).
+    (matches obs[52:54]); 0 means no contact.  ``cop`` is the
+    equivalent pressure point in the local frame (inside the foot's
+    CoP patch, tool6); meaningless when force_ratio is 0.
     """
 
-    contact: bool
-    pos: np.ndarray                    # (3,) foot landmark position
     force_ratio: float = 0.0
-    cop: Optional[np.ndarray] = None   # (2,) local; None if airborne
+    cop: Optional[np.ndarray] = None   # (2,) local
 
 
 @dataclass
