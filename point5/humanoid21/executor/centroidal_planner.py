@@ -141,7 +141,24 @@ class CentroidalPlanner:
 
     def plan(self, observation: np.ndarray,
              clip) -> list:
-        """(observation, remaining clip) -> ordered LandMark seq."""
+        """(observation, remaining clip) -> ordered LandMark seq.
+
+        锚点分类（与用户对齐）：
+
+        1. 支撑事件锚点：锚点放在支撑状态变化的时刻；相邻锚点间
+           接触方式不变或只变一次。一次迈步 = 离地(重心移到
+           支撑脚, capture point 指向落点) / 触地(摆动脚承重,
+           COM 居中偏新脚) / 稳定(COM 落新域, 后续有步则速度
+           不限, 否则=0)。垫步/回位同构。
+        2. 姿态锚点：clip 中不换脚但改变质心的关键帧（下蹲、
+           前送、偏载）——工具1 com_estimate 投影到当前支撑域。
+           TODO: 目前没有，纯下蹲/出拳帧被丢。
+        3. 终点锚点：clip 最后一帧的终态（支撑+COM+vel=0）。
+           TODO: 未实现。
+
+        规划范围：只覆盖下一个+再下一个支撑事件；远处 footstep
+        只用于判断落地后收不收。
+        """
         from .start_solver import extract_landmark
         from .support_planner import plan_footsteps
         from point5.contracts import compose_frame
