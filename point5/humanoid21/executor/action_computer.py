@@ -166,7 +166,7 @@ class ActionComputer:
         # — scoring must evaluate the candidate against the schedule it
         # was actually told to track, else ref and objective disagree.
         dwell = 0
-        dwell_budget = 6
+        dwell_budget = 14
         from .com_solver import com_estimate
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
@@ -233,9 +233,11 @@ class ActionComputer:
         # issued.  Each unfinished anchor gets at most ~H/remaining
         # steps before the next one is tried.
         dwell = 0
-        # 0.3s per anchor: enough time for the tracker to actually move
-        # (3-step budgets thrash — ref switches before the body reacts)
-        budget = 6
+        # generous dwell: ref mostly advances on reach; the fallback
+        # only prevents an infinite stall on an unreachable anchor.
+        # (tight budgets chase the schedule through unstable poses —
+        # every video that used them fell; v4 survived WITHOUT one)
+        budget = 14
         for t in range(n_steps):
             o = wsim.get_derived_state()[self.robot_id]["observation"]
             q = np.asarray(o[0:21], np.float64)
@@ -254,7 +256,8 @@ class ActionComputer:
             # how close it got to the anchor
             g2 = np.asarray(o2[42:45])
             if float(np.arccos(np.clip(-g2[2]
-                     / (np.linalg.norm(g2) + 1e-9), -1, 1))) > 0.61:
+                     / (np.linalg.norm(g2) + 1e-9), -1, 1))) \
+                    > getattr(self, "_abort_tilt", 0.61):
                 return obs_seq, u0, True
             # advance the reference anchor when the current one is met
             # OR its dwell budget is spent (fallback keeps the
@@ -279,6 +282,14 @@ class ActionComputer:
         # --- inject x_hat(0) and record frame0 pose ------------------------
         wsim.set_core_state({self.robot_id: obs_to_core_state(obs)})
         lm0_w, origin0, yaw0 = self._fk_decode(wsim, obs)
+
+        # adaptive abort ceiling: cap candidates at ~25deg above the
+        # STARTING tilt — from an already-tilted state the controller
+        # must be allowed to try recovery, not instant-abort everything
+        g0 = np.asarray(obs[42:45])
+        tilt0 = float(np.arccos(np.clip(-g0[2]
+                 / (np.linalg.norm(g0) + 1e-9), -1, 1)))
+        self._abort_tilt = max(0.44, tilt0 + 0.10)
 
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
