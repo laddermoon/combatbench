@@ -49,6 +49,7 @@ from .cop_solver import FLAT_Z as LIFT_Z
 
 _FIDX = {"right": 3, "left": 4}
 _STEP_MAX = 0.35          # prior: nominal max single-step length (m)
+_GAIT_STRIDE = 0.45       # per-step advance when both feet relocate
 _G = 9.81                 # LIP: capture point xi = c + v/w, w=sqrt(g/z0)
 
 
@@ -135,6 +136,29 @@ def _nearest_foot(xi, feet) -> str:
     return min(feet, key=lambda s: np.linalg.norm(
         np.asarray(feet[s].foot_pos) - xi))
 
+
+
+def _walk(steps, todo, w_kf, feet_xy, loaded, t, lead):
+    """Both feet must relocate -> alternating walk steps ending at
+    the clip's required stance.  The clip specifies only the end;
+    the intermediate steps are generated here."""
+    idx = {"right": 3, "left": 4}
+    tgt = {s: w_kf[idx[s], :2].copy() for s in todo}
+    foot, other = (lead, "left" if lead == "right" else "right")
+    n = 0
+    while any(np.linalg.norm(tgt[s] - feet_xy[s]) > 0.02
+              for s in todo) and n < 12:
+        s = foot if (np.linalg.norm(tgt[foot] - feet_xy[foot])
+                     > 0.02) else other
+        d = tgt[s] - feet_xy[s]
+        dist = np.linalg.norm(d)
+        nxt = feet_xy[s] + d / dist * min(dist, _GAIT_STRIDE)
+        steps.append(Footstep(foot=s, target=nxt, kind="move",
+                              reason=f"seg{t.seg} walk"))
+        feet_xy[s] = nxt
+        loaded[s] = True
+        foot, other = other, foot
+        n += 1
 
 
 def plan_footsteps(start_landmark, clip,
@@ -239,19 +263,26 @@ def plan_footsteps(start_landmark, clip,
                 reason="restore support for clip intent"))
             feet_xy[sup] = sup_need
 
-        # mover target only becomes a footstep if that keyframe's
-        # foot is GROUNDED — a lifted z is a mid-air swing waypoint,
-        # not a support point
-        m_z = clip.keyframes[t.seg].pos[_FIDX[t.mover], 2]
-        grounded = m_z <= LIFT_Z
-        if not grounded:
+        # foot targets of this keyframe in frame0; any foot whose
+        # required position differs from its current spot must step
+        w_kf = to_world(clip.keyframes[t.seg].pos, *poses[t.seg])
+        todo = [s for s in ("right", "left")
+                if clip.keyframes[t.seg].pos[_FIDX[s], 2] <= LIFT_Z
+                and np.linalg.norm(w_kf[_FIDX[s], :2] - feet_xy[s])
+                > 0.05]
+        if len(todo) == 2:
+            # walk transition: BOTH feet relocate -> alternate steps,
+            # each <= _GAIT_STRIDE toward its own kf target; this is
+            # the self-planned middle the clip leaves open
+            _walk(steps, todo, w_kf, feet_xy, loaded, t, t.mover)
             continue
-        # far targets are ONE step — the planner does not judge
-        # clip feasibility; the input requirement is the intent
-        steps.append(Footstep(foot=t.mover, target=tgt_xy,
+        if t.mover not in todo:
+            continue                        # swing waypoint only
+        steps.append(Footstep(foot=t.mover,
+                              target=w_kf[_FIDX[t.mover], :2].copy(),
                               kind="move",
                               reason=f"seg{t.seg} mover"))
-        feet_xy[t.mover] = tgt_xy
+        feet_xy[t.mover] = w_kf[_FIDX[t.mover], :2].copy()
         loaded[t.mover] = True
 
     # recover: corrective steps may have displaced a foot the clip
@@ -456,6 +487,11 @@ if __name__ == "__main__":
         return P5Clip(name="fd", keyframes=(
             Keyframe(pos=P),
             Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 2.0))))
+    def walk_far():
+        return P5Clip(name="w", keyframes=(
+            Keyframe(pos=P),
+            Keyframe(pos=P, transfer=Transfer(1.5, 0, 0, 2.0))))
     render("15_far_target", mk(), far_target())
     render("16_far_diag", mk(), far_diag())
+    render("17_walk_far", mk(), walk_far())
     print("done ->", outdir)
