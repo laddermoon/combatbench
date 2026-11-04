@@ -1,5 +1,25 @@
 """Support planning (algorithm-1 branch).
 
+Deepened requirements (user-driven, v1):
+
+1. A Footstep is a LANDING only — mid-air swing waypoints
+   (lifted z in the clip) are not support points and emit nothing.
+2. The physical gate is the LIP capture point xi = c + v/w against
+   the CURRENT support hull — no velocity thresholds.
+3. After a corrective step the virtual state is RE-ANCHORED:
+   the bracing foot moves, momentum is considered braked, and the
+   same segment is rechecked before any next step is emitted.
+4. Corrective foot choice prefers the foot that was going to move
+   anyway (near-tie) — least damage to clip intent.
+5. Momentum that agrees with the intent needs no corrective: if
+   the mover's own landing produces a hull containing xi, the move
+   itself is the capture step.
+6. A move step's validity assumes the clip's support geometry —
+   if a corrective displaced a clip-required planted foot, a
+   recover step returns it BEFORE the mover lifts.
+7. The plan's terminal stance must satisfy the clip's last
+   keyframe; residual displacement gets a recover step.
+
 Two layers:
 
 1. ``support_transitions`` — which segments need weight transfer
@@ -160,12 +180,24 @@ def plan_footsteps(start_landmark, clip,
             *poses[t.seg])[0, :2]
 
         # ---- physical gate: is current momentum catchable? ----
+        from .capability_solver import _PATCH as _PATCH_g
+        _PATCH = _PATCH_g
         n_fix = 0
         while n_fix < max_correction:
             z0 = max(com[2], 0.1)
             xi = com[:2] + vel[:2] / np.sqrt(_G / z0)
             h = hull()
             if h is not None and _inside(xi, h):
+                break
+            # momentum aligned with the intent needs no brace: if
+            # the mover's own landing creates a hull containing xi,
+            # the move itself IS the capture step
+            probe = dict(feet_xy)
+            probe[t.mover] = tgt_xy
+            pts = [probe[s2] + np.asarray(_PATCH)
+                   for s2 in probe if probe[s2] is not None]
+            from .capability_solver import _hull2d
+            if _inside(xi, _hull2d(np.vstack(pts))):
                 break
             # capture step on the foot nearest xi; on a near-tie
             # prefer the mover (going to move anyway = least damage)
