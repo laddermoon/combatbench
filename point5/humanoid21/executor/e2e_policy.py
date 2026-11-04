@@ -110,15 +110,6 @@ class ExecutorPolicy(Policy):
                 continue
             break
 
-    def _is_step_frame(self, kfs) -> bool:
-        """Next keyframe relocates a foot (>5cm) -> needs step time."""
-        i = self._idx + 1
-        if i >= len(kfs):
-            return False
-        cur, nxt = np.asarray(kfs[self._idx].pos), np.asarray(kfs[i].pos)
-        return (np.linalg.norm(cur[3, :2] - nxt[3, :2]) > 0.05 or
-                np.linalg.norm(cur[4, :2] - nxt[4, :2]) > 0.05)
-
     def _frame_err(self, kfs, local_p5) -> float:
         """||target P5 of kfs[idx+1] (expressed in frame0) - local_p5||"""
         from point5.contracts import compose_frame, to_world
