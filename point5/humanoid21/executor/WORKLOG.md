@@ -40,3 +40,8 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
 - **热启动负结果**：用工具2 solve_equilibrium 的目标帧均衡姿态做 CEM mean 反而更差（cold 0.0038 vs warm 0.0067）——静态姿态不含动态转移信息，陷局部最优
 - **cost 补齐**：加 `force_ratio` 误差项（obs[52:54] 直接读实测触地力，3× 权重）——swing/离地锚点的核心就是卸载，之前完全没用到
 - **LandMark 加 `frame` 元信息**（实现细节）：锚点记录来源 kf 下标，供算法2 的 P5 项/种子用
+
+### ~18:30
+
+- **多锚点顺序打分 `_seq_score`**：rollout 步推进模型——状态误差 < reach_eps 即"到达"并切下一锚点（隐式 tau），residual = 当前+后续锚点误差和 - 进度奖励；CEM 主循环已接入
+- git push 故障排查：新 shell 无 ssh-agent → `eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519` 恢复

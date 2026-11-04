@@ -112,6 +112,32 @@ class ActionComputer:
                 err += 3.0 * float((actual - f.force_ratio) ** 2)
         return err
 
+    def _seq_score(self, wsim, obs_seq, origin0, yaw0, lms,
+                   reach_eps=0.06):
+        """Walk the rollout obs seq against the anchor list.
+
+        Progress model: advance to the next anchor whenever the
+        current state's error drops below reach_eps (implicit tau);
+        residual cost = unfinished anchors' best distances +
+        current-anchor residual, earlier anchors weighted higher.
+        """
+        from .com_solver import com_estimate
+        tgt_i, best = 1, {}
+        errs = []
+        for o in obs_seq:
+            lm_w, _, _ = self._fk_decode(wsim, o)
+            e = self._landmark_error(lm_w, origin0, yaw0,
+                                     lms[tgt_i], obs=o)
+            errs.append(e)
+            if e < reach_eps and tgt_i < len(lms) - 1:
+                tgt_i += 1
+        # total = last-observed err per unreached anchor + progress
+        tail = sum(self._landmark_error(
+                self._fk_decode(wsim, obs_seq[-1])[0],
+                origin0, yaw0, lms[j], obs=obs_seq[-1])
+            for j in range(tgt_i, min(len(lms), tgt_i + 2)))
+        return float(min(errs) + tail - tgt_i * reach_eps)
+
     # -- rollout ------------------------------------------------------------
     def _rollout(self, wsim, chunks):
         """Apply piecewise-constant actions; return per-action obs."""
@@ -137,8 +163,6 @@ class ActionComputer:
         wsim.set_core_state({self.robot_id: obs_to_core_state(obs)})
         lm0_w, origin0, yaw0 = self._fk_decode(wsim, obs)
 
-        target = landmarks[1]              # nearest anchor only (v1)
-
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
 
@@ -158,12 +182,8 @@ class ActionComputer:
                 seq = self._rollout(
                     wsim, cand.reshape(n_chunks, 21)
                     .repeat(_CHUNK, axis=0))
-                costs[i] = min(
-                    self._landmark_error(
-                        lm_w, origin0, yaw0, target, obs=o)
-                    for o in seq
-                    for lm_w, _, _ in
-                    [self._fk_decode(wsim, o)])
+                costs[i] = self._seq_score(
+                    wsim, seq, origin0, yaw0, landmarks)
                 if costs[i] < best_cost:
                     best_cost = costs[i]
                     best_a = cand[:21].copy()
