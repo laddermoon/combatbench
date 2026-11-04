@@ -106,3 +106,28 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
   --video .../punch.mp4 --seed 0`
 - Result: 120 steps OK, robot_a upright + visibly steps/reaches in
   punch window, no fall. Video: /data1/dev/combatbench_executor/e2e/punch.mp4
+
+## 算法2 稳定性攻关 (~02:30)
+
+诊断链：
+- trivial "stand" clip 也倒 → 不是跟踪问题，是基础能力问题
+- 常值保持动作 ~35 步倒；CEM 输出 ~16 步倒 → 搜索主动挑更烂的解
+- wsim 注入后 rollout 与真实 sim **零发散** → 模型完美，纯搜索/cost 问题
+- 300 个 hold-perturb 候选里有近水平的解 → 好解存在
+- A/B: hold 0.396 vs CEM 1.478 → **CEM 从不给 null 候选打分**，漂进更烂区
+
+修复序列：
+1. 平衡项移出 _landmark_error，per-step 累加（tilt²/root_z下限/vz下沉/
+   捕获点出支撑域）；landmark 走查不再 min()
+2. mean 平铺 hold-pose（原为 0 填充=关节归中折叠）
+3. 注入 hold+mean 候选保底
+   → 24步→48步，仍会瘫
+4. pose 先验：a_ref=锚点 frame→clip kf pos→pose_solver 参考动作，
+   CEM mean=当前→a_ref 斜坡
+   → 52步倒，0.75 蹲姿能稳 12 步但起不来
+5. **反馈式 rollout（关键）**：候选=5组增益 k，wsim 内逐步闭环
+   u=clip(a_ref+k(a_ref−q))。84维→5维，候选天然抗扰
+   → **stand 场景 80 步全活**，com_z 稳 0.835，tilt 有界 ~9°
+
+原理：开环动作带里没有"主动扶正"方向；跟踪控制器参数空间才有。
+下一步：punch 场景验证。

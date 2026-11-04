@@ -65,7 +65,9 @@ class ExecutorPolicy(Policy):
             remaining = [Keyframe(pos=local_p5)] + list(kfs[self._idx + 1:])
             clip = P5Clip(name=self.clip.name, keyframes=tuple(remaining))
             self._last_action = np.asarray(
-                self.ex.gen_action(Context(observation=obs, clip=clip)),
+                self.ex.gen_action(Context(
+                    observation=obs, clip=clip,
+                    meta={"last_action": self._last_action})),
                 dtype=np.float64)
             self._advance(kfs)
         return self._last_action.astype(np.float32), None

@@ -59,6 +59,7 @@ class ActionComputer:
     def __init__(self, robot_id: str = "robot_a"):
         self.robot_id = robot_id
         self._decoder = None
+        self._pose_solver = None
         self._zero_b = np.zeros(21, np.float32)
 
     # -- decoding -----------------------------------------------------------
@@ -110,42 +111,66 @@ class ActionComputer:
             if obs is not None:
                 actual = (obs[52] if side == "right" else obs[53])
                 err += 3.0 * float((actual - f.force_ratio) ** 2)
-        # upright/balance prior — penalize sinking + tilt away
-        # from vertical (prevents CEM drifting into collapse)
-        if obs is not None:
-            g = np.asarray(obs[42:45])
-            tilt = float(np.arccos(np.clip(-g[2]
-                            / (np.linalg.norm(g) + 1e-9), -1, 1)))
-            err += 2.0 * tilt * tilt
-            err += 1.5 * float(max(0.0, 0.87 - obs[45]) ** 2)
         return err
 
-    def _seq_score(self, wsim, obs_seq, origin0, yaw0, lms,
-                   reach_eps=0.06):
-        """Walk the rollout obs seq against the anchor list.
-
-        Progress model: advance to the next anchor whenever the
-        current state's error drops below reach_eps (implicit tau);
-        residual cost = unfinished anchors' best distances +
-        current-anchor residual, earlier anchors weighted higher.
+    def _balance_terms(self, o, lm_world, origin0, yaw0):
+        """Per-step stability penalty — summed over the horizon, so a
+        candidate that collapses late still pays.  Capture-point exit
+        is the predictive term: penalize BEFORE the fall is visible.
         """
         from .com_solver import com_estimate
-        tgt_i, best = 1, {}
-        errs = []
+        from .capability_solver import _hull2d
+        from .support_planner import _inside
+        b = 0.0
+        g = np.asarray(o[42:45], np.float64)
+        tilt = float(np.arccos(np.clip(-g[2]
+                      / (np.linalg.norm(g) + 1e-9), -1, 1)))
+        b += 6.0 * tilt * tilt
+        z = float(o[45])
+        b += 4.0 * max(0.0, 0.80 - z) ** 2        # root-height floor
+        vz = float(o[48])
+        b += 0.4 * max(0.0, -vz) ** 2              # sinking velocity
+        # capture point xi = c + v/omega in frame0, outside support hull
+        com_t = com_estimate(lm_world)
+        com_f = np.concatenate(
+            [self._to_frame0(com_t[:2], origin0, yaw0), com_t[2:3]])
+        omega = np.sqrt(9.81 / max(com_f[2], 0.3))
+        cp = com_f[:2] + np.asarray(o[46:48], np.float64) / omega
+        sup = [self._to_frame0(lm_world[fi, :2], origin0, yaw0)
+               for fi, k in ((3, 0), (4, 1)) if o[52 + k] > 0.05]
+        if not sup:                               # airborne: no support
+            b += 4.0 * float(np.sum((cp - com_f[:2]) ** 2))
+        else:
+            hull = _hull2d(np.asarray(sup))
+            if not _inside(cp, hull):
+                d = min(float(np.linalg.norm(cp - p)) for p in sup)
+                b += 3.0 * d * d
+        return b
+
+    def _seq_score(self, wsim, obs_seq, origin0, yaw0, lms,
+                   chunks=None, a_prev=None, reach_eps=0.06):
+        """Per-candidate cost = accumulated balance + landmark progress
+        + action smoothness.  No min() over time — instability is
+        cumulative, not best-moment."""
+        cost = 0.0
+        tgt_i = 1
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
+            cost += self._balance_terms(o, lm_w, origin0, yaw0)
             e = self._landmark_error(lm_w, origin0, yaw0,
                                      lms[tgt_i], obs=o)
-            errs.append(e)
             if e < reach_eps and tgt_i < len(lms) - 1:
                 tgt_i += 1
-        # progress-driven: end-state distance to the NEXT anchor
-        # (gradient toward it, not binary reach) + how far the seq
-        # got (reached anchors pay off via tgt_i bonus)
         end_lm = self._fk_decode(wsim, obs_seq[-1])[0]
         end_err = self._landmark_error(
             end_lm, origin0, yaw0, lms[tgt_i], obs=obs_seq[-1])
-        return float(end_err + min(errs) - tgt_i * reach_eps)
+        cost += end_err - tgt_i * reach_eps
+        if chunks is not None:
+            for a, b_ in zip(chunks[:-1], chunks[1:]):
+                cost += 0.05 * float(np.sum((a - b_) ** 2))
+        if a_prev is not None:
+            cost += 0.02 * float(np.sum((chunks[0] - a_prev) ** 2))
+        return float(cost)
 
     # -- rollout ------------------------------------------------------------
     def _rollout(self, wsim, chunks):
@@ -161,6 +186,34 @@ class ActionComputer:
                 ["observation"].copy())
         return obs_seq
 
+    _GROUPS = ((0, 3), (3, 9), (9, 15), (15, 18), (18, 21))
+
+    def _rollout_feedback(self, wsim, k, a_ref, n_steps):
+        """Closed-loop INSIDE the model: each step the action is
+        u = clip(a_ref + k_group*(a_ref - q)) — the candidate is a
+        tracking controller, not an open-loop tape.  Recovery
+        directions (push back toward the ref when deviated) live in
+        this space; raw action tapes almost never contain them.
+        Returns per-step obs AND the first action (to execute)."""
+        obs_seq, u0 = [], None
+        kg = np.empty(21)
+        for g, (lo, hi) in enumerate(self._GROUPS):
+            kg[lo:hi] = k[g]
+        for t in range(n_steps):
+            o = wsim.get_derived_state()[self.robot_id]["observation"]
+            q = np.asarray(o[0:21], np.float64)
+            u = np.clip(a_ref + kg * (a_ref - q), -1.0, 1.0)
+            if u0 is None:
+                u0 = u.copy()
+            wsim.set_action({self.robot_id: u.astype(np.float32),
+                             "robot_b": self._zero_b})
+            for _ in range(_CTRL_SUBSTEPS):
+                wsim.physical_step()
+            obs_seq.append(
+                wsim.get_derived_state()[self.robot_id]
+                ["observation"].copy())
+        return obs_seq, u0
+
     # -- solver -------------------------------------------------------------
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
         """LandMark seq + obs -> next (21,) normalized action."""
@@ -175,31 +228,61 @@ class ActionComputer:
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
 
-        n_chunks = _HORIZON_ACTIONS // _CHUNK
-        dim = n_chunks * 21
-        mean = np.zeros(dim)
-        mean[:21] = obs[0:21]               # seed: hold current pose
-        std = np.full(dim, 0.6)
-        best_a, best_cost = obs[0:21].copy(), np.inf
+        # candidate = tracking-controller gains over 5 joint groups,
+        # rolled out closed-loop inside wsim around the anchor-pose
+        # reference.  Dim=5, every candidate inherently reactive.
+        a_ref = self._anchor_ref_action(ctx, landmarks[1], obs)
+        if a_ref is None:
+            a_ref = obs[0:21].copy()
+        NG = len(self._GROUPS)
+        mean = np.ones(NG)
+        std = np.full(NG, 0.7)
+        inject = [np.zeros(NG), np.ones(NG), np.full(NG, 2.0)]
+        best_k, best_cost = np.ones(NG), np.inf
 
         for _ in range(_CEM_ITERS):
-            pop = np.clip(mean + std * np.random.randn(_CEM_POP, dim),
-                          -1.0, 1.0)
-            costs = np.empty(_CEM_POP)
+            pop = np.clip(mean + std * np.random.randn(_CEM_POP, NG),
+                          -0.5, 3.0)
+            pop = np.vstack([pop, mean[None, :], np.asarray(inject)])
+            costs = np.empty(len(pop))
             for i, cand in enumerate(pop):
                 self._sim_restore(wsim, snap)
-                seq = self._rollout(
-                    wsim, cand.reshape(n_chunks, 21)
-                    .repeat(_CHUNK, axis=0))
+                seq, _ = self._rollout_feedback(
+                    wsim, cand, a_ref, _HORIZON_ACTIONS)
                 costs[i] = self._seq_score(
                     wsim, seq, origin0, yaw0, landmarks)
                 if costs[i] < best_cost:
                     best_cost = costs[i]
-                    best_a = cand[:21].copy()
+                    best_k = cand.copy()
             elite = pop[np.argsort(costs)[:_CEM_ELITE]]
             mean, std = elite.mean(0), elite.std(0) + 0.05
         self._sim_restore(wsim, snap)
-        return best_a.astype(np.float32)
+
+        kg = np.empty(21)
+        for g, (lo, hi) in enumerate(self._GROUPS):
+            kg[lo:hi] = best_k[g]
+        u = np.clip(a_ref + kg * (a_ref - obs[0:21]), -1.0, 1.0)
+        return u.astype(np.float32)
+
+    def _anchor_ref_action(self, ctx, landmark, obs):
+        """Pose-solve the anchor's source clip keyframe -> reference
+        action.  Falls back to None (hold-pose prior) when the anchor
+        has no usable frame link or the solve fails."""
+        try:
+            fr = getattr(landmark, "frame", None)
+            if fr is None or ctx.clip is None:
+                return None
+            kfs = ctx.clip.keyframes
+            if not (0 <= fr < len(kfs)):
+                return None
+            if self._pose_solver is None:
+                from .pose_solver import Humanoid21PoseSolver
+                self._pose_solver = Humanoid21PoseSolver()
+            res = self._pose_solver.solve(np.asarray(kfs[fr].pos,
+                                                     np.float64))
+            return np.asarray(res.action, np.float64)
+        except Exception:
+            return None
 
     # -- wsim snapshot helpers ----------------------------------------------
     def _sim_snapshot(self, wsim):
