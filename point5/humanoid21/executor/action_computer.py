@@ -216,6 +216,15 @@ class ActionComputer:
             kg[lo:hi] = cand[g]
             dg[lo:hi] = cand[len(self._GROUPS) + g]
         tgt_i = 1
+        # time-budgeted ref advance: a hard anchor (e.g. full unload)
+        # may never satisfy reach_eps — without a dwell fallback the ref
+        # is stuck on it forever and the swing/land poses are never
+        # issued.  Each unfinished anchor gets at most ~H/remaining
+        # steps before the next one is tried.
+        dwell = 0
+        # 0.3s per anchor: enough time for the tracker to actually move
+        # (3-step budgets thrash — ref switches before the body reacts)
+        budget = 6
         for t in range(n_steps):
             o = wsim.get_derived_state()[self.robot_id]["observation"]
             q = np.asarray(o[0:21], np.float64)
@@ -230,12 +239,16 @@ class ActionComputer:
             o2 = wsim.get_derived_state()[self.robot_id]["observation"]
             obs_seq.append(o2.copy())
             # advance the reference anchor when the current one is met
+            # OR its dwell budget is spent (fallback keeps the
+            # swing->land sequence flowing)
+            dwell += 1
             if tgt_i < len(lms) - 1:
                 lm_w, _, _ = self._fk_decode(wsim, o2)
                 e = self._landmark_error(lm_w, origin0, yaw0,
                                          lms[tgt_i], obs=o2)
-                if e < reach_eps:
+                if e < reach_eps or dwell >= budget:
                     tgt_i += 1
+                    dwell = 0
         return obs_seq, u0
 
     # -- solver -------------------------------------------------------------
