@@ -74,3 +74,16 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
 - 改 seq_score：end_err(终态距锚点) + min(errs) - 进度奖励，替代原"min+tail"二元到达
 - 效果：dist->lm1 从单调增大(0.066→0.115)变为震荡收敛(0.054→0.063)——优化器有梯度了
 - 遗留：收敛仍慢（短时窗0.4s内进步有限）、P5姿态项未加
+
+### ~21:00 长时窗无改善
+
+- 试 _HORIZON_ACTIONS=16/CHUNK=4（0.8s 视野）：dist->lm1 0.062→0.074 震荡——**瓶颈不在时窗长度**
+- 结论：算法2 v1 能"不倒+有梯度"，但单锚点 CEM 收敛慢；下一步该考虑：
+  (a) P5 姿态项引导身体形态（出拳手臂）
+  (b) 锚点子目标间用 pose_solver 的帧姿态做中间引导（非 mean 而是 waypoint）
+  (c) 多候选动作族（非纯随机采样）
+
+### 本轮总结
+- 算法1 完整落地：obs→start LandMark→plan_footsteps(capture物理+矫正before1+回位for帧)→gen_landmarks(帧驱动锚点)
+- 算法2 v1 落地：obs→sim注入+CEM rollout搜索+D_LM(com/foot/force_ratio/upright)+多锚点顺序打分
+- 已知局限：闭环收敛慢、无P5姿态项、CEM 2.6s/次偏慢
