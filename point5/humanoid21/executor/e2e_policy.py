@@ -87,22 +87,19 @@ class ExecutorPolicy(Policy):
 
     _REACH_EPS = 0.30          # full-P5 err counting a frame as reached
     _MAX_DWELL = 1.2           # s — give up on a frame after this
-    _STEP_DWELL = 2.5          # s — stepping frames need real time
 
     def _advance(self, kfs, local_p5) -> None:
         """Progress-gated advance: consume the next keyframe when its
         pose requirement is actually met (or the dwell cap expires).
         Pure dur-budget burning lets the intent expire while the body
         is still mid-motion — the 90% rule says carry the intent, not
-        the clock.  Frames that relocate a foot get the longer step
-        budget: a swing+land physically can't happen in 0.3s."""
+        the clock.  (v4 semantics — a longer stepping dwell doubled the
+        tilt exposure window and every video with it fell.)"""
         self._elapsed += CTRL_DT
         while self._idx + 1 < len(kfs):
             tr = kfs[self._idx + 1].transfer
             dur = tr.dur if tr is not None else 1.0
-            cap = (self._STEP_DWELL if self._is_step_frame(kfs)
-                   else max(3.0 * dur, self._MAX_DWELL))
-            if self._elapsed >= cap:
+            if self._elapsed >= max(3.0 * dur, self._MAX_DWELL):
                 self._elapsed -= dur
                 self._idx += 1
                 continue

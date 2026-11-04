@@ -282,7 +282,10 @@ class ActionComputer:
         g0 = np.asarray(obs[42:45])
         tilt0 = float(np.arccos(np.clip(-g0[2]
                  / (np.linalg.norm(g0) + 1e-9), -1, 1)))
-        self._abort_tilt = max(0.70, tilt0 + 0.10)
+        # v4 ran with NO abort and survived; keep the machinery but
+        # make it fire only past ~60deg (beyond get-up territory) so
+        # the semantics match the proven-alive config.
+        self._abort_tilt = max(1.05, tilt0 + 0.10)
 
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
