@@ -1,28 +1,20 @@
-"""Algorithm 1: centroidal motion planning.
+"""Observation decode machinery (shared by algorithm-1 tools).
 
-Input : Observation (96-dim policy obs) -> decode -> centroidal state
-        z=(c,l,L) in the P5 local frame + the remaining P5Clip.
-Output: CentroidalTrajectory.
+The 96-dim policy obs carries no self keypoints — the local P5 must
+be reconstructed by forward kinematics:
 
-Decode path (obs contains no self keypoints — must FK):
     q_rad = obs[0:21] * scale + ref            (ranges from FK model)
-    root quat = minimal rot g_body -> -z       (tilt, arbitrary yaw 0)
-    FK -> landmarks -> torso yaw -> local P5 -> tool1 com_estimate
-    l = MASS * R_local @ v_body ;  L = I_est @ R_local @ w_body
+    root quat = minimal rot g_body -> -z       (tilt, arbitrary yaw)
+    FK -> landmarks -> torso yaw -> local P5
+
+``CentroidalPlanner`` is kept as the holder of this decode path;
+algorithm-1 planning itself lives in the LandMark pipeline
+(start_solver / support_planner).
 """
 from __future__ import annotations
 
-from typing import Any, Optional
-
 import numpy as np
 
-from .capability_solver import capability
-from .centroidal import (CTRL_DT, MASS_KG, CentroidalState,
-                         CentroidalTrajectory)
-from .com_solver import com_estimate, mass_estimate
-from .contracts import Context, PlanError
-
-_SETTLE_T = 0.6               # hold/settle horizon for 1-kf clips
 
 
 def _level_rot(g_body: np.ndarray) -> np.ndarray:
@@ -41,26 +33,6 @@ def _level_rot(g_body: np.ndarray) -> np.ndarray:
                   [-axis[1], axis[0], 0]])
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
 
-
-def _project_inside(c: np.ndarray, poly: np.ndarray,
-                    eps: float = 0.02) -> np.ndarray:
-    """Nearest point on/inside polygon, nudged eps toward centroid."""
-    c = np.asarray(c, np.float64)
-    best, bd = None, np.inf
-    m = len(poly)
-    for i in range(m):
-        a, b = poly[i], poly[(i + 1) % m]
-        e = b - a
-        t = np.clip(np.dot(c - a, e) / max(np.dot(e, e), 1e-12),
-                    0.0, 1.0)
-        p = a + t * e
-        d = float(np.linalg.norm(c - p))
-        if d < bd:
-            best, bd = p, d
-    center = poly.mean(axis=0)
-    v = center - best
-    n = np.linalg.norm(v)
-    return best + v / n * min(eps, n) if n > 1e-9 else best
 
 
 def _quat_wxyz(R: np.ndarray) -> np.ndarray:
@@ -114,108 +86,3 @@ class CentroidalPlanner:
                        [-np.sin(ang), np.cos(ang), 0], [0, 0, 1]])
         return local, Rz @ R_tilt
 
-    def extract_centroidal_state(self, observation: np.ndarray
-                                 ) -> CentroidalState:
-        """96-dim policy obs -> z=(c,l,L) in the P5 local frame."""
-        obs = np.asarray(observation, np.float64)
-        local_p5, R_loc = self._decode_p5_local(obs)
-        c = com_estimate(local_p5)
-        v_loc = R_loc @ obs[46:49]                        # body->local
-        w_obs = obs[49:52]
-        w_body = np.sign(w_obs) * w_obs * np.abs(w_obs) * 2.0
-        w_loc = R_loc @ w_body
-        I_loc = mass_estimate(local_p5).inertia_per_mass * MASS_KG
-        return CentroidalState(com=c, lin_mom=MASS_KG * v_loc,
-                               ang_mom=I_loc @ w_loc)
-
-    def plan(self, ctx: Context,
-             c0: CentroidalState) -> CentroidalTrajectory:
-        """Centroidal trajectory from current state + remaining clip.
-
-        大逻辑（设计意图，先注释后实现）：
-
-        1. 由果推因——直接从 P5Clip 设计质心轨迹这个"果"，
-           不做支撑相位/落脚点级别的因果规划；物理上能不能
-           实现这个果是算法2 要解决的问题。
-
-        2. 轨迹由"业务约束"生成，而非动力学优化：
-           - 锚点：每个关键帧经工具1 com_estimate 得到局部系
-             推荐质心（世界系锚定由 clip frame 链给出）。
-           - 曲线模板：按段类型套简单有效的经验曲线——
-             e.g. 换步支撑段：质心横向滑移为 S 曲线，
-             先加速离脚、中途恒速、落地前减速；
-             单脚段：质心向支撑脚收敛后保持；
-             出手段：z 维持，xy 微前送。
-           - 速度约束：相邻段速度连续（或受控跳变），
-             单段内 |v| 不超过该段能力预期。
-
-        3. 能力预期（经验函数，P5->capability）：
-           - capability(p5) -> 该姿态下质心可改变的速率/
-             加速度包络（随姿态而异：宽站距 vs 窄站距、
-             蹲姿 vs 立姿、单脚 vs 双脚）。
-           - 用于定每段时长：dur = f(质心位移需求, capability)。
-           - 初版可以是几个粗糙查表/分段线性经验值，
-             90% 信息量即可。
-
-        4. 输出 CentroidalTrajectory：
-           states[k] = 第 k 个控制步之后的 z=(c,l,L)；
-           l 由曲线速度*MASS 给出，L 初版可为 0
-           （角动量后补 yaw 旋转需求）。
-        """
-        clip = ctx.clip
-        kfs = clip.keyframes
-        from point5.contracts import compose_frame, to_world
-
-        # 1) frame poses + COM targets, all expressed in frame0
-        poses = [(np.zeros(2), 0.0)]
-        for k in range(1, len(kfs)):
-            poses.append(compose_frame(*poses[-1], kfs[k].transfer))
-        com_t = []
-        for k, kf in enumerate(kfs):
-            cap = capability(kf.pos)
-            cl = cap.com_local.copy()
-            # business constraint: a held keyframe must be statically
-            # consistent — pull COM xy inside the support polygon
-            if not cap.static_ok and len(cap.support_polygon):
-                cl[:2] = _project_inside(cap.com_local[:2],
-                                         cap.support_polygon)
-            w = to_world(np.asarray(cl)[None, :],
-                         poses[k][0], poses[k][1])[0]
-            com_t.append(w)
-
-        states = []
-
-        def emit(c_from, v_from, c_to, dur, cap_p5):
-            n = max(1, int(round(dur / CTRL_DT)))
-            # capability stretch: required peak vel must fit envelope
-            dist = float(np.linalg.norm(c_to - c_from))
-            d_hat = (c_to - c_from) / (dist + 1e-12)
-            v_cap = capability(cap_p5).v_max(d_hat)
-            # statically-unreachable pose (margin<=0) still needs a
-            # sane pace, not a zero-cap bypass -> conservative default
-            v_eff = v_cap if v_cap > 0 else 0.5
-            need = dist / (n * CTRL_DT) * 1.875      # min-jerk peak
-            if need > v_eff:
-                n = int(np.ceil(dist / (v_eff / 1.875) / CTRL_DT))
-                n = int(np.ceil(dist / (v_eff / 1.875) / CTRL_DT))
-            T = n * CTRL_DT
-            for i in range(1, n + 1):
-                t = i * CTRL_DT
-                h = (t / T)
-                s_ = (10 * h**3 - 15 * h**4 + 6 * h**5)
-                sd = (30 * h**2 - 60 * h**3 + 30 * h**4) / T
-                c = c_from + (c_to - c_from) * s_
-                v = (c_to - c_from) * sd + v_from * (1 - s_)
-                states.append(CentroidalState(
-                    com=c, lin_mom=MASS_KG * v,
-                    ang_mom=np.zeros(3)))
-
-        if len(kfs) == 1:
-            emit(c0.com, c0.com_vel, com_t[0], _SETTLE_T, kfs[0].pos)
-        else:
-            for k in range(1, len(kfs)):
-                src = (c0.com, c0.com_vel) if k == 1 \
-                    else (com_t[k - 1], np.zeros(3))
-                emit(src[0], src[1], com_t[k], kfs[k].transfer.dur,
-                     kfs[k].pos)
-        return CentroidalTrajectory(states=states)

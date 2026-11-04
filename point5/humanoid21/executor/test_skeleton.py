@@ -47,24 +47,11 @@ def test_pipeline_stubs_raise():
     ex.action_computer = ActionComputer()
     ex.wsim = None
     _patched(ex, stand_p5())
-    # algo 1 now works; algo 2 is the remaining stub
-    with pytest.raises(PlanError, match="algorithm 2"):
+    # algo 1 start+footsteps work; landmark generation is the
+    # remaining stub before algorithm 2
+    with pytest.raises(PlanError,
+                       match="landmark sequence generation"):
         ex.gen_action(_ctx())
-
-
-def test_extract_centroidal_standing():
-    """obs(standing) -> c near local COM, l=L=0."""
-    from envs.humanoid21.simulator import Humanoid21Simulator
-    from point5.humanoid21.executor.centroidal_planner import (
-        CentroidalPlanner)
-    s = Humanoid21Simulator(initial_distance=6.0,
-                            initial_pose_a="standing")
-    s.reset(0)
-    obs = s.get_derived_state()["robot_a"]["observation"]
-    z = CentroidalPlanner("robot_a").extract_centroidal_state(obs)
-    assert 0.7 < z.com[2] < 1.0 and abs(z.com[1]) < 0.1
-    assert np.linalg.norm(z.lin_mom) < 1.0
-    assert np.linalg.norm(z.ang_mom) < 1.0
 
 
 def test_capability_physics():

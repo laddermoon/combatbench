@@ -3,10 +3,10 @@
 Flow per call (per bootstrip.md):
 
     0. verify clip frame 0 anchored to the observation's P5
-    1. extract centroidal motion state from the observation
-    2. centroidal motion planning  (algorithm 1 — stub)
-    3. compute the next action     (algorithm 2 — stub:
-       CNext -> P5Next -> [optional Humanoid21RefNext] -> Action)
+    1. extract the start LandMark from the observation (tool8)
+    2. support planning             (algorithm-1 branch)
+    3. LandMark sequence generation (algorithm 1 — TODO)
+    4. compute the next action      (algorithm 2 — stub)
 
 The only owned resource is the internal working simulator used for
 rollouts; no progress, plan, or cache survives a call.
@@ -50,18 +50,19 @@ class Executor:
     def gen_action(self, ctx: Context) -> Action:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
-        c0 = self.centroidal.extract_centroidal_state(ctx.observation)
-        plan = self.centroidal.plan(ctx, c0)
-        return self.action_computer.compute(ctx, plan, self.wsim)
+        from .start_solver import extract_landmark
+        from .support_planner import plan_footsteps
+        lm0 = extract_landmark(ctx.observation, self.centroidal)
+        footsteps = plan_footsteps(lm0, ctx.clip)
+        raise PlanError(
+            "landmark sequence generation not implemented "
+            f"(footsteps ready: {len(footsteps)})")
 
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
-        """Reconstruct the local P5 (5,3) from the 96-dim policy
-        observation.  The obs vector carries keypoint positions in its
-        own layout — parsing them is itself a decoder algorithm.
-
-        TODO: implement from OBSERVATION_zh layout."""
-        raise PlanError("obs->P5 extraction not implemented")
+        """96-dim obs -> local P5 (5,3) via the shared FK decode."""
+        local_p5, _ = self.centroidal._decode_p5_local(observation)
+        return local_p5
 
     def _verify_anchor(self, ctx: Context) -> None:
         """Step 0: clip frame0 must equal the current local P5."""
