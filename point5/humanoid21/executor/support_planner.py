@@ -114,64 +114,94 @@ def _nearest_foot(xi, feet) -> str:
 
 
 def plan_footsteps(start_landmark, clip,
-                   step_max: float = _STEP_MAX) -> List[Footstep]:
+                   step_max: float = _STEP_MAX,
+                   max_correction: int = 2) -> List[Footstep]:
     """Start LandMark + clip -> ordered footsteps incl. correction.
 
-    For each transition segment the mover foot steps to that
-    keyframe's foot xy (expressed in frame0).  If COM momentum
-    points away from the support foot (i.e. the required weight
-    shift would start backward), insert a corrective step on the
-    support foot in the momentum direction — a short 垫步 that
-    catches the drift before the mover lifts.
+    Per transition segment the mover foot steps to the keyframe's
+    foot xy (frame0).  Before each transition, physics gate: the
+    LIP capture point xi = c + v/w must sit inside the CURRENT
+    support hull — if not, emit a corrective capture step and
+    RE-ANCHOR the virtual state (foot moved, momentum braked)
+    before rechecking.  Corrective foot choice prefers the foot
+    that was going to move anyway (least damage to clip intent).
     """
     steps: List[Footstep] = []
     trans = support_transitions(clip) or []
     if not trans:
         return steps
 
-    # accumulate frame poses for world-frame foot targets
     poses = [(np.zeros(2), 0.0)]
     for k in range(1, len(clip.keyframes)):
         poses.append(compose_frame(*poses[-1],
                                    clip.keyframes[k].transfer))
 
-    com = np.asarray(start_landmark.com)
-    vel = (np.asarray(start_landmark.vel)
+    # virtual current state — updated as the plan emits steps
+    com = np.asarray(start_landmark.com, np.float64)
+    vel = (np.asarray(start_landmark.vel, np.float64)
            if start_landmark.vel is not None else np.zeros(3))
+    feet_xy = {s: np.asarray(
+        start_landmark.feet[s].foot_pos, np.float64).copy()
+        for s in ("right", "left")}
+    loaded = {s: start_landmark.feet[s].force_ratio > 0.05
+              for s in ("right", "left")}
+
+    def hull():
+        from .capability_solver import _PATCH, _hull2d
+        pts = [feet_xy[s] + np.asarray(_PATCH)
+               for s in loaded if s and feet_xy[s] is not None]
+        return _hull2d(np.vstack(pts)) if pts else None
 
     for t in trans:
         sup = t.support
-        kf = clip.keyframes[t.seg]
         tgt_xy = to_world(
-            kf.pos[_FIDX[t.mover]:_FIDX[t.mover] + 1],
+            clip.keyframes[t.seg].pos[
+                _FIDX[t.mover]:_FIDX[t.mover] + 1],
             *poses[t.seg])[0, :2]
-        sup_xy = np.asarray(
-            start_landmark.feet[sup].foot_pos
-            if start_landmark.feet[sup].foot_pos is not None
-            else kf.pos[_FIDX[sup], :2])
 
-        # physical check (LIP): can the CURRENT support polygon
-        # brake the momentum?  capture point xi = c + v/omega is
-        # where the COM coasts to a stop over; if xi sits inside
-        # the polygon, existing contact catches it — no step needed.
-        z0 = max(com[2], 0.1)
-        xi = com[:2] + vel[:2] / np.sqrt(_G / z0)
-        if _outside_polygon(xi, start_landmark.feet):
-            # capture step: the foot nearest xi steps onto xi
-            # (clamped to prior step length)
-            foot = _nearest_foot(xi, start_landmark.feet)
-            fxy = np.asarray(start_landmark.feet[foot].foot_pos)
-            d = xi - fxy
+        # ---- physical gate: is current momentum catchable? ----
+        n_fix = 0
+        while n_fix < max_correction:
+            z0 = max(com[2], 0.1)
+            xi = com[:2] + vel[:2] / np.sqrt(_G / z0)
+            h = hull()
+            if h is not None and _inside(xi, h):
+                break
+            # capture step on the foot nearest xi; on a near-tie
+            # prefer the mover (going to move anyway = least damage)
+            cand = sorted(
+                (s for s in feet_xy if feet_xy[s] is not None),
+                key=lambda s: np.linalg.norm(feet_xy[s] - xi))
+            foot = cand[0]
+            if (t.mover in cand[1:]
+                    and np.linalg.norm(feet_xy[t.mover] - xi)
+                    < np.linalg.norm(feet_xy[foot] - xi) + 0.05):
+                foot = t.mover
+            d = xi - feet_xy[foot]
             n = np.linalg.norm(d)
-            tgt = fxy + d / n * min(n, step_max)
+            tgt = feet_xy[foot] + (d / n) * min(n, step_max)
             steps.append(Footstep(
                 foot=foot, target=tgt, kind="corrective",
-                reason=(f"capture pt overshoot {n:.2f}m -> "
-                        f"{foot} steps to {np.round(xi,2)}")))
+                reason=(f"capture overshoot {n:.2f}m -> {foot} "
+                        f"braces at {np.round(xi, 2)}")))
+            # re-anchor virtual state: foot moved, momentum braked
+            feet_xy[foot] = tgt
+            loaded[foot] = True
+            vel = np.zeros(3)
+            n_fix += 1
+
+        # feasibility note on the mover step
+        reach = np.linalg.norm(tgt_xy - feet_xy[sup])
+        reason = f"seg{t.seg} mover"
+        if reach > 2 * step_max:
+            reason += f" [suspect: {reach:.2f}m from {sup}]"
         steps.append(Footstep(foot=t.mover, target=tgt_xy,
-                              kind="move",
-                              reason=f"seg{t.seg} mover"))
+                              kind="move", reason=reason))
+        feet_xy[t.mover] = tgt_xy
+        loaded[t.mover] = True
     return steps
+
+
 
 
 # ---------- scenario visualization (manual check) ---------------------------
