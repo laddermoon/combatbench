@@ -110,6 +110,14 @@ class ActionComputer:
             if obs is not None:
                 actual = (obs[52] if side == "right" else obs[53])
                 err += 3.0 * float((actual - f.force_ratio) ** 2)
+        # upright/balance prior — penalize sinking + tilt away
+        # from vertical (prevents CEM drifting into collapse)
+        if obs is not None:
+            g = np.asarray(obs[42:45])
+            tilt = float(np.arccos(np.clip(-g[2]
+                            / (np.linalg.norm(g) + 1e-9), -1, 1)))
+            err += 2.0 * tilt * tilt
+            err += 1.5 * float(max(0.0, 0.87 - obs[45]) ** 2)
         return err
 
     def _seq_score(self, wsim, obs_seq, origin0, yaw0, lms,

@@ -45,3 +45,14 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
 
 - **多锚点顺序打分 `_seq_score`**：rollout 步推进模型——状态误差 < reach_eps 即"到达"并切下一锚点（隐式 tau），residual = 当前+后续锚点误差和 - 进度奖励；CEM 主循环已接入
 - git push 故障排查：新 shell 无 ssh-agent → `eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519` 恢复
+
+### ~19:00 闭环测试
+
+- 4步连续 gen_action：com_z 缓降 1.278→1.238，第4步 lms 7→10（矫正锚点出现）——**机器人在缓慢失衡**，cost 缺直立项
+- 待改：加 com_z/upright 维持惩罚到打分
+
+### ~19:30 平衡项修复
+
+- 加 upright 惩罚：tilt²(2×) + com_z<0.87 下沉(1.5×)
+- 重跑闭环：com_z 1.282→1.258 缓稳、lms 恒 7（不再触发矫正）——CEM 不再把机器人往倒里选
+- 遗留：无 P5 姿态项、无 cop 项、速度约束未接入 vel_w
