@@ -129,9 +129,6 @@ class ActionComputer:
         tilt = float(np.arccos(np.clip(-g[2]
                       / (np.linalg.norm(g) + 1e-9), -1, 1)))
         b += 9.0 * tilt * tilt
-        # hard gate: beyond ~25deg the margin for error collapses —
-        # candidates must pay heavily to pass through these states
-        b += 40.0 * max(0.0, tilt - 0.45) ** 2
         z = float(o[45])
         # root-height floor: crouching is "free" in tilt terms — make it
         # expensive or the score trades height for stability every step
@@ -166,7 +163,7 @@ class ActionComputer:
         # — scoring must evaluate the candidate against the schedule it
         # was actually told to track, else ref and objective disagree.
         dwell = 0
-        dwell_budget = 14
+        dwell_budget = len(obs_seq) + 1   # reach-only, matching rollout
         from .com_solver import com_estimate
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
@@ -227,17 +224,13 @@ class ActionComputer:
             kg[lo:hi] = cand[g]
             dg[lo:hi] = cand[len(self._GROUPS) + g]
         tgt_i = 1
-        # time-budgeted ref advance: a hard anchor (e.g. full unload)
-        # may never satisfy reach_eps — without a dwell fallback the ref
-        # is stuck on it forever and the swing/land poses are never
-        # issued.  Each unfinished anchor gets at most ~H/remaining
-        # steps before the next one is tried.
+        # reach-only ref advance (v4 semantics — the ONLY config that
+        # survived a full video).  Time-budgeted fallbacks push refs
+        # through anchors the body can't achieve; every variant that
+        # used them fell (v5-v9).  The tracker committing persistently
+        # to the FIRST unfinished anchor is conservative but alive.
         dwell = 0
-        # generous dwell: ref mostly advances on reach; the fallback
-        # only prevents an infinite stall on an unreachable anchor.
-        # (tight budgets chase the schedule through unstable poses —
-        # every video that used them fell; v4 survived WITHOUT one)
-        budget = 14
+        budget = n_steps + 1          # effectively disabled
         for t in range(n_steps):
             o = wsim.get_derived_state()[self.robot_id]["observation"]
             q = np.asarray(o[0:21], np.float64)
@@ -283,13 +276,13 @@ class ActionComputer:
         wsim.set_core_state({self.robot_id: obs_to_core_state(obs)})
         lm0_w, origin0, yaw0 = self._fk_decode(wsim, obs)
 
-        # adaptive abort ceiling: cap candidates at ~25deg above the
-        # STARTING tilt — from an already-tilted state the controller
-        # must be allowed to try recovery, not instant-abort everything
+        # abort ceiling: only reject truly unrecoverable rollouts
+        # (~40deg+6deg over start).  Tight aborts paralyzed the
+        # controller mid-fall; no abort at all (v4) still survived.
         g0 = np.asarray(obs[42:45])
         tilt0 = float(np.arccos(np.clip(-g0[2]
                  / (np.linalg.norm(g0) + 1e-9), -1, 1)))
-        self._abort_tilt = max(0.44, tilt0 + 0.10)
+        self._abort_tilt = max(0.70, tilt0 + 0.10)
 
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
