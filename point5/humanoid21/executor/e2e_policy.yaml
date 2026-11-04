@@ -1,0 +1,4 @@
+version: 1
+cls: "point5.humanoid21.executor.e2e_policy:ExecutorPolicy"
+config:
+  robot_id: "robot_a"

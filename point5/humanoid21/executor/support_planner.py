@@ -107,8 +107,8 @@ class Footstep:
     # clip frame provenance — exactly ONE is set:
     #   for_frame=k   this step fulfills keyframe k's requirement
     #   before_frame=k this step must happen before keyframe k
-    for_frame: int = 0
-    before_frame: int = 0
+    for_frame: Optional[int] = None
+    before_frame: Optional[int] = None
 
 
 def _foot_patches(feet) -> List[np.ndarray]:
@@ -177,7 +177,8 @@ def _walk(steps, todo, w_kf, feet_xy, loaded, t, lead):
                     float(np.dot(tgt[s], dirv)))
         pos_new = dirv * q_new + perp * lane(s)
         steps.append(Footstep(foot=s, target=pos_new, kind="move",
-                              reason=f"seg{t.seg} walk"))
+                              reason=f"seg{t.seg} walk",
+                              before_frame=t.seg))
         feet_xy[s] = pos_new
         loaded[s] = True
         n += 1

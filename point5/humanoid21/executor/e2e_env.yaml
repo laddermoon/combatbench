@@ -1,0 +1,32 @@
+# Executor end-to-end smoke env: robot_a runs ExecutorPolicy (P5 punch
+# intent), robot_b is frozen as scenery.  No reward observers — the
+# policy consumes the raw 96-dim simulator observation directly.
+
+parameters:
+  initial_distance:
+    default: 6.0
+    description: "Spawn distance between robots (m); far enough that the punch never reaches B."
+  max_steps:
+    default: 120
+    description: "Max control frames (20 Hz, 6 s)."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "envs.humanoid21.plugins:FrozenRobotPlugin"
+    config:
+      frozen_robot_id: "robot_b"
+  - cls: "envs.framework.common_plugins:TimeoutPlugin"
+    config:
+      max_steps: ${max_steps}
