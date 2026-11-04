@@ -130,6 +130,27 @@ class CentroidalPlanner:
     planning sub-algorithm, 3) target design by priors,
     4) landmark planning.  Every stage marked TODO is a prior that
     still needs design.
+
+    LandMark 序列的锚点组成 = 支撑事件锚点 + 姿态锚点 + 终点锚点。
+
+    设计原则：锚点放在支撑状态变化处；相邻两个锚点之间，接触
+    方式不变或只发生一次变化——算法2 每段只面对一种接触模式。
+    锚点不带时间，先后顺序即可。
+
+    1. 支撑事件锚点（每个 Footstep，含垫步/回位，各三个）：
+       - 离地：支撑脚 ~1.0、摆动脚 0；质心移到支撑脚 CoP 区域
+         附近；速度不强制为 0，只要求 capture point 指向落脚区。
+       - 触地：摆动脚开始承重，进入双支撑；质心在两脚之间、
+         朝新支撑方向；速度一般不限。
+       - 稳定：载荷按下一阶段需要分配；质心在新支撑域内并留
+         裕度；后面还有步则速度不限，最后一步或垫步后为 0。
+    2. 姿态锚点：clip 中不换支撑、只改变质心的关键帧（蓄力下
+       蹲、出拳前送、重心偏移）——工具1 由该帧 P5 得推荐质心，
+       再投影进当时的支撑域。
+    3. 终点锚点：clip 最后一帧的支撑方式与质心位置，速度为 0。
+
+    规划范围：只需覆盖下一个和再下一个支撑事件；更远的步只用
+    于判断当前步落地后是否要停住，由下一次重规划处理。
     """
 
     def __init__(self, robot_id: str = "robot_a"):
@@ -142,22 +163,6 @@ class CentroidalPlanner:
     def plan(self, observation: np.ndarray,
              clip) -> list:
         """(observation, remaining clip) -> ordered LandMark seq.
-
-        锚点分类（与用户对齐）：
-
-        1. 支撑事件锚点：锚点放在支撑状态变化的时刻；相邻锚点间
-           接触方式不变或只变一次。一次迈步 = 离地(重心移到
-           支撑脚, capture point 指向落点) / 触地(摆动脚承重,
-           COM 居中偏新脚) / 稳定(COM 落新域, 后续有步则速度
-           不限, 否则=0)。垫步/回位同构。
-        2. 姿态锚点：clip 中不换脚但改变质心的关键帧（下蹲、
-           前送、偏载）——工具1 com_estimate 投影到当前支撑域。
-           TODO: 目前没有，纯下蹲/出拳帧被丢。
-        3. 终点锚点：clip 最后一帧的终态（支撑+COM+vel=0）。
-           TODO: 未实现。
-
-        规划范围：只覆盖下一个+再下一个支撑事件；远处 footstep
-        只用于判断落地后收不收。
         """
         from .start_solver import extract_landmark
         from .support_planner import plan_footsteps
