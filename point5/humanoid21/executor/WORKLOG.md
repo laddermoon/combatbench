@@ -87,3 +87,22 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
 - 算法1 完整落地：obs→start LandMark→plan_footsteps(capture物理+矫正before1+回位for帧)→gen_landmarks(帧驱动锚点)
 - 算法2 v1 落地：obs→sim注入+CEM rollout搜索+D_LM(com/foot/force_ratio/upright)+多锚点顺序打分
 - 已知局限：闭环收敛慢、无P5姿态项、CEM 2.6s/次偏慢
+
+## E2E: ExecutorPolicy + RoundRunner video pipeline (~00:30)
+
+- `e2e_policy.py`: Policy ABC wrapper. Per act(): decode obs→local P5,
+  rebuild remaining clip (kf0=current P5 + kfs[idx+1:]), gen_action,
+  advance idx on Transfer.dur budget, hold last action when clip ends.
+  KNOWN GAP v1: naive re-anchor → displacement targets drift with the
+  robot; needs persistent virtual anchor for faithful semantics.
+- `e2e_env.yaml`: sim + FrozenRobotPlugin(robot_b) + Timeout(120).
+  No reward observers — policy eats raw 96-dim obs.
+- BUGFIX support_planner: Footstep for_frame/before_frame were int=0
+  defaults; walk-step emit had neither → KeyError:0 in gen_landmarks
+  on first real obs. Now Optional=None + walk gets before_frame=seg.
+- Run: `python -m envs.framework.round_runner --env-blueprint
+  .../e2e_env.yaml --policy-a-blueprint .../e2e_policy.yaml
+  --policy-b-blueprint policy/blueprints/random.yaml
+  --video .../punch.mp4 --seed 0`
+- Result: 120 steps OK, robot_a upright + visibly steps/reaches in
+  punch window, no fall. Video: /data1/dev/combatbench_executor/e2e/punch.mp4
