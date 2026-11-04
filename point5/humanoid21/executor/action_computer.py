@@ -250,6 +250,13 @@ class ActionComputer:
                 wsim.physical_step()
             o2 = wsim.get_derived_state()[self.robot_id]["observation"]
             obs_seq.append(o2.copy())
+            # absolute viability ceiling: past ~35deg the state is
+            # unrecoverable — reject the whole candidate regardless of
+            # how close it got to the anchor
+            g2 = np.asarray(o2[42:45])
+            if float(np.arccos(np.clip(-g2[2]
+                     / (np.linalg.norm(g2) + 1e-9), -1, 1))) > 0.61:
+                return obs_seq, u0, True
             # advance the reference anchor when the current one is met
             # OR its dwell budget is spent (fallback keeps the
             # swing->land sequence flowing)
@@ -261,7 +268,7 @@ class ActionComputer:
                 if e < reach_eps or dwell >= budget:
                     tgt_i += 1
                     dwell = 0
-        return obs_seq, u0
+        return obs_seq, u0, False
 
     # -- solver -------------------------------------------------------------
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
@@ -303,11 +310,11 @@ class ActionComputer:
             costs = np.empty(len(pop))
             for i, cand in enumerate(pop):
                 self._sim_restore(wsim, snap)
-                seq, _ = self._rollout_feedback(
+                seq, _, aborted = self._rollout_feedback(
                     wsim, cand, a_refs, origin0, yaw0, landmarks,
                     _HORIZON_ACTIONS)
-                costs[i] = self._seq_score(
-                    wsim, seq, origin0, yaw0, landmarks)
+                costs[i] = (np.inf if aborted else self._seq_score(
+                    wsim, seq, origin0, yaw0, landmarks))
                 if costs[i] < best_cost:
                     best_cost = costs[i]
                     best_c = cand.copy()
