@@ -64,9 +64,13 @@ def main() -> None:
         g = obs2[42:45]
         tilt = np.degrees(np.arccos(
             np.clip(-g[2] / (np.linalg.norm(g) + 1e-9), -1, 1)))
+        # left-foot forward travel + left-hand reach (punch intent)
+        fl_x = p5[4, 0]                     # left ankle x (frame0 local)
+        hl_reach = p5[2, 0] - p5[0, 0]      # left hand vs head, fwd dist
         print(f"{t:4d} | {com[2]:.3f} {tilt:6.1f} | "
               f"{np.linalg.norm(act):.2f} {np.abs(act).max():.2f} | "
-              f"{'':8s} | {ms:5.0f}", flush=True)
+              f"fl_x={fl_x:+.3f} reach={hl_reach:+.3f} | {ms:5.0f}",
+              flush=True)
         if com[2] < 0.6 or tilt > 60:
             print("FALLEN"); break
 

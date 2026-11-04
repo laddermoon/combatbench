@@ -82,17 +82,42 @@ class ExecutorPolicy(Policy):
                 meta={"last_action": self._last_action})),
             dtype=np.float64)
         if self._idx + 1 < len(kfs):
-            self._advance(kfs)
+            self._advance(kfs, local_p5)
         return self._last_action.astype(np.float32), None
 
-    def _advance(self, kfs) -> None:
-        """Consume Transfer.dur budgets: move _idx past elapsed frames."""
+    _REACH_EPS = 0.30          # full-P5 err counting a frame as reached
+    _MAX_DWELL = 1.2           # s — give up on a frame after this
+
+    def _advance(self, kfs, local_p5) -> None:
+        """Progress-gated advance: consume the next keyframe when its
+        pose requirement is actually met (or the dwell cap expires).
+        Pure dur-budget burning lets the intent expire while the body
+        is still mid-motion — the 90% rule says carry the intent, not
+        the clock."""
         self._elapsed += CTRL_DT
-        while (self._idx + 1 < len(kfs)
-               and kfs[self._idx + 1].transfer is not None
-               and self._elapsed >= kfs[self._idx + 1].transfer.dur):
-            self._elapsed -= kfs[self._idx + 1].transfer.dur
-            self._idx += 1
+        while self._idx + 1 < len(kfs):
+            tr = kfs[self._idx + 1].transfer
+            dur = tr.dur if tr is not None else 1.0
+            if self._elapsed >= max(3.0 * dur, self._MAX_DWELL):
+                self._elapsed -= dur
+                self._idx += 1
+                continue
+            if (self._elapsed >= 0.5 * dur
+                    and self._frame_err(kfs, local_p5) < self._REACH_EPS):
+                self._elapsed = 0.0
+                self._idx += 1
+                continue
+            break
+
+    def _frame_err(self, kfs, local_p5) -> float:
+        """||target P5 of kfs[idx+1] (expressed in frame0) - local_p5||"""
+        from point5.contracts import compose_frame, to_world
+        nxt = self._idx + 1
+        pose = (np.zeros(2), 0.0)
+        for i in range(1, nxt + 1):
+            pose = compose_frame(*pose, kfs[i].transfer)
+        target = to_world(np.asarray(kfs[nxt].pos, np.float64), *pose)
+        return float(np.linalg.norm(target - local_p5))
 
     def close(self) -> None:
         wsim = getattr(self.ex, "wsim", None)
