@@ -74,6 +74,5 @@ class LandMark:
     com: np.ndarray                    # (3,) target COM, local frame
     feet: Dict[str, FootSupport]       # 'right'/'left'
     vel: Optional[np.ndarray] = None   # (3,) desired arrival COM vel
-    torso_yaw: float = 0.0             # rad, torso facing target
+    torso_yaw: Optional[float] = None  # rad; None = not handled (v1)
     time_hint: float = 0.0             # soft duration expectation (s)
-    label: str = ""
