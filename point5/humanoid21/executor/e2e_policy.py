@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
 from envs.framework.policy import Policy
-from point5.contracts import Keyframe, P5Clip
+from point5.contracts import Keyframe, P5Clip, Transfer
 
 from .centroidal import CTRL_DT
 from .centroidal_planner import ObsDecoder
@@ -51,6 +51,7 @@ class ExecutorPolicy(Policy):
         self._idx = 0                    # keyframes[:idx+1] already issued
         self._elapsed = 0.0              # time spent in current segment
         self._last_action = np.zeros(21, dtype=np.float64)
+        self._hold_p5 = None             # posture frozen at clip end
 
     def reset(self, seed: Optional[int] = None) -> None:
         self._idx = 0
@@ -60,15 +61,27 @@ class ExecutorPolicy(Policy):
             want_extra: bool = False) -> Tuple[np.ndarray, Optional[Dict]]:
         obs = np.asarray(observation, dtype=np.float64)
         kfs = self.clip.keyframes
+        local_p5, _ = self.dec.decode_p5_local(obs)
         if self._idx + 1 < len(kfs):
-            local_p5, _ = self.dec.decode_p5_local(obs)
             remaining = [Keyframe(pos=local_p5)] + list(kfs[self._idx + 1:])
             clip = P5Clip(name=self.clip.name, keyframes=tuple(remaining))
-            self._last_action = np.asarray(
-                self.ex.gen_action(Context(
-                    observation=obs, clip=clip,
-                    meta={"last_action": self._last_action})),
-                dtype=np.float64)
+        else:
+            # intent exhausted -> boxing semantics: retract to stance.
+            # Target = canonical standing P5 (NOT the pose at exhaustion,
+            # which is already mid-fall; freezing it anchors the lean).
+            if self._hold_p5 is None:
+                from point5.humanoid21.stand_punch import stand_p5
+                self._hold_p5 = stand_p5()
+            stay = Keyframe(pos=self._hold_p5,
+                            transfer=Transfer(0.0, 0.0, 0.0, 5.0))
+            clip = P5Clip(name="hold", keyframes=(
+                Keyframe(pos=local_p5), stay))
+        self._last_action = np.asarray(
+            self.ex.gen_action(Context(
+                observation=obs, clip=clip,
+                meta={"last_action": self._last_action})),
+            dtype=np.float64)
+        if self._idx + 1 < len(kfs):
             self._advance(kfs)
         return self._last_action.astype(np.float32), None
 
