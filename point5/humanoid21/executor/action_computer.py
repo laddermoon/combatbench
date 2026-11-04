@@ -26,10 +26,12 @@ from .centroidal_planner import _level_rot, _quat_wxyz
 from .contracts import Context, PlanError
 
 _CTRL_SUBSTEPS = 25          # phys steps per action (50 ms @ 2 kHz)
-_HORIZON_ACTIONS = 8         # actions per rollout (0.4 s)
+_HORIZON_ACTIONS = 16        # actions per rollout (0.8 s — slow
+                             # crouch-collapse becomes visible INSIDE
+                             # the window, not after it)
 _CHUNK = 2                   # actions per sampled chunk -> 4 DoF*21
 _CEM_ITERS = 4
-_CEM_POP = 24
+_CEM_POP = 32
 _CEM_ELITE = 6
 
 
@@ -60,6 +62,7 @@ class ActionComputer:
         self.robot_id = robot_id
         self._decoder = None
         self._pose_solver = None
+        self._ref_cache = {}                # (clip_id, frame) -> action
         self._zero_b = np.zeros(21, np.float32)
 
     # -- decoding -----------------------------------------------------------
@@ -97,7 +100,7 @@ class ActionComputer:
         com_t = com_estimate(lm_world)
         com_f = np.concatenate([self._to_frame0(com_t[:2], origin,
                                               yaw0), com_t[2:3]])
-        err += 6.0 * float(np.sum((com_f - target.com) ** 2))
+        err += 10.0 * float(np.sum((com_f - target.com) ** 2))
         if target.vel is not None and vel_w is not None:
             err += 2.0 * float(np.sum((vel_w - target.vel) ** 2))
         for side, fi in (("right", 3), ("left", 4)):
@@ -127,7 +130,9 @@ class ActionComputer:
                       / (np.linalg.norm(g) + 1e-9), -1, 1)))
         b += 6.0 * tilt * tilt
         z = float(o[45])
-        b += 4.0 * max(0.0, 0.80 - z) ** 2        # root-height floor
+        # root-height floor: crouching is "free" in tilt terms — make it
+        # expensive or the score trades height for stability every step
+        b += 25.0 * max(0.0, 0.84 - z) ** 2
         vz = float(o[48])
         b += 0.4 * max(0.0, -vz) ** 2              # sinking velocity
         # capture point xi = c + v/omega in frame0, outside support hull
@@ -154,9 +159,14 @@ class ActionComputer:
         cumulative, not best-moment."""
         cost = 0.0
         tgt_i = 1
+        from .com_solver import com_estimate
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
             cost += self._balance_terms(o, lm_w, origin0, yaw0)
+            # anti-crouch gate: sinking under the current anchor's com_z
+            # is cheap in tilt terms — price it directly, one-sided.
+            com_t = com_estimate(lm_w)
+            cost += 12.0 * max(0.0, lms[tgt_i].com[2] - com_t[2]) ** 2
             e = self._landmark_error(lm_w, origin0, yaw0,
                                      lms[tgt_i], obs=o)
             if e < reach_eps and tgt_i < len(lms) - 1:
@@ -188,30 +198,44 @@ class ActionComputer:
 
     _GROUPS = ((0, 3), (3, 9), (9, 15), (15, 18), (18, 21))
 
-    def _rollout_feedback(self, wsim, k, a_ref, n_steps):
-        """Closed-loop INSIDE the model: each step the action is
-        u = clip(a_ref + k_group*(a_ref - q)) — the candidate is a
-        tracking controller, not an open-loop tape.  Recovery
-        directions (push back toward the ref when deviated) live in
-        this space; raw action tapes almost never contain them.
+    def _rollout_feedback(self, wsim, cand, a_refs, origin0, yaw0,
+                          lms, n_steps, reach_eps=0.06):
+        """Closed-loop INSIDE the model.  Candidate = [k(5), d(5)]:
+        u = clip(a_ref + k_g*(a_ref - q) + d_g).
+
+        The reference follows the anchor SEQUENCE: the same reach_eps
+        walk used for scoring decides which anchor pose the controller
+        is tracking.  A liftoff->touchdown pair becomes a real step —
+        swing first, then land — which a single static ref can never
+        express.
         Returns per-step obs AND the first action (to execute)."""
         obs_seq, u0 = [], None
         kg = np.empty(21)
+        dg = np.empty(21)
         for g, (lo, hi) in enumerate(self._GROUPS):
-            kg[lo:hi] = k[g]
+            kg[lo:hi] = cand[g]
+            dg[lo:hi] = cand[len(self._GROUPS) + g]
+        tgt_i = 1
         for t in range(n_steps):
             o = wsim.get_derived_state()[self.robot_id]["observation"]
             q = np.asarray(o[0:21], np.float64)
-            u = np.clip(a_ref + kg * (a_ref - q), -1.0, 1.0)
+            a_ref = a_refs[min(tgt_i, len(a_refs) - 1)]
+            u = np.clip(a_ref + kg * (a_ref - q) + dg, -1.0, 1.0)
             if u0 is None:
                 u0 = u.copy()
             wsim.set_action({self.robot_id: u.astype(np.float32),
                              "robot_b": self._zero_b})
             for _ in range(_CTRL_SUBSTEPS):
                 wsim.physical_step()
-            obs_seq.append(
-                wsim.get_derived_state()[self.robot_id]
-                ["observation"].copy())
+            o2 = wsim.get_derived_state()[self.robot_id]["observation"]
+            obs_seq.append(o2.copy())
+            # advance the reference anchor when the current one is met
+            if tgt_i < len(lms) - 1:
+                lm_w, _, _ = self._fk_decode(wsim, o2)
+                e = self._landmark_error(lm_w, origin0, yaw0,
+                                         lms[tgt_i], obs=o2)
+                if e < reach_eps:
+                    tgt_i += 1
         return obs_seq, u0
 
     # -- solver -------------------------------------------------------------
@@ -228,40 +252,51 @@ class ActionComputer:
         # --- snapshot to restore between rollouts --------------------------
         snap = self._sim_snapshot(wsim)
 
-        # candidate = tracking-controller gains over 5 joint groups,
-        # rolled out closed-loop inside wsim around the anchor-pose
-        # reference.  Dim=5, every candidate inherently reactive.
-        a_ref = self._anchor_ref_action(ctx, landmarks[1], obs)
-        if a_ref is None:
-            a_ref = obs[0:21].copy()
+        # candidate = [k(5), d(5)]: tracking gains + residual offsets
+        # over 5 joint groups, rolled out closed-loop inside wsim.
+        # references: one solved pose action per anchor, walked in order.
         NG = len(self._GROUPS)
-        mean = np.ones(NG)
-        std = np.full(NG, 0.7)
-        inject = [np.zeros(NG), np.ones(NG), np.full(NG, 2.0)]
-        best_k, best_cost = np.ones(NG), np.inf
+        a_refs = [obs[0:21].copy()]          # index 0 = start (unused)
+        for lm in landmarks[1:]:
+            a = self._anchor_ref_action(ctx, lm, obs)
+            a_refs.append(a if a is not None else obs[0:21].copy())
+        mean = np.concatenate([np.ones(NG), np.zeros(NG)])
+        std = np.concatenate([np.full(NG, 0.7), np.full(NG, 0.3)])
+        inj = [np.concatenate([k, np.zeros(NG)])
+               for k in (np.zeros(NG), np.ones(NG), np.full(NG, 2.0))]
+        best_c, best_cost = np.concatenate([np.ones(NG),
+                                            np.zeros(NG)]), np.inf
 
+        # deterministic RNG per call -> reproducible choice for a given
+        # context (Executor stays stateless; callers may vary the seed
+        # via ctx.meta["seed"] if they want diversity).
+        rng = np.random.default_rng(int(ctx.meta.get("seed", 0)))
         for _ in range(_CEM_ITERS):
-            pop = np.clip(mean + std * np.random.randn(_CEM_POP, NG),
-                          -0.5, 3.0)
-            pop = np.vstack([pop, mean[None, :], np.asarray(inject)])
+            pop = np.clip(mean + std * rng.standard_normal(
+                (_CEM_POP, 2 * NG)), -1.0, 3.0)
+            pop = np.vstack([pop, mean[None, :], np.asarray(inj)])
             costs = np.empty(len(pop))
             for i, cand in enumerate(pop):
                 self._sim_restore(wsim, snap)
                 seq, _ = self._rollout_feedback(
-                    wsim, cand, a_ref, _HORIZON_ACTIONS)
+                    wsim, cand, a_refs, origin0, yaw0, landmarks,
+                    _HORIZON_ACTIONS)
                 costs[i] = self._seq_score(
                     wsim, seq, origin0, yaw0, landmarks)
                 if costs[i] < best_cost:
                     best_cost = costs[i]
-                    best_k = cand.copy()
+                    best_c = cand.copy()
             elite = pop[np.argsort(costs)[:_CEM_ELITE]]
             mean, std = elite.mean(0), elite.std(0) + 0.05
         self._sim_restore(wsim, snap)
 
         kg = np.empty(21)
+        dg = np.empty(21)
         for g, (lo, hi) in enumerate(self._GROUPS):
-            kg[lo:hi] = best_k[g]
-        u = np.clip(a_ref + kg * (a_ref - obs[0:21]), -1.0, 1.0)
+            kg[lo:hi] = best_c[g]
+            dg[lo:hi] = best_c[NG + g]
+        a_ref0 = a_refs[min(1, len(a_refs) - 1)]
+        u = np.clip(a_ref0 + kg * (a_ref0 - obs[0:21]) + dg, -1.0, 1.0)
         return u.astype(np.float32)
 
     def _anchor_ref_action(self, ctx, landmark, obs):
@@ -278,9 +313,14 @@ class ActionComputer:
             if self._pose_solver is None:
                 from .pose_solver import Humanoid21PoseSolver
                 self._pose_solver = Humanoid21PoseSolver()
-            res = self._pose_solver.solve(np.asarray(kfs[fr].pos,
-                                                     np.float64))
-            return np.asarray(res.action, np.float64)
+            # cache by pose content — the clip object is rebuilt every
+            # control step so object identity is useless as a key.
+            key = np.asarray(kfs[fr].pos, np.float64).tobytes()
+            if key not in self._ref_cache:
+                res = self._pose_solver.solve(
+                    np.asarray(kfs[fr].pos, np.float64))
+                self._ref_cache[key] = np.asarray(res.action, np.float64)
+            return self._ref_cache[key]
         except Exception:
             return None
 
