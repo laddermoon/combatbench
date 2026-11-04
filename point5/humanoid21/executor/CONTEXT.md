@@ -28,15 +28,16 @@ gen_action(ctx)
   **闭环**：`u = clip(a_ref + k(a_ref−q) + d)`（反馈在模型内）
 - `a_ref[i]` = 锚点 i 的 clip 帧 P5 → `pose_solver.solve().action`
   （按 pos 内容缓存）
-- rollout 内 ref 按锚点序列走查：到达(reach_eps=0.06) OR dwell≥6 步
-- score：per-step 平衡项(tilt²/com_z 下限/vz/捕获点出域) + 走查跟
-  踪误差 + 末端误差；**tilt>35° rollout 中止判 +inf**
+- rollout 内 ref 按锚点序列走查：**reach-only（reach_eps=0.06）**——
+  时间兜底变体让 ref 追着做不到的锚点走，视频全倒，已废弃
+- score：per-step 平衡项(tilt²·6/com_z 下限·12/vz/捕获点出域) +
+  schedule-aware 末端误差 + tgt 推进奖励；tilt abort 机械存在但
+  阈值 3.0rad 实际禁用
 - CEM：pop32×iter4，注入 hold/mean/纯ref 保底，种子=ctx.meta.seed
 
 ## 调用方职责（e2e_policy.py）
 
-- 进度门控翻页：P5 err<0.30 且过半 dur → 翻页；兜底 max(3×dur,1.2s)，
-  迈步帧 2.5s
+- 进度门控翻页：P5 err<0.30 且过半 dur → 翻页；兜底 max(3×dur,1.2s)
 - clip 耗尽 → 收势站姿 clip（hold target = stand_p5，拳击收回站架）
 - meta 传 last_action / seed
 
@@ -57,6 +58,9 @@ gen_action(ctx)
 - 时间烧 clip（dur 预算）会让意图先于身体过期——必须进度门控
 - obs[45] 是 root_z(≈1.28) 不是 com_z(≈0.87)，下限要打在 com 上
 - 迈步轨迹不是静态姿态能表达的——v1 迈步只能到 ~+0.10/0.35
+- **系统完全确定**（CEM 定种子+确定性 sim）：同代码=同轨迹=同视频，
+  v12 MD5==v4。任何评分改动都会重排那条唯一存活的轨迹——"改进"
+  必须 A/B 到视频长度（40 步 diag 预测不了 120 步存活）
 
 ## 验证抓手
 
