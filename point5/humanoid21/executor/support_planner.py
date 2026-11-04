@@ -256,44 +256,94 @@ if __name__ == "__main__":
             Keyframe(pos=P),
             Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 1.0))))
 
+    def punch_r():
+        plan = plan_stand_punch(np.array([1.05, 0, 1.15]), "right")
+        raw = list(plan.task.keyframes)
+        return P5Clip(name="pr", keyframes=tuple(
+            [Keyframe(pos=stand_p5()),
+             Keyframe(pos=raw[0].pos,
+                      transfer=Transfer(0, 0, 0, 0.5))] + raw[1:]))
+
+    def fwd_step():
+        p2 = P.copy()
+        p2[4] += np.array([0.3, 0, 0])          # left foot fwd
+        return P5Clip(name="f", keyframes=(
+            Keyframe(pos=P),
+            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 0.8))))
+
+    def back_step():
+        p2 = P.copy()
+        p2[3] += np.array([-0.3, 0, 0])         # right foot back
+        return P5Clip(name="b", keyframes=(
+            Keyframe(pos=P),
+            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 0.8))))
+
     def render(name, lm, clip):
         steps = plan_footsteps(lm, clip)
-        fig, ax = plt.subplots(figsize=(7, 6))
+        fig, ax = plt.subplots(figsize=(8, 7))
         ax.set_aspect("equal")
+        placed = []                       # occupied label positions
 
-        # 1) clip keyframe feet IN FRAME0 (through transfer chain):
-        #    gray circles, labeled "k<i>:<R/L>"
+        def _lab(pos, text, color):
+            """Place a label clear of existing labels/markers,
+            with a leader line back to pos."""
+            dirs = [(0.03, 0.02), (0.03, -0.02), (-0.03, 0.02),
+                    (-0.03, -0.02), (0.0, 0.04), (0.0, -0.04),
+                    (0.05, 0.0), (-0.05, 0.0), (0.05, 0.04),
+                    (-0.05, 0.04), (0.05, -0.04), (-0.05, -0.04),
+                    (0.0, 0.07), (0.0, -0.07), (0.08, 0.0),
+                    (-0.08, 0.0)]
+            for d in dirs:
+                lp = np.asarray(pos, float) + np.asarray(d)
+                if all(np.linalg.norm(lp - q) > 0.035 for q in placed):
+                    placed.append(lp)
+                    ax.annotate(text, pos, xytext=lp, fontsize=9,
+                                color=color,
+                                arrowprops=dict(arrowstyle="-",
+                                                color=color,
+                                                lw=0.6, alpha=0.6))
+                    return
+            ax.annotate(text, pos, xytext=np.asarray(pos)
+                        + [0.06, 0.06], fontsize=9, color=color)
+
+        def _ring(pos, colors, edge):
+            """Overlapping markers -> concentric rings, biggest out."""
+            for j, c in enumerate(colors):
+                ax.scatter(*pos, s=380 - 90 * j, facecolor="none",
+                           edgecolor=c, linewidth=1.6, zorder=4 - j)
+
+        # collect clip kf feet positions (frame0), grouped by spot
         poses = [(np.zeros(2), 0.0)]
         for k in range(1, len(clip.keyframes)):
             poses.append(compose_frame(
                 *poses[-1], clip.keyframes[k].transfer))
+        spots = {}                        # pos-key -> [(label,color)]
         for i, kf in enumerate(clip.keyframes):
             w = to_world(kf.pos, *poses[i]) if i else kf.pos
             for side, fi in (("R", 3), ("L", 4)):
-                ax.scatter(*w[fi, :2], s=340, facecolor="none",
-                           edgecolor="gray", linewidth=1.8)
-                ax.annotate(f"k{i}:{side}", w[fi, :2],
-                            xytext=(4, 4), textcoords="offset points",
-                            fontsize=8, color="gray")
+                key = tuple(np.round(w[fi, :2], 2))
+                spots.setdefault(key, []).append(
+                    (w[fi, :2], f"k{i}:{side}", "gray"))
+        for key, items in spots.items():
+            pos = items[0][0]
+            _ring(pos, ["gray"] * len(items), "gray")
+            _lab(pos, " ".join(t for _, t, _ in items), "gray")
 
-        # 2) current support: black circles, "now:<R/L>"
+        # current support: black
         for side, f in lm.feet.items():
             if f.foot_pos is not None:
+                key = tuple(np.round(f.foot_pos, 2))
                 ax.scatter(*f.foot_pos, s=200, c="black", zorder=5)
-                ax.annotate(f"now:{side[0].upper()}", f.foot_pos,
-                            xytext=(4, -14),
-                            textcoords="offset points", fontsize=9)
+                _lab(f.foot_pos, f"now:{side[0].upper()}", "black")
 
-        # 3) planned steps: colored circles, numbered + R/L
+        # planned steps
         for i, st in enumerate(steps):
             col = ("tab:orange" if st.kind == "corrective"
                    else "tab:green")
-            ax.scatter(*st.target, s=220, facecolor="none",
-                       edgecolor=col, linewidth=2.2, zorder=6)
-            ax.annotate(f"{i + 1}:{st.foot[0].upper()}",
-                        st.target, xytext=(5, 5),
-                        textcoords="offset points", fontsize=10,
-                        color=col, weight="bold")
+            ax.scatter(*st.target, s=260, facecolor="none",
+                       edgecolor=col, linewidth=2.4, zorder=6)
+            _lab(st.target,
+                 f"{i + 1}:{st.foot[0].upper()}", col)
             cur = lm.feet[st.foot].foot_pos
             if cur is not None:
                 ax.annotate("", xy=st.target, xytext=cur,
@@ -308,10 +358,20 @@ if __name__ == "__main__":
         plt.close(fig)
         print("saved", p)
 
-    render("still_punch", mk(), punch())
-    render("drift_left", mk(vel=(0, 0.5, 0)), punch())
-    render("drift_back", mk(vel=(-0.5, 0, 0)), punch())
-    render("drift_right", mk(vel=(0, -0.5, 0)), punch())
-    render("single_support", mk(fr=1.0, fl=0.0), punch())
-    render("side_shift", mk(), shift())
+    render("01_still_punch", mk(), punch())
+    render("02_drift_left", mk(vel=(0, 0.5, 0)), punch())
+    render("03_drift_back", mk(vel=(-0.5, 0, 0)), punch())
+    render("04_drift_right", mk(vel=(0, -0.5, 0)), punch())
+    render("05_drift_fwd", mk(vel=(0.5, 0, 0)), punch())
+    render("06_drift_diag", mk(vel=(-0.35, 0.35, 0)), punch())
+    render("07_big_momentum", mk(vel=(0, 1.8, 0)), punch())
+    render("08_single_support", mk(fr=1.0, fl=0.0), punch())
+    render("09_single_drift", mk(vel=(0, 0.5, 0), fr=1.0, fl=0.0),
+           punch())
+    render("10_com_offset", mk(com=(0.0, -0.12, 0.87)), punch())
+    render("11_fwd_step", mk(), fwd_step())
+    render("12_back_step", mk(), back_step())
+    render("13_punch_right", mk(), punch_r())
+    render("14_crouch_drift", mk(com=(0.02, 0, 0.62), vel=(0, 0.4, 0)),
+           punch())
     print("done ->", outdir)
