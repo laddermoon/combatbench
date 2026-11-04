@@ -53,8 +53,8 @@ def _quat_wxyz(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
-class CentroidalPlanner:
-    """Stateless centroidal planner used by Executor.gen_action."""
+class ObsDecoder:
+    """96-dim policy obs -> local P5 via FK (lazy Humanoid21FK)."""
 
     def __init__(self, robot_id: str = "robot_a"):
         self.robot_id = robot_id
@@ -66,7 +66,7 @@ class CentroidalPlanner:
             self._fk = Humanoid21FK()
         return self._fk
 
-    def _decode_p5_local(self, obs: np.ndarray):
+    def decode_p5_local(self, obs: np.ndarray):
         """obs -> (local_p5 (5,3), R_local(3,3): body->P5 frame)."""
         from point5.contracts import ankle_mid_xy, to_local
         fk, rid = self.fk(), self.robot_id
@@ -88,7 +88,7 @@ class CentroidalPlanner:
 
 
 
-class _Algo1:
+class CentroidalPlanner:
     """Algorithm 1 (bootstrip): (Observation, P5Clip) -> LandMark seq.
 
     Internal stages: 1) extract start LandMark from obs, 2) support
@@ -99,7 +99,10 @@ class _Algo1:
 
     def __init__(self, robot_id: str = "robot_a"):
         self.robot_id = robot_id
-        self._decoder = CentroidalPlanner(robot_id)
+        self._decoder = ObsDecoder(robot_id)
+
+    def decode_p5_local(self, obs: np.ndarray):
+        return self._decoder.decode_p5_local(obs)
 
     def plan(self, observation: np.ndarray,
              clip) -> list:

@@ -50,8 +50,7 @@ class Executor:
     def gen_action(self, ctx: Context) -> Action:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
-        from .centroidal_planner import _Algo1
-        landmarks = _Algo1(self.robot_id).plan(
+        landmarks = self.centroidal.plan(
             ctx.observation, ctx.clip)
         return self.action_computer.compute(
             ctx, landmarks, self.wsim)
@@ -59,7 +58,7 @@ class Executor:
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
         """96-dim obs -> local P5 (5,3) via the shared FK decode."""
-        local_p5, _ = self.centroidal._decode_p5_local(observation)
+        local_p5, _ = self.centroidal.decode_p5_local(observation)
         return local_p5
 
     def _verify_anchor(self, ctx: Context) -> None:

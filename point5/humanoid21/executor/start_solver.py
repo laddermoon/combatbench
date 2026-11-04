@@ -20,13 +20,13 @@ _CONTACT_EPS = 0.05        # force_ratio below this = airborne
 
 
 def extract_landmark(observation: np.ndarray,
-                     planner=None) -> LandMark:
+                     decoder=None) -> LandMark:
     """96-dim policy obs -> start LandMark."""
     obs = np.asarray(observation, np.float64)
-    if planner is None:
-        from .centroidal_planner import CentroidalPlanner
-        planner = CentroidalPlanner("robot_a")
-    local_p5, R_loc = planner._decode_p5_local(obs)
+    if decoder is None:
+        from .centroidal_planner import ObsDecoder
+        decoder = ObsDecoder("robot_a")
+    local_p5, R_loc = decoder.decode_p5_local(obs)
 
     fr = obs[52:54]
     feet = {}
