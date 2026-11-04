@@ -102,7 +102,7 @@ class Footstep:
 
     foot: str
     target: np.ndarray                  # (2,) local frame xy
-    kind: str = "move"                  # 'move' | 'corrective'
+    kind: str = "move"                  # 'move'|'corrective'|'recover'
     reason: str = ""
 
 

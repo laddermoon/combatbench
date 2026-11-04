@@ -87,42 +87,6 @@ class ObsDecoder:
         return local, Rz @ R_tilt
 
 
-
-def design_next_target(next_step, following, prev: "LandMark"
-                       ) -> "LandMark":
-    """Bootstrip step 3: design the goal state at the NEXT support
-    point, from its position and what follows.
-
-    Target contents: post-event support state (load ratios + CoP)
-    and a COM velocity constraint — ``vel=0`` when the plan must
-    settle (corrective/recover, or the last needed step), ``None``
-    (free) when the gait continues.
-
-    Priors:
-      - COM after landing -> mean of the new stance's CoPs (inside
-        the fresh support hull by construction)
-      - brace/recover always settle
-      - a move followed by another move keeps momentum (v free)
-    """
-    from .contracts import FootSupport, LandMark
-    other = "left" if next_step.foot == "right" else "right"
-    feet = dict(prev.feet)
-    feet[next_step.foot] = FootSupport(
-        0.5, next_step.target.copy(), next_step.target.copy())
-    fo = feet[other]
-    feet[other] = FootSupport(0.5, fo.cop, fo.foot_pos)
-
-    settle = (next_step.kind != "move"
-              or not any(f.kind == "move" for f in following))
-    cops = [f.cop for f in feet.values() if f.cop is not None]
-    com_t = prev.com.copy()
-    if cops:
-        com_t[:2] = np.mean(cops, axis=0)
-    return LandMark(com=com_t, feet=feet,
-                    vel=np.zeros(3) if settle else None)
-
-
-
 class CentroidalPlanner:
     """Algorithm 1 (bootstrip): (Observation, P5Clip) -> LandMark seq.
 
@@ -170,17 +134,8 @@ class CentroidalPlanner:
 
         lm0 = extract_landmark(observation, self._decoder)
         steps = plan_footsteps(lm0, clip)
-        lms: list = [lm0]
-        poses = [(np.zeros(2), 0.0)]
-        for k in range(1, len(clip.keyframes)):
-            poses.append(compose_frame(
-                *poses[-1], clip.keyframes[k].transfer))
-
-        for i, st in enumerate(steps):
-            lms.append(design_next_target(
-                st, steps[i + 1:], lms[-1]))
-        # TODO(algo1): terminal hold landmark from the clip's last
-        # keyframe — COM target via tool1 on the kf P5 (frame0),
-        # both feet loaded per the kf's support pattern
+        # 生成Landmark序列
+        # TODO(algo1): 支撑事件锚点(离地+落地)/姿态锚点/终点锚点
+        lms = [lm0]
         return lms
 
