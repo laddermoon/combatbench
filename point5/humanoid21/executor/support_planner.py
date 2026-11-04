@@ -190,6 +190,19 @@ def plan_footsteps(start_landmark, clip,
             vel = np.zeros(3)
             n_fix += 1
 
+        # if a corrective displaced the SUPPORT foot this segment
+        # expects, return it BEFORE the mover lifts — the move's
+        # validity assumes the clip's support geometry
+        sup_need = to_world(
+            clip.keyframes[t.seg - 1].pos[
+                _FIDX[sup]:_FIDX[sup] + 1],
+            *poses[t.seg - 1])[0, :2]
+        if np.linalg.norm(feet_xy[sup] - sup_need) > 0.05:
+            steps.append(Footstep(
+                foot=sup, target=sup_need, kind="recover",
+                reason="restore support for clip intent"))
+            feet_xy[sup] = sup_need
+
         # mover target only becomes a footstep if that keyframe's
         # foot is GROUNDED — a lifted z is a mid-air swing waypoint,
         # not a support point
