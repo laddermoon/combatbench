@@ -15,19 +15,16 @@ Two layers:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 
 from point5.contracts import compose_frame, to_world
 
-from .centroidal import CTRL_DT
 from .cop_solver import FLAT_Z as LIFT_Z
 
-_FEET = ("right", "left")
 _FIDX = {"right": 3, "left": 4}
-_SETTLE_T = 0.30
 _STEP_MAX = 0.35          # prior: nominal max single-step length (m)
 _G = 9.81                 # LIP: capture point xi = c + v/w, w=sqrt(g/z0)
 
@@ -68,73 +65,6 @@ def support_transitions(clip, xy_eps: float = 0.05,
                 support="left" if m == "right" else "right",
                 mover_dxy=movers[0][1], mover_dz=movers[0][2]))
     return out or None
-
-
-# ---------- per-segment phases (kept from before) ---------------------------
-@dataclass
-class SupportPhase:
-    kind: str                # 'hold'|'shift'|'move'|'settle'
-    support: Tuple[str, ...]
-    dur: float
-    mover: Optional[str] = None
-
-
-@dataclass
-class SupportSegment:
-    seg: int
-    mover: Optional[str]
-    phases: List[SupportPhase] = field(default_factory=list)
-
-
-@dataclass
-class SupportPlan:
-    keyframe_supports: List[Tuple[str, ...]]
-    segments: List[SupportSegment]
-
-    @property
-    def n_transition_segments(self) -> int:
-        return sum(1 for s in self.segments if s.mover)
-
-
-def _support_at(p5_pos: np.ndarray) -> Tuple[str, ...]:
-    return tuple(s for s in _FEET if p5_pos[_FIDX[s], 2] <= LIFT_Z)
-
-
-def build_support_plan(clip) -> SupportPlan:
-    """P5Clip -> per-keyframe support + per-segment phase plan."""
-    from .capability_solver import capability
-    kfs = clip.keyframes
-    kf_supports = [_support_at(np.asarray(kf.pos)) for kf in kfs]
-    trans = {t.seg: t for t in support_transitions(clip) or []}
-    segments = []
-    for k in range(1, len(kfs)):
-        prev, cur = kfs[k - 1], kfs[k]
-        dur = cur.transfer.dur
-        t = trans.get(k)
-        if t is None:
-            segments.append(SupportSegment(
-                seg=k, mover=None,
-                phases=[SupportPhase("hold", kf_supports[k - 1],
-                                     dur)]))
-            continue
-        sup, mov = t.support, t.mover
-        landed = cur.pos[_FIDX[mov], 2] <= LIFT_Z
-        cap = capability(np.asarray(prev.pos))
-        fi = _FIDX[sup]
-        d = float(np.linalg.norm(
-            cap.com_local[:2] - prev.pos[fi, :2])) - 0.05
-        v = max(cap.v_max([1, 0]), 0.3)
-        sh = float(np.clip(d / v, CTRL_DT, max(dur * 0.6, CTRL_DT)))
-        move = max(dur - sh, CTRL_DT)
-        phases = [SupportPhase("shift", (sup,), sh, mov),
-                  SupportPhase("move", (sup,), move, mov)]
-        if landed and len(kf_supports[k]) == 2:
-            phases.append(SupportPhase(
-                "settle", kf_supports[k], _SETTLE_T))
-        segments.append(SupportSegment(seg=k, mover=mov,
-                                       phases=phases))
-    return SupportPlan(keyframe_supports=kf_supports,
-                       segments=segments)
 
 
 # ---------- footstep sub-algorithm (bootstrip) ------------------------------
