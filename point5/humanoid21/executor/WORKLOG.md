@@ -56,3 +56,21 @@ compute 耗时 ~2.5s/次（4×24×8 rollout 的 FK 解码是瓶颈）。
 - 加 upright 惩罚：tilt²(2×) + com_z<0.87 下沉(1.5×)
 - 重跑闭环：com_z 1.282→1.258 缓稳、lms 恒 7（不再触发矫正）——CEM 不再把机器人往倒里选
 - 遗留：无 P5 姿态项、无 cop 项、速度约束未接入 vel_w
+
+### 备注：git push 间歇失败（publickey）
+
+- 现象：`ssh -T git@github.com` 认证成功但 `git push` 间歇性 publickey denied
+- 原因：每个 exec shell 是新进程，不继承 ssh-agent；`eval "$(ssh-agent -s)" && ssh-add` 同一命令链内才有效
+- 现状：commit 均在本地安全（main ahead of origin），稍后重推即可
+
+### ~20:00 闭环偏离诊断
+
+- 重测闭环：直立项生效（z 稳 1.22-1.28）但 dist->lm1 单调增大 0.066→0.115——**机器人漂离锚点**
+- 根因分析：seq_score 的 reach_eps=0.06 短时窗内够不着锚点时，min(errs)几乎不变 → 打分退化成"不倒即可"，无收敛梯度
+- 待改：打分改为进步导向（终态距离+到达奖励）而非二元到达
+
+### ~20:40 进步导向打分修复漂移
+
+- 改 seq_score：end_err(终态距锚点) + min(errs) - 进度奖励，替代原"min+tail"二元到达
+- 效果：dist->lm1 从单调增大(0.066→0.115)变为震荡收敛(0.054→0.063)——优化器有梯度了
+- 遗留：收敛仍慢（短时窗0.4s内进步有限）、P5姿态项未加

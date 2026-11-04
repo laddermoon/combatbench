@@ -139,12 +139,13 @@ class ActionComputer:
             errs.append(e)
             if e < reach_eps and tgt_i < len(lms) - 1:
                 tgt_i += 1
-        # total = last-observed err per unreached anchor + progress
-        tail = sum(self._landmark_error(
-                self._fk_decode(wsim, obs_seq[-1])[0],
-                origin0, yaw0, lms[j], obs=obs_seq[-1])
-            for j in range(tgt_i, min(len(lms), tgt_i + 2)))
-        return float(min(errs) + tail - tgt_i * reach_eps)
+        # progress-driven: end-state distance to the NEXT anchor
+        # (gradient toward it, not binary reach) + how far the seq
+        # got (reached anchors pay off via tgt_i bonus)
+        end_lm = self._fk_decode(wsim, obs_seq[-1])[0]
+        end_err = self._landmark_error(
+            end_lm, origin0, yaw0, lms[tgt_i], obs=obs_seq[-1])
+        return float(end_err + min(errs) - tgt_i * reach_eps)
 
     # -- rollout ------------------------------------------------------------
     def _rollout(self, wsim, chunks):
