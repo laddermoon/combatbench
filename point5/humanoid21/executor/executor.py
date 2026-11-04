@@ -51,12 +51,11 @@ class Executor:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
         from .start_solver import extract_landmark
-        from .support_planner import plan_footsteps
+        from .centroidal_planner import _Algo1
         lm0 = extract_landmark(ctx.observation, self.centroidal)
-        footsteps = plan_footsteps(lm0, ctx.clip)
-        raise PlanError(
-            "landmark sequence generation not implemented "
-            f"(footsteps ready: {len(footsteps)})")
+        landmarks = _Algo1(self.robot_id).plan(ctx.clip, lm0)
+        return self.action_computer.compute(
+            ctx, landmarks, self.wsim)
 
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:

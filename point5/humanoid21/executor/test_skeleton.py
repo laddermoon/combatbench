@@ -43,14 +43,14 @@ def test_pipeline_stubs_raise():
     from point5.humanoid21.executor.centroidal_planner import (
         CentroidalPlanner)
     ex = Executor.__new__(Executor)
+    ex.robot_id = "robot_a"
     ex.centroidal = CentroidalPlanner()
     ex.action_computer = ActionComputer()
     ex.wsim = None
     _patched(ex, stand_p5())
-    # algo 1 start+footsteps work; landmark generation is the
-    # remaining stub before algorithm 2
-    with pytest.raises(PlanError,
-                       match="landmark sequence generation"):
+    # algo 1 runs through landmark generation; algorithm 2
+    # (action_computer) is the remaining stub
+    with pytest.raises(PlanError):
         ex.gen_action(_ctx())
 
 
