@@ -59,7 +59,7 @@ class FootSupport:
 
     force_ratio: float = 0.0
     cop: Optional[np.ndarray] = None   # (2,) local; contact only
-    foot_pos: Optional[np.ndarray] = None  # (3,) foot position
+    foot_pos: Optional[np.ndarray] = None  # (2,) foot xy position
                                         # (mainly for airborne)
 
 
