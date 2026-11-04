@@ -104,11 +104,123 @@ def gen_landmarks(lm0: "LandMark", clip, steps
     Output: ordered LandMark list — support-event anchors +
     posture anchors + terminal anchor, per the composition spec
     in CentroidalPlanner's docstring.
-
-    TODO: implement.
     """
-    from .contracts import PlanError
-    raise PlanError("landmark sequence generation not implemented")
+    from .com_solver import com_estimate
+    from .contracts import FootSupport, LandMark
+    from .cop_solver import FLAT_Z as LIFT_Z
+    from .capability_solver import _PATCH, _hull2d
+    from .support_planner import _inside
+    from point5.contracts import compose_frame, to_world
+
+    FIDX = {"right": 3, "left": 4}
+    kfs = clip.keyframes
+    poses = [(np.zeros(2), 0.0)]
+    for k in range(1, len(kfs)):
+        poses.append(compose_frame(*poses[-1], kfs[k].transfer))
+    w_kfs = [to_world(kf.pos, *poses[k]) if k else kf.pos
+             for k, kf in enumerate(kfs)]
+
+    before = {k: [] for k in range(1, len(kfs))}
+    for_k = {k: [] for k in range(1, len(kfs))}
+    for st in steps:
+        (for_k if st.for_frame else before)[
+            st.for_frame or st.before_frame].append(st)
+
+    # virtual state
+    com = np.asarray(lm0.com, np.float64).copy()
+    feet_xy = {s: (np.asarray(lm0.feet[s].foot_pos,
+                              np.float64).copy()
+                   if lm0.feet[s].foot_pos is not None else None)
+               for s in FIDX}
+    loaded = {s: lm0.feet[s].force_ratio > 0.05 for s in FIDX}
+    lms = [lm0]
+
+    def _feet():
+        n = sum(loaded.values()) or 1
+        return {s: FootSupport(
+            force_ratio=(1.0 / n) if loaded[s] else 0.0,
+            cop=(feet_xy[s].copy() if loaded[s] else None),
+            foot_pos=(feet_xy[s].copy()
+                      if feet_xy[s] is not None else None))
+            for s in FIDX}
+
+    def _liftoff(foot):
+        nonlocal com
+        loaded[foot] = False
+        com_t = com.copy()
+        cops = [feet_xy[s] for s in FIDX if loaded[s]]
+        if len(cops) == 1:                 # single support left
+            com_t[:2] = cops[0]
+        lms.append(LandMark(com=com_t, feet=_feet(), vel=None))
+
+    def _touchdown(foot, target):
+        nonlocal com
+        feet_xy[foot] = np.asarray(target, np.float64).copy()
+        loaded[foot] = True
+        com_t = com.copy()
+        cops = [feet_xy[s] for s in FIDX if loaded[s]]
+        if cops:
+            com_t[:2] = np.mean(cops, axis=0)
+        lms.append(LandMark(com=com_t, feet=_feet(), vel=None))
+
+    def _project(pt, poly):
+        if _inside(pt, poly):
+            return pt
+        best, bd = pt, np.inf
+        for i in range(len(poly)):
+            a, b = poly[i], poly[(i + 1) % len(poly)]
+            e = b - a
+            t = np.clip(np.dot(pt - a, e)
+                        / max(np.dot(e, e), 1e-12), 0.0, 1.0)
+            p = a + t * e
+            d = np.linalg.norm(pt - p)
+            if d < bd:
+                best, bd = p, d
+        return best
+
+    def _posture(k):
+        """The frame's own requirement as an anchor."""
+        nonlocal com
+        w = np.asarray(w_kfs[k], np.float64)
+        n_load = sum(kfs[k].pos[FIDX[s], 2] <= LIFT_Z
+                     for s in FIDX) or 1
+        feet = {}
+        hull_pts = []
+        for s, fi in FIDX.items():
+            grounded = kfs[k].pos[fi, 2] <= LIFT_Z
+            if grounded:
+                hull_pts.append(w[fi, :2] + np.asarray(_PATCH))
+            feet[s] = FootSupport(
+                force_ratio=(1.0 / n_load) if grounded else 0.0,
+                cop=w[fi, :2].copy() if grounded else None,
+                foot_pos=w[fi, :2].copy())
+            feet_xy[s] = w[fi, :2].copy()
+            loaded[s] = grounded
+        com_t = com_estimate(w)
+        if hull_pts:
+            com_t[:2] = _project(com_t[:2], _hull2d(np.vstack(hull_pts)))
+        com = com_t.copy()
+        settle = (k == len(kfs) - 1) or not for_k.get(k + 1)
+        lms.append(LandMark(com=com_t, feet=feet,
+                            vel=np.zeros(3) if settle else None))
+
+    for k in range(1, len(kfs)):
+        for st in before[k]:
+            if loaded.get(st.foot):
+                _liftoff(st.foot)
+            _touchdown(st.foot, st.target)
+        # frame foot-state diff: loaded -> airborne (no step covers)
+        for s, fi in FIDX.items():
+            was = kfs[k - 1].pos[fi, 2] <= LIFT_Z
+            now = kfs[k].pos[fi, 2] <= LIFT_Z
+            if was and not now and loaded[s]:
+                _liftoff(s)
+        for st in for_k[k]:
+            if loaded.get(st.foot):
+                _liftoff(st.foot)
+            _touchdown(st.foot, st.target)
+        _posture(k)
+    return lms
 
 
 class CentroidalPlanner:
