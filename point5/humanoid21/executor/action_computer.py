@@ -159,6 +159,11 @@ class ActionComputer:
         cumulative, not best-moment."""
         cost = 0.0
         tgt_i = 1
+        # same advance rule the rollout's ref walk uses (reach OR dwell)
+        # — scoring must evaluate the candidate against the schedule it
+        # was actually told to track, else ref and objective disagree.
+        dwell = 0
+        dwell_budget = 6
         from .com_solver import com_estimate
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
@@ -169,8 +174,12 @@ class ActionComputer:
             cost += 12.0 * max(0.0, lms[tgt_i].com[2] - com_t[2]) ** 2
             e = self._landmark_error(lm_w, origin0, yaw0,
                                      lms[tgt_i], obs=o)
-            if e < reach_eps and tgt_i < len(lms) - 1:
-                tgt_i += 1
+            cost += 0.25 * e                  # tracking the schedule
+            dwell += 1
+            if tgt_i < len(lms) - 1:
+                if e < reach_eps or dwell >= dwell_budget:
+                    tgt_i += 1
+                    dwell = 0
         end_lm = self._fk_decode(wsim, obs_seq[-1])[0]
         end_err = self._landmark_error(
             end_lm, origin0, yaw0, lms[tgt_i], obs=obs_seq[-1])
