@@ -89,20 +89,26 @@ class CentroidalPlanner:
 
 
 class _Algo1:
-    """Algorithm 1 chain: start LandMark + clip -> LandMark list.
+    """Algorithm 1 (bootstrip): (Observation, P5Clip) -> LandMark seq.
 
-    Wire-up status (v0): the skeleton is connected; every stage
-    marked TODO is a prior that still needs design.
+    Internal stages: 1) extract start LandMark from obs, 2) support
+    planning sub-algorithm, 3) target design by priors,
+    4) landmark planning.  Every stage marked TODO is a prior that
+    still needs design.
     """
 
     def __init__(self, robot_id: str = "robot_a"):
         self.robot_id = robot_id
+        self._decoder = CentroidalPlanner(robot_id)
 
-    def plan(self, clip, lm0: "LandMark") -> list:
-        """lm0 + remaining clip -> ordered LandMark sequence."""
+    def plan(self, observation: np.ndarray,
+             clip) -> list:
+        """(observation, remaining clip) -> ordered LandMark seq."""
+        from .start_solver import extract_landmark
         from .support_planner import plan_footsteps
         from point5.contracts import compose_frame
 
+        lm0 = extract_landmark(observation, self._decoder)
         steps = plan_footsteps(lm0, clip)
         lms: list = [lm0]
         poses = [(np.zeros(2), 0.0)]

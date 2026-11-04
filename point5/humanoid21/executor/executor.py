@@ -50,10 +50,9 @@ class Executor:
     def gen_action(self, ctx: Context) -> Action:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
-        from .start_solver import extract_landmark
         from .centroidal_planner import _Algo1
-        lm0 = extract_landmark(ctx.observation, self.centroidal)
-        landmarks = _Algo1(self.robot_id).plan(ctx.clip, lm0)
+        landmarks = _Algo1(self.robot_id).plan(
+            ctx.observation, ctx.clip)
         return self.action_computer.compute(
             ctx, landmarks, self.wsim)
 
