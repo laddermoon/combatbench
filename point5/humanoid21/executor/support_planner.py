@@ -19,6 +19,9 @@ Deepened requirements (user-driven, v1):
    recover step returns it BEFORE the mover lifts.
 7. The plan's terminal stance must satisfy the clip's last
    keyframe; residual displacement gets a recover step.
+8. Clip feasibility is NOT the planner's job — inputs are
+   assumed reasonable.  A far target is a single step, never a
+   self-invented gait.
 
 Two layers:
 
@@ -133,6 +136,7 @@ def _nearest_foot(xi, feet) -> str:
         np.asarray(feet[s].foot_pos) - xi))
 
 
+
 def plan_footsteps(start_landmark, clip,
                    step_max: float = _STEP_MAX,
                    max_correction: int = 2) -> List[Footstep]:
@@ -242,12 +246,11 @@ def plan_footsteps(start_landmark, clip,
         grounded = m_z <= LIFT_Z
         if not grounded:
             continue
-        reach = np.linalg.norm(tgt_xy - feet_xy[sup])
-        reason = f"seg{t.seg} mover"
-        if reach > 2 * step_max:
-            reason += f" [suspect: {reach:.2f}m from {sup}]"
+        # far targets are ONE step — the planner does not judge
+        # clip feasibility; the input requirement is the intent
         steps.append(Footstep(foot=t.mover, target=tgt_xy,
-                              kind="move", reason=reason))
+                              kind="move",
+                              reason=f"seg{t.seg} mover"))
         feet_xy[t.mover] = tgt_xy
         loaded[t.mover] = True
 
@@ -440,4 +443,19 @@ if __name__ == "__main__":
     render("13_punch_right", mk(), punch_r())
     render("14_crouch_drift", mk(com=(0.02, 0, 0.62), vel=(0, 0.4, 0)),
            punch())
+
+    def far_target():
+        p2 = P.copy()
+        p2[4] += np.array([1.0, 0, 0])          # left foot 1m ahead
+        return P5Clip(name="far", keyframes=(
+            Keyframe(pos=P),
+            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 2.0))))
+    def far_diag():
+        p2 = P.copy()
+        p2[4] += np.array([0.7, 0.3, 0])
+        return P5Clip(name="fd", keyframes=(
+            Keyframe(pos=P),
+            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 2.0))))
+    render("15_far_target", mk(), far_target())
+    render("16_far_diag", mk(), far_diag())
     print("done ->", outdir)
