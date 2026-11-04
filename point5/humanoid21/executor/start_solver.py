@@ -1,0 +1,40 @@
+"""Tool 8: Observation -> the start LandMark.
+
+The current state is itself a LandMark — the first element of any
+algorithm-1 output sequence.  Extraction:
+
+    com  = tool1 com_estimate(FK-decoded local P5)
+    vel  = obs[46:49] root linear velocity rotated to local frame
+    feet = obs[52:54] contact force ratios; cop ~= foot xy when
+           loaded; foot_pos always the decoded foot xy
+    torso_yaw = None (v1)
+"""
+from __future__ import annotations
+
+import numpy as np
+
+from .com_solver import com_estimate
+from .contracts import FootSupport, LandMark
+
+_CONTACT_EPS = 0.05        # force_ratio below this = airborne
+
+
+def extract_landmark(observation: np.ndarray,
+                     planner=None) -> LandMark:
+    """96-dim policy obs -> start LandMark."""
+    obs = np.asarray(observation, np.float64)
+    if planner is None:
+        from .centroidal_planner import CentroidalPlanner
+        planner = CentroidalPlanner("robot_a")
+    local_p5, R_loc = planner._decode_p5_local(obs)
+
+    fr = obs[52:54]
+    feet = {}
+    for side, fi, k in (("right", 3, 0), ("left", 4, 1)):
+        touching = fr[k] > _CONTACT_EPS
+        feet[side] = FootSupport(
+            force_ratio=float(fr[k]),
+            cop=local_p5[fi, :2].copy() if touching else None,
+            foot_pos=local_p5[fi, :2].copy())
+    return LandMark(com=com_estimate(local_p5), feet=feet,
+                    vel=R_loc @ obs[46:49])

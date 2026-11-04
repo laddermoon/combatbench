@@ -29,6 +29,7 @@ gen_action(ctx)
 | 工具5 轨迹可视化 | `traj_viz.py` | ✅ JSON→MP4：球自转=L、拖尾、高度标注 |
 | 工具6 脚→CoP 范围 | `cop_solver.py` | ✅ 平贴→多边形；翘起→接触边集合；离地→None |
 | 工具7 clip→支撑规划段 | `support_solver.py` | ✅ 逐段检出摆动脚/支撑脚；None=无转移 |
+| 工具8 obs→起点LandMark | `start_solver.py` | ✅ 力比直接读 obs[52:54] |
 | 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 局部系 + `CentroidalTrajectory` |
 | obs→P5 解码 | `centroidal_planner._decode_p5_local` | ✅ FK 重建（观测无自身关键点） |
 
