@@ -177,7 +177,6 @@ class ActionComputer:
             cost += 12.0 * max(0.0, lms[tgt_i].com[2] - com_t[2]) ** 2
             e = self._landmark_error(lm_w, origin0, yaw0,
                                      lms[tgt_i], obs=o)
-            cost += 0.25 * e                  # tracking the schedule
             dwell += 1
             if tgt_i < len(lms) - 1:
                 if e < reach_eps or dwell >= dwell_budget:
