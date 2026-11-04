@@ -4,54 +4,65 @@
 
 P5 指令的**无状态伺服后端**：`Executor.gen_action(Context) -> Action`。
 Executor 是策略后端——只能看到 policy 的 96 维 observation，拿不到
-sim 内部结构；只持有自己的内部仿真器，不维护任何执行进度。
+sim 内部结构；只持有自己的内部仿真器（wsim），不维护任何执行进度。
+调用方（`e2e_policy.py`）负责 clip 进度推进 + 每步把剩余 clip 首帧
+重锚定到当前观测。
 
-## 依赖结构（大逻辑）
+## 流水线（已实现）
 
 ```
 gen_action(ctx)
-  0  _verify_anchor      clip 首帧必须锚定 obs 解出的当前 P5（已实现）
-  1  obs -> P5            _extract_p5（stub：锚定校验用的解码）
-  2  obs -> 质心状态      extract_centroidal_state（已实现：FK解码+工具1/3）
-  3  算法1 centroidal     CentroidalPlanner.plan（stub）
-  4  算法2 action         ActionComputer.compute（stub）
-      CNext -> P5Next -> [可选 Humanoid21RefNext(工具2)] -> Action
+  0  _verify_anchor    clip kf0.pos 必须==obs 解出的当前 P5（atol 1e-6）
+  1  算法1 CentroidalPlanner.plan(obs, clip)
+       ObsDecoder(obs→局部P5) → extract_landmark(起点)
+       → plan_footsteps(支撑规划：捕获点矫正/回位/leapfrog)
+       → gen_landmarks(帧驱动锚点序列)
+  2  算法2 ActionComputer.compute(ctx, landmarks, wsim)
+       → (21,) 归一化 PD 目标，只执行 u0
 ```
 
-| 件 | 文件 | 状态 |
-|---|---|---|
-| 算法1 质心规划 | `centroidal_planner.py` | obs→z=(c,l,L) 提取已实现；plan() stub（由果推因设计注释已写） |
-| 算法2 动作计算 | `action_computer.py` | stub |
-| 工具1 P5→推荐质心 | `com_solver.py` → `point5.mass_model` | ✅ |
-| 工具2 P5→参考姿态 | `pose_solver.py` → `mechanics.solve_equilibrium` | solve ✅；LUT 加速 stub |
-| 工具3 P5→转动惯量 | `inertia_solver.py` → `mass_model` | ✅ 关于质心的 (3,3) 惯量/回转半径 |
-| 工具4 P5→能力预期 | `capability_solver.py` | ✅ LIP 包络：多边形 margin→a/v(d) |
-| 工具5 轨迹可视化 | `traj_viz.py` | ✅ JSON→MP4：球自转=L、拖尾、高度标注 |
-| 工具6 脚→CoP 范围 | `cop_solver.py` | ✅ 平贴→多边形；翘起→接触边集合；离地→None |
-| 工具7 clip→支撑规划段 | `support_solver.py` | ✅ 逐段检出摆动脚/支撑脚；None=无转移 |
-| 工具8 obs→起点LandMark | `start_solver.py` | ✅ 力比直接读 obs[52:54] |
-| 质心状态表示 | `centroidal.py` | ✅ `z=(c,l,L)` 局部系 + `CentroidalTrajectory` |
-| obs→P5 解码 | `centroidal_planner._decode_p5_local` | ✅ FK 重建（观测无自身关键点） |
+## 算法2 形态（当前）
+
+- 注入 `obs_to_core_state` 重建 x̂0 到 wsim；**模型与真实 sim 零发散**
+- 候选 = **[k(5), d(5)]** 5 关节组跟踪增益+残差偏移；rollout 内
+  **闭环**：`u = clip(a_ref + k(a_ref−q) + d)`（反馈在模型内）
+- `a_ref[i]` = 锚点 i 的 clip 帧 P5 → `pose_solver.solve().action`
+  （按 pos 内容缓存）
+- rollout 内 ref 按锚点序列走查：到达(reach_eps=0.06) OR dwell≥6 步
+- score：per-step 平衡项(tilt²/com_z 下限/vz/捕获点出域) + 走查跟
+  踪误差 + 末端误差；**tilt>35° rollout 中止判 +inf**
+- CEM：pop32×iter4，注入 hold/mean/纯ref 保底，种子=ctx.meta.seed
+
+## 调用方职责（e2e_policy.py）
+
+- 进度门控翻页：P5 err<0.30 且过半 dur → 翻页；兜底 max(3×dur,1.2s)，
+  迈步帧 2.5s
+- clip 耗尽 → 收势站姿 clip（hold target = stand_p5，拳击收回站架）
+- meta 传 last_action / seed
 
 ## 契约（contracts.py）
 
-- `Observation` = policy 收到的 96 维平铺向量（不是 derived dict）。
-- `Context` = {observation, clip, meta}；clip 是调用方每次锚定当前
-  状态切好的**剩余指令**。
-- `Action` = (21,) 归一化 PD 目标，即 `sim.set_action` 输入。
-- 锚定校验容差 `anchor_atol = 1e-6`；不一致抛 `AnchorError`，
-  Executor 不补接。
+- `Context` = {observation, clip, meta}；clip 是切好的**剩余指令**
+- `LandMark` = {com(3,), feet{force_ratio,cop,foot_pos}, vel|None,
+  frame}；`Footstep` = {foot,target,kind,for_frame|before_frame}
+- `Action` = (21,) PD 目标；`PlanError`/`AnchorError` 为失败语义
 
-## 质心状态（centroidal.py）
+## 已证结论（勿重踩）
 
-唯一保留的核心表示：`z = (c, l, L)`（质心位置/线动量/角动量，
-`com_vel = l/m`）。接触模式、落脚点、阶段时间属伴随信息。
-旧 centroidal_dynamics 包的其余实现全部删除——过度复杂。
+- 姿态开环 PD 必倒；**反馈式 rollout 候选才能抗扰**（开环动作带里
+  没有"主动扶正"方向）
+- CEM 必须给 null/mean 候选打分，否则漂进比 hold 更烂的区域
+- 平衡项要 per-step 累加；放 `min()` 里会被倒塌瞬间刷分
+- com_z 目标必须配单向下限：下蹲在 tilt 项里免费，会棘轮式坐化
+- 时间烧 clip（dur 预算）会让意图先于身体过期——必须进度门控
+- obs[45] 是 root_z(≈1.28) 不是 com_z(≈0.87)，下限要打在 com 上
+- 迈步轨迹不是静态姿态能表达的——v1 迈步只能到 ~+0.10/0.35
 
-## 已证结论（前一轮失败迭代，勿重踩）
+## 验证抓手
 
-- 本机**没有任何姿态开环 PD 稳定**（4 个关键帧姿态全部 ~1.15s 内倒）
-  ——动作层必须持续主动平衡。
-- CEM+PD 可保持双足站立、可完成单脚摆动到达，但迈步落地相在
-  预算内找不到稳定序列——算法2 是主战场。
-- IK 姿态本身能正确放脚（放置后漂移 <2cm），问题只在动态转移。
+- `diag_e2e.py [stand|punch] [steps]`：手动 sim loop + com_z/tilt/
+  fl_x/reach 日志，FALLEN 自动停
+- `test_e2e.py`：pytest 断言（stand 60 步直立；punch 存活+伸展+脚动）
+- RoundRunner 视频：`e2e_env.yaml` + `e2e_policy.yaml` → mp4；
+  输出 /data1/dev/combatbench_executor/e2e/*.mp4
+- WORKLOG.md：每轮尝试+结果记录
