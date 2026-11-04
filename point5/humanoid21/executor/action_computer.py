@@ -16,16 +16,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from .centroidal import CentroidalTrajectory
 from .contracts import Context, PlanError
 
 
 class ActionComputer:
     """Stateless action computation used by Executor.gen_action."""
 
-    def compute(self, ctx: Context, plan: CentroidalTrajectory,
+    def compute(self, ctx: Context, landmarks: list,
                 wsim) -> np.ndarray:
-        """Return the next (21,) action.
+        """LandMark sequence + obs -> next (21,) action.
 
         ``wsim`` is the executor's internal working simulator for
         candidate rollouts.  TODO: implement.
