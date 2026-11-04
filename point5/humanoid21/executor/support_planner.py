@@ -22,6 +22,10 @@ Deepened requirements (user-driven, v1):
 8. Clip feasibility is NOT the planner's job — inputs are
    assumed reasonable.  A far target is a single step, never a
    self-invented gait.
+9. But when a transfer relocates BOTH feet (a far frame shift),
+   the middle walk is self-planned as a leapfrog gait: the
+   trailing foot always steps PAST the leader, feet never land
+   level, and the plan ends at the clip's required stance.
 
 Two layers:
 
@@ -139,26 +143,40 @@ def _nearest_foot(xi, feet) -> str:
 
 
 def _walk(steps, todo, w_kf, feet_xy, loaded, t, lead):
-    """Both feet must relocate -> alternating walk steps ending at
-    the clip's required stance.  The clip specifies only the end;
-    the intermediate steps are generated here."""
+    """Both feet must relocate -> leapfrog walk: the TRAILING foot
+    always steps past the leading one, each step <= _GAIT_STRIDE,
+    landing on its own lateral lane.  Ends at the clip stance."""
     idx = {"right": 3, "left": 4}
     tgt = {s: w_kf[idx[s], :2].copy() for s in todo}
-    foot, other = (lead, "left" if lead == "right" else "right")
+    # dominant direction = mean displacement
+    dm = np.mean([tgt[s] - feet_xy[s] for s in todo], axis=0)
+    dirv = dm / (np.linalg.norm(dm) + 1e-9)
+    perp = np.array([-dirv[1], dirv[0]])
+
+    def q(s):                       # progress coordinate of foot s
+        return float(np.dot(feet_xy[s], dirv))
+
+    def lane(s):                    # target lateral coord
+        return float(np.dot(tgt[s], perp))
+
     n = 0
-    while any(np.linalg.norm(tgt[s] - feet_xy[s]) > 0.02
-              for s in todo) and n < 12:
-        s = foot if (np.linalg.norm(tgt[foot] - feet_xy[foot])
-                     > 0.02) else other
-        d = tgt[s] - feet_xy[s]
-        dist = np.linalg.norm(d)
-        nxt = feet_xy[s] + d / dist * min(dist, _GAIT_STRIDE)
-        steps.append(Footstep(foot=s, target=nxt, kind="move",
+    while n < 12:
+        rem = {s: float(np.dot(tgt[s], dirv)) - q(s) for s in todo}
+        if all(abs(r) < 0.02 for r in rem.values()):
+            break
+        # trailing foot steps past the front foot
+        s = min(todo, key=q)
+        # trailing foot leapfrogs PAST the leader by one stride,
+        # clamped only at its own target — never lands level
+        q_new = min(max(q(x) for x in todo) + _GAIT_STRIDE,
+                    float(np.dot(tgt[s], dirv)))
+        pos_new = dirv * q_new + perp * lane(s)
+        steps.append(Footstep(foot=s, target=pos_new, kind="move",
                               reason=f"seg{t.seg} walk"))
-        feet_xy[s] = nxt
+        feet_xy[s] = pos_new
         loaded[s] = True
-        foot, other = other, foot
         n += 1
+
 
 
 def plan_footsteps(start_landmark, clip,
