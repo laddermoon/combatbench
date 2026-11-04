@@ -29,7 +29,7 @@ _FEET = ("right", "left")
 _FIDX = {"right": 3, "left": 4}
 _SETTLE_T = 0.30
 _STEP_MAX = 0.35          # prior: nominal max single-step length (m)
-_V_AWAY = 0.10            # m/s: momentum-away threshold for correction
+_G = 9.81                 # LIP: capture point xi = c + v/w, w=sqrt(g/z0)
 
 
 # ---------- detection -------------------------------------------------------
@@ -148,8 +148,42 @@ class Footstep:
     reason: str = ""
 
 
+def _foot_patches(feet) -> List[np.ndarray]:
+    """Contact patches (4,2 each) of loaded feet."""
+    from .capability_solver import _PATCH
+    out = []
+    for f in feet.values():
+        if f.force_ratio > 0.05 and f.foot_pos is not None:
+            out.append(np.asarray(f.foot_pos) + np.asarray(_PATCH))
+    return out
+
+
+def _inside(pt, poly) -> bool:
+    m = len(poly)
+    for i in range(m):
+        a, b = poly[i], poly[(i + 1) % m]
+        e = b - a
+        if np.cross(e, pt - a) < -1e-9:
+            return False
+    return True
+
+
+def _outside_polygon(xi, feet) -> bool:
+    # support polygon = CONVEX HULL of all contact patches
+    pts = np.vstack(_foot_patches(feet)) if _foot_patches(feet) \
+        else np.empty((0, 2))
+    if len(pts) == 0:
+        return False
+    from .capability_solver import _hull2d
+    return not _inside(xi, _hull2d(pts))
+
+
+def _nearest_foot(xi, feet) -> str:
+    return min(feet, key=lambda s: np.linalg.norm(
+        np.asarray(feet[s].foot_pos) - xi))
+
+
 def plan_footsteps(start_landmark, clip,
-                   v_away: float = _V_AWAY,
                    step_max: float = _STEP_MAX) -> List[Footstep]:
     """Start LandMark + clip -> ordered footsteps incl. correction.
 
@@ -186,21 +220,24 @@ def plan_footsteps(start_landmark, clip,
             if start_landmark.feet[sup].foot_pos is not None
             else kf.pos[_FIDX[sup], :2])
 
-        # corrective check: momentum pointing away from support foot
-        to_sup = sup_xy - com[:2]
-        away = np.dot(vel[:2], to_sup / (np.linalg.norm(to_sup)
-                                       + 1e-9))
-        if away < -v_away and np.linalg.norm(vel[:2]) > v_away:
-            # step the support foot in the momentum direction to
-            # re-establish a polygon the COM can settle over
-            step = vel[:2] / (np.linalg.norm(vel[:2]) + 1e-9)
-            n = np.linalg.norm(step)
-            step = step / n * min(step_max, 0.25 + 0.3 * n)
+        # physical check (LIP): can the CURRENT support polygon
+        # brake the momentum?  capture point xi = c + v/omega is
+        # where the COM coasts to a stop over; if xi sits inside
+        # the polygon, existing contact catches it — no step needed.
+        z0 = max(com[2], 0.1)
+        xi = com[:2] + vel[:2] / np.sqrt(_G / z0)
+        if _outside_polygon(xi, start_landmark.feet):
+            # capture step: the foot nearest xi steps onto xi
+            # (clamped to prior step length)
+            foot = _nearest_foot(xi, start_landmark.feet)
+            fxy = np.asarray(start_landmark.feet[foot].foot_pos)
+            d = xi - fxy
+            n = np.linalg.norm(d)
+            tgt = fxy + d / n * min(n, step_max)
             steps.append(Footstep(
-                foot=sup, target=sup_xy + step[:2],
-                kind="corrective",
-                reason=(f"com momentum {away:.2f} m/s away from "
-                        f"{sup} foot -> brace step")))
+                foot=foot, target=tgt, kind="corrective",
+                reason=(f"capture pt overshoot {n:.2f}m -> "
+                        f"{foot} steps to {np.round(xi,2)}")))
         steps.append(Footstep(foot=t.mover, target=tgt_xy,
                               kind="move",
                               reason=f"seg{t.seg} mover"))
