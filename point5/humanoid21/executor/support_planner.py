@@ -205,6 +205,21 @@ def plan_footsteps(start_landmark, clip,
                               kind="move", reason=reason))
         feet_xy[t.mover] = tgt_xy
         loaded[t.mover] = True
+
+    # recover: corrective steps may have displaced a foot the clip
+    # requires planted — return it to the clip's final stance once
+    # double support has resumed
+    last = clip.keyframes[-1]
+    w_last = to_world(last.pos, *poses[-1])
+    for side in ("right", "left"):
+        if last.pos[_FIDX[side], 2] > LIFT_Z:
+            continue                        # clip doesn't want it down
+        tgt = w_last[_FIDX[side], :2]
+        if np.linalg.norm(feet_xy[side] - tgt) > 0.05:
+            steps.append(Footstep(
+                foot=side, target=tgt, kind="recover",
+                reason="restore clip-required stance"))
+            feet_xy[side] = tgt
     return steps
 
 
@@ -344,8 +359,8 @@ if __name__ == "__main__":
 
         # planned steps
         for i, st in enumerate(steps):
-            col = ("tab:orange" if st.kind == "corrective"
-                   else "tab:green")
+            col = {"corrective": "tab:orange", "move": "tab:green",
+                   "recover": "tab:purple"}.get(st.kind, "tab:gray")
             ax.scatter(*st.target, s=260, facecolor="none",
                        edgecolor=col, linewidth=2.4, zorder=6)
             _lab(st.target,
