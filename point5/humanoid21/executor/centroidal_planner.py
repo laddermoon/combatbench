@@ -87,6 +87,30 @@ class ObsDecoder:
         return local, Rz @ R_tilt
 
 
+def gen_landmarks(lm0: "LandMark", clip, steps
+                  ) -> "list":
+    """LandMark sequence generation (bootstrip step 4).
+
+    Inputs:
+        lm0   — start LandMark, extracted from the observation
+                (the sequence's first element)
+        clip  — the remaining P5Clip; supplies posture anchors
+                (per-kf recommended COM via tool1) and the
+                terminal anchor
+        steps — ordered Footstep list from the support-planning
+                sub-algorithm (plan_footsteps); each produces a
+                liftoff + touchdown anchor pair
+
+    Output: ordered LandMark list — support-event anchors +
+    posture anchors + terminal anchor, per the composition spec
+    in CentroidalPlanner's docstring.
+
+    TODO: implement.
+    """
+    from .contracts import PlanError
+    raise PlanError("landmark sequence generation not implemented")
+
+
 class CentroidalPlanner:
     """Algorithm 1 (bootstrip): (Observation, P5Clip) -> LandMark seq.
 
@@ -135,7 +159,5 @@ class CentroidalPlanner:
         lm0 = extract_landmark(observation, self._decoder)
         steps = plan_footsteps(lm0, clip)
         # 生成Landmark序列
-        # TODO(algo1): 支撑事件锚点(离地+落地)/姿态锚点/终点锚点
-        lms = [lm0]
-        return lms
+        return gen_landmarks(lm0, clip, steps)
 

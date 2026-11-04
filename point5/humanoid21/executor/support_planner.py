@@ -104,6 +104,11 @@ class Footstep:
     target: np.ndarray                  # (2,) local frame xy
     kind: str = "move"                  # 'move'|'corrective'|'recover'
     reason: str = ""
+    # clip frame provenance — exactly ONE is set:
+    #   for_frame=k   this step fulfills keyframe k's requirement
+    #   before_frame=k this step must happen before keyframe k
+    for_frame: int = 0
+    before_frame: int = 0
 
 
 def _foot_patches(feet) -> List[np.ndarray]:
@@ -261,7 +266,8 @@ def plan_footsteps(start_landmark, clip,
             steps.append(Footstep(
                 foot=foot, target=tgt, kind="corrective",
                 reason=(f"capture overshoot {n:.2f}m -> {foot} "
-                        f"braces at {np.round(xi, 2)}")))
+                        f"braces at {np.round(xi, 2)}"),
+                before_frame=t.seg))
             # re-anchor virtual state: foot moved, momentum braked
             feet_xy[foot] = tgt
             loaded[foot] = True
@@ -278,7 +284,8 @@ def plan_footsteps(start_landmark, clip,
         if np.linalg.norm(feet_xy[sup] - sup_need) > 0.05:
             steps.append(Footstep(
                 foot=sup, target=sup_need, kind="recover",
-                reason="restore support for clip intent"))
+                reason="restore support for clip intent",
+                before_frame=t.seg))
             feet_xy[sup] = sup_need
 
         # foot targets of this keyframe in frame0; any foot whose
@@ -299,7 +306,8 @@ def plan_footsteps(start_landmark, clip,
         steps.append(Footstep(foot=t.mover,
                               target=w_kf[_FIDX[t.mover], :2].copy(),
                               kind="move",
-                              reason=f"seg{t.seg} mover"))
+                              reason=f"seg{t.seg} mover",
+                              for_frame=t.seg))
         feet_xy[t.mover] = w_kf[_FIDX[t.mover], :2].copy()
         loaded[t.mover] = True
 
@@ -315,7 +323,8 @@ def plan_footsteps(start_landmark, clip,
         if np.linalg.norm(feet_xy[side] - tgt) > 0.05:
             steps.append(Footstep(
                 foot=side, target=tgt, kind="recover",
-                reason="restore clip-required stance"))
+                reason="restore clip-required stance",
+                for_frame=len(clip.keyframes) - 1))
             feet_xy[side] = tgt
     return steps
 
