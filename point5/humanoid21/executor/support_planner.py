@@ -231,13 +231,18 @@ if __name__ == "__main__":
         fig, ax = plt.subplots(figsize=(7, 6))
         ax.set_aspect("equal")
 
-        # 1) clip keyframe feet: gray circles, labeled "k<i>:<R/L>"
+        # 1) clip keyframe feet IN FRAME0 (through transfer chain):
+        #    gray circles, labeled "k<i>:<R/L>"
+        poses = [(np.zeros(2), 0.0)]
+        for k in range(1, len(clip.keyframes)):
+            poses.append(compose_frame(
+                *poses[-1], clip.keyframes[k].transfer))
         for i, kf in enumerate(clip.keyframes):
-            for side, fi, col in (("R", 3, "tab:red"),
-                                  ("L", 4, "tab:blue")):
-                ax.scatter(*kf.pos[fi, :2], s=180, facecolor="none",
-                           edgecolor="gray", linewidth=1.2)
-                ax.annotate(f"k{i}:{side}", kf.pos[fi, :2],
+            w = to_world(kf.pos, *poses[i]) if i else kf.pos
+            for side, fi in (("R", 3), ("L", 4)):
+                ax.scatter(*w[fi, :2], s=340, facecolor="none",
+                           edgecolor="gray", linewidth=1.8)
+                ax.annotate(f"k{i}:{side}", w[fi, :2],
                             xytext=(4, 4), textcoords="offset points",
                             fontsize=8, color="gray")
 
