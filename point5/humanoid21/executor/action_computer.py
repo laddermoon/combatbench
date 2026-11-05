@@ -16,7 +16,7 @@ from typing import List
 import numpy as np
 
 from .algo2_functions import f1, f2, f3, f4, f5
-from .algo2_meta import I1, I4, I6, I7
+from .algo2_meta import I1, I4, I6, I7, I9
 from .contracts import Context, PlanError
 
 
@@ -43,9 +43,11 @@ class ActionComputer:
         i4 = I4(obs[0:21].copy())
         i6 = I6(np.asarray(landmarks[0].com, np.float64))
         i7 = I7(np.asarray(landmarks[1].com, np.float64))
+        i9 = (I9(np.asarray(landmarks[2].com, np.float64))
+              if len(landmarks) > 2 else None)
 
         i2 = f1(landmarks, ctx.clip)
-        i8 = f4(i6, i7)
+        i8 = f4(i6, i7, i9)
         i3 = f2(i1, i2, i8, i6, i7)
         i5 = f3(i3, i4, i8)
         return f5(i8, i5).action.astype(np.float32)

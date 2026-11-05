@@ -103,11 +103,20 @@ class I7:
 
 @dataclass
 class I8:
-    """下一帧质心目标 — F4(I6, I7)。"""
+    """下一帧质心目标 — F4(I6, I7, I9)。"""
     com: np.ndarray
 
     def __post_init__(self):
         self.com = _chk(self.com, _COM, "I8.com")
+
+
+@dataclass
+class I9:
+    """下下个 landmark 的质心位置 — F4 前瞻输入。"""
+    com: np.ndarray
+
+    def __post_init__(self):
+        self.com = _chk(self.com, _COM, "I9.com")
 
 
 # ---------- 动作空间 ----------
@@ -121,4 +130,4 @@ class R:
         self.action = _chk(self.action, (_JOINTS,), "R.action")
 
 
-__all__ = ["I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "R"]
+__all__ = ["I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "I9", "R"]
