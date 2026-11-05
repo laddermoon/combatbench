@@ -16,7 +16,7 @@ P5 约定：5 个关键点的局部坐标 `(5,3)`——头、左手、右手、�
 | 2 | `pose_solver.py` | P5 局部姿态 → Humanoid21 参考关节姿态 + (21,) 动作 | `Humanoid21PoseSolver().solve(p5) -> PoseResult{qpos(21,), action(21,), satisfied, energy}` |
 | 3 | `inertia_solver.py` | P5 局部姿态 → 绕质心转动惯量 | `inertia_estimate(p5) -> (3,3) kg·m²`；`inertia_per_mass`；`gyration_z` |
 | 4 | `capability_solver.py` | P5 → 质心变化能力预期（LIP/捕获点模型） | `capability(p5) -> Capability`；`margin(d)`/`a_max(d)`/`v_max(d)` |
-| 5 | `traj_viz.py` | 质心轨迹 → 3D MP4 动画（可视化调试） | `render_traj(traj_json, out_mp4)` |
+| 5 | `landmark_viz.py` | LandMark 锚点序列 → MP4 走查动画 | `render_landmarks(landmarks, out_mp4)` |
 | 6 | `cop_solver.py` | P5 脚点 → CoP 可行域多边形 | `cop_ranges(p5) -> [poly|None ×2]`；`foot_cop_range(foot_xy)` |
 | 7 | （在 `../support_planner.py`） | clip → 支撑转移段检出 | `support_transitions(clip) -> List[SupportTransition]` |
 | 8 | `start_solver.py` | Observation → 起点 LandMark | `extract_landmark(obs, decoder) -> LandMark` |
@@ -50,10 +50,12 @@ P5 约定：5 个关键点的局部坐标 `(5,3)`——头、左手、右手、�
 算法1 判"当前能不能迈出下一步/要不要先矫正"；算法2 用
 `_hull2d`/`_PATCH` 算捕获点出域罚。
 
-### 工具5 `traj_viz` — 质心轨迹 → MP4
+### 工具5 `landmark_viz` — LandMark 序列 → MP4
 
-调试可视化：球轨迹跟 c(t)，自转表示角动量 L，拖尾+地面投影+
-高度标注。供分析规划器输出的质心轨迹合理性。
+算法1 输出的走查动画：每个锚点驻留 ~0.6s——蓝球=com+垂线、
+橙/绿 patch=右/左脚着地（透明度∝force_ratio）、浮空脚=小球标记、
+红点=CoP、青色箭头=vel 约束、拖尾+序号字幕。直观检查锚点序列
+的支撑事件/姿态意图对不对。
 
 ### 工具6 `cop_solver` — 脚点 → CoP 可行域
 

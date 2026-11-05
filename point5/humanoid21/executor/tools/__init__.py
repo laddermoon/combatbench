@@ -9,6 +9,7 @@ from .inertia_solver import inertia_estimate, inertia_per_mass
 from .capability_solver import Capability, capability
 from .cop_solver import cop_ranges, foot_cop_range
 from .start_solver import extract_landmark
+from .landmark_viz import render_landmarks
 
 __all__ = [
     "com_estimate", "mass_estimate",
@@ -16,5 +17,5 @@ __all__ = [
     "inertia_estimate", "inertia_per_mass",
     "Capability", "capability",
     "cop_ranges", "foot_cop_range",
-    "extract_landmark",
+    "extract_landmark", "render_landmarks",
 ]
