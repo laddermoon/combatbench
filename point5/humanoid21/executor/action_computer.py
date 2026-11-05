@@ -47,7 +47,7 @@ class ActionComputer:
               if len(landmarks) > 2 else None)
 
         i2 = f1(landmarks, ctx.clip)
-        i8 = f4(i6, i7, i9)
+        i8 = f4(i6, i7, i9, landmarks)
         i3 = f2(i1, i2, i8, i6, i7)
         i5 = f3(i3, i4, i8)
         return f5(i8, i5).action.astype(np.float32)

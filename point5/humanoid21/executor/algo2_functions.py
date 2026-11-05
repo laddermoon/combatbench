@@ -15,7 +15,7 @@ from typing import List, Optional
 import numpy as np
 
 from point5.contracts import P5Clip
-from .algo2_meta import I1, I2, I3, I4, I5, I6, I7, I8, R
+from .algo2_meta import I1, I2, I3, I4, I5, I6, I7, I8, I9, R
 from .contracts import LandMark
 
 
@@ -48,8 +48,15 @@ def f3(i3: I3, i4: I4, i8: I8) -> I5:
     raise NotImplementedError
 
 
-def f4(i6: I6, i7: I7) -> I8:
-    """f4(I6, I7) -> I8：当前质心 → 锚点质心的下一帧目标。"""
+def f4(i6: I6, i7: I7, i9: Optional[I9] = None,
+       landmarks: Optional[List[LandMark]] = None) -> I8:
+    """f4(I6, I7, I9?, landmarks) -> I8：当前质心 → 下一帧质心目标。
+
+    I9 下下个锚点质心——前瞻规划：下一帧目标不只盯 I7，
+    还要为 I9 的方向留余量；
+    landmarks 完整锚点信息——支撑态/脚位/force_ratio 决定
+    质心路径的可行通道（如抬脚前须先移到支撑脚上方）。
+    """
     raise NotImplementedError
 
 
