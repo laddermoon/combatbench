@@ -28,10 +28,11 @@ def f1(landmarks: List[LandMark], clip: P5Clip) -> I2:
     raise NotImplementedError
 
 
-def f2(i1: I1, i2: I2, i8: I8) -> I3:
-    """f2(I1, I2, I8) -> I3。
+def f2(i1: I1, i2: I2, i8: I8, i6: I6, i7: I7) -> I3:
+    """f2(I1, I2, I8, I6, I7) -> I3。
 
-    当前 P5 → 锚点 P5 的过渡，须与质心轨迹一致（I8 输入）。
+    当前 P5 → 锚点 P5 的过渡，须与质心轨迹一致（I8 输入）；
+    I8 的进度语义由 I6→I7 路径定义。
     """
     raise NotImplementedError
 
