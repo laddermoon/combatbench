@@ -25,6 +25,13 @@ class ActionComputer:
 
     def __init__(self, robot_id: str = "robot_a"):
         self.robot_id = robot_id
+        self._decoder = None
+
+    def _dec(self):
+        if self._decoder is None:
+            from .centroidal_planner import ObsDecoder
+            self._decoder = ObsDecoder(self.robot_id)
+        return self._decoder
 
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
         """LandMark seq + obs -> next (21,) normalized action."""
@@ -32,10 +39,11 @@ class ActionComputer:
         if not landmarks or len(landmarks) < 2:
             raise PlanError("algorithm 2 needs >=2 landmarks")
 
-        i1 = I1(None)     # TODO: obs 解码当前 P5
-        i4 = I4(None)     # TODO: obs[0:21]
-        i6 = I6(None)     # TODO: obs 解码质心
-        i7 = I7(None)     # TODO: landmarks[1].com
+        i1 = I1(self._dec().decode_p5_local(obs)[0])
+        i4 = I4(obs[0:21].copy())
+        from .tools.com_solver import com_estimate
+        i6 = I6(com_estimate(i1.p5))
+        i7 = I7(np.asarray(landmarks[1].com, np.float64))
 
         i2 = f1(landmarks, ctx.clip)
         i8 = f4(i6, i7)
