@@ -41,8 +41,7 @@ class ActionComputer:
 
         i1 = I1(self._dec().decode_p5_local(obs)[0])
         i4 = I4(obs[0:21].copy())
-        from .tools.com_solver import com_estimate
-        i6 = I6(com_estimate(i1.p5))
+        i6 = I6(np.asarray(landmarks[0].com, np.float64))
         i7 = I7(np.asarray(landmarks[1].com, np.float64))
 
         i2 = f1(landmarks, ctx.clip)
