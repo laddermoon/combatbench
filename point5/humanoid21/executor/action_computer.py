@@ -47,5 +47,5 @@ class ActionComputer:
         i2 = f1(landmarks, ctx.clip)
         i8 = f4(i6, i7)
         i3 = f2(i1, i2, i8, i6, i7)
-        i5 = f3(i3)
+        i5 = f3(i3, i4, i8)
         return f5(i8, i5).action.astype(np.float32)

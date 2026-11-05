@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
@@ -37,9 +37,14 @@ def f2(i1: I1, i2: I2, i8: I8, i6: I6, i7: I7) -> I3:
     raise NotImplementedError
 
 
-def f3(i3: I3, i4: Optional[I4] = None,
-       i8: Optional[I8] = None) -> I5:
-    """f3(I3, I4, I8?) -> I5：P5 → 关节姿态（工具2 pose_solver）。"""
+def f3(i3: I3, i4: I4, i8: I8) -> I5:
+    """f3(I3, I4, I8) -> I5：P5 + 约束 → 关节姿态。
+
+    I3 参考姿态：生成的姿态不能离它太远；
+    I4 新姿态的 5 点约束，同时可经 pose_solver 给参考动作；
+    I8 质心位置约束。
+    多约束姿态求解——本链中较难的一个算法。
+    """
     raise NotImplementedError
 
 
