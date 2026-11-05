@@ -48,12 +48,14 @@ def f3(i3: I3, i4: I4, i8: I8) -> I5:
     raise NotImplementedError
 
 
-def f4(i6: I6, i7: I7, i9: Optional[I9] = None,
-       landmarks: Optional[List[LandMark]] = None) -> I8:
-    """f4(I6, I7, I9?, landmarks) -> I8：当前质心 → 下一帧质心目标。
+def f4(landmarks: List[LandMark]) -> I8:
+    """f4(landmarks) -> I8：当前质心 → 下一帧质心目标。
 
-    I9 下下个锚点质心——前瞻规划：下一帧目标不只盯 I7，
-    还要为 I9 的方向留余量；
+    I6/I7/I9 内部使用：
+      I6 = landmarks[0].com（当前质心 = 起点锚点）
+      I7 = landmarks[1].com（下一锚点质心）
+      I9 = landmarks[2].com（前瞻锚点，缺省则无）
+
     landmarks 完整锚点信息——支撑态/脚位/force_ratio 决定
     质心路径的可行通道（如抬脚前须先移到支撑脚上方）。
     """
