@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 from .com_solver import com_estimate
-from .contracts import FootSupport, LandMark
+from ..contracts import FootSupport, LandMark
 
 _CONTACT_EPS = 0.05        # force_ratio below this = airborne
 
@@ -24,7 +24,7 @@ def extract_landmark(observation: np.ndarray,
     """96-dim policy obs -> start LandMark."""
     obs = np.asarray(observation, np.float64)
     if decoder is None:
-        from .centroidal_planner import ObsDecoder
+        from ..centroidal_planner import ObsDecoder
         decoder = ObsDecoder("robot_a")
     local_p5, R_loc = decoder.decode_p5_local(obs)
 

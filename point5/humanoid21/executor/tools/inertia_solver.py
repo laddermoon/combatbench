@@ -10,7 +10,7 @@ import numpy as np
 
 from point5.mass_model import mass_proxy
 
-from .centroidal import MASS_KG
+from ..centroidal import MASS_KG
 
 
 def inertia_per_mass(local_p5: np.ndarray) -> np.ndarray:

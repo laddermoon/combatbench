@@ -95,7 +95,7 @@ class ActionComputer:
     def _landmark_error(self, lm_world, origin, yaw0, target,
                         vel_w=None, obs=None) -> float:
         """D_LM between decoded rollout state and a LandMark."""
-        from .com_solver import com_estimate
+        from .tools.com_solver import com_estimate
         err = 0.0
         com_t = com_estimate(lm_world)
         com_f = np.concatenate([self._to_frame0(com_t[:2], origin,
@@ -121,8 +121,8 @@ class ActionComputer:
         candidate that collapses late still pays.  Capture-point exit
         is the predictive term: penalize BEFORE the fall is visible.
         """
-        from .com_solver import com_estimate
-        from .capability_solver import _hull2d
+        from .tools.com_solver import com_estimate
+        from .tools.capability_solver import _hull2d
         from .support_planner import _inside
         b = 0.0
         g = np.asarray(o[42:45], np.float64)
@@ -164,7 +164,7 @@ class ActionComputer:
         # was actually told to track, else ref and objective disagree.
         dwell = 0
         dwell_budget = len(obs_seq) + 1   # reach-only, matching rollout
-        from .com_solver import com_estimate
+        from .tools.com_solver import com_estimate
         for o in obs_seq:
             lm_w, _, _ = self._fk_decode(wsim, o)
             cost += self._balance_terms(o, lm_w, origin0, yaw0)
@@ -348,7 +348,7 @@ class ActionComputer:
             if not (0 <= fr < len(kfs)):
                 return None
             if self._pose_solver is None:
-                from .pose_solver import Humanoid21PoseSolver
+                from .tools.pose_solver import Humanoid21PoseSolver
                 self._pose_solver = Humanoid21PoseSolver()
             # cache by pose content — the clip object is rebuilt every
             # control step so object identity is useless as a key.

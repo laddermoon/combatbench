@@ -1,16 +1,16 @@
 """Executor — stateless P5 servo.  See DESIGN notes in module docs."""
-from .capability_solver import Capability, capability
-from .com_solver import com_estimate, mass_estimate
-from .cop_solver import cop_ranges, foot_cop_range
-from .start_solver import extract_landmark
+from .tools.capability_solver import Capability, capability
+from .tools.com_solver import com_estimate, mass_estimate
+from .tools.cop_solver import cop_ranges, foot_cop_range
+from .tools.start_solver import extract_landmark
 from .support_planner import (plan_footsteps, support_transitions,
     SupportTransition)
-from .inertia_solver import inertia_estimate, inertia_per_mass
+from .tools.inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (
     Action, AnchorError, Context, ExecutorError,
     Observation, PlanError)
 from .executor import Executor
-from .pose_solver import Humanoid21PoseSolver
+from .tools.pose_solver import Humanoid21PoseSolver
 
 __all__ = [
     "Action", "AnchorError", "Context",

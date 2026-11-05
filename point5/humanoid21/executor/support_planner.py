@@ -49,7 +49,7 @@ import numpy as np
 
 from point5.contracts import compose_frame, to_world
 
-from .cop_solver import FLAT_Z as LIFT_Z
+from .tools.cop_solver import FLAT_Z as LIFT_Z
 
 _FIDX = {"right": 3, "left": 4}
 _STEP_MAX = 0.35          # prior: nominal max single-step length (m)
@@ -113,7 +113,7 @@ class Footstep:
 
 def _foot_patches(feet) -> List[np.ndarray]:
     """Contact patches (4,2 each) of loaded feet."""
-    from .capability_solver import _PATCH
+    from .tools.capability_solver import _PATCH
     out = []
     for f in feet.values():
         if f.force_ratio > 0.05 and f.foot_pos is not None:
@@ -137,7 +137,7 @@ def _outside_polygon(xi, feet) -> bool:
         else np.empty((0, 2))
     if len(pts) == 0:
         return False
-    from .capability_solver import _hull2d
+    from .tools.capability_solver import _hull2d
     return not _inside(xi, _hull2d(pts))
 
 
@@ -219,7 +219,7 @@ def plan_footsteps(start_landmark, clip,
               for s in ("right", "left")}
 
     def hull():
-        from .capability_solver import _PATCH, _hull2d
+        from .tools.capability_solver import _PATCH, _hull2d
         pts = [feet_xy[s] + np.asarray(_PATCH)
                for s in loaded if s and feet_xy[s] is not None]
         return _hull2d(np.vstack(pts)) if pts else None
@@ -262,7 +262,7 @@ def plan_footsteps(start_landmark, clip,
             *poses[t.seg])[0, :2]
 
         # ---- physical gate: is current momentum catchable? ----
-        from .capability_solver import _PATCH as _PATCH_g
+        from .tools.capability_solver import _PATCH as _PATCH_g
         _PATCH = _PATCH_g
         n_fix = 0
         while n_fix < max_correction:
@@ -278,7 +278,7 @@ def plan_footsteps(start_landmark, clip,
             probe[t.mover] = tgt_xy
             pts = [probe[s2] + np.asarray(_PATCH)
                    for s2 in probe if probe[s2] is not None]
-            from .capability_solver import _hull2d
+            from .tools.capability_solver import _hull2d
             if _inside(xi, _hull2d(np.vstack(pts))):
                 break
             # capture step on the foot nearest xi; on a near-tie
@@ -379,7 +379,7 @@ if __name__ == "__main__":
     from matplotlib.patches import Polygon as MpPoly
 
     from point5.contracts import Keyframe, P5Clip, Transfer
-    from point5.humanoid21.executor.com_solver import com_estimate
+    from point5.humanoid21.executor.tools.com_solver import com_estimate
     from point5.humanoid21.executor.contracts import (FootSupport,
                                                       LandMark)
     from point5.humanoid21.stand_punch import (plan_stand_punch,

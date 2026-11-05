@@ -26,7 +26,9 @@ gen_action(ctx)
 - 注入 `obs_to_core_state` 重建 x̂0 到 wsim；**模型与真实 sim 零发散**
 - 候选 = **[k(5), d(5)]** 5 关节组跟踪增益+残差偏移；rollout 内
   **闭环**：`u = clip(a_ref + k(a_ref−q) + d)`（反馈在模型内）
-- `a_ref[i]` = 锚点 i 的 clip 帧 P5 → `pose_solver.solve().action`
+- 先验工具集在 `tools/`（各工具说明见其 README.md）：com/pose/
+  inertia/capability/cop/start solver + traj_viz
+- `a_ref[i]` = 锚点 i 的 clip 帧 P5 → `tools.pose_solver.solve().action`
   （按 pos 内容缓存）
 - rollout 内 ref 按锚点序列走查：**reach-only（reach_eps=0.06）**——
   时间兜底变体让 ref 追着做不到的锚点走，视频全倒，已废弃

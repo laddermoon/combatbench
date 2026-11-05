@@ -105,10 +105,10 @@ def gen_landmarks(lm0: "LandMark", clip, steps
     posture anchors + terminal anchor, per the composition spec
     in CentroidalPlanner's docstring.
     """
-    from .com_solver import com_estimate
+    from .tools.com_solver import com_estimate
     from .contracts import FootSupport, LandMark
-    from .cop_solver import FLAT_Z as LIFT_Z
-    from .capability_solver import _PATCH, _hull2d
+    from .tools.cop_solver import FLAT_Z as LIFT_Z
+    from .tools.capability_solver import _PATCH, _hull2d
     from .support_planner import _inside
     from point5.contracts import compose_frame, to_world
 
@@ -267,7 +267,7 @@ class CentroidalPlanner:
              clip) -> list:
         """(observation, remaining clip) -> ordered LandMark seq.
         """
-        from .start_solver import extract_landmark
+        from .tools.start_solver import extract_landmark
         from .support_planner import plan_footsteps
         from point5.contracts import compose_frame
 

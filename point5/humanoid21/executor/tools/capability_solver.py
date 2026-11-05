@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .centroidal import MASS_KG  # noqa: F401  (mass for absolute force)
+from ..centroidal import MASS_KG  # noqa: F401  (mass for absolute force)
 from .com_solver import com_estimate
 
 G = 9.81

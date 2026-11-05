@@ -19,7 +19,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-from .centroidal import CTRL_DT, load_traj
+from ..centroidal import CTRL_DT, load_traj
 
 I_REF = 0.53            # kg·m^2 nominal inertia (standing Izz)
 _TRAIL = 40             # steps kept in the fading trail
