@@ -371,11 +371,16 @@ class Pose:
         return a, lv, am
 
     def com_vel(self, **anchor_kw) -> np.ndarray:
-        """Exact subtree COM velocity (3,) in the anchored local frame."""
+        """Exact subtree COM velocity (3,) — anchored local frame.
+
+        与 ``a.com()``/``a.p5()`` 同一坐标系（默认 ankle_mid 原点、
+        躯干 +x、重力 -z）：com_vel 指哪，com 就往哪漂。
+        mujoco subtree_linvel 原本在世界系，经 ``a.R`` 旋入锚定帧；
+        旋转保模长——换锚点只改分量表达，不改 |v|。"""
         return self._momentum_state(**anchor_kw)[1]
 
     def ang_mom(self, **anchor_kw) -> np.ndarray:
-        """Subtree angular momentum (3,) in the anchored local frame."""
+        """Subtree angular momentum (3,) — anchored local frame."""
         return self._momentum_state(**anchor_kw)[2]
 
     # ---------- unanchored ----------
