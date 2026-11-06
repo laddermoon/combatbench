@@ -16,34 +16,24 @@ from .algo1_meta import I1, I2, I3, R
 from .contracts import Observation
 
 
-_RANGES = None
 
-
-def _ranges():
-    """(21,2) joint radian ranges for obs denormalization."""
-    global _RANGES
-    if _RANGES is None:
-        from point5.humanoid21.pose import Pose
-        _RANGES = Pose.joint_ranges("robot_a")
-    return _RANGES
 
 
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
-    Pose.from_obs -> anchor('ankle_mid') 一次 FK 出：
-    脚位 xy + 精确质心（质量加权）+ obs[52:54] 实测力度分配。
+    Pose.support_landmark_on_p5_axis() 出几何（脚位 + 精确质心）；
+    force_ratio 覆盖为 obs[52:54] 实测动态分配（当前态是测量
+    不是设计——落地判带那套默认分配只用于规划态）。
     """
-    from .contracts import FootSupport, SupportLandMark
     from point5.humanoid21.pose import Pose
 
-    a = Pose.from_obs(np.asarray(obs, np.float64),
-                            _ranges()).anchor('ankle_mid')
-    fp = a.foot_pos()
+    obs = np.asarray(obs, np.float64)
+    lm = Pose.from_obs(obs).support_landmark_on_p5_axis()
     fr = obs[52:54]
-    feet = {s: FootSupport(force_ratio=float(fr[k]), pos=fp[s])
-            for s, k in (("right", 0), ("left", 1))}
-    return I1(lm=SupportLandMark(com=a.com(), feet=feet))
+    lm.feet["right"].force_ratio = float(fr[0])
+    lm.feet["left"].force_ratio = float(fr[1])
+    return I1(lm=lm)
 
 
 def f2(obs: Observation) -> I2:
