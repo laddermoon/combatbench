@@ -16,10 +16,10 @@ import numpy as np
 
 from point5.contracts import P5Clip
 from .algo2_meta import I1, I2, I3, I4, I5, I6, I7, I8, I9, R
-from .contracts import SupportLandMark
+from .contracts import SupportState
 
 
-def f1(landmarks: List[SupportLandMark], clip: P5Clip) -> I2:
+def f1(landmarks: List[SupportState], clip: P5Clip) -> I2:
     """f1(landmarks, clip) -> I2。
 
     姿态锚点：frame 链接到 clip 关键帧取 pos；
@@ -48,7 +48,7 @@ def f3(i3: I3, i4: I4, i8: I8) -> I5:
     raise NotImplementedError
 
 
-def f4(landmarks: List[SupportLandMark]) -> I8:
+def f4(landmarks: List[SupportState]) -> I8:
     """f4(landmarks) -> I8：当前质心 → 下一帧质心目标。
 
     I6/I7/I9 内部使用：

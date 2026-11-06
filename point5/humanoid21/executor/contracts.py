@@ -68,15 +68,28 @@ class FootSupport:
 
 
 @dataclass
-class SupportLandMark:
-    """Algorithm 1 output unit — a self-consistent target state.
-
-    No time index: describes WHAT state to reach (support + COM +
-    torso facing), not when.  ``vel=None`` means free arrival speed;
-    a given vector (incl. zeros) is the desired COM velocity.
+class SupportState:
+    """
+    不规定坐标系，可以用于任意坐标系
     """
 
     com: np.ndarray                    # (3,) target COM, local frame
     feet: Dict[str, FootSupport]       # 'right'/'left'
     torso_yaw: Optional[float] = None  # rad; None = not handled (v1)
     for_frame: int = 0                 # for fullfil source clip frame (metadata)
+
+@dataclass
+class SupportPlan:
+    """算法一的输出 — 支撑状态序列。
+
+    所有 SupportState 坐标统一在**首帧 P5 局部帧**（坐标系约定挂
+    在 plan 层，state 本身帧无关）。landmarks[i] 存绝对值——
+    帧间转移是需要时算的差，不是存储模型。
+    """
+    landmarks: List[SupportState] = field(default_factory=list)
+
+    def __len__(self):
+        return len(self.landmarks)
+
+    def __getitem__(self, i):
+        return self.landmarks[i]

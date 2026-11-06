@@ -7,7 +7,7 @@ from .support_planner import SupportPlanner
 from .tools.inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (
     Action, AnchorError, Context, ExecutorError,
-    Observation, PlanError)
+    Observation, PlanError, SupportPlan, SupportState)
 from .executor import Executor
 
 __all__ = [
@@ -16,5 +16,5 @@ __all__ = [
     "Observation", "PlanError", "com_estimate", "mass_estimate",
     "inertia_estimate", "inertia_per_mass", "Capability",
     "capability", "cop_ranges", "foot_cop_range",
-    "SupportPlanner", "f1",
+    "SupportPlan", "SupportState", "SupportPlanner", "f1",
 ]

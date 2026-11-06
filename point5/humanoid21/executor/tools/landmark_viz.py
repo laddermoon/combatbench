@@ -1,4 +1,4 @@
-"""Tool 5: SupportLandMark sequence -> MP4 walkthrough (MuJoCo render).
+"""Tool 5: SupportState sequence -> MP4 walkthrough (MuJoCo render).
 
 Each anchor is held for ``hold`` frames so the planned support event /
 posture can be read off:
@@ -109,7 +109,7 @@ def _project(cam, fovy_deg, world, size):
 
 def render_landmarks(landmarks: List, out_mp4: str,
                      hold: int = _HOLD) -> Path:
-    """Render an ordered SupportLandMark sequence to MP4."""
+    """Render an ordered SupportState sequence to MP4."""
     cs = np.array([lm.com for lm in landmarks], np.float64)
 
     model = mujoco.MjModel.from_xml_string(_XML.format(r=_BALL_R))

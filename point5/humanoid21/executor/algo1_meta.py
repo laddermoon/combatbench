@@ -1,9 +1,9 @@
 """算法1 信息项 —— alg1_infoflow.md 的代码落地。
 
     输入: Observation(96,), P5Clip
-    输出: R = 支撑状态序列（List[SupportLandMark]，≥3，首项=当前态）
+    输出: R = 支撑状态序列（List[SupportState]，≥3，首项=当前态）
 
-支撑状态（SupportLandMark）：两脚 XY 位置 + 支撑力度分配（体重归一）
+支撑状态（SupportState）：两脚 XY 位置 + 支撑力度分配（体重归一）
 + 质心 (3,)；不含质心速度/角速度、不带时间。
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import List
 
 import numpy as np
 
-from .contracts import SupportLandMark  # noqa: F401  (re-exported types)
+from .contracts import SupportState  # noqa: F401  (re-exported types)
 
 _COM = (3,)
 
@@ -28,9 +28,9 @@ def _chk(v: np.ndarray, shape, name: str) -> np.ndarray:
 class I1:
     """当前支撑状态 — F1(Observation)。
 
-    当前两脚位置、支撑分配、质心——形态上就是当前时刻的 SupportLandMark。
+    当前两脚位置、支撑分配、质心——形态上就是当前时刻的 SupportState。
     """
-    lm: SupportLandMark
+    lm: SupportState
 
 
 @dataclass
@@ -55,7 +55,7 @@ class I3:
     逐帧变换：每帧 P5 → 对应支撑状态（脚位取 P5 踝点、
     质心经工具1 推荐并投影支撑域）。与 clip 帧一一对齐。
     """
-    targets: List[SupportLandMark]        # len = clip 帧数
+    targets: List[SupportState]        # len = clip 帧数
 
 
 @dataclass
@@ -65,7 +65,7 @@ class R:
     锚点 = 支撑事件锚点 + 姿态锚点；不带时间、允许重复；
     长度 ≥3（clip 无换脚需求时以维持平衡的锚点补齐）。
     """
-    landmarks: List[SupportLandMark]
+    landmarks: List[SupportState]
 
     def __post_init__(self):
         assert len(self.landmarks) >= 3, "R: sequence must have >=3 anchors"

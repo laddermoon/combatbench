@@ -3,9 +3,9 @@
 Flow per call (per bootstrip.md):
 
     0. verify clip frame 0 anchored to the observation's P5
-    1. extract the start SupportLandMark from the observation (tool8)
+    1. extract the start SupportState from the observation (tool8)
     2. support planning             (algorithm-1 branch)
-    3. SupportLandMark sequence generation (algorithm 1 — TODO)
+    3. SupportState sequence generation (algorithm 1 — TODO)
     4. compute the next action      (algorithm 2 — stub)
 
 The only owned resource is the internal working simulator used for

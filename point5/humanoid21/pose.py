@@ -217,13 +217,13 @@ class Pose:
         return self.anchor('ankle_mid').p5()
 
     def support_landmark_on_p5_axis(self):
-        """P5 轴系下的 SupportLandMark。
+        """P5 轴系下的 SupportState。
 
         com 精确质量加权；foot pos 来自锚定帧；force_ratio 按
         落地脚均分（姿态本身不带接触力——这是支撑语义不是测量）。
         """
         from point5.humanoid21.executor.contracts import (
-            FootSupport, SupportLandMark)
+            FootSupport, SupportState)
         a = self.anchor('ankle_mid')
         fp, raw = a.foot_pos(), a.p5().pos
         # P5 脚点是踝中心——落地时 z≈0.087，不是 0
@@ -233,7 +233,7 @@ class Pose:
         feet = {s: FootSupport(force_ratio=share if s in planted
                                else 0.0, pos=fp[s])
                 for s in ("right", "left")}
-        return SupportLandMark(com=a.com(), feet=feet)
+        return SupportState(com=a.com(), feet=feet)
 
     def tilt_angles(self) -> np.ndarray:
         """(2,) [roll, pitch] rad — 由 g_body 分解的倾斜角。"""

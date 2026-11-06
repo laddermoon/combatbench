@@ -3,7 +3,7 @@
 每个 I 是一个命名信息项（dataclass），承载载荷 + 来源语义；
 功能点 F1-F5 只出现在来源签名里，不在此定义。
 
-    输入: Observation(96,), P5Clip, List[SupportLandMark]
+    输入: Observation(96,), P5Clip, List[SupportState]
     输出: R (Action 21,)
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Optional
 
 import numpy as np
 
-from .contracts import Action, SupportLandMark  # noqa: F401  (re-exported types)
+from .contracts import Action, SupportState  # noqa: F401  (re-exported types)
 
 # ---------- payload shapes ----------
 _P5 = (5, 3)      # 头/左右手/左右脚，重力对齐局部系
