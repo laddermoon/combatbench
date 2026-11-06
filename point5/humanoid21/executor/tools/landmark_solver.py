@@ -3,7 +3,9 @@
 Extraction:
 
     com  = tool1 com_estimate(FK-decoded local P5)
-    feet = obs[52:54] contact force ratios; pos = 解码脚 xy
+    feet = obs[52:54] MEASURED normal-force ratios (动态实测值，
+           含冲击瞬态——是"地面正在给多少力"，不是姿态推的
+           静态分配；pos = 解码脚 xy
     torso_yaw = None (v1)
 """
 from __future__ import annotations
