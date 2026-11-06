@@ -35,14 +35,19 @@ class ActionComputer:
 
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
         """SupportState seq + obs -> next (21,) normalized action."""
+        from point5.humanoid21.pose import Pose
+        from .algo1_functions import f12
+
         obs = np.asarray(ctx.observation, np.float64)
         if not landmarks or len(landmarks) < 2:
             raise PlanError("algorithm 2 needs >=2 landmarks")
 
-        i1 = I1(self._dec().from_obs(obs).anchor('ankle_mid').p5().pos)
-        i4 = I4(obs[0:21].copy())
-        i6 = I6(np.asarray(landmarks[0].com, np.float64))
-        i7 = I7(np.asarray(landmarks[1].com, np.float64))
+        pose = Pose.from_obs(obs)
+        i1v, _ = f12(obs)
+        i1 = I1(pose.anchor('ankle_mid').p5().pos)
+        i4 = I4(pose)                       # Pose（关节+高度+倾斜+速度）
+        i6 = I6(i1v.lm)                     # 当前支撑态（f12 解码）
+        i7 = I7(landmarks[1])               # 下一锚点支撑态
 
         i2 = f1(landmarks, ctx.clip)
         i8 = f4(landmarks)
