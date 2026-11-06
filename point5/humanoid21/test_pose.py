@@ -353,3 +353,164 @@ class TestDeterminism:
         a = Pose.from_p5(pose.p5(), tolerance=0.02)
         b = Pose.from_p5(pose.p5(), tolerance=0.02)
         np.testing.assert_allclose(a.qpos, b.qpos, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 深：世界系度量不变量、_quat_wxyz、共享FK、z透传、边界、估计器对照
+# ---------------------------------------------------------------------------
+
+class TestWorldInvariants:
+    """Frame-free ground truth: distances are invariant across frames."""
+
+    def _sim_foot_dist(self, sim):
+        d = sim.data
+        fl = d.xpos[__import__('mujoco').mj_name2id(
+            d.model, __import__('mujoco').mjtObj.mjOBJ_BODY,
+            'ankle_left_a')][0:2] if False else None
+        return None
+
+    def test_foot_span_matches_sim(self, sim, pose):
+        import mujoco
+        fr = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_BODY,
+                               "foot_right_a")
+        fl = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_BODY,
+                               "foot_left_a")
+        sim_span = np.linalg.norm(
+            sim.data.xpos[fr][:2] - sim.data.xpos[fl][:2])
+        p = pose.p5().pos
+        dec_span = np.linalg.norm(p[3, :2] - p[4, :2])
+        # landmark offsets vs body origins differ but same order
+        assert abs(sim_span - dec_span) < 0.1
+
+    def test_head_foot_distance_sane(self, pose):
+        p = pose.p5().pos
+        d = np.linalg.norm(p[0] - p[3])
+        assert 1.0 < d < 1.8          # head-to-ankle chord, standing
+
+
+class TestQuatWxyz:
+    def test_identity(self):
+        from point5.humanoid21.pose import _quat_wxyz
+        np.testing.assert_allclose(_quat_wxyz(np.eye(3)),
+                                   [1, 0, 0, 0], atol=1e-9)
+
+    def test_90deg_branches(self):
+        # rotations with trace <= 0 hit the elif branch
+        from point5.humanoid21.pose import _quat_wxyz
+        for axis, ang in (([1, 0, 0], np.pi), ([0, 1, 0], np.pi),
+                          ([0, 0, 1], np.pi), ([1, 0, 0], np.pi / 2),
+                          ([0, 1, 0], 2 * np.pi / 3)):
+            a = np.asarray(axis, float); a /= np.linalg.norm(a)
+            K = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]],
+                          [-a[1], a[0], 0]])
+            R = np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
+            q = _quat_wxyz(R)
+            assert abs(np.linalg.norm(q) - 1) < 1e-9
+            # quat -> rotation must reproduce R
+            w, x, y, z = q
+            R2 = np.array([
+                [1-2*(y*y+z*z), 2*(x*y-w*z), 2*(x*z+w*y)],
+                [2*(x*y+w*z), 1-2*(x*x+z*z), 2*(y*z-w*x)],
+                [2*(x*z-w*y), 2*(y*z+w*x), 1-2*(x*x+y*y)]])
+            np.testing.assert_allclose(R2, R, atol=1e-6)
+
+
+class TestSharedFK:
+    def test_alternating_anchors_independent(self, sim):
+        # _FK is a shared mutable model — two poses' anchors must not
+        # leak state between calls
+        obs = sim.get_derived_state()["robot_a"]["observation"]
+        p1 = Pose.from_obs(obs)
+        q2 = np.zeros(21); q2[10] = 0.3
+        p2 = Pose(qpos=q2, root_z=1.0, g_body=np.array([0., 0., -9.81]))
+        a1 = p1.anchor().com()
+        _ = p2.anchor()                     # intervening FK pose
+        np.testing.assert_allclose(p1.anchor().com(), a1)
+
+    def test_two_poses_different(self, sim):
+        obs = sim.get_derived_state()["robot_a"]["observation"]
+        p1 = Pose.from_obs(obs)
+        p2 = Pose(qpos=np.zeros(21), root_z=1.0,
+                  g_body=np.array([0., 0., -9.81]))
+        assert not np.allclose(p1.anchor().com(),
+                               p2.anchor().com(), atol=1e-6)
+
+
+class TestZPassthrough:
+    def test_anchor_preserves_z(self, pose):
+        # xy translation + yaw rotation must not change any z
+        for kw in (dict(xy=(1, 2), yaw=0.5),
+                   dict(point="left", xy=(-1, 0), yaw=-1.2)):
+            a = pose.anchor(**kw)
+            ref = pose.anchor()
+            np.testing.assert_allclose(a.p5().pos[:, 2],
+                                       ref.p5().pos[:, 2], atol=1e-9)
+
+
+class TestPlantedBoundary:
+    def test_boundary_semantics(self):
+        # foot z < 0.12 counts planted; just above does not
+        p0 = np.zeros((5, 3)); p0[0] = [0, 0, 1.4]
+        p0[3] = [0, -0.09, 0.087]; p0[4] = [0, 0.09, 0.13]   # 0.13 > band
+        pos = Pose.from_p5(p0, tolerance=0.05)
+        lm = pos.support_landmark_on_p5_axis()
+        raw = pos.p5().pos
+        # whichever side is above band gets 0; if solver lands both
+        # below, both share — lock the semantic either way
+        for s, fi in (("right", 3), ("left", 4)):
+            if raw[fi, 2] > 0.12:
+                assert lm.feet[s].force_ratio == 0.0
+
+
+class TestEstimatorCrossCheck:
+    def test_exact_com_vs_mass_proxy(self, pose):
+        # exact mass-weighted com vs model-free proxy: same ballpark
+        from point5.humanoid21.executor.tools.com_solver import (
+            com_estimate)
+        exact = pose.anchor().com()
+        proxy = com_estimate(pose.p5().pos)
+        assert np.linalg.norm(exact - proxy) < 0.08
+
+    def test_com_inside_support_polygon(self, pose):
+        # standing: com xy must sit within the ankle-mid support area
+        a = pose.anchor()
+        fp = a.foot_pos()
+        com = a.com()[:2]
+        xr = sorted([fp["right"][1], fp["left"][1]])
+        assert xr[0] - 0.05 < com[1] < xr[1] + 0.05
+        assert abs(com[0]) < 0.15          # near ankle line
+
+
+class TestAnchorPoints:
+    @pytest.mark.parametrize("pt", ["ankle_mid", "left", "right", "com"])
+    def test_all_points_resolve(self, pose, pt):
+        a = pose.anchor(pt, xy=(0.2, -0.1), yaw=0.3)
+        assert a.p5().pos.shape == (5, 3)
+        assert np.all(np.isfinite(a.com()))
+
+    def test_anchor_com_vs_mid_differ(self, pose):
+        # different anchor points -> different frames, same pose shape
+        m, c = pose.anchor("ankle_mid"), pose.anchor("com")
+        dm = np.linalg.norm(m.p5().pos[3:5] - c.p5().pos[3:5], axis=1)
+        assert dm.min() > 0                 # frames differ
+        # but pairwise foot distance is frame-invariant
+        fm = np.linalg.norm(m.foot_pos()["right"] - m.foot_pos()["left"])
+        fc = np.linalg.norm(c.foot_pos()["right"] - c.foot_pos()["left"])
+        assert fm == pytest.approx(fc, abs=1e-9)
+
+
+class TestFromP5Poses:
+    def test_stepped_pose(self):
+        p0 = np.zeros((5, 3)); p0[0] = [0.1, 0, 1.3]
+        p0[1] = [0.2, -0.15, 0.9]; p0[2] = [0.2, 0.15, 0.9]
+        p0[3] = [0.3, -0.09, 0.087]; p0[4] = [-0.05, 0.09, 0.087]
+        pos = Pose.from_p5(p0, tolerance=0.05)
+        p = pos.p5().pos
+        # solver must put front foot forward of rear foot
+        assert p[3, 0] > p[4, 0] + 0.1
+
+    def test_crouch_pose(self):
+        p0 = np.zeros((5, 3)); p0[0] = [0, 0, 0.9]
+        p0[3] = [0, -0.09, 0.087]; p0[4] = [0, 0.09, 0.087]
+        pos = Pose.from_p5(p0, tolerance=0.05)
+        assert pos.com_height() < 0.75     # crouched com is low
