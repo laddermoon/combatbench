@@ -17,7 +17,7 @@ from envs.humanoid21.simulator import Humanoid21Simulator
 from point5.contracts import Keyframe, P5Clip, Transfer
 from point5.humanoid21.stand_punch import stand_p5, plan_stand_punch
 from point5.humanoid21.executor.tools.com_solver import com_estimate
-from point5.humanoid21.executor.tools.obs_decoder import ObsDecoder
+from point5.humanoid21.executor.tools.pose_anchor import PoseAnchor
 from point5.humanoid21.executor.e2e_policy import ExecutorPolicy
 
 
@@ -41,7 +41,7 @@ def main() -> None:
                               initial_pose_a="standing")
     sim.reset(seed=0)
     pol = ExecutorPolicy(robot_id="robot_a", clip=make_clip(kind))
-    dec = ObsDecoder("robot_a")
+
 
     print(f"kind={kind} steps={n_steps}")
     print("step | com_z  tilt_deg | a_norm a_max | lm1_dist | ms")
@@ -58,7 +58,7 @@ def main() -> None:
             sim.physical_step()
 
         obs2 = sim.get_observation()["robot_a"]
-        p5, _ = dec.decode_p5_local(obs2)
+        p5 = PoseAnchor.from_obs(obs2).anchor('ankle_mid').p5()
         com = com_estimate(p5)
         # tilt: gravity in body frame, obs[42:45]; upright => -z
         g = obs2[42:45]

@@ -25,7 +25,7 @@ from envs.framework.policy import Policy
 from point5.contracts import Keyframe, P5Clip, Transfer
 
 from .contracts import CTRL_DT
-from .tools.obs_decoder import ObsDecoder
+from .tools.pose_anchor import PoseAnchor
 from .contracts import Context
 from .executor import Executor
 
@@ -46,7 +46,7 @@ class ExecutorPolicy(Policy):
                  **_ignored: Any):
         self.robot_id = robot_id
         self.ex = Executor(robot_id=robot_id)
-        self.dec = ObsDecoder(robot_id)
+
         self.clip = clip if clip is not None else _default_clip()
         self._idx = 0                    # keyframes[:idx+1] already issued
         self._elapsed = 0.0              # time spent in current segment
@@ -61,7 +61,7 @@ class ExecutorPolicy(Policy):
             want_extra: bool = False) -> Tuple[np.ndarray, Optional[Dict]]:
         obs = np.asarray(observation, dtype=np.float64)
         kfs = self.clip.keyframes
-        local_p5, _ = self.dec.decode_p5_local(obs)
+        local_p5 = PoseAnchor.from_obs(obs).anchor('ankle_mid').p5()
         if self._idx + 1 < len(kfs):
             remaining = [Keyframe(pos=local_p5)] + list(kfs[self._idx + 1:])
             clip = P5Clip(name=self.clip.name, keyframes=tuple(remaining))

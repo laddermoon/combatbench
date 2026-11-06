@@ -11,5 +11,4 @@
 | `capability_solver.py` | P5 → 质心能力预期（LIP） | `p5 (5,3)` → `Capability`；`margin(d)`/`a_max(d)`/`v_max(d)` |
 | `landmark_viz.py` | 锚点序列 → MP4 走查动画 | `landmarks, out_mp4` → 视频文件 |
 | `cop_solver.py` | P5 脚点 → CoP 可行域 | `p5 (5,3)` → `cop_ranges [poly|None ×2]`；`foot_cop_range(foot_xy)` |
-| `obs_decoder.py` | obs → 局部 P5（FK 重建） | `obs (96,)` → `(p5 (5,3), R_local (3,3))` |
-| `pose_anchor.py` | 精确姿态表达（锚点用） | `qpos(21,) + root_z + g_body(3,)`；`from_obs(obs, ranges)` |
+| `pose_anchor.py` | 精确无位置姿态表达 + 锚定解析 | `qpos(21,)+root_z+g_body(3,)`；`anchor(point,xy,yaw)` → `p5()/foot_pos()/com()`；`com_height()` |

@@ -16,32 +16,34 @@ from .algo1_meta import I1, I2, I3, R
 from .contracts import Observation
 
 
-_DECODER = None
+_RANGES = None
 
 
-def _dec():
-    """Shared lazy ObsDecoder for obs -> local P5."""
-    global _DECODER
-    if _DECODER is None:
-        from .tools.obs_decoder import ObsDecoder
-        _DECODER = ObsDecoder("robot_a")
-    return _DECODER
+def _ranges():
+    """(21,2) joint radian ranges for obs denormalization."""
+    global _RANGES
+    if _RANGES is None:
+        from .tools.pose_anchor import PoseAnchor
+        _RANGES = PoseAnchor.fk().joint_ranges("robot_a")
+    return _RANGES
 
 
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
-    一次 FK 解码出：脚位 xy（leveled landmark）+ 精确质心
-    （模型质量加权）+ obs[52:54] 实测力度分配；不经过 P5。
+    PoseAnchor.from_obs -> anchor('ankle_mid') 一次 FK 出：
+    脚位 xy + 精确质心（质量加权）+ obs[52:54] 实测力度分配。
     """
     from .contracts import FootSupport, SupportLandMark
+    from .tools.pose_anchor import PoseAnchor
 
-    obs = np.asarray(obs, np.float64)
-    feet_xy, com_loc = _dec().decode_support_local(obs)
+    a = PoseAnchor.from_obs(np.asarray(obs, np.float64),
+                            _ranges()).anchor('ankle_mid')
+    fp = a.foot_pos()
     fr = obs[52:54]
-    feet = {s: FootSupport(force_ratio=float(fr[k]), pos=feet_xy[s])
+    feet = {s: FootSupport(force_ratio=float(fr[k]), pos=fp[s])
             for s, k in (("right", 0), ("left", 1))}
-    return I1(lm=SupportLandMark(com=com_loc, feet=feet))
+    return I1(lm=SupportLandMark(com=a.com(), feet=feet))
 
 
 def f2(obs: Observation) -> I2:

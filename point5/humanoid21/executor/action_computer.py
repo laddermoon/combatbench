@@ -29,8 +29,8 @@ class ActionComputer:
 
     def _dec(self):
         if self._decoder is None:
-            from .tools.obs_decoder import ObsDecoder
-            self._decoder = ObsDecoder(self.robot_id)
+            from .tools.pose_anchor import PoseAnchor
+            self._decoder = PoseAnchor
         return self._decoder
 
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
@@ -39,7 +39,7 @@ class ActionComputer:
         if not landmarks or len(landmarks) < 2:
             raise PlanError("algorithm 2 needs >=2 landmarks")
 
-        i1 = I1(self._dec().decode_p5_local(obs)[0])
+        i1 = I1(self._dec().from_obs(obs).anchor('ankle_mid').p5())
         i4 = I4(obs[0:21].copy())
         i6 = I6(np.asarray(landmarks[0].com, np.float64))
         i7 = I7(np.asarray(landmarks[1].com, np.float64))

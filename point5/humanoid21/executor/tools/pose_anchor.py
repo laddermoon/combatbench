@@ -4,18 +4,78 @@
     root_z (1,)   躯干高度，世界系 z
     g_body (3,)   机体系重力向量 — 编码俯仰/侧倾，不含 yaw
 
-与 obs 模块一/二精确对应：obs[0:21] 归一化关节角 ×range，
-obs[42:45] 重力向量，obs[45] 高度。yaw 与水平位置不在
-此表达——锚点的位置语义由脚位/支撑态给。
+位置缺失：水平位置与 yaw 不在此表达——由 ``anchor()`` 解析：
+把命名点钉到目标 xy + 躯干朝向，得到锚定帧的 p5/foot_pos/com。
+``com_height()`` 不需要锚定（z 是绝对的）。
+
+    a = pa.anchor('left', xy=(0.3, 0.0), yaw=np.pi/4)
+    a.p5()  a.foot_pos()  a.com()
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
+import mujoco
 import numpy as np
 
 _JOINTS = (21,)
 _G = (3,)
+_FIDX = {"right": 3, "left": 4}     # landmark index of each foot
+
+
+def _level_rot(g_body: np.ndarray) -> np.ndarray:
+    """Minimal rotation taking body-frame gravity to [0,0,-1]."""
+    g = np.asarray(g_body, np.float64)
+    g = g / (np.linalg.norm(g) + 1e-12)
+    target = np.array([0.0, 0.0, -1.0])
+    axis = np.cross(g, target)
+    n = np.linalg.norm(axis)
+    if n < 1e-9:
+        return np.eye(3) if g[2] < 0 else np.diag([1.0, -1.0, -1.0])
+    axis /= n
+    ang = float(np.arccos(np.clip(np.dot(g, target), -1.0, 1.0)))
+    K = np.array([[0, -axis[2], axis[1]],
+                  [axis[2], 0, -axis[0]],
+                  [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
+
+
+def _quat_wxyz(R: np.ndarray) -> np.ndarray:
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1) * 2
+        return np.array([s / 4, (R[2, 1] - R[1, 2]) / s,
+                         (R[0, 2] - R[2, 0]) / s,
+                         (R[1, 0] - R[0, 1]) / s])
+    i = int(np.argmax(np.diag(R)))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = np.sqrt(R[i, i] - R[j, j] - R[k, k] + 1) * 2
+    q = np.empty(4)
+    q[i + 1] = s / 4
+    q[0] = (R[k, j] - R[j, k]) / s
+    q[j + 1] = (R[j, i] + R[i, j]) / s
+    q[k + 1] = (R[k, i] + R[i, k]) / s
+    return q / np.linalg.norm(q)
+
+
+@dataclass
+class _Anchored:
+    """PoseAnchor resolved into a frame — all outputs live here."""
+    _p5: np.ndarray                 # (5,3) anchored local
+    _feet: dict                     # side -> (2,) anchored local
+    _com: np.ndarray                # (3,) anchored local
+    R: np.ndarray = field(          # world -> anchored rotation
+        default_factory=lambda: np.eye(3))
+
+    def p5(self) -> np.ndarray:
+        return self._p5
+
+    def foot_pos(self) -> dict:
+        return self._feet
+
+    def com(self) -> np.ndarray:
+        return self._com
 
 
 @dataclass
@@ -24,6 +84,9 @@ class PoseAnchor:
     qpos: np.ndarray               # (21,) rad
     root_z: float                  # 世界系高度
     g_body: np.ndarray             # (3,) 机体系重力向量
+    robot_id: str = "robot_a"
+
+    _FK = None                     # class-level lazy Humanoid21FK
 
     def __post_init__(self):
         self.qpos = np.asarray(self.qpos, np.float64)
@@ -35,19 +98,86 @@ class PoseAnchor:
         self.root_z = float(self.root_z)
 
     @classmethod
-    def from_obs(cls, obs: np.ndarray, joint_ranges: np.ndarray):
+    def fk(cls):
+        if cls._FK is None:
+            from point5.humanoid21.fk import Humanoid21FK
+            cls._FK = Humanoid21FK()
+        return cls._FK
+
+    @classmethod
+    def from_obs(cls, obs: np.ndarray,
+                 joint_ranges: Optional[np.ndarray] = None,
+                 robot_id: str = "robot_a"):
         """obs (96,) -> PoseAnchor（关节角反归一化）。
 
-        joint_ranges: (21,2) 各关节 (lo,hi) 弧度范围
-        （Humanoid21FK.joint_ranges）。
+        joint_ranges: (21,2) 各关节 (lo,hi) 弧度；None = 从 fk 取。
         """
+        if joint_ranges is None:
+            joint_ranges = cls.fk().joint_ranges(robot_id)
         rng = np.asarray(joint_ranges, np.float64)
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
         return cls(qpos=np.asarray(obs[0:21], np.float64) * sc + ref,
                    root_z=float(obs[45]),
-                   g_body=np.asarray(obs[42:45], np.float64))
+                   g_body=np.asarray(obs[42:45], np.float64),
+                   robot_id=robot_id)
 
     def tilt_angles(self) -> np.ndarray:
         """(2,) [roll, pitch] rad — 由 g_body 分解的倾斜角。"""
         gx, gy, gz = self.g_body / (np.linalg.norm(self.g_body) + 1e-12)
         return np.array([np.arctan2(-gy, -gz), np.arctan2(gx, -gz)])
+
+    # ---------- anchored (position-resolved) outputs ----------
+
+    def _fk_state(self):
+        """Pose the FK model (tilt-leveled, yaw=0) and read geometry."""
+        fk = self.fk()
+        R_tilt = _level_rot(self.g_body)
+        fk.set_pose(self.robot_id, np.array([0.0, 0.0, self.root_z]),
+                    _quat_wxyz(R_tilt), self.qpos)
+        lm = fk.landmark_positions(self.robot_id)
+        r = fk._robots[self.robot_id]
+        ids = np.asarray(r["body_ids_sorted"], int)
+        ms = np.asarray(fk.model.body_mass)[ids]
+        xip = np.asarray(fk.data.xipos)[ids]
+        com = (ms[:, None] * xip).sum(0) / ms.sum()
+        poses = fk.body_pose(self.robot_id)
+        torso = next(v for k, v in poses.items() if "torso" in k)
+        fwd = torso[1][:, 0]
+        torso_yaw = float(np.arctan2(fwd[1], fwd[0]))
+        return lm, com, torso_yaw, R_tilt
+
+    def anchor(self, point: str = "ankle_mid",
+               xy=(0.0, 0.0), yaw: float = 0.0) -> _Anchored:
+        """Resolve the positionless pose into a frame.
+
+        point: 'ankle_mid' | 'left' | 'right' | 'com'
+        xy:    where the point lands
+        yaw:   desired torso-heading direction (0 = +x, 沿用局部系约定)
+        """
+        lm, com, tyaw, R_tilt = self._fk_state()
+        if point == "ankle_mid":
+            raw = (lm[3, :2] + lm[4, :2]) / 2
+        elif point == "com":
+            raw = com[:2]
+        elif point in ("left", "right"):
+            raw = lm[_FIDX[point], :2]
+        else:
+            raise ValueError(f"unknown anchor point {point!r}")
+
+        a = yaw - tyaw                    # rotation to put torso at yaw
+        Rz = np.array([[np.cos(a), -np.sin(a), 0],
+                       [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+        T = (lambda v: Rz @ (np.asarray(v, np.float64)
+                             - np.array([raw[0], raw[1], 0.0]))
+             + np.array([xy[0], xy[1], 0.0]))
+        feet = {s: T(lm[fi])[:2] for s, fi in _FIDX.items()}
+        return _Anchored(_p5=np.array([T(p) for p in lm]),
+                         _feet=feet, _com=T(com),
+                         R=Rz @ R_tilt)
+
+    # ---------- unanchored ----------
+
+    def com_height(self) -> float:
+        """Exact mass-weighted COM height — absolute, no anchor needed."""
+        _, com, _, _ = self._fk_state()
+        return float(com[2])
