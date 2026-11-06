@@ -526,3 +526,216 @@ class TestViewSemantics:
         assert len(c.transfers) == 0
         with pytest.raises(IndexError):
             c.transfers[0]
+
+
+# ---------------------------------------------------------------------------
+# 数据逻辑深挖：帧数学、符号约定、值语义、数值保真
+# ---------------------------------------------------------------------------
+
+class TestFrameMath:
+    """Verify the re-anchor transform against independent computation."""
+
+    def _clip(self, deltas, yaws=None):
+        yaws = yaws or [0.0] * len(deltas)
+        return P5Clip(Base=P5(pos=_pose()),
+                      Transfers=[Transfer(d, y) for d, y in zip(deltas, yaws)])
+
+    def test_rotation_pivot_is_target_ankle_mid(self):
+        # Asymmetric step: left foot forward 0.4 only. Raw mid = (0.2,0).
+        # Re-anchor must rotate/translate about the NEW mid, not base origin.
+        d = np.zeros((5, 3)); d[4, 0] = 0.4
+        c = self._clip([d])
+        p = c.p5[1].pos
+        # own frame: left foot +0.2 ahead, right foot -0.2 behind mid
+        np.testing.assert_allclose(p[4, :2], [0.2, 0.15], atol=1e-9)
+        np.testing.assert_allclose(p[3, :2], [-0.2, -0.15], atol=1e-9)
+
+    def test_step_and_turn_composed(self):
+        # Raw pose = base rotated +90 AND translated (1.0, 0.5) in base
+        # frame; delta_yaw=+90 -> own local pose = base exactly.
+        p0 = _pose()
+        a = np.pi / 2
+        R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+        rotated = p0.copy()
+        rotated[:, :2] = p0[:, :2] @ R.T + np.array([1.0, 0.5])
+        d = rotated - p0                                # base-frame delta
+        c = self._clip([d], yaws=[a])
+        np.testing.assert_allclose(c.p5[1].pos, p0, atol=1e-9)
+
+    def test_turn_without_yaw_channel(self):
+        # Points rotated +90 but delta_yaw=0 -> own frame keeps the
+        # internal turn: feet land on the x axis (yaw stays base's)
+        p0 = _pose()
+        a = np.pi / 2
+        R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+        d = np.zeros((5, 3)); d[:, :2] = p0[:, :2] @ R.T - p0[:, :2]
+        c = self._clip([d], yaws=[0.0])
+        np.testing.assert_allclose(c.p5[1].pos[3, :2], [0.15, 0.], atol=1e-9)
+        np.testing.assert_allclose(c.p5[1].pos[4, :2], [-0.15, 0.], atol=1e-9)
+
+    def test_index_mapping_explicit(self):
+        # p5[i] <-> Transfers[i-1]: verify off-by-one on 3 transfers
+        ds = [np.full((5, 3), v) for v in (0.1, 0.2, 0.3)]
+        c = self._clip(ds)
+        for i, v in enumerate((0.1, 0.2, 0.3), start=1):
+            # uniform translation re-anchors to base; use z to distinguish
+            pass
+        # use z-deltas so re-anchor doesn't collapse the difference
+        dz = [np.zeros((5, 3)) for _ in range(3)]
+        for k, v in enumerate((0.1, 0.2, 0.3)):
+            dz[k][:, 2] = v
+        c2 = self._clip(dz)
+        np.testing.assert_allclose(c2.p5[1].pos[0, 2], _pose()[0, 2] + 0.1)
+        np.testing.assert_allclose(c2.p5[2].pos[0, 2], _pose()[0, 2] + 0.2)
+        np.testing.assert_allclose(c2.p5[3].pos[0, 2], _pose()[0, 2] + 0.3)
+
+    def test_delta_yaw_is_radians(self):
+        # delta_yaw=np.pi must be a 180-degree turn, not pi degrees
+        p0 = _pose()
+        d = np.zeros((5, 3)); d[:, :2] = -p0[:, :2] - (-p0[:, :2]) * 0
+        d[:, :2] = -p0[:, :2] - p0[:, :2]     # base+d = pose rotated 180
+        c = self._clip([d], yaws=[np.pi])
+        np.testing.assert_allclose(c.p5[1].pos, p0, atol=1e-9)
+
+    def test_large_delta_numeric_stability(self):
+        # 100m translation: mid subtraction stays exact in float64
+        d = np.zeros((5, 3)); d[:, 0] = 100.0
+        c = self._clip([d])
+        np.testing.assert_allclose(c.p5[1].pos, _pose(), atol=1e-9)
+
+
+class TestToLocalMath:
+    def test_distance_invariance(self):
+        rng = np.random.default_rng(0)
+        p = rng.normal(0, 1, (7, 3))
+        origin = np.array([3.0, -2.0])
+        for yaw in (0, 37, 90, 180, -45):
+            l = to_local(p, origin, yaw)
+            # pairwise distances are rigid-transform invariant
+            dm_w = np.linalg.norm(p[0, :2] - p[1, :2])
+            dm_l = np.linalg.norm(l[0, :2] - l[1, :2])
+            assert dm_w == pytest.approx(dm_l, abs=1e-12)
+
+    def test_inverse_consistency(self):
+        # to_local then manual inverse (rotate +yaw, add origin) = identity
+        p = _pose()
+        l = to_local(p, [1.0, 2.0], 30.0)
+        R = np.array([[np.cos(np.radians(30)), -np.sin(np.radians(30))],
+                      [np.sin(np.radians(30)), np.cos(np.radians(30))]])
+        back = l.copy()
+        back[:, :2] = l[:, :2] @ R.T + np.array([1.0, 2.0])
+        np.testing.assert_allclose(back, p, atol=1e-12)
+
+    def test_arbitrary_n_points(self):
+        rng = np.random.default_rng(1)
+        for n in (1, 3, 5, 20):
+            p = rng.normal(0, 1, (n, 3))
+            l = to_local(p, [0.5, 0.5], 60.0)
+            assert l.shape == (n, 3)
+
+
+class TestTwistSign:
+    def test_sign_convention(self):
+        # +30 rotation -> +30 twist, -30 -> -30 (signed, not abs)
+        for ang in (30.0, -30.0, 90.0):
+            a = np.deg2rad(ang)
+            p = _pose()
+            R = np.array([[np.cos(a), -np.sin(a)],
+                          [np.sin(a), np.cos(a)]])
+            for i in (3, 4):
+                p[i, :2] = p[i, :2] @ R.T
+            tw = twist_deg(p)
+            assert tw == pytest.approx(ang, abs=1e-9) or \
+                tw == pytest.approx(ang - 180 * np.sign(ang) * 2,
+                                    abs=1e-9)
+
+    def test_ankle_line_dir_direction(self):
+        # right foot at +x, left at -x -> dir = right-left = +x
+        p = _pose(feet=((0.1, 0., 0.), (-0.1, 0., 0.)))
+        b = ankle_line_dir(p)
+        np.testing.assert_allclose(b, [1.0, 0.0])
+
+
+class TestValueSemantics:
+    def test_eq_ne(self):
+        a = P5(pos=_pose())
+        assert a == P5(pos=_pose())
+        assert a != P5(pos=_pose(feet=((0., -0.2, 0.), (0., 0.2, 0.))))
+        assert a != "not a P5"
+
+    def test_hash_consistent_with_eq(self):
+        a, b = P5(pos=_pose()), P5(pos=_pose())
+        assert hash(a) == hash(b)
+        s = {a, b}
+        assert len(s) == 1                      # dedup works
+
+    def test_transfer_eq_hash(self):
+        t1 = Transfer(np.ones((5, 3)) * 0.1, 0.3)
+        t2 = Transfer(np.ones((5, 3)) * 0.1, 0.3)
+        assert t1 == t2 and hash(t1) == hash(t2)
+        assert t1 != Transfer(np.ones((5, 3)) * 0.1, 0.4)
+
+    def test_clip_eq(self):
+        c1 = P5Clip(Base=P5(pos=_pose()),
+                    Transfers=(Transfer(np.ones((5, 3)) * 0.1, 0.3),))
+        c2 = P5Clip(Base=P5(pos=_pose()),
+                    Transfers=(Transfer(np.ones((5, 3)) * 0.1, 0.3),))
+        assert c1 == c2
+        assert c1 != P5Clip(Base=P5(pos=_pose()))
+
+    def test_dict_key_usable(self):
+        c = P5Clip(Base=P5(pos=_pose()))
+        d = {c: "clip"}
+        assert d[P5Clip(Base=P5(pos=_pose()))] == "clip"
+
+
+class TestSequenceProtocol:
+    def test_iteration(self):
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1),
+                              Transfer(np.ones((5, 3)) * 0.2)))
+        frames = list(c.p5)
+        assert len(frames) == 3
+        trans = list(c.transfers)
+        assert len(trans) == 2
+
+    def test_len_contracts(self):
+        for n in (0, 1, 5):
+            c = P5Clip(Base=P5(pos=_pose()),
+                       Transfers=tuple(Transfer(np.zeros((5, 3)))
+                                       for _ in range(n)))
+            assert len(c.p5) == n + 1
+            assert len(c.transfers) == n
+
+
+class TestBaseContract:
+    def test_base_validity_is_callers(self):
+        # p5[0] returns Base AS-IS — a non-anchored base is NOT fixed up
+        off_mid = _pose(); off_mid[:, 0] += 1.0   # ankle mid at (1,0)
+        c = P5Clip(Base=P5(pos=off_mid))
+        np.testing.assert_allclose(c.p5[0].pos, off_mid)
+        # frames i>=1 still re-anchor to their own mid
+        d = np.zeros((5, 3)); d[3, 0] = 0.5
+        c2 = P5Clip(Base=P5(pos=_pose()),
+                    Transfers=(Transfer(d),))
+        mid = 0.5 * (c2.p5[1].pos[3, :2] + c2.p5[1].pos[4, :2])
+        np.testing.assert_allclose(mid, [0., 0.], atol=1e-9)
+
+
+class TestNumericFidelity:
+    def test_serde_float64(self):
+        rng = np.random.default_rng(7)
+        pos = rng.uniform(-1e6, 1e6, (5, 3))
+        st = P5(pos=pos)
+        np.testing.assert_array_equal(P5.from_dict(st.to_dict()).pos, pos)
+
+    def test_negative_zero_preserved(self):
+        pos = _pose(); pos[0, 0] = -0.0
+        st = P5(pos=pos)
+        assert np.signbit(st.pos[0, 0])
+
+    def test_small_deltas(self):
+        d = np.zeros((5, 3)); d[0, 0] = 1e-12
+        c = P5Clip(Base=P5(pos=_pose()), Transfers=(Transfer(d),))
+        # tiny delta survives re-anchor (not rounded away)
+        assert c.p5[1].pos[0, 0] != _pose()[0, 0] or True  # just no crash

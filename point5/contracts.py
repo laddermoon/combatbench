@@ -129,6 +129,14 @@ class Transfer:
             raise TaskValidationError("transfer.delta_yaw must be finite")
         object.__setattr__(self, "delta_yaw", float(self.delta_yaw))
 
+    def __eq__(self, other) -> bool:
+        return (isinstance(other, Transfer)
+                and np.array_equal(self.delta_pos, other.delta_pos)
+                and self.delta_yaw == other.delta_yaw)
+
+    def __hash__(self):
+        return hash((self.delta_pos.tobytes(), self.delta_yaw))
+
     def to_dict(self) -> Dict[str, Any]:
         return {"delta_pos": self.delta_pos.tolist(),
                 "delta_yaw": float(self.delta_yaw)}
@@ -167,6 +175,14 @@ class P5Clip:
         Stored deltas are base->frame(i+1); the i->i+1 transition is
         the difference of consecutive base deltas."""
         return _TransferSeq(self)
+
+    def __eq__(self, other) -> bool:
+        return (isinstance(other, P5Clip)
+                and self.Base == other.Base
+                and self.Transfers == other.Transfers)
+
+    def __hash__(self):
+        return hash((self.Base, self.Transfers))
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": CLIP_FORMAT,
@@ -246,6 +262,12 @@ class P5:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pos", _pos5(self.pos))
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, P5) and np.array_equal(self.pos, other.pos)
+
+    def __hash__(self):
+        return hash(self.pos.tobytes())
 
     def point_pos(self, name: str) -> np.ndarray:
         return self.pos[_idx(name)]
