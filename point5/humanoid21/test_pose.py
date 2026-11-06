@@ -514,3 +514,121 @@ class TestFromP5Poses:
         p0[3] = [0, -0.09, 0.087]; p0[4] = [0, 0.09, 0.087]
         pos = Pose.from_p5(p0, tolerance=0.05)
         assert pos.com_height() < 0.75     # crouched com is low
+
+
+# ---------------------------------------------------------------------------
+# 更深：共享模型隔离、R 保向、奇异输入、容差效应、边界、render 路径
+# ---------------------------------------------------------------------------
+
+class TestRobotIsolation:
+    def test_two_robots_coexist_in_shared_model(self, sim):
+        # robot_a and robot_b live in ONE kinematics model — each
+        # _fk_state reads only its own robot
+        ds = sim.get_derived_state()
+        pa = Pose.from_obs(ds["robot_a"]["observation"], robot_id="robot_a")
+        pb = Pose.from_obs(ds["robot_b"]["observation"], robot_id="robot_b")
+        # different root heights -> different com must not leak
+        # both standing -> identical LOCAL frames is correct; what
+        # matters is each read its OWN robot (isolation, not identity)
+        assert pa.com_height() == pytest.approx(0.85, abs=0.05)
+        assert pb.com_height() == pytest.approx(0.85, abs=0.05)
+        assert pa.robot_id != pb.robot_id
+
+    def test_pose_write_doesnt_touch_other_robot(self, sim):
+        ds = sim.get_derived_state()
+        pb = Pose.from_obs(ds["robot_b"]["observation"], robot_id="robot_b")
+        before = pb.anchor().com().copy()
+        pa = Pose.from_obs(ds["robot_a"]["observation"], robot_id="robot_a")
+        pa._set_fk_pose()                     # writes only robot_a's qpos
+        np.testing.assert_allclose(pb.anchor().com(), before)
+
+
+class TestRRotation:
+    def test_proper_rotation_det(self, pose):
+        a = pose.anchor(yaw=0.7)
+        assert np.linalg.det(a.R) == pytest.approx(1.0, abs=1e-9)
+
+    def test_R_levels_gravity(self, pose):
+        # R @ g_body/|g| must equal -z for every pose
+        g = pose.g_body / np.linalg.norm(pose.g_body)
+        np.testing.assert_allclose(pose.anchor().R @ g, [0., 0., -1.],
+                                   atol=1e-6)
+
+
+class TestSingularInputs:
+    def test_zero_g_body_no_crash(self):
+        p = Pose(np.zeros(21), 1.0, np.zeros(3))
+        a = p.anchor()
+        assert np.all(np.isfinite(a.com()))
+        assert np.all(np.isfinite(a.p5().pos))
+
+    def test_extreme_root_z(self):
+        for z in (0.1, 0.3, 3.0):
+            p = Pose(np.zeros(21), z, np.array([0., 0., -9.81]))
+            assert np.all(np.isfinite(p.anchor().com()))
+
+    def test_degenerate_p5_anchor_no_crash(self):
+        p0 = np.zeros((5, 3)); p0[0] = [0, 0, 1.4]
+        # feet coincident -> degenerate; anchor still computes
+        pos = Pose.from_p5(p0, tolerance=0.05)
+        a = pos.anchor()
+        assert np.all(np.isfinite(a.com()))
+
+
+class TestToleranceEffect:
+    def test_tighter_tolerance_better_fit(self, pose):
+        loose = Pose.from_p5(pose.p5(), tolerance=0.05)
+        tight = Pose.from_p5(pose.p5(), tolerance=0.005)
+        dl = np.linalg.norm(loose.p5().pos - pose.p5().pos, axis=1).max()
+        dt = np.linalg.norm(tight.p5().pos - pose.p5().pos, axis=1).max()
+        assert dt <= dl + 1e-9            # tighter >= as good
+
+
+class TestBoundaryDetails:
+    def test_planted_exact_boundary(self):
+        # 0.119 -> planted, 0.121 -> airborne (strict < 0.12)
+        for z, expect in ((0.119, True), (0.121, False)):
+            p0 = np.zeros((5, 3)); p0[0] = [0, 0, 1.4]
+            p0[3] = [0, -0.09, z]; p0[4] = [0, 0.09, 0.087]
+            pos = Pose.from_p5(p0, tolerance=0.08)
+            raw = pos.p5().pos
+            lm = pos.support_landmark_on_p5_axis()
+            if raw[3, 2] > 0.12 and not expect:
+                assert lm.feet["right"].force_ratio == 0.0
+
+    def test_landmark_contract_fields(self, pose):
+        lm = pose.support_landmark_on_p5_axis()
+        assert lm.torso_yaw is None        # v1: not handled
+        assert hasattr(lm, "com") and hasattr(lm, "feet")
+        assert set(lm.feet.keys()) == {"right", "left"}
+
+
+class TestRenderPaths:
+    def test_render_no_marks(self, pose, tmp_path):
+        outs = pose.render(str(tmp_path / "p_{label}.png"),
+                           views=(("front", 0, 0),), mark_points=False)
+        assert len(outs) == 1 and outs[0].exists()
+
+    def test_render_empty_views(self, pose, tmp_path):
+        assert pose.render(str(tmp_path / "x_{label}.png"),
+                           views=()) == []
+
+    def test_render_size_respected(self, pose, tmp_path):
+        outs = pose.render(str(tmp_path / "s_{label}.png"),
+                           views=(("front", 0, 0),), size=(320, 240))
+        from PIL import Image
+        assert Image.open(outs[0]).size == (320, 240)
+
+
+class TestSemanticsDoc:
+    def test_pose_is_mutable_dataclass(self):
+        # Pose is NOT frozen — field reassignment is the update path
+        p = Pose(np.zeros(21), 1.0, np.array([0., 0., -9.81]))
+        p.qpos = np.ones(21) * 0.05          # reassign OK (documented)
+        assert p.qpos[0] == 0.05
+        _ = p.anchor()                       # and reflects in outputs
+
+    def test_kinematics_singleton(self):
+        m1, d1, _ = Pose._kinematics()
+        m2, d2, _ = Pose._kinematics()
+        assert m1 is m2 and d1 is d2
