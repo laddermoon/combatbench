@@ -87,139 +87,6 @@ class ObsDecoder:
         return local, Rz @ R_tilt
 
 
-def gen_landmarks(lm0: "SupportLandMark", clip, steps
-                  ) -> "list":
-    """SupportLandMark sequence generation (bootstrip step 4).
-
-    Inputs:
-        lm0   — start SupportLandMark, extracted from the observation
-                (the sequence's first element)
-        clip  — the remaining P5Clip; supplies posture anchors
-                (per-kf recommended COM via tool1) and the
-                terminal anchor
-        steps — ordered Footstep list from the support-planning
-                sub-algorithm (plan_footsteps); each produces a
-                liftoff + touchdown anchor pair
-
-    Output: ordered SupportLandMark list — support-event anchors +
-    posture anchors + terminal anchor, per the composition spec
-    in CentroidalPlanner's docstring.
-    """
-    from .tools.com_solver import com_estimate
-    from .contracts import FootSupport, SupportLandMark
-    from .tools.cop_solver import FLAT_Z as LIFT_Z
-    from .tools.capability_solver import _PATCH, _hull2d
-    from .support_planner import _inside
-    from point5.contracts import compose_frame, to_world
-
-    FIDX = {"right": 3, "left": 4}
-    kfs = clip.keyframes
-    poses = [(np.zeros(2), 0.0)]
-    for k in range(1, len(kfs)):
-        poses.append(compose_frame(*poses[-1], kfs[k].transfer))
-    w_kfs = [to_world(kf.pos, *poses[k]) if k else kf.pos
-             for k, kf in enumerate(kfs)]
-
-    before = {k: [] for k in range(1, len(kfs))}
-    for_k = {k: [] for k in range(1, len(kfs))}
-    for st in steps:
-        (for_k if st.for_frame else before)[
-            st.for_frame or st.before_frame].append(st)
-
-    # virtual state
-    com = np.asarray(lm0.com, np.float64).copy()
-    feet_xy = {s: np.asarray(lm0.feet[s].pos,
-                             np.float64).copy()
-               for s in FIDX}
-    loaded = {s: lm0.feet[s].force_ratio > 0.05 for s in FIDX}
-    lms = [lm0]
-
-    def _feet():
-        n = sum(loaded.values()) or 1
-        return {s: FootSupport(
-            force_ratio=(1.0 / n) if loaded[s] else 0.0,
-            pos=feet_xy[s].copy())
-            for s in FIDX}
-
-    def _liftoff(foot, frame=0):
-        nonlocal com
-        loaded[foot] = False
-        com_t = com.copy()
-        cops = [feet_xy[s] for s in FIDX if loaded[s]]
-        if len(cops) == 1:                 # single support left
-            com_t[:2] = cops[0]
-        lms.append(SupportLandMark(com=com_t, feet=_feet(),
-                            for_frame=frame))
-
-    def _touchdown(foot, target, frame=0):
-        nonlocal com
-        feet_xy[foot] = np.asarray(target, np.float64).copy()
-        loaded[foot] = True
-        com_t = com.copy()
-        cops = [feet_xy[s] for s in FIDX if loaded[s]]
-        if cops:
-            com_t[:2] = np.mean(cops, axis=0)
-        lms.append(SupportLandMark(com=com_t, feet=_feet(),
-                            for_frame=frame))
-
-    def _project(pt, poly):
-        if _inside(pt, poly):
-            return pt
-        best, bd = pt, np.inf
-        for i in range(len(poly)):
-            a, b = poly[i], poly[(i + 1) % len(poly)]
-            e = b - a
-            t = np.clip(np.dot(pt - a, e)
-                        / max(np.dot(e, e), 1e-12), 0.0, 1.0)
-            p = a + t * e
-            d = np.linalg.norm(pt - p)
-            if d < bd:
-                best, bd = p, d
-        return best
-
-    def _posture(k):
-        """The frame's own requirement as an anchor."""
-        nonlocal com
-        w = np.asarray(w_kfs[k], np.float64)
-        n_load = sum(kfs[k].pos[FIDX[s], 2] <= LIFT_Z
-                     for s in FIDX) or 1
-        feet = {}
-        hull_pts = []
-        for s, fi in FIDX.items():
-            grounded = kfs[k].pos[fi, 2] <= LIFT_Z
-            if grounded:
-                hull_pts.append(w[fi, :2] + np.asarray(_PATCH))
-            feet[s] = FootSupport(
-                force_ratio=(1.0 / n_load) if grounded else 0.0,
-                pos=w[fi, :2].copy())
-            feet_xy[s] = w[fi, :2].copy()
-            loaded[s] = grounded
-        com_t = com_estimate(w)
-        if hull_pts:
-            com_t[:2] = _project(com_t[:2], _hull2d(np.vstack(hull_pts)))
-        com = com_t.copy()
-        settle = (k == len(kfs) - 1) or not for_k.get(k + 1)
-        lms.append(SupportLandMark(com=com_t, feet=feet, for_frame=k))
-
-    for k in range(1, len(kfs)):
-        for st in before[k]:
-            if loaded.get(st.foot):
-                _liftoff(st.foot, k)
-            _touchdown(st.foot, st.target, k)
-        # frame foot-state diff: loaded -> airborne (no step covers)
-        for s, fi in FIDX.items():
-            was = kfs[k - 1].pos[fi, 2] <= LIFT_Z
-            now = kfs[k].pos[fi, 2] <= LIFT_Z
-            if was and not now and loaded[s]:
-                _liftoff(s, k)
-        for st in for_k[k]:
-            if loaded.get(st.foot):
-                _liftoff(st.foot, k)
-            _touchdown(st.foot, st.target, k)
-        _posture(k)
-    return lms
-
-
 class SupportPlanner:
     """Algorithm 1 (bootstrip): (Observation, P5Clip) -> SupportLandMark seq.
 
@@ -260,15 +127,10 @@ class SupportPlanner:
     def plan(self, observation: np.ndarray,
              clip) -> list:
         """(observation, remaining clip) -> ordered SupportLandMark seq.
+
+        f-chain: f1(obs)->I1 当前支撑状态，f2(obs)->I2 当前质心动量，
+        f3(clip)->I3 逐帧目标支撑状态，f4(I1,I2,I3)->R 锚点序列。
         """
-        from .tools.start_solver import extract_landmark
-        from .contracts import PlanError
-
-        lm0 = extract_landmark(observation, self._decoder)
-        _, R_loc = self._decoder.decode_p5_local(observation)
-        vel = R_loc @ np.asarray(observation, np.float64)[46:49]
-        # 旧 plan_footsteps 已删除——支撑子规划器由 f4 重新实现
-        # (algo1_functions.f4: I1,I2,I3 -> R)
-        raise PlanError(
-            "support sub-planner removed; wire algo1 f-chain here")
-
+        from .algo1_functions import f1, f2, f3, f4
+        return f4(f1(observation), f2(observation),
+                  f3(clip)).landmarks

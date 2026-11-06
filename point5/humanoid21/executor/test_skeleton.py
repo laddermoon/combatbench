@@ -48,9 +48,8 @@ def test_pipeline_stubs_raise():
     ex.action_computer = ActionComputer()
     ex.wsim = None
     _patched(ex, stand_p5())
-    # algo 1 runs through landmark generation; algorithm 2
-    # (action_computer) is the remaining stub
-    with pytest.raises(PlanError):
+    # algo-1 f-chain is stubbed (f1 raises before algo-2 is reached)
+    with pytest.raises(NotImplementedError):
         ex.gen_action(_ctx())
 
 
