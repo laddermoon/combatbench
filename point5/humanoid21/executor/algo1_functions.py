@@ -16,10 +16,37 @@ from .algo1_meta import I1, I2, I3, R
 from .contracts import Observation
 
 
+_DECODER = None
+
+
+def _dec():
+    """Shared lazy ObsDecoder for obs -> local P5."""
+    global _DECODER
+    if _DECODER is None:
+        from .tools.obs_decoder import ObsDecoder
+        _DECODER = ObsDecoder("robot_a")
+    return _DECODER
+
+
 def f1(obs: Observation) -> I1:
-    """f1(Observation) -> I1：obs 解码当前支撑状态（工具8）。"""
-    from .tools.landmark_solver import extract_landmark
-    return I1(lm=extract_landmark(obs))
+    """f1(Observation) -> I1：obs 解码当前支撑状态。
+
+    com  = 工具1 com_estimate(FK 解码局部 P5)
+    feet = obs[52:54] 实测法向力比例（动态值，含冲击瞬态）；
+           pos = 解码脚 xy；腾空脚 force_ratio<0.05
+    """
+    from .tools.com_solver import com_estimate
+    from .contracts import FootSupport, SupportLandMark
+
+    obs = np.asarray(obs, np.float64)
+    local_p5, _ = _dec().decode_p5_local(obs)
+    fr = obs[52:54]
+    feet = {}
+    for side, fi, k in (("right", 3, 0), ("left", 4, 1)):
+        feet[side] = FootSupport(force_ratio=float(fr[k]),
+                                 pos=local_p5[fi, :2].copy())
+    return I1(lm=SupportLandMark(com=com_estimate(local_p5),
+                               feet=feet))
 
 
 def f2(obs: Observation) -> I2:
