@@ -189,6 +189,8 @@ class _P5Frames:
 
     def __getitem__(self, i: int) -> P5:
         c = self._c
+        if not 0 <= i < len(self):
+            raise IndexError(f"p5 index {i} out of range (len {len(self)})")
         if i == 0:
             return c.Base
         t = c.Transfers[i - 1]
@@ -211,6 +213,9 @@ class _TransferSeq:
         self._c = clip
 
     def __getitem__(self, i: int) -> "Transfer":
+        if not 0 <= i < len(self):
+            raise IndexError(
+                f"transfers index {i} out of range (len {len(self)})")
         cur = self._c.Transfers[i]                  # base -> frame i+1
         if i == 0:
             return cur                              # base -> frame 1
