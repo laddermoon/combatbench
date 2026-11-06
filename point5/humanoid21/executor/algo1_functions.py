@@ -31,21 +31,21 @@ def _dec():
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
-    com  = 工具1 com_estimate(FK 解码局部 P5)
+    com  = FK 模型精确子树质心（decode_com_local，非估计）
     feet = obs[52:54] 实测法向力比例（动态值，含冲击瞬态）；
            pos = 解码脚 xy；腾空脚 force_ratio<0.05
     """
-    from .tools.com_solver import com_estimate
     from .contracts import FootSupport, SupportLandMark
 
     obs = np.asarray(obs, np.float64)
-    local_p5, _ = _dec().decode_p5_local(obs)
+    dec = _dec()
+    local_p5, _ = dec.decode_p5_local(obs)
     fr = obs[52:54]
     feet = {}
     for side, fi, k in (("right", 3, 0), ("left", 4, 1)):
         feet[side] = FootSupport(force_ratio=float(fr[k]),
                                  pos=local_p5[fi, :2].copy())
-    return I1(lm=SupportLandMark(com=com_estimate(local_p5),
+    return I1(lm=SupportLandMark(com=dec.decode_com_local(obs),
                                feet=feet))
 
 

@@ -9,6 +9,7 @@ be reconstructed by forward kinematics:
 """
 from __future__ import annotations
 
+import mujoco
 import numpy as np
 
 
@@ -81,3 +82,23 @@ class ObsDecoder:
         Rz = np.array([[np.cos(ang), np.sin(ang), 0],
                        [-np.sin(ang), np.cos(ang), 0], [0, 0, 1]])
         return local, Rz @ R_tilt
+
+    def decode_com_local(self, obs: np.ndarray) -> np.ndarray:
+        """obs -> exact subtree COM (3,) in the P5 local frame.
+
+        Uses the model's mass-weighted subtree_com — exact, unlike
+        the mass_proxy estimator (~4cm RMSE)."""
+        from point5.contracts import ankle_mid_xy
+        _, R_loc = self.decode_p5_local(obs)       # sets fk pose
+        fk, rid = self.fk(), self.robot_id
+        mid = ankle_mid_xy(fk.landmark_positions(rid))
+        r = fk._robots[rid]
+        ids = np.asarray(r["body_ids_sorted"], int)
+        ms = np.asarray(fk.model.body_mass)[ids]
+        xip = np.asarray(fk.data.xipos)[ids]      # kinematics output
+        com_w = (ms[:, None] * xip).sum(0) / ms.sum()
+        # fk pose is already tilt-leveled -> only the yaw part of
+        # R_loc (= Rz @ R_tilt) applies: Rz = R_loc @ R_tilt.T
+        R_tilt = _level_rot(obs[42:45])
+        Rz = R_loc @ R_tilt.T
+        return Rz @ (com_w - np.array([mid[0], mid[1], 0.0]))
