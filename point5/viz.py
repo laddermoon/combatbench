@@ -1,12 +1,12 @@
-"""Offline geometric visualization for point5 clips (v2).
+"""Offline geometric visualization for point5 clips.
 
 Two outputs, both simulator-unaware:
 
 - ``export_mp4``: PIL-rendered 3-view frames piped to ffmpeg.
 - ``export_html``: single self-contained HTML canvas player.
 
-Input is a list of world-frame position samples (``(N,5,3)``), e.g.
-from ``trajectory.sample_clip``.
+Input is a list of position samples ``(N,5,3)`` — e.g. base-frame
+coords from ``_clip_samples`` (world placement is the caller's).
 
 CLI::
 
@@ -144,6 +144,22 @@ def export_html(world_samples: np.ndarray, out_path: str,
     Path(out_path).write_text(page)
 
 
+def _clip_samples(clip: P5Clip, per_segment: int = 15) -> np.ndarray:
+    """Linear-interpolated base-frame positions for each clip frame.
+
+    raw_0 = Base.pos; raw_i = Base.pos + Transfers[i-1].delta_pos.
+    """
+    raws = [clip.Base.pos] + [clip.Base.pos + t.delta_pos
+                              for t in clip.Transfers]
+    out = []
+    for a, b in zip(raws, raws[1:]):
+        for k in range(per_segment):
+            out.append(a + (b - a) * (k / per_segment))
+    if raws:
+        out.append(raws[-1])
+    return np.asarray(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--clip", required=True)
@@ -153,13 +169,9 @@ def main() -> None:
     ap.add_argument("--html", action="store_true")
     a = ap.parse_args()
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from point5.trajectory import sample_clip  # noqa: E402
-
     d = json.loads(Path(a.clip).read_text())
     clip = P5Clip.from_dict(d)
-    world = np.stack([s.world_pos() for s in sample_clip(clip,
-                                                       max_step=a.max_step)])
+    world = _clip_samples(clip)
     if a.html:
         export_html(world, a.out, a.fps)
     else:
