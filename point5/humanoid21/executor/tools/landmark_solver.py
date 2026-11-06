@@ -3,9 +3,7 @@
 Extraction:
 
     com  = tool1 com_estimate(FK-decoded local P5)
-    vel  = obs[46:49] root linear velocity rotated to local frame
-    feet = obs[52:54] contact force ratios; cop ~= foot xy when
-           loaded; foot_pos always the decoded foot xy
+    feet = obs[52:54] contact force ratios; pos = 解码脚 xy
     torso_yaw = None (v1)
 """
 from __future__ import annotations
