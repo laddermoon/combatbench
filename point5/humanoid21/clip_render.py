@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 from point5.contracts import (  # noqa: E402
     POINT_NAMES, P5Clip, to_world)
 from point5.trajectory import sample_clip  # noqa: E402
-from point5.humanoid21.fk import Humanoid21FK  # noqa: E402
+from point5.humanoid21.pose import Humanoid21FK  # noqa: E402
 from point5.humanoid21.mechanics import (  # noqa: E402
     Skeleton, solve_equilibrium)
 from point5.humanoid21.pose import _project  # noqa: E402
