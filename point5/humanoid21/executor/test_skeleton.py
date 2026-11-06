@@ -40,11 +40,11 @@ def test_anchor_accepts_exact():
 def test_pipeline_stubs_raise():
     from point5.humanoid21.executor.action_computer import (
         ActionComputer)
-    from point5.humanoid21.executor.centroidal_planner import (
-        CentroidalPlanner)
+    from point5.humanoid21.executor.support_planner import (
+        SupportPlanner)
     ex = Executor.__new__(Executor)
     ex.robot_id = "robot_a"
-    ex.centroidal = CentroidalPlanner()
+    ex.support = SupportPlanner()
     ex.action_computer = ActionComputer()
     ex.wsim = None
     _patched(ex, stand_p5())

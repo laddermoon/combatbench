@@ -3,8 +3,7 @@ from .tools.capability_solver import Capability, capability
 from .tools.com_solver import com_estimate, mass_estimate
 from .tools.cop_solver import cop_ranges, foot_cop_range
 from .tools.start_solver import extract_landmark
-from .support_planner import (plan_footsteps, support_transitions,
-    SupportTransition)
+from .support_planner import SupportPlanner
 from .tools.inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (
     Action, AnchorError, Context, ExecutorError,
@@ -18,6 +17,5 @@ __all__ = [
     "Observation", "PlanError", "com_estimate", "mass_estimate",
     "inertia_estimate", "inertia_per_mass", "Capability",
     "capability", "cop_ranges", "foot_cop_range",
-    "support_transitions", "SupportTransition",
-    "extract_landmark",
+    "SupportPlanner", "extract_landmark",
 ]

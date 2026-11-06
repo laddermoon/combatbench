@@ -18,7 +18,7 @@ from typing import Any, Optional
 import numpy as np
 
 from .action_computer import ActionComputer
-from .centroidal_planner import CentroidalPlanner
+from .support_planner import SupportPlanner
 from .contracts import (Action, AnchorError, Context,
                         ExecutorError, Observation, PlanError)
 
@@ -43,14 +43,14 @@ class Executor:
                                        initial_pose_a="standing")
             wsim.reset(seed=0)
         self.wsim = wsim
-        self.centroidal = CentroidalPlanner()
+        self.support = SupportPlanner()
         self.action_computer = ActionComputer()
 
     # -- public API ----------------------------------------------------------
     def gen_action(self, ctx: Context) -> Action:
         """Context -> Action.  Stateless."""
         self._verify_anchor(ctx)
-        landmarks = self.centroidal.plan(
+        landmarks = self.support.plan(
             ctx.observation, ctx.clip)
         return self.action_computer.compute(
             ctx, landmarks, self.wsim)
@@ -58,7 +58,7 @@ class Executor:
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
         """96-dim obs -> local P5 (5,3) via the shared FK decode."""
-        local_p5, _ = self.centroidal.decode_p5_local(observation)
+        local_p5, _ = self.support.decode_p5_local(observation)
         return local_p5
 
     def _verify_anchor(self, ctx: Context) -> None:

@@ -1,555 +1,274 @@
-"""Support planning (algorithm-1 branch).
+"""Observation decode machinery (shared by algorithm-1 tools).
 
-Deepened requirements (user-driven, v1):
+The 96-dim policy obs carries no self keypoints — the local P5 must
+be reconstructed by forward kinematics:
 
-1. A Footstep is a LANDING only — mid-air swing waypoints
-   (lifted z in the clip) are not support points and emit nothing.
-2. The physical gate is the LIP capture point xi = c + v/w against
-   the CURRENT support hull — no velocity thresholds.
-3. After a corrective step the virtual state is RE-ANCHORED:
-   the bracing foot moves, momentum is considered braked, and the
-   same segment is rechecked before any next step is emitted.
-4. Corrective foot choice prefers the foot that was going to move
-   anyway (near-tie) — least damage to clip intent.
-5. Momentum that agrees with the intent needs no corrective: if
-   the mover's own landing produces a hull containing xi, the move
-   itself is the capture step.
-6. A move step's validity assumes the clip's support geometry —
-   if a corrective displaced a clip-required planted foot, a
-   recover step returns it BEFORE the mover lifts.
-7. The plan's terminal stance must satisfy the clip's last
-   keyframe; residual displacement gets a recover step.
-8. Clip feasibility is NOT the planner's job — inputs are
-   assumed reasonable.  A far target is a single step, never a
-   self-invented gait.
-9. But when a transfer relocates BOTH feet (a far frame shift),
-   the middle walk is self-planned as a leapfrog gait: the
-   trailing foot always steps PAST the leader, feet never land
-   level, and the plan ends at the clip's required stance.
+    q_rad = obs[0:21] * scale + ref            (ranges from FK model)
+    root quat = minimal rot g_body -> -z       (tilt, arbitrary yaw)
+    FK -> landmarks -> torso yaw -> local P5
 
-Two layers:
-
-1. ``support_transitions`` — which segments need weight transfer
-   (foot displacement between consecutive keyframes in a shared
-   frame).  Detection, not planning.
-
-2. ``plan_footsteps`` — the support-planning sub-algorithm per
-   bootstrip: from the start SupportLandMark + clip emit an ordered
-   Footstep list.  Physics rule: if COM momentum points away from
-   where the next support must go, insert a corrective step
-   (垫步) on the support side to brake/catch the momentum before
-   the intended mover lifts.
+``CentroidalPlanner`` is kept as the holder of this decode path;
+algorithm-1 planning itself lives in the SupportLandMark pipeline
+(start_solver / support_planner).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
-
 import numpy as np
 
-from point5.contracts import compose_frame, to_world
-
-from .tools.cop_solver import FLAT_Z as LIFT_Z
-
-_FIDX = {"right": 3, "left": 4}
-_STEP_MAX = 0.35          # prior: nominal max single-step length (m)
-_GAIT_STRIDE = 0.45       # per-step advance when both feet relocate
-_G = 9.81                 # LIP: capture point xi = c + v/w, w=sqrt(g/z0)
 
 
-# ---------- detection -------------------------------------------------------
-@dataclass
-class SupportTransition:
-    """One segment that needs support planning."""
+def _level_rot(g_body: np.ndarray) -> np.ndarray:
+    """Minimal rotation taking body-frame gravity to [0,0,-1]."""
+    g = np.asarray(g_body, np.float64)
+    g = g / (np.linalg.norm(g) + 1e-12)
+    target = np.array([0.0, 0.0, -1.0])
+    axis = np.cross(g, target)
+    n = np.linalg.norm(axis)
+    if n < 1e-9:                                     # (anti-)parallel
+        return np.eye(3) if g[2] < 0 else np.diag([1.0, -1.0, -1.0])
+    axis /= n
+    ang = float(np.arccos(np.clip(np.dot(g, target), -1.0, 1.0)))
+    K = np.array([[0, -axis[2], axis[1]],
+                  [axis[2], 0, -axis[0]],
+                  [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * K @ K
 
-    seg: int
-    mover: str
-    support: str
-    mover_dxy: float
-    mover_dz: float
 
 
-def support_transitions(clip, xy_eps: float = 0.05,
-                        lift_eps: float = 0.06
-                        ) -> Optional[List[SupportTransition]]:
-    """Segments requiring support planning, or None."""
-    out = []
+def _quat_wxyz(R: np.ndarray) -> np.ndarray:
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1) * 2
+        return np.array([s / 4, (R[2, 1] - R[1, 2]) / s,
+                         (R[0, 2] - R[2, 0]) / s,
+                         (R[1, 0] - R[0, 1]) / s])
+    i = int(np.argmax(np.diag(R)))
+    j, k = (i + 1) % 3, (i + 2) % 3
+    s = np.sqrt(R[i, i] - R[j, j] - R[k, k] + 1) * 2
+    q = np.empty(4)
+    q[i + 1] = s / 4
+    q[0] = (R[k, j] - R[j, k]) / s
+    q[j + 1] = (R[j, i] + R[i, j]) / s
+    q[k + 1] = (R[k, i] + R[i, k]) / s
+    return q / np.linalg.norm(q)
+
+
+class ObsDecoder:
+    """96-dim policy obs -> local P5 via FK (lazy Humanoid21FK)."""
+
+    def __init__(self, robot_id: str = "robot_a"):
+        self.robot_id = robot_id
+        self._fk = None
+
+    def fk(self):
+        if self._fk is None:
+            from point5.humanoid21.fk import Humanoid21FK
+            self._fk = Humanoid21FK()
+        return self._fk
+
+    def decode_p5_local(self, obs: np.ndarray):
+        """obs -> (local_p5 (5,3), R_local(3,3): body->P5 frame)."""
+        from point5.contracts import ankle_mid_xy, to_local
+        fk, rid = self.fk(), self.robot_id
+        rng = fk.joint_ranges(rid).astype(np.float64)
+        ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
+        R_tilt = _level_rot(obs[42:45])
+        fk.set_pose(rid, np.array([0.0, 0.0, obs[45]]),
+                    _quat_wxyz(R_tilt), obs[0:21] * sc + ref)
+        lm = fk.landmark_positions(rid)
+        poses = fk.body_pose(rid)
+        torso = next(v for k, v in poses.items() if "torso" in k)
+        fwd = torso[1][:, 0]
+        yaw = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
+        local = to_local(lm, ankle_mid_xy(lm), yaw)
+        ang = np.radians(yaw)
+        Rz = np.array([[np.cos(ang), np.sin(ang), 0],
+                       [-np.sin(ang), np.cos(ang), 0], [0, 0, 1]])
+        return local, Rz @ R_tilt
+
+
+def gen_landmarks(lm0: "SupportLandMark", clip, steps
+                  ) -> "list":
+    """SupportLandMark sequence generation (bootstrip step 4).
+
+    Inputs:
+        lm0   — start SupportLandMark, extracted from the observation
+                (the sequence's first element)
+        clip  — the remaining P5Clip; supplies posture anchors
+                (per-kf recommended COM via tool1) and the
+                terminal anchor
+        steps — ordered Footstep list from the support-planning
+                sub-algorithm (plan_footsteps); each produces a
+                liftoff + touchdown anchor pair
+
+    Output: ordered SupportLandMark list — support-event anchors +
+    posture anchors + terminal anchor, per the composition spec
+    in CentroidalPlanner's docstring.
+    """
+    from .tools.com_solver import com_estimate
+    from .contracts import FootSupport, SupportLandMark
+    from .tools.cop_solver import FLAT_Z as LIFT_Z
+    from .tools.capability_solver import _PATCH, _hull2d
+    from .support_planner import _inside
+    from point5.contracts import compose_frame, to_world
+
+    FIDX = {"right": 3, "left": 4}
     kfs = clip.keyframes
-    for k in range(1, len(kfs)):
-        prev, cur = kfs[k - 1], kfs[k]
-        tr = cur.transfer
-        cur_in_prev = to_world(cur.pos, [tr.dx, tr.dy], tr.dyaw)
-        movers = []
-        for side, fi in (("right", 3), ("left", 4)):
-            d = cur_in_prev[fi] - prev.pos[fi]
-            if (np.linalg.norm(d[:2]) > xy_eps or d[2] > lift_eps):
-                movers.append((side, float(np.linalg.norm(d[:2])),
-                               float(d[2])))
-        if movers:
-            movers.sort(key=lambda t: -t[1])
-            m = movers[0][0]
-            out.append(SupportTransition(
-                seg=k, mover=m,
-                support="left" if m == "right" else "right",
-                mover_dxy=movers[0][1], mover_dz=movers[0][2]))
-    return out or None
-
-
-# ---------- footstep sub-algorithm (bootstrip) ------------------------------
-@dataclass
-class Footstep:
-    """
-    指定的脚，从原来的地方，到指定的坐标落地。
-    """
-
-    foot: str
-    target: np.ndarray                  # (2,) local frame xy
-    kind: str = "move"                  # 'move'|'corrective'|'recover'
-    reason: str = ""
-    # clip frame provenance — exactly ONE is set:
-    #   for_frame=k   this step fulfills keyframe k's requirement
-    #   before_frame=k this step must happen before keyframe k（因为从当前的状态无法直接到keyframe k）
-    for_frame: Optional[int] = None
-    before_frame: Optional[int] = None
-
-
-def _foot_patches(feet) -> List[np.ndarray]:
-    """Contact patches (4,2 each) of loaded feet."""
-    from .tools.capability_solver import _PATCH
-    out = []
-    for f in feet.values():
-        if f.force_ratio > 0.05 and f.pos is not None:
-            out.append(np.asarray(f.pos) + np.asarray(_PATCH))
-    return out
-
-
-def _inside(pt, poly) -> bool:
-    m = len(poly)
-    for i in range(m):
-        a, b = poly[i], poly[(i + 1) % m]
-        e = b - a
-        if e[0] * (pt - a)[1] - e[1] * (pt - a)[0] < -1e-9:
-            return False
-    return True
-
-
-def _outside_polygon(xi, feet) -> bool:
-    # support polygon = CONVEX HULL of all contact patches
-    pts = np.vstack(_foot_patches(feet)) if _foot_patches(feet) \
-        else np.empty((0, 2))
-    if len(pts) == 0:
-        return False
-    from .tools.capability_solver import _hull2d
-    return not _inside(xi, _hull2d(pts))
-
-
-def _nearest_foot(xi, feet) -> str:
-    return min(feet, key=lambda s: np.linalg.norm(
-        np.asarray(feet[s].pos) - xi))
-
-
-
-def _walk(steps, todo, w_kf, feet_xy, loaded, t, lead):
-    """Both feet must relocate -> leapfrog walk: the TRAILING foot
-    always steps past the leading one, each step <= _GAIT_STRIDE,
-    landing on its own lateral lane.  Ends at the clip stance."""
-    idx = {"right": 3, "left": 4}
-    tgt = {s: w_kf[idx[s], :2].copy() for s in todo}
-    # dominant direction = mean displacement
-    dm = np.mean([tgt[s] - feet_xy[s] for s in todo], axis=0)
-    dirv = dm / (np.linalg.norm(dm) + 1e-9)
-    perp = np.array([-dirv[1], dirv[0]])
-
-    def q(s):                       # progress coordinate of foot s
-        return float(np.dot(feet_xy[s], dirv))
-
-    def lane(s):                    # target lateral coord
-        return float(np.dot(tgt[s], perp))
-
-    n = 0
-    while n < 12:
-        rem = {s: float(np.dot(tgt[s], dirv)) - q(s) for s in todo}
-        if all(abs(r) < 0.02 for r in rem.values()):
-            break
-        # trailing foot steps past the front foot
-        s = min(todo, key=q)
-        # trailing foot leapfrogs PAST the leader by one stride,
-        # clamped only at its own target — never lands level
-        q_new = min(max(q(x) for x in todo) + _GAIT_STRIDE,
-                    float(np.dot(tgt[s], dirv)))
-        pos_new = dirv * q_new + perp * lane(s)
-        steps.append(Footstep(foot=s, target=pos_new, kind="move",
-                              reason=f"seg{t.seg} walk",
-                              before_frame=t.seg))
-        feet_xy[s] = pos_new
-        loaded[s] = True
-        n += 1
-
-
-
-def plan_footsteps(start_landmark, clip, vel=None,
-                   step_max: float = _STEP_MAX,
-                   max_correction: int = 2) -> List[Footstep]:
-    """Start SupportLandMark + clip -> ordered footsteps incl. correction.
-
-    Per transition segment the mover foot steps to the keyframe's
-    foot xy (frame0).  Before each transition, physics gate: the
-    LIP capture point xi = c + v/w must sit inside the CURRENT
-    support hull — if not, emit a corrective capture step and
-    RE-ANCHOR the virtual state (foot moved, momentum braked)
-    before rechecking.  Corrective foot choice prefers the foot
-    that was going to move anyway (least damage to clip intent).
-    """
-    steps: List[Footstep] = []
-    trans = support_transitions(clip) or []
-    if not trans:
-        return steps
-
     poses = [(np.zeros(2), 0.0)]
-    for k in range(1, len(clip.keyframes)):
-        poses.append(compose_frame(*poses[-1],
-                                   clip.keyframes[k].transfer))
+    for k in range(1, len(kfs)):
+        poses.append(compose_frame(*poses[-1], kfs[k].transfer))
+    w_kfs = [to_world(kf.pos, *poses[k]) if k else kf.pos
+             for k, kf in enumerate(kfs)]
 
-    # virtual current state — updated as the plan emits steps
-    com = np.asarray(start_landmark.com, np.float64)
-    vel = (np.asarray(vel, np.float64)
-           if vel is not None else np.zeros(3))
-    feet_xy = {s: np.asarray(
-        start_landmark.feet[s].pos, np.float64).copy()
-        for s in ("right", "left")}
-    loaded = {s: start_landmark.feet[s].force_ratio > 0.05
-              for s in ("right", "left")}
+    before = {k: [] for k in range(1, len(kfs))}
+    for_k = {k: [] for k in range(1, len(kfs))}
+    for st in steps:
+        (for_k if st.for_frame else before)[
+            st.for_frame or st.before_frame].append(st)
 
-    def hull():
-        from .tools.capability_solver import _PATCH, _hull2d
-        pts = [feet_xy[s] + np.asarray(_PATCH)
-               for s in loaded if s and feet_xy[s] is not None]
-        return _hull2d(np.vstack(pts)) if pts else None
+    # virtual state
+    com = np.asarray(lm0.com, np.float64).copy()
+    feet_xy = {s: np.asarray(lm0.feet[s].pos,
+                             np.float64).copy()
+               for s in FIDX}
+    loaded = {s: lm0.feet[s].force_ratio > 0.05 for s in FIDX}
+    lms = [lm0]
 
-    # ---- initial capture check (rule 10): the start state is
-    # already falling -> brace BEFORE frame 1, then (rule 11)
-    # recover ONLY if clip frame 1 requires that foot planted
-    xi = com[:2] + vel[:2] / np.sqrt(_G / max(com[2], 0.1))
-    h = hull()
-    if h is not None and not _inside(xi, h) \
-            and len(clip.keyframes) > 1:
-        foot = _nearest_foot(xi, start_landmark.feet)
-        d = xi - feet_xy[foot]
-        n = np.linalg.norm(d)
-        tgt = feet_xy[foot] + d / n * min(n, step_max)
-        steps.append(Footstep(
-            foot=foot, target=tgt, kind="corrective",
-            reason=(f"initial capture overshoot {n:.2f}m"),
-            before_frame=1))
-        feet_xy[foot] = tgt
+    def _feet():
+        n = sum(loaded.values()) or 1
+        return {s: FootSupport(
+            force_ratio=(1.0 / n) if loaded[s] else 0.0,
+            pos=feet_xy[s].copy())
+            for s in FIDX}
+
+    def _liftoff(foot, frame=0):
+        nonlocal com
+        loaded[foot] = False
+        com_t = com.copy()
+        cops = [feet_xy[s] for s in FIDX if loaded[s]]
+        if len(cops) == 1:                 # single support left
+            com_t[:2] = cops[0]
+        lms.append(SupportLandMark(com=com_t, feet=_feet(),
+                            for_frame=frame))
+
+    def _touchdown(foot, target, frame=0):
+        nonlocal com
+        feet_xy[foot] = np.asarray(target, np.float64).copy()
         loaded[foot] = True
-        vel = np.zeros(3)
-        # recover only when kf1 requires this foot planted and
-        # the brace displaced it (rule 11)
-        w1 = to_world(clip.keyframes[1].pos, *poses[1])
-        if (clip.keyframes[1].pos[_FIDX[foot], 2] <= LIFT_Z
-                and np.linalg.norm(
-                    w1[_FIDX[foot], :2] - feet_xy[foot]) > 0.05):
-            steps.append(Footstep(
-                foot=foot, target=w1[_FIDX[foot], :2].copy(),
-                kind="recover", for_frame=1,
-                reason="restore kf1-required stance"))
-            feet_xy[foot] = w1[_FIDX[foot], :2].copy()
+        com_t = com.copy()
+        cops = [feet_xy[s] for s in FIDX if loaded[s]]
+        if cops:
+            com_t[:2] = np.mean(cops, axis=0)
+        lms.append(SupportLandMark(com=com_t, feet=_feet(),
+                            for_frame=frame))
 
-    for t in trans:
-        sup = t.support
-        tgt_xy = to_world(
-            clip.keyframes[t.seg].pos[
-                _FIDX[t.mover]:_FIDX[t.mover] + 1],
-            *poses[t.seg])[0, :2]
+    def _project(pt, poly):
+        if _inside(pt, poly):
+            return pt
+        best, bd = pt, np.inf
+        for i in range(len(poly)):
+            a, b = poly[i], poly[(i + 1) % len(poly)]
+            e = b - a
+            t = np.clip(np.dot(pt - a, e)
+                        / max(np.dot(e, e), 1e-12), 0.0, 1.0)
+            p = a + t * e
+            d = np.linalg.norm(pt - p)
+            if d < bd:
+                best, bd = p, d
+        return best
 
-        # ---- physical gate: is current momentum catchable? ----
-        from .tools.capability_solver import _PATCH as _PATCH_g
-        _PATCH = _PATCH_g
-        n_fix = 0
-        while n_fix < max_correction:
-            z0 = max(com[2], 0.1)
-            xi = com[:2] + vel[:2] / np.sqrt(_G / z0)
-            h = hull()
-            if h is not None and _inside(xi, h):
-                break
-            # momentum aligned with the intent needs no brace: if
-            # the mover's own landing creates a hull containing xi,
-            # the move itself IS the capture step
-            probe = dict(feet_xy)
-            probe[t.mover] = tgt_xy
-            pts = [probe[s2] + np.asarray(_PATCH)
-                   for s2 in probe if probe[s2] is not None]
-            from .tools.capability_solver import _hull2d
-            if _inside(xi, _hull2d(np.vstack(pts))):
-                break
-            # capture step on the foot nearest xi; on a near-tie
-            # prefer the mover (going to move anyway = least damage)
-            cand = sorted(
-                (s for s in feet_xy if feet_xy[s] is not None),
-                key=lambda s: np.linalg.norm(feet_xy[s] - xi))
-            foot = cand[0]
-            if (t.mover in cand[1:]
-                    and np.linalg.norm(feet_xy[t.mover] - xi)
-                    < np.linalg.norm(feet_xy[foot] - xi) + 0.05):
-                foot = t.mover
-            d = xi - feet_xy[foot]
-            n = np.linalg.norm(d)
-            tgt = feet_xy[foot] + (d / n) * min(n, step_max)
-            steps.append(Footstep(
-                foot=foot, target=tgt, kind="corrective",
-                reason=(f"capture overshoot {n:.2f}m -> {foot} "
-                        f"braces at {np.round(xi, 2)}"),
-                before_frame=t.seg))
-            # re-anchor virtual state: foot moved, momentum braked
-            feet_xy[foot] = tgt
-            loaded[foot] = True
-            vel = np.zeros(3)
-            n_fix += 1
+    def _posture(k):
+        """The frame's own requirement as an anchor."""
+        nonlocal com
+        w = np.asarray(w_kfs[k], np.float64)
+        n_load = sum(kfs[k].pos[FIDX[s], 2] <= LIFT_Z
+                     for s in FIDX) or 1
+        feet = {}
+        hull_pts = []
+        for s, fi in FIDX.items():
+            grounded = kfs[k].pos[fi, 2] <= LIFT_Z
+            if grounded:
+                hull_pts.append(w[fi, :2] + np.asarray(_PATCH))
+            feet[s] = FootSupport(
+                force_ratio=(1.0 / n_load) if grounded else 0.0,
+                pos=w[fi, :2].copy())
+            feet_xy[s] = w[fi, :2].copy()
+            loaded[s] = grounded
+        com_t = com_estimate(w)
+        if hull_pts:
+            com_t[:2] = _project(com_t[:2], _hull2d(np.vstack(hull_pts)))
+        com = com_t.copy()
+        settle = (k == len(kfs) - 1) or not for_k.get(k + 1)
+        lms.append(SupportLandMark(com=com_t, feet=feet, for_frame=k))
 
-        # if a corrective displaced the SUPPORT foot this segment
-        # expects, return it BEFORE the mover lifts — the move's
-        # validity assumes the clip's support geometry
-        sup_need = to_world(
-            clip.keyframes[t.seg - 1].pos[
-                _FIDX[sup]:_FIDX[sup] + 1],
-            *poses[t.seg - 1])[0, :2]
-        if np.linalg.norm(feet_xy[sup] - sup_need) > 0.05:
-            steps.append(Footstep(
-                foot=sup, target=sup_need, kind="recover",
-                reason="restore support for clip intent",
-                before_frame=t.seg))
-            feet_xy[sup] = sup_need
-
-        # foot targets of this keyframe in frame0; any foot whose
-        # required position differs from its current spot must step
-        w_kf = to_world(clip.keyframes[t.seg].pos, *poses[t.seg])
-        todo = [s for s in ("right", "left")
-                if clip.keyframes[t.seg].pos[_FIDX[s], 2] <= LIFT_Z
-                and np.linalg.norm(w_kf[_FIDX[s], :2] - feet_xy[s])
-                > 0.05]
-        if len(todo) == 2:
-            # walk transition: BOTH feet relocate -> alternate steps,
-            # each <= _GAIT_STRIDE toward its own kf target; this is
-            # the self-planned middle the clip leaves open
-            _walk(steps, todo, w_kf, feet_xy, loaded, t, t.mover)
-            continue
-        if t.mover not in todo:
-            continue                        # swing waypoint only
-        steps.append(Footstep(foot=t.mover,
-                              target=w_kf[_FIDX[t.mover], :2].copy(),
-                              kind="move",
-                              reason=f"seg{t.seg} mover",
-                              for_frame=t.seg))
-        feet_xy[t.mover] = w_kf[_FIDX[t.mover], :2].copy()
-        loaded[t.mover] = True
-
-    # recover: corrective steps may have displaced a foot the clip
-    # requires planted — return it to the clip's final stance once
-    # double support has resumed
-    last = clip.keyframes[-1]
-    w_last = to_world(last.pos, *poses[-1])
-    for side in ("right", "left"):
-        if last.pos[_FIDX[side], 2] > LIFT_Z:
-            continue                        # clip doesn't want it down
-        tgt = w_last[_FIDX[side], :2]
-        if np.linalg.norm(feet_xy[side] - tgt) > 0.05:
-            steps.append(Footstep(
-                foot=side, target=tgt, kind="recover",
-                reason="restore clip-required stance",
-                for_frame=len(clip.keyframes) - 1))
-            feet_xy[side] = tgt
-    return steps
+    for k in range(1, len(kfs)):
+        for st in before[k]:
+            if loaded.get(st.foot):
+                _liftoff(st.foot, k)
+            _touchdown(st.foot, st.target, k)
+        # frame foot-state diff: loaded -> airborne (no step covers)
+        for s, fi in FIDX.items():
+            was = kfs[k - 1].pos[fi, 2] <= LIFT_Z
+            now = kfs[k].pos[fi, 2] <= LIFT_Z
+            if was and not now and loaded[s]:
+                _liftoff(s, k)
+        for st in for_k[k]:
+            if loaded.get(st.foot):
+                _liftoff(st.foot, k)
+            _touchdown(st.foot, st.target, k)
+        _posture(k)
+    return lms
 
 
+class SupportPlanner:
+    """Algorithm 1 (bootstrip): (Observation, P5Clip) -> SupportLandMark seq.
 
+    Internal stages: 1) extract start SupportLandMark from obs, 2) support
+    planning sub-algorithm, 3) target design by priors,
+    4) landmark planning.  Every stage marked TODO is a prior that
+    still needs design.
 
-# ---------- scenario visualization (manual check) ---------------------------
-if __name__ == "__main__":
-    """Top-down scenario renders: foot patches, COM, capture point,
-    planned footsteps.
+    SupportLandMark 序列的锚点组成 = 支撑事件锚点 + 姿态锚点 + 终点锚点。
 
-        PYTHONPATH=. python3 -m \
-            point5.humanoid21.executor.support_planner [outdir]
+    设计原则：锚点放在支撑状态变化处；相邻两个锚点之间，接触
+    方式不变或只发生一次变化——算法2 每段只面对一种接触模式。
+    锚点不带时间，先后顺序即可。
+
+    1. 支撑事件锚点：取某只脚离地和落地的一瞬间（含垫步、回
+       位）。
+       - 离地：支撑脚 ~1.0、摆动脚 0；质心移到支撑脚 CoP 区域
+         附近；速度不强制为 0，只要求 capture point 指向落脚区。
+       - 触地：摆动脚开始承重，进入双支撑；质心在两脚之间、
+         朝新支撑方向；速度一般不限。
+       （稳定锚点暂不做——落地即完成事件。）
+    2. 姿态锚点：clip 中不换支撑、只改变质心的关键帧（蓄力下
+       蹲、出拳前送、重心偏移）——工具1 由该帧 P5 得推荐质心，
+       再投影进当时的支撑域。
+    3. 终点锚点：clip 最后一帧的支撑方式与质心位置，速度为 0。
+
+    规划范围：只需覆盖下一个和再下一个支撑事件；更远的步只用
+    于判断当前步落地后是否要停住，由下一次重规划处理。
     """
-    import sys
-    from pathlib import Path
 
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Polygon as MpPoly
+    def __init__(self, robot_id: str = "robot_a"):
+        self.robot_id = robot_id
+        self._decoder = ObsDecoder(robot_id)
 
-    from point5.contracts import Keyframe, P5Clip, Transfer
-    from point5.humanoid21.executor.tools.com_solver import com_estimate
-    from point5.humanoid21.executor.contracts import (FootSupport,
-                                                      SupportLandMark)
-    from point5.humanoid21.stand_punch import (plan_stand_punch,
-                                               stand_p5)
+    def decode_p5_local(self, obs: np.ndarray):
+        return self._decoder.decode_p5_local(obs)
 
-    outdir = Path(sys.argv[1] if len(sys.argv) > 1
-                  else "/data1/dev/combatbench_executor/support_scen")
-    outdir.mkdir(parents=True, exist_ok=True)
+    def plan(self, observation: np.ndarray,
+             clip) -> list:
+        """(observation, remaining clip) -> ordered SupportLandMark seq.
+        """
+        from .tools.start_solver import extract_landmark
+        from .contracts import PlanError
 
-    P = stand_p5()
+        lm0 = extract_landmark(observation, self._decoder)
+        _, R_loc = self._decoder.decode_p5_local(observation)
+        vel = R_loc @ np.asarray(observation, np.float64)[46:49]
+        # 旧 plan_footsteps 已删除——支撑子规划器由 f4 重新实现
+        # (algo1_functions.f4: I1,I2,I3 -> R)
+        raise PlanError(
+            "support sub-planner removed; wire algo1 f-chain here")
 
-    def mk(com=(0.03, 0.0, 0.87), vel=(0, 0, 0), fr=0.5, fl=0.5):
-        return SupportLandMark(
-            com=np.asarray(com, float),
-            feet={"right": FootSupport(fr, P[3, :2].copy()),
-                  "left": FootSupport(fl, P[4, :2].copy())})
-
-    def punch():
-        plan = plan_stand_punch(np.array([1.05, 0, 1.15]), "left")
-        raw = list(plan.task.keyframes)
-        return P5Clip(name="p", keyframes=tuple(
-            [Keyframe(pos=stand_p5()),
-             Keyframe(pos=raw[0].pos,
-                      transfer=Transfer(0, 0, 0, 0.5))] + raw[1:]))
-
-    def shift():
-        p2 = P.copy()
-        p2[3] += np.array([0, -0.3, 0])
-        return P5Clip(name="s", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 1.0))))
-
-    def punch_r():
-        plan = plan_stand_punch(np.array([1.05, 0, 1.15]), "right")
-        raw = list(plan.task.keyframes)
-        return P5Clip(name="pr", keyframes=tuple(
-            [Keyframe(pos=stand_p5()),
-             Keyframe(pos=raw[0].pos,
-                      transfer=Transfer(0, 0, 0, 0.5))] + raw[1:]))
-
-    def fwd_step():
-        p2 = P.copy()
-        p2[4] += np.array([0.3, 0, 0])          # left foot fwd
-        return P5Clip(name="f", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 0.8))))
-
-    def back_step():
-        p2 = P.copy()
-        p2[3] += np.array([-0.3, 0, 0])         # right foot back
-        return P5Clip(name="b", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 0.8))))
-
-    def render(name, lm, clip):
-        steps = plan_footsteps(lm, clip)
-        fig, ax = plt.subplots(figsize=(8, 7))
-        ax.set_aspect("equal")
-        placed = []                       # occupied label positions
-
-        def _lab(pos, text, color):
-            """Place a label clear of existing labels/markers,
-            with a leader line back to pos."""
-            dirs = [(0.03, 0.02), (0.03, -0.02), (-0.03, 0.02),
-                    (-0.03, -0.02), (0.0, 0.04), (0.0, -0.04),
-                    (0.05, 0.0), (-0.05, 0.0), (0.05, 0.04),
-                    (-0.05, 0.04), (0.05, -0.04), (-0.05, -0.04),
-                    (0.0, 0.07), (0.0, -0.07), (0.08, 0.0),
-                    (-0.08, 0.0)]
-            for d in dirs:
-                lp = np.asarray(pos, float) + np.asarray(d)
-                if all(np.linalg.norm(lp - q) > 0.035 for q in placed):
-                    placed.append(lp)
-                    ax.annotate(text, pos, xytext=lp, fontsize=9,
-                                color=color,
-                                arrowprops=dict(arrowstyle="-",
-                                                color=color,
-                                                lw=0.6, alpha=0.6))
-                    return
-            ax.annotate(text, pos, xytext=np.asarray(pos)
-                        + [0.06, 0.06], fontsize=9, color=color)
-
-        def _ring(pos, colors, edge):
-            """Overlapping markers -> concentric rings, biggest out."""
-            for j, c in enumerate(colors):
-                ax.scatter(*pos, s=380 - 90 * j, facecolor="none",
-                           edgecolor=c, linewidth=1.6, zorder=4 - j)
-
-        # collect clip kf feet positions (frame0), grouped by spot
-        poses = [(np.zeros(2), 0.0)]
-        for k in range(1, len(clip.keyframes)):
-            poses.append(compose_frame(
-                *poses[-1], clip.keyframes[k].transfer))
-        spots = {}                        # pos-key -> [(label,color)]
-        for i, kf in enumerate(clip.keyframes):
-            w = to_world(kf.pos, *poses[i]) if i else kf.pos
-            for side, fi in (("R", 3), ("L", 4)):
-                key = tuple(np.round(w[fi, :2], 2))
-                spots.setdefault(key, []).append(
-                    (w[fi, :2], f"k{i}:{side}", "gray"))
-        for key, items in spots.items():
-            pos = items[0][0]
-            _ring(pos, ["gray"] * len(items), "gray")
-            _lab(pos, " ".join(t for _, t, _ in items), "gray")
-
-        # current support: black
-        for side, f in lm.feet.items():
-            if f.pos is not None:
-                key = tuple(np.round(f.pos, 2))
-                ax.scatter(*f.pos, s=200, c="black", zorder=5)
-                _lab(f.pos, f"now:{side[0].upper()}", "black")
-
-        # planned steps
-        for i, st in enumerate(steps):
-            col = {"corrective": "tab:orange", "move": "tab:green",
-                   "recover": "tab:purple"}.get(st.kind, "tab:gray")
-            ax.scatter(*st.target, s=260, facecolor="none",
-                       edgecolor=col, linewidth=2.4, zorder=6)
-            _lab(st.target,
-                 f"{i + 1}:{st.foot[0].upper()}", col)
-            cur = lm.feet[st.foot].pos
-            if cur is not None:
-                ax.annotate("", xy=st.target, xytext=cur,
-                            arrowprops=dict(arrowstyle="->",
-                                            color=col, lw=1.2,
-                                            alpha=0.6))
-        ax.set_title(name)
-        ax.set_xlabel("x fwd"); ax.set_ylabel("y left")
-        fig.tight_layout()
-        p = outdir / f"{name}.png"
-        fig.savefig(p, dpi=130)
-        plt.close(fig)
-        print("saved", p)
-
-    render("01_still_punch", mk(), punch())
-    render("02_drift_left", mk(vel=(0, 0.5, 0)), punch())
-    render("03_drift_back", mk(vel=(-0.5, 0, 0)), punch())
-    render("04_drift_right", mk(vel=(0, -0.5, 0)), punch())
-    render("05_drift_fwd", mk(vel=(0.5, 0, 0)), punch())
-    render("06_drift_diag", mk(vel=(-0.35, 0.35, 0)), punch())
-    render("07_big_momentum", mk(vel=(0, 1.8, 0)), punch())
-    render("08_single_support", mk(fr=1.0, fl=0.0), punch())
-    render("09_single_drift", mk(vel=(0, 0.5, 0), fr=1.0, fl=0.0),
-           punch())
-    render("10_com_offset", mk(com=(0.0, -0.12, 0.87)), punch())
-    render("11_fwd_step", mk(), fwd_step())
-    render("12_back_step", mk(), back_step())
-    render("13_punch_right", mk(), punch_r())
-    render("14_crouch_drift", mk(com=(0.02, 0, 0.62), vel=(0, 0.4, 0)),
-           punch())
-
-    def far_target():
-        p2 = P.copy()
-        p2[4] += np.array([1.0, 0, 0])          # left foot 1m ahead
-        return P5Clip(name="far", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 2.0))))
-    def far_diag():
-        p2 = P.copy()
-        p2[4] += np.array([0.7, 0.3, 0])
-        return P5Clip(name="fd", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=p2, transfer=Transfer(0, 0, 0, 2.0))))
-    def walk_far():
-        return P5Clip(name="w", keyframes=(
-            Keyframe(pos=P),
-            Keyframe(pos=P, transfer=Transfer(1.5, 0, 0, 2.0))))
-    render("15_far_target", mk(), far_target())
-    render("16_far_diag", mk(), far_diag())
-    render("17_walk_far", mk(), walk_far())
-    print("done ->", outdir)

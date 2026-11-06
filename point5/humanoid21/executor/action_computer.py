@@ -29,7 +29,7 @@ class ActionComputer:
 
     def _dec(self):
         if self._decoder is None:
-            from .centroidal_planner import ObsDecoder
+            from .support_planner import ObsDecoder
             self._decoder = ObsDecoder(self.robot_id)
         return self._decoder
 

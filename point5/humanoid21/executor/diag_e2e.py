@@ -17,7 +17,7 @@ from envs.humanoid21.simulator import Humanoid21Simulator
 from point5.contracts import Keyframe, P5Clip, Transfer
 from point5.humanoid21.stand_punch import stand_p5, plan_stand_punch
 from point5.humanoid21.executor.tools.com_solver import com_estimate
-from point5.humanoid21.executor.centroidal_planner import ObsDecoder
+from point5.humanoid21.executor.support_planner import ObsDecoder
 from point5.humanoid21.executor.e2e_policy import ExecutorPolicy
 
 
