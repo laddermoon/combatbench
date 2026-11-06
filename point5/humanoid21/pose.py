@@ -216,8 +216,8 @@ class Pose:
         """自身局部帧 P5（踝中点原点、躯干 +x）。"""
         return self.anchor('ankle_mid').p5()
 
-    def support_landmark_on_p5_axis(self):
-        """P5 轴系下的 SupportState。
+    def support_state_on_p5_axis(self):
+        """P5 轴系下的 SupportState（统一局部帧）。
 
         com 精确质量加权；foot pos 来自锚定帧；force_ratio 按
         落地脚均分（姿态本身不带接触力——这是支撑语义不是测量）。

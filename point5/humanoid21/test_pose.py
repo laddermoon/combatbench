@@ -149,7 +149,7 @@ class TestOutputs:
         assert pose.com_height() == pytest.approx(true_z, abs=0.01)
 
     def test_support_landmark_standing(self, pose):
-        lm = pose.support_landmark_on_p5_axis()
+        lm = pose.support_state_on_p5_axis()
         assert lm.feet["right"].force_ratio == pytest.approx(0.5)
         assert lm.feet["left"].force_ratio == pytest.approx(0.5)
         assert lm.com[2] == pytest.approx(0.85, abs=0.02)
@@ -162,7 +162,7 @@ class TestOutputs:
                                 initial_pose_a="stand_on_left_leg")
         s.reset(0)
         obs = s.get_derived_state()["robot_a"]["observation"]
-        lm = Pose.from_obs(obs).support_landmark_on_p5_axis()
+        lm = Pose.from_obs(obs).support_state_on_p5_axis()
         assert lm.feet["right"].force_ratio == 0.0     # airborne
         assert lm.feet["left"].force_ratio == pytest.approx(1.0)
 
@@ -246,7 +246,7 @@ class TestCrossConsistency:
         assert p[0, 2] > 1.0
 
     def test_landmark_com_matches_anchor(self, pose):
-        lm = pose.support_landmark_on_p5_axis()
+        lm = pose.support_state_on_p5_axis()
         np.testing.assert_allclose(lm.com, pose.anchor().com())
 
     def test_anchor_idempotent(self, pose):
@@ -319,7 +319,7 @@ class TestNonStanding:
         # robot_b is the frozen one standing; use robot_a falling pose
         obs = s.get_derived_state()["robot_a"]["observation"]
         p = Pose.from_obs(obs)
-        lm = p.support_landmark_on_p5_axis()
+        lm = p.support_state_on_p5_axis()
         # com pulled toward the support (left) foot side
         assert lm.feet["left"].force_ratio == 1.0
         assert lm.feet["right"].force_ratio == 0.0
@@ -338,7 +338,7 @@ class TestNonStanding:
         # both raw foot z > 0.12 -> all zero force (if the solver lifts them)
         raw = a.p5().pos
         if raw[3, 2] > 0.12 and raw[4, 2] > 0.12:
-            lm = p.support_landmark_on_p5_axis()
+            lm = p.support_state_on_p5_axis()
             assert lm.feet["right"].force_ratio == 0.0
             assert lm.feet["left"].force_ratio == 0.0
 
@@ -453,7 +453,7 @@ class TestPlantedBoundary:
         p0 = np.zeros((5, 3)); p0[0] = [0, 0, 1.4]
         p0[3] = [0, -0.09, 0.087]; p0[4] = [0, 0.09, 0.13]   # 0.13 > band
         pos = Pose.from_p5(p0, tolerance=0.05)
-        lm = pos.support_landmark_on_p5_axis()
+        lm = pos.support_state_on_p5_axis()
         raw = pos.p5().pos
         # whichever side is above band gets 0; if solver lands both
         # below, both share — lock the semantic either way
@@ -592,12 +592,12 @@ class TestBoundaryDetails:
             p0[3] = [0, -0.09, z]; p0[4] = [0, 0.09, 0.087]
             pos = Pose.from_p5(p0, tolerance=0.08)
             raw = pos.p5().pos
-            lm = pos.support_landmark_on_p5_axis()
+            lm = pos.support_state_on_p5_axis()
             if raw[3, 2] > 0.12 and not expect:
                 assert lm.feet["right"].force_ratio == 0.0
 
     def test_landmark_contract_fields(self, pose):
-        lm = pose.support_landmark_on_p5_axis()
+        lm = pose.support_state_on_p5_axis()
         assert lm.torso_yaw is None        # v1: not handled
         assert hasattr(lm, "com") and hasattr(lm, "feet")
         assert set(lm.feet.keys()) == {"right", "left"}

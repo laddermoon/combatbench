@@ -19,14 +19,14 @@ from .contracts import Observation
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
-    Pose.support_landmark_on_p5_axis() 出几何（脚位 + 精确质心）；
+    Pose.support_state_on_p5_axis() 出几何（脚位 + 精确质心）；
     force_ratio 覆盖为 obs[52:54] 实测动态分配（当前态是测量
     不是设计——落地判带那套默认分配只用于规划态）。
     """
     from point5.humanoid21.pose import Pose
 
     obs = np.asarray(obs, np.float64)
-    lm = Pose.from_obs(obs).support_landmark_on_p5_axis()
+    lm = Pose.from_obs(obs).support_state_on_p5_axis()
     fr = obs[52:54]
     lm.feet["right"].force_ratio = float(fr[0])
     lm.feet["left"].force_ratio = float(fr[1])
