@@ -68,7 +68,7 @@ class Executor:
         """Step 0: clip frame0 must equal the current local P5."""
         pos = self._extract_p5(ctx.observation)
         dev = np.linalg.norm(
-            np.asarray(ctx.clip.keyframes[0].pos)
+            np.asarray(ctx.clip.Base.pos)
             - np.asarray(pos), axis=1)
         if float(dev.max()) > self.anchor_atol:
             raise AnchorError(

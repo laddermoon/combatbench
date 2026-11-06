@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from point5.contracts import Keyframe, P5Clip, P5
+from point5.contracts import P5Clip, P5
 from point5.humanoid21.stand_punch import stand_p5
 from point5.humanoid21.executor.contracts import (
     AnchorError, Context, Observation, PlanError)
@@ -11,7 +11,7 @@ from point5.humanoid21.executor.executor import Executor
 
 def _ctx():
     pos = stand_p5()
-    clip = P5Clip(name="t", keyframes=(Keyframe(pos=pos),))
+    clip = P5Clip(Base=P5(pos=pos))
     return Context(observation=np.zeros(96), clip=clip)
 
 
@@ -23,10 +23,9 @@ def test_anchor_rejects_mismatch():
     ex = Executor.__new__(Executor)          # skip sim init for speed
     _patched(ex, stand_p5())
     ctx = _ctx()
-    moved = ctx.clip.keyframes[0].pos.copy()
+    moved = ctx.clip.Base.pos.copy()
     moved[0, 2] += 0.05
-    ctx.clip = P5Clip(name="t", keyframes=(
-        Keyframe(pos=moved),))
+    ctx.clip = P5Clip(Base=P5(pos=moved))
     with pytest.raises(AnchorError):
         ex._verify_anchor(ctx)
 
