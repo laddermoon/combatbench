@@ -1,7 +1,7 @@
 """Humanoid21 adapter for the point5 business language.
 
 This is the ONLY package under point5 allowed to import simulator code.
+(adapter removed — obs->P5 decode moved to PoseAnchor in executor tools)
 """
-from .adapter import point5_from_view
 
-__all__ = ["point5_from_view"]
+__all__ = []

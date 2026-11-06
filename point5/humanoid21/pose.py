@@ -81,7 +81,7 @@ class _Anchored:
 
 
 @dataclass
-class PoseAnchor:
+class Pose:
     """关节角 + 高度 + 俯仰——机器人姿态的精确表达。"""
     qpos: np.ndarray               # (21,) rad
     root_z: float                  # 世界系高度
