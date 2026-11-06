@@ -29,8 +29,8 @@ class ActionComputer:
 
     def _dec(self):
         if self._decoder is None:
-            from .tools.pose_anchor import PoseAnchor
-            self._decoder = PoseAnchor
+            from point5.humanoid21.pose import Pose
+            self._decoder = Pose
         return self._decoder
 
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:

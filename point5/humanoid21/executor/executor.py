@@ -58,8 +58,8 @@ class Executor:
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
         """96-dim obs -> local P5 (5,3) via the shared FK decode."""
-        from .tools.pose_anchor import PoseAnchor
-        local_p5 = PoseAnchor.from_obs(
+        from point5.humanoid21.pose import Pose
+        local_p5 = Pose.from_obs(
             observation, robot_id=self.robot_id
         ).anchor('ankle_mid').p5().pos
         return local_p5

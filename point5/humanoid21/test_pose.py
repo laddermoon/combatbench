@@ -55,7 +55,7 @@ class TestConstruction:
 
 class TestFromObs:
     def test_qpos_denormalized(self, obs, pose):
-        rng = Pose.fk().joint_ranges("robot_a")
+        rng = Pose.joint_ranges("robot_a")
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
         np.testing.assert_allclose(pose.qpos, obs[0:21] * sc + ref)
 

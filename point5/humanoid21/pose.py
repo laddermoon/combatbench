@@ -1,4 +1,4 @@
-"""PoseAnchor — 精确的无位置机器人姿态表达（锚点用）。
+"""Pose — 精确的无位置机器人姿态表达（锚点用）。
 
     qpos   (21,)  关节角，弧度（真实单位，非归一化）
     root_z (1,)   躯干高度，世界系 z
@@ -18,6 +18,8 @@ from typing import Optional
 
 import mujoco
 import numpy as np
+
+from point5.contracts import POINT_NAMES
 
 _JOINTS = (21,)
 _G = (3,)
@@ -63,74 +65,6 @@ from envs.humanoid21.meta import Humanoid21Meta
 from envs.humanoid21.simulator import Humanoid21Simulator
 from .mechanics import LANDMARKS
 
-_ROOT_DOFS = 6
-_ROOT_QPOS = 7
-
-
-class Humanoid21FK:
-    """Read-only kinematics model for one or both arena robots."""
-
-    def __init__(self) -> None:
-        self.model = mujoco.MjSpec.from_file(
-            Humanoid21Simulator.ARENA_XML).compile()
-        self.data = mujoco.MjData(self.model)
-        self._tables = Humanoid21Meta.build_runtime_tables(self.model)
-        self._robots = self._tables["robots"]
-
-    def controlled_joints(self, robot_id: str) -> list:
-        return list(self._robots[robot_id]["controlled_joint_names"])
-
-    def joint_ranges(self, robot_id: str) -> np.ndarray:
-        return np.asarray(self._robots[robot_id]["jnt_ranges"],
-                          dtype=np.float64)
-
-    def set_pose(self, robot_id: str, root_pos, root_quat_wxyz,
-                 joint_pos: np.ndarray) -> None:
-        """Write ``qpos`` for one robot and refresh kinematics."""
-        r = self._robots[robot_id]
-        joints = np.asarray(joint_pos, dtype=np.float64)
-        if joints.shape != (len(r["qpos_indices"]),):
-            raise ValueError(
-                f"joint_pos must be ({len(r['qpos_indices'])},), "
-                f"got {joints.shape}")
-        adr = int(r["root_qpos_adr"])
-        self.data.qpos[adr:adr + 3] = np.asarray(root_pos, dtype=np.float64)
-        self.data.qpos[adr + 3:adr + _ROOT_QPOS] = np.asarray(
-            root_quat_wxyz, dtype=np.float64)
-        self.data.qpos[np.asarray(r["qpos_indices"])] = joints
-        mujoco.mj_kinematics(self.model, self.data)
-
-    def landmark_positions(self, robot_id: str) -> np.ndarray:
-        """(5,3) world positions of the business points, POINT_NAMES order."""
-        r = self._robots[robot_id]
-        out = np.zeros((5, 3), dtype=np.float64)
-        for i, name in enumerate(_lm_order()):
-            body, off = LANDMARKS[name]
-            bid = r["keypoint_body_ids"].get(body)
-            if bid is None:
-                bid = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_BODY,
-                    f"{body}{r['suffix']}")
-            out[i] = (np.asarray(self.data.xpos[bid])
-                      + np.asarray(self.data.xmat[bid]).reshape(3, 3) @ off)
-        return out
-
-    def body_pose(self, robot_id: str) -> Dict[str, np.ndarray]:
-        """All body world poses for rendering: name -> (xpos, xmat)."""
-        r = self._robots[robot_id]
-        result = {}
-        for bid, name in zip(r["body_ids_sorted"], r["body_names"]):
-            result[name] = (np.asarray(self.data.xpos[bid]).copy(),
-                            np.asarray(self.data.xmat[bid]).reshape(3, 3)
-                            .copy())
-        return result
-
-
-def _lm_order():
-    from point5.contracts import POINT_NAMES
-    return POINT_NAMES
-
-
 _POINT_RGBA = {
     "head": (224, 72, 62, 255),
     "hand_right": (59, 165, 59, 255),
@@ -160,7 +94,7 @@ def _project(cam, fovy: float, size: tuple, p3: np.ndarray):
 
 @dataclass
 class _Anchored:
-    """PoseAnchor resolved into a frame — all outputs live here."""
+    """Pose resolved into a frame — all outputs live here."""
     _p5: np.ndarray                 # (5,3) anchored local
     _feet: dict                     # side -> (2,) anchored local
     _com: np.ndarray                # (3,) anchored local
@@ -187,7 +121,9 @@ class Pose:
     g_body: np.ndarray             # (3,) 机体系重力向量
     robot_id: str = "robot_a"
 
-    _FK = None                     # class-level lazy Humanoid21FK
+    _MODEL = None                  # class-level lazy kinematics
+    _DATA = None
+    _ROBOTS = None
 
     def __post_init__(self):
         self.qpos = np.array(self.qpos, np.float64)      # copy, not alias
@@ -199,21 +135,43 @@ class Pose:
         self.root_z = float(self.root_z)
 
     @classmethod
-    def fk(cls):
-        if cls._FK is None:
-            cls._FK = Humanoid21FK()
-        return cls._FK
+    def _kinematics(cls):
+        """Lazy shared (model, data, robots) — read-only kinematics."""
+        if cls._MODEL is None:
+            cls._MODEL = mujoco.MjSpec.from_file(
+                Humanoid21Simulator.ARENA_XML).compile()
+            cls._DATA = mujoco.MjData(cls._MODEL)
+            cls._ROBOTS = Humanoid21Meta.build_runtime_tables(
+                cls._MODEL)["robots"]
+        return cls._MODEL, cls._DATA, cls._ROBOTS
+
+    @classmethod
+    def joint_ranges(cls, robot_id: str = "robot_a") -> np.ndarray:
+        """(21,2) joint radian ranges (obs denormalization)."""
+        _, _, robots = cls._kinematics()
+        return np.asarray(robots[robot_id]["jnt_ranges"], dtype=np.float64)
+
+    def _set_fk_pose(self):
+        """Write this pose into the shared kinematics model."""
+        model, data, robots = self._kinematics()
+        r = robots[self.robot_id]
+        adr = int(r["root_qpos_adr"])
+        data.qpos[adr:adr + 3] = [0.0, 0.0, self.root_z]
+        data.qpos[adr + 3:adr + 7] = _quat_wxyz(_level_rot(self.g_body))
+        data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
+        mujoco.mj_kinematics(model, data)
+        return model, data, r
 
     @classmethod
     def from_obs(cls, obs: np.ndarray,
                  joint_ranges: Optional[np.ndarray] = None,
                  robot_id: str = "robot_a"):
-        """obs (96,) -> PoseAnchor（关节角反归一化）。
+        """obs (96,) -> Pose（关节角反归一化）。
 
         joint_ranges: (21,2) 各关节 (lo,hi) 弧度；None = 从 fk 取。
         """
         if joint_ranges is None:
-            joint_ranges = cls.fk().joint_ranges(robot_id)
+            joint_ranges = cls.joint_ranges(robot_id)
         rng = np.asarray(joint_ranges, np.float64)
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
         return cls(qpos=np.asarray(obs[0:21], np.float64) * sc + ref,
@@ -269,22 +227,27 @@ class Pose:
     # ---------- anchored (position-resolved) outputs ----------
 
     def _fk_state(self):
-        """Pose the FK model (tilt-leveled, yaw=0) and read geometry."""
-        fk = self.fk()
-        R_tilt = _level_rot(self.g_body)
-        fk.set_pose(self.robot_id, np.array([0.0, 0.0, self.root_z]),
-                    _quat_wxyz(R_tilt), self.qpos)
-        lm = fk.landmark_positions(self.robot_id)
-        r = fk._robots[self.robot_id]
+        """Pose the shared kinematics model and read geometry.
+
+        Returns (landmark positions (5,3), exact mass-weighted com (3,),
+        torso yaw, R_tilt)."""
+        model, data, r = self._set_fk_pose()
+        lm = np.zeros((5, 3))
+        for i, name in enumerate(POINT_NAMES):
+            body, off = LANDMARKS[name]
+            bid = r["keypoint_body_ids"].get(body) or                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                                  f"{body}{r['suffix']}")
+            lm[i] = (np.asarray(data.xpos[bid])
+                     + np.asarray(data.xmat[bid]).reshape(3, 3) @ off)
         ids = np.asarray(r["body_ids_sorted"], int)
-        ms = np.asarray(fk.model.body_mass)[ids]
-        xip = np.asarray(fk.data.xipos)[ids]
+        ms = np.asarray(model.body_mass)[ids]
+        xip = np.asarray(data.xipos)[ids]
         com = (ms[:, None] * xip).sum(0) / ms.sum()
-        poses = fk.body_pose(self.robot_id)
-        torso = next(v for k, v in poses.items() if "torso" in k)
-        fwd = torso[1][:, 0]
+        tbid = r["keypoint_body_ids"].get("torso") or             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                              f"torso{r['suffix']}")
+        fwd = np.asarray(data.xmat[tbid]).reshape(3, 3)[:, 0]
         torso_yaw = float(np.arctan2(fwd[1], fwd[0]))
-        return lm, com, torso_yaw, R_tilt
+        return lm, com, torso_yaw, _level_rot(self.g_body)
 
     def anchor(self, point: str = "ankle_mid",
                xy=(0.0, 0.0), yaw: float = 0.0) -> _Anchored:
@@ -329,11 +292,15 @@ class Pose:
         from PIL import Image, ImageDraw
         from point5.contracts import POINT_NAMES
 
-        fk = self.fk()
-        fk.set_pose(self.robot_id, np.array([0., 0., self.root_z]),
-                    _quat_wxyz(_level_rot(self.g_body)), self.qpos)
-        lm = fk.landmark_positions(self.robot_id)
-        model, data = fk.model, fk.data
+        model, data, r = self._set_fk_pose()
+        lm = np.zeros((5, 3))
+        for i, name in enumerate(POINT_NAMES):
+            body, off = LANDMARKS[name]
+            bid = r["keypoint_body_ids"].get(body) or \
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY,
+                                  f"{body}{r['suffix']}")
+            lm[i] = (np.asarray(data.xpos[bid])
+                     + np.asarray(data.xmat[bid]).reshape(3, 3) @ off)
         fovy = float(model.vis.global_.fovy) or 45.0
         outs = []
         for label, az, el in views:
