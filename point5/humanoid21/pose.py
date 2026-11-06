@@ -91,10 +91,10 @@ class Pose:
     _FK = None                     # class-level lazy Humanoid21FK
 
     def __post_init__(self):
-        self.qpos = np.asarray(self.qpos, np.float64)
+        self.qpos = np.array(self.qpos, np.float64)      # copy, not alias
         assert self.qpos.shape == _JOINTS, \
             f"qpos expected {_JOINTS}, got {self.qpos.shape}"
-        self.g_body = np.asarray(self.g_body, np.float64)
+        self.g_body = np.array(self.g_body, np.float64)
         assert self.g_body.shape == _G, \
             f"g_body expected {_G}, got {self.g_body.shape}"
         self.root_z = float(self.root_z)

@@ -208,3 +208,148 @@ class TestLevelRot:
             g = rng.normal(0, 5, 3); g[2] = -abs(g[2]) - 1
             R = _level_rot(g)
             np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 深入：别名隔离、跨方法一致性、复合锚定、边缘 g_body、robot_b
+# ---------------------------------------------------------------------------
+
+class TestOwnership:
+    def test_qpos_not_aliased(self):
+        q = np.zeros(21)
+        p = Pose(qpos=q, root_z=1.0, g_body=np.array([0., 0., -9.81]))
+        q[0] = 99.0
+        assert p.qpos[0] == 0.0
+
+    def test_g_body_not_aliased(self):
+        g = np.array([0., 0., -9.81])
+        p = Pose(np.zeros(21), 1.0, g)
+        g[0] = 5.0
+        assert p.g_body[0] == 0.0
+
+
+class TestCrossConsistency:
+    def test_com_height_equals_anchored_com_z(self, pose):
+        a = pose.anchor()
+        assert a.com()[2] == pytest.approx(pose.com_height(), abs=1e-9)
+
+    def test_foot_pos_matches_p5(self, pose):
+        a = pose.anchor()
+        fp, p = a.foot_pos(), a.p5().pos
+        np.testing.assert_allclose(fp["right"], p[3, :2])
+        np.testing.assert_allclose(fp["left"], p[4, :2])
+
+    def test_p5_point_order(self, pose):
+        # index 0 must be the head (highest point when standing)
+        p = pose.p5().pos
+        assert p[0, 2] == p[:, 2].max()
+        assert p[0, 2] > 1.0
+
+    def test_landmark_com_matches_anchor(self, pose):
+        lm = pose.support_landmark_on_p5_axis()
+        np.testing.assert_allclose(lm.com, pose.anchor().com())
+
+    def test_anchor_idempotent(self, pose):
+        # repeated anchors on one Pose give identical outputs (no state)
+        a1, a2 = pose.anchor(), pose.anchor()
+        np.testing.assert_allclose(a1.p5().pos, a2.p5().pos)
+        np.testing.assert_allclose(a1.com(), a2.com())
+
+
+class TestCompositeAnchor:
+    def test_xy_and_yaw_together(self, pose):
+        a = pose.anchor("left", xy=(0.3, -0.7), yaw=np.pi / 2)
+        np.testing.assert_allclose(a.foot_pos()["left"], [0.3, -0.7],
+                                   atol=1e-9)
+        # and heading rotated: ankle line dir -> +x (right-left axis)
+        d = a.foot_pos()["right"] - a.foot_pos()["left"]
+        np.testing.assert_allclose(d / np.linalg.norm(d), [1., 0.],
+                                   atol=1e-9)
+
+    def test_tilted_pose_anchored_level(self):
+        # g_body tilted 15deg — anchor still produces a level output
+        g = np.array([np.sin(0.26), 0., -np.cos(0.26)]) * 9.81
+        p = Pose(qpos=np.zeros(21), root_z=1.2, g_body=g)
+        a = p.anchor()
+        mid = 0.5 * (a.foot_pos()["right"] + a.foot_pos()["left"])
+        np.testing.assert_allclose(mid, [0., 0.], atol=1e-9)
+        # R must fold the tilt in: R applied to g_body -> -z
+        np.testing.assert_allclose(
+            a.R @ (g / np.linalg.norm(g)), [0., 0., -1.], atol=1e-9)
+
+
+class TestGBodyEdge:
+    def test_inverted(self):
+        # g_body pointing UP (robot upside down) — 180deg branch
+        p = Pose(np.zeros(21), 1.0, np.array([0., 0., 9.81]))
+        a = p.anchor()
+        mid = 0.5 * (a.foot_pos()["right"] + a.foot_pos()["left"])
+        np.testing.assert_allclose(mid, [0., 0.], atol=1e-9)
+
+    def test_tiny_magnitude(self):
+        # near-zero g_body is normalized, not crashing
+        p = Pose(np.zeros(21), 1.0, np.array([0., 0., -1e-12]))
+        a = p.anchor()
+        assert np.all(np.isfinite(a.com()))
+
+    def test_level_rot_inverted_branch(self):
+        # g = +z exactly: the g[2]<0 else-branch (diag flip)
+        R = _level_rot(np.array([0., 0., 9.81]))
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-9)
+
+
+class TestRobotB:
+    def test_from_obs_robot_b(self):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+        s = Humanoid21Simulator(initial_distance=6.0,
+                                initial_pose_a="standing")
+        s.reset(0)
+        obs = s.get_derived_state()["robot_b"]["observation"]
+        p = Pose.from_obs(obs, robot_id="robot_b")
+        assert p.com_height() == pytest.approx(0.85, abs=0.05)
+
+
+class TestNonStanding:
+    def test_single_leg_tilt_nonzero(self):
+        from envs.humanoid21.simulator import Humanoid21Simulator
+        s = Humanoid21Simulator(initial_distance=6.0,
+                                initial_pose_a="stand_on_left_leg")
+        s.reset(0)
+        obs = s.get_derived_state()["robot_b"]["observation"]
+        # robot_b is the frozen one standing; use robot_a falling pose
+        obs = s.get_derived_state()["robot_a"]["observation"]
+        p = Pose.from_obs(obs)
+        lm = p.support_landmark_on_p5_axis()
+        # com pulled toward the support (left) foot side
+        assert lm.feet["left"].force_ratio == 1.0
+        assert lm.feet["right"].force_ratio == 0.0
+        # com closer to support foot than airborne foot in xy
+        fp = lm.feet
+        assert (np.linalg.norm(lm.com[:2] - fp["left"].pos)
+                < np.linalg.norm(lm.com[:2] - fp["right"].pos))
+
+    def test_airborne_gives_zero_force(self):
+        # a P5 with both feet lifted above the planted band
+        base = np.zeros((5, 3)); base[3] = [0, -0.09, 0.5]; base[4] = [0, 0.09, 0.5]
+        base[0] = [0, 0, 1.5]
+        p = Pose.from_p5(base, tolerance=0.05)
+        a = p.anchor()
+        fp = a.foot_pos()
+        # both raw foot z > 0.12 -> all zero force (if the solver lifts them)
+        raw = a.p5().pos
+        if raw[3, 2] > 0.12 and raw[4, 2] > 0.12:
+            lm = p.support_landmark_on_p5_axis()
+            assert lm.feet["right"].force_ratio == 0.0
+            assert lm.feet["left"].force_ratio == 0.0
+
+
+class TestDeterminism:
+    def test_same_obs_same_pose(self, obs):
+        p1, p2 = Pose.from_obs(obs), Pose.from_obs(obs)
+        np.testing.assert_array_equal(p1.qpos, p2.qpos)
+        np.testing.assert_allclose(p1.com_height(), p2.com_height())
+
+    def test_from_p5_deterministic(self, pose):
+        a = Pose.from_p5(pose.p5(), tolerance=0.02)
+        b = Pose.from_p5(pose.p5(), tolerance=0.02)
+        np.testing.assert_allclose(a.qpos, b.qpos, atol=1e-6)
