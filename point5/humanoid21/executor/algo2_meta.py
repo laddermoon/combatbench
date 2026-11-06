@@ -14,6 +14,7 @@ from typing import Optional
 import numpy as np
 
 from .contracts import Action, SupportState  # noqa: F401  (re-exported types)
+from point5.humanoid21.pose import Pose
 
 # ---------- payload shapes ----------
 _P5 = (5, 3)      # 头/左右手/左右脚，重力对齐局部系
@@ -31,7 +32,7 @@ def _chk(v: np.ndarray, shape, name: str) -> np.ndarray:
 
 @dataclass
 class I1:
-    """当前 P5 — Observation 解码（clip kf0 同一份）。"""
+    """当前 P5 — 取 clip.Base（观测侧参考起点）。"""
     p5: np.ndarray
 
     def __post_init__(self):
@@ -40,10 +41,10 @@ class I1:
 
 @dataclass
 class I2:
-    """下一 landmark 的 P5 — F1(landmarks, clip)。
+    """下一锚点的 P5 — F1(plan, clip)。
 
-    姿态锚点：经 lm.for_frame 从 clip 关键帧直接取；
-    接触锚点：缺失，由锚点质心态 + 先验/后续姿态 P5 补全。
+    经 SupportState.for_frame 从 clip.p5[for_frame] 取；
+    接触锚点缺失时由锚点支撑态 + 先验姿态 P5 补全。
     """
     p5: np.ndarray
     completed: bool = False      # True = 由 F1 补全（接触锚点）
@@ -65,58 +66,63 @@ class I3:
 
 @dataclass
 class I4:
-    """当前姿态 — obs[0:21] 关节位置。"""
-    pose: np.ndarray
+    """当前姿态 — Pose（qpos + root_z + g_body + 速度）。"""
+    pose: Pose
 
     def __post_init__(self):
-        self.pose = _chk(self.pose, (_JOINTS,), "I4.pose")
+        assert isinstance(self.pose, Pose), "I4.pose must be Pose"
 
 
 @dataclass
 class I5:
-    """目标姿态 — F3(I3, I4, I8?)。"""
-    pose: np.ndarray
+    """目标姿态 — Pose（I3 反解的关节空间参考）。"""
+    pose: Pose
 
     def __post_init__(self):
-        self.pose = _chk(self.pose, (_JOINTS,), "I5.pose")
+        assert isinstance(self.pose, Pose), "I5.pose must be Pose"
 
 
-# ---------- 质心空间（位置 only） ----------
+# ---------- 支撑态空间（统一首帧 P5 系） ----------
+
+def _st(v, name):
+    assert isinstance(v, SupportState), f"{name} must be SupportState"
+    return v
+
 
 @dataclass
 class I6:
-    """当前质心位置 — obs 解码（工具1/8）。"""
-    com: np.ndarray
+    """当前支撑态 — obs 解码（f12）为主，plan[0] 备选。"""
+    state: SupportState
 
     def __post_init__(self):
-        self.com = _chk(self.com, _COM, "I6.com")
+        self.state = _st(self.state, "I6.state")
 
 
 @dataclass
 class I7:
-    """锚点质心位置 — 下一 landmark 的 com。"""
-    com: np.ndarray
+    """锚点支撑态 — 下一 SupportState。"""
+    state: SupportState
 
     def __post_init__(self):
-        self.com = _chk(self.com, _COM, "I7.com")
+        self.state = _st(self.state, "I7.state")
 
 
 @dataclass
 class I8:
-    """下一帧质心目标 — F4(I6, I7, I9)。"""
-    com: np.ndarray
+    """下一帧支撑态目标 — F4(I6, I7, I9)。"""
+    state: SupportState
 
     def __post_init__(self):
-        self.com = _chk(self.com, _COM, "I8.com")
+        self.state = _st(self.state, "I8.state")
 
 
 @dataclass
 class I9:
-    """下下个 landmark 的质心位置 — F4 前瞻输入。"""
-    com: np.ndarray
+    """下下锚点支撑态 — F4 前瞻输入。"""
+    state: SupportState
 
     def __post_init__(self):
-        self.com = _chk(self.com, _COM, "I9.com")
+        self.state = _st(self.state, "I9.state")
 
 
 # ---------- 动作空间 ----------

@@ -52,9 +52,9 @@ def f4(landmarks: List[SupportState]) -> I8:
     """f4(landmarks) -> I8：当前质心 → 下一帧质心目标。
 
     I6/I7/I9 内部使用：
-      I6 = landmarks[0].com（当前质心 = 起点锚点）
-      I7 = landmarks[1].com（下一锚点质心）
-      I9 = landmarks[2].com（前瞻锚点，缺省则无）
+      I6 = plan[0]（当前支撑态 = 起点锚点，SupportState）
+      I7 = plan[1]（下一锚点支撑态）
+      I9 = plan[2]（前瞻锚点，缺省则无）
 
     landmarks 完整锚点信息——支撑态/脚位/force_ratio 决定
     质心路径的可行通道（如抬脚前须先移到支撑脚上方）。
