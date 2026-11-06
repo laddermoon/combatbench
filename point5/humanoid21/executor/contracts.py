@@ -14,6 +14,14 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 
+CTRL_DT = 0.05             # simulator control period (20 Hz)
+
+# Humanoid21 total body mass (kg) — from
+# envs.humanoid21.meta.Humanoid21Meta.build_runtime_tables
+# ['robot_a']['total_mass'].
+MASS_KG = 40.844
+
+
 class ExecutorError(RuntimeError):
     pass
 
