@@ -43,7 +43,8 @@ class TaskValidationError(Point5Error):
 
 
 def _pos5(value: Any, name: str = "pos") -> np.ndarray:
-    arr = np.asarray(value, dtype=np.float64)
+    # np.array (copy): frozen dataclasses must not alias caller arrays
+    arr = np.array(value, dtype=np.float64)
     if arr.shape != (N_POINTS, 3) or not np.all(np.isfinite(arr)):
         raise TaskValidationError(
             f"{name} must be a finite ({N_POINTS},3) array, got {arr.shape}")
@@ -134,6 +135,9 @@ class Transfer:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Transfer":
+        if "delta_pos" not in d or "delta_yaw" not in d:
+            raise TaskValidationError(
+                "Transfer dict needs 'delta_pos' and 'delta_yaw'")
         return cls(delta_pos=np.asarray(d["delta_pos"], dtype=np.float64),
                    delta_yaw=float(d["delta_yaw"]))
 
@@ -175,6 +179,9 @@ class P5Clip:
         if fmt != CLIP_FORMAT:
             raise TaskValidationError(
                 f"unsupported clip format {fmt!r}; expected {CLIP_FORMAT!r}")
+        if "base" not in d or "transfers" not in d:
+            raise TaskValidationError(
+                "clip dict needs 'base' and 'transfers'")
         return cls(Base=P5(pos=np.asarray(d["base"]["pos"],
                                           dtype=np.float64)),
                    Transfers=tuple(Transfer.from_dict(t)
@@ -254,4 +261,6 @@ class P5:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "P5":
+        if "p5" not in d:
+            raise TaskValidationError("P5 dict missing 'p5'")
         return cls(pos=np.asarray(d["p5"], dtype=np.float64))

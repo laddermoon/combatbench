@@ -347,3 +347,182 @@ class TestPurity:
         for m in mods:
             for banned in ("mujoco", "envs", "baseline"):
                 assert not m.startswith(banned), f"imports {m}"
+
+
+# ---------------------------------------------------------------------------
+# 深层语义：不变量、累加语义、拷贝语义
+# ---------------------------------------------------------------------------
+
+class TestOwnership:
+    """frozen dataclass must not alias caller arrays (copy semantics)."""
+
+    def test_p5_not_aliased(self):
+        arr = np.zeros((5, 3))
+        st = P5(pos=arr)
+        arr[0, 0] = 99.0
+        assert st.pos[0, 0] == 0.0
+
+    def test_transfer_not_aliased(self):
+        arr = np.zeros((5, 3))
+        t = Transfer(delta_pos=arr)
+        arr[0, 0] = 99.0
+        assert t.delta_pos[0, 0] == 0.0
+
+    def test_clip_base_not_aliased(self):
+        arr = np.zeros((5, 3))
+        c = P5Clip(Base=P5(pos=arr))
+        arr[0, 0] = 99.0
+        assert c.Base.pos[0, 0] == 0.0
+
+    def test_input_list_accepted(self):
+        st = P5(pos=[[0, 0, 0]] * 5)
+        assert st.pos.shape == (5, 3)
+        assert st.pos.dtype == np.float64
+
+    def test_input_int_coerced(self):
+        st = P5(pos=np.zeros((5, 3), dtype=np.int64))
+        assert st.pos.dtype == np.float64
+
+
+class TestClipInvariants:
+    """The core re-anchor invariant: every frame is a valid local P5."""
+
+    def _clip(self, deltas, yaws=None):
+        yaws = yaws or [0.0] * len(deltas)
+        return P5Clip(Base=P5(pos=_pose()),
+                      Transfers=[Transfer(d, y) for d, y in zip(deltas, yaws)])
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_ankle_mid_always_origin(self, seed):
+        rng = np.random.default_rng(seed)
+        deltas = [rng.normal(0, 0.3, (5, 3)) for _ in range(3)]
+        yaws = list(rng.uniform(-np.pi, np.pi, 3))
+        c = self._clip(deltas, yaws)
+        for i in range(len(c.p5)):
+            p = c.p5[i].pos
+            mid = 0.5 * (p[POINT_INDEX["foot_right"], :2]
+                         + p[POINT_INDEX["foot_left"], :2])
+            np.testing.assert_allclose(mid, [0., 0.], atol=1e-9,
+                                       err_msg=f"frame {i} not re-anchored")
+
+    def test_z_passthrough_through_reanchor(self):
+        # crouch: all z drop by 0.3 — re-anchor must not touch z
+        d = np.zeros((5, 3)); d[:, 2] = -0.3
+        c = self._clip([d])
+        np.testing.assert_allclose(c.p5[1].pos[:, 2],
+                                   _pose()[:, 2] - 0.3, atol=1e-9)
+
+    def test_p5_frames_independent(self):
+        # Transfers[1] is an ABSOLUTE base-frame delta, not cumulative:
+        # T0 moves right foot +0.4x, T1 +0.6x -> frame2 foot = +0.6 target
+        d0 = np.zeros((5, 3)); d0[3, 0] = 0.4
+        d1 = np.zeros((5, 3)); d1[3, 0] = 0.6
+        c = self._clip([d0, d1])
+        # frame2 raw: right (0.6,-0.15) left (0,0.15), mid=0.3 ->
+        # own frame right x = 0.6-0.3 = +0.3 (cumulative would give 0.5)
+        np.testing.assert_allclose(c.p5[2].pos[3, :2],
+                                   [0.3, -0.15], atol=1e-9)
+
+    def test_base_untouched_by_views(self):
+        c = self._clip([np.ones((5, 3)) * 0.1], yaws=[0.5])
+        before = c.Base.pos.copy()
+        _ = c.p5[1]; _ = c.transfers[0]
+        np.testing.assert_allclose(c.Base.pos, before)
+
+    def test_degenerate_frame_still_constructs(self):
+        # delta collapses the feet together — p5[i] builds (no P5-level
+        # degenerate rejection; is_degenerate is a diagnostic, not a gate)
+        d = np.zeros((5, 3))
+        d[4] = _pose()[3] - _pose()[4]   # left foot -> right foot pos
+        c = self._clip([d])
+        p = c.p5[1].pos
+        np.testing.assert_allclose(p[3], p[4], atol=1e-9)
+
+    def test_yaw_only_delta(self):
+        # delta_pos=0 + yaw: pose points rotate -yaw in own frame,
+        # feet stay symmetric (a turn-in-place expresses twisted feet)
+        c = self._clip([np.zeros((5, 3))], yaws=[np.pi / 2])
+        p = c.p5[1].pos
+        np.testing.assert_allclose(p[3, :2], [-0.15, 0.], atol=1e-9)
+        np.testing.assert_allclose(p[4, :2], [0.15, 0.], atol=1e-9)
+
+
+class TestTelescoping:
+    """transfers[i] must telescope: sum of adjacent deltas == base delta."""
+
+    def test_delta_pos_telescopes(self):
+        T = [Transfer(np.ones((5, 3)) * 0.1, 0.2),
+             Transfer(np.ones((5, 3)) * 0.5, -0.4),
+             Transfer(np.ones((5, 3)) * 0.15, 0.9)]
+        c = P5Clip(Base=P5(pos=_pose()), Transfers=T)
+        for k in range(len(T)):
+            total = sum(c.transfers[i].delta_pos
+                        for i in range(k + 1))
+            np.testing.assert_allclose(total, T[k].delta_pos, atol=1e-9)
+
+    def test_delta_yaw_telescopes(self):
+        yaws = [0.2, -0.4, 0.9]
+        T = [Transfer(np.zeros((5, 3)), y) for y in yaws]
+        c = P5Clip(Base=P5(pos=_pose()), Transfers=T)
+        for k in range(len(T)):
+            total = sum(c.transfers[i].delta_yaw for i in range(k + 1))
+            assert total == pytest.approx(T[k].delta_yaw)
+
+
+class TestSerdeEdge:
+    def test_json_roundtrip(self):
+        import json
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1, 0.3),))
+        d = json.loads(json.dumps(c.to_dict()))   # must be JSON-serializable
+        c2 = P5Clip.from_dict(d)
+        np.testing.assert_allclose(c2.Base.pos, c.Base.pos)
+
+    def test_p5_json_roundtrip(self):
+        import json
+        st = P5(pos=_pose())
+        d = json.loads(json.dumps(st.to_dict()))
+        np.testing.assert_allclose(P5.from_dict(d).pos, st.pos)
+
+    @pytest.mark.parametrize("bad", [
+        {}, {"type": CLIP_FORMAT},
+        {"type": CLIP_FORMAT, "base": {}},
+        {"type": CLIP_FORMAT, "base": {"pos": [[0]*3]*5}},   # no transfers
+    ])
+    def test_clip_from_dict_missing_keys(self, bad):
+        with pytest.raises((TaskValidationError, KeyError)):
+            P5Clip.from_dict(bad)
+
+    def test_p5_from_dict_missing_pos(self):
+        with pytest.raises(TaskValidationError):
+            P5.from_dict({"type": STATE_FORMAT})
+
+    def test_transfer_from_dict_missing(self):
+        with pytest.raises(TaskValidationError):
+            Transfer.from_dict({"delta_yaw": 0.5})
+
+    def test_missing_type_key_accepted(self):
+        # format tag defaults to CLIP_FORMAT when absent
+        c = P5Clip(Base=P5(pos=_pose()))
+        d = c.to_dict(); del d["type"]
+        c2 = P5Clip.from_dict(d)
+        np.testing.assert_allclose(c2.Base.pos, c.Base.pos)
+
+
+class TestViewSemantics:
+    def test_views_fresh_each_access(self):
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1),))
+        a, b = c.p5[1], c.p5[1]
+        assert a is not b                      # recomputed, not cached
+        np.testing.assert_allclose(a.pos, b.pos)
+
+    def test_p5_zero_identity(self):
+        c = P5Clip(Base=P5(pos=_pose()))
+        assert c.p5[0] is c.Base               # literally the Base object
+
+    def test_transfers_len_zero_edge(self):
+        c = P5Clip(Base=P5(pos=_pose()))
+        assert len(c.transfers) == 0
+        with pytest.raises(IndexError):
+            c.transfers[0]
