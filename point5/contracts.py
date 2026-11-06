@@ -188,17 +188,18 @@ class P5Clip:
     def __post_init__(self) -> None:
         object.__setattr__(self, "Transfers", tuple(self.Transfers))
 
-    def pose(self, i: int) -> P5:
-        """i-th target pose = Base.pos + Transfers[i].delta_pos."""
-        return P5(pos=self.Base.pos + self.Transfers[i].delta_pos)
+    @property
+    def p5(self):
+        """p5[i] — i-th frame's P5; p5[0] = Base.
 
-    def yaw(self, i: int) -> float:
-        """i-th target torso heading = Transfers[i].delta_yaw (vs base)."""
-        return float(self.Transfers[i].delta_yaw)
+        i >= 1: P5(pos = Base.pos + Transfers[i-1].delta_pos),
+        all coordinates in the Base frame."""
+        return _P5Frames(self)
 
     @property
-    def n_targets(self) -> int:
-        return len(self.Transfers)
+    def transfers(self):
+        """transfers[i] — the transition from frame i to frame i+1."""
+        return self.Transfers
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": CLIP_FORMAT,
@@ -215,6 +216,22 @@ class P5Clip:
                                           dtype=np.float64)),
                    Transfers=tuple(Transfer.from_dict(t)
                                    for t in d["transfers"]))
+
+
+class _P5Frames:
+    """Indexable view: clip.p5[i] -> the i-th frame's P5."""
+
+    def __init__(self, clip: "P5Clip"):
+        self._c = clip
+
+    def __getitem__(self, i: int) -> P5:
+        c = self._c
+        if i == 0:
+            return c.Base
+        return P5(pos=c.Base.pos + c.Transfers[i - 1].delta_pos)
+
+    def __len__(self) -> int:
+        return 1 + len(self._c.Transfers)
 
 
 # ---------------------------------------------------------------------------
