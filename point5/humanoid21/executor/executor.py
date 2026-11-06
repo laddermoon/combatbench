@@ -61,7 +61,7 @@ class Executor:
         from .tools.pose_anchor import PoseAnchor
         local_p5 = PoseAnchor.from_obs(
             observation, robot_id=self.robot_id
-        ).anchor('ankle_mid').p5()
+        ).anchor('ankle_mid').p5().pos
         return local_p5
 
     def _verify_anchor(self, ctx: Context) -> None:

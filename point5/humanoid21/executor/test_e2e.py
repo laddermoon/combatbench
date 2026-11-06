@@ -33,7 +33,7 @@ def _run(clip, n_steps, seed=0):
         for _ in range(25):
             sim.physical_step()
         o = sim.get_observation()["robot_a"]
-        p5 = PoseAnchor.from_obs(o).anchor('ankle_mid').p5()
+        p5 = PoseAnchor.from_obs(o).anchor('ankle_mid').p5().pos
         com_z.append(com_estimate(p5)[2])
         g = o[42:45]
         tilt.append(np.degrees(np.arccos(

@@ -39,7 +39,7 @@ class ActionComputer:
         if not landmarks or len(landmarks) < 2:
             raise PlanError("algorithm 2 needs >=2 landmarks")
 
-        i1 = I1(self._dec().from_obs(obs).anchor('ankle_mid').p5())
+        i1 = I1(self._dec().from_obs(obs).anchor('ankle_mid').p5().pos)
         i4 = I4(obs[0:21].copy())
         i6 = I6(np.asarray(landmarks[0].com, np.float64))
         i7 = I7(np.asarray(landmarks[1].com, np.float64))

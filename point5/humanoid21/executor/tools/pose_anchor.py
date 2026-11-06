@@ -68,8 +68,10 @@ class _Anchored:
     R: np.ndarray = field(          # world -> anchored rotation
         default_factory=lambda: np.eye(3))
 
-    def p5(self) -> np.ndarray:
-        return self._p5
+    def p5(self):
+        """Point5State — 局部 P5 姿态（含 time/vel/meta 语义）。"""
+        from point5.contracts import Point5State
+        return Point5State(pos=self._p5)
 
     def foot_pos(self) -> dict:
         return self._feet

@@ -61,7 +61,7 @@ class ExecutorPolicy(Policy):
             want_extra: bool = False) -> Tuple[np.ndarray, Optional[Dict]]:
         obs = np.asarray(observation, dtype=np.float64)
         kfs = self.clip.keyframes
-        local_p5 = PoseAnchor.from_obs(obs).anchor('ankle_mid').p5()
+        local_p5 = PoseAnchor.from_obs(obs).anchor('ankle_mid').p5().pos
         if self._idx + 1 < len(kfs):
             remaining = [Keyframe(pos=local_p5)] + list(kfs[self._idx + 1:])
             clip = P5Clip(name=self.clip.name, keyframes=tuple(remaining))

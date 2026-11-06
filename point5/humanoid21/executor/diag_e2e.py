@@ -58,7 +58,7 @@ def main() -> None:
             sim.physical_step()
 
         obs2 = sim.get_observation()["robot_a"]
-        p5 = PoseAnchor.from_obs(obs2).anchor('ankle_mid').p5()
+        p5 = PoseAnchor.from_obs(obs2).anchor('ankle_mid').p5().pos
         com = com_estimate(p5)
         # tilt: gravity in body frame, obs[42:45]; upright => -z
         g = obs2[42:45]
