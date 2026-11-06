@@ -25,7 +25,7 @@ from envs.framework.policy import Policy
 from point5.contracts import Keyframe, P5Clip, Transfer
 
 from .contracts import CTRL_DT
-from .support_planner import ObsDecoder
+from .tools.obs_decoder import ObsDecoder
 from .contracts import Context
 from .executor import Executor
 

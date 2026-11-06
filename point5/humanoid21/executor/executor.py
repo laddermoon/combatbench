@@ -58,7 +58,9 @@ class Executor:
     # -- pipeline steps ------------------------------------------------------
     def _extract_p5(self, observation: np.ndarray) -> np.ndarray:
         """96-dim obs -> local P5 (5,3) via the shared FK decode."""
-        local_p5, _ = self.support.decode_p5_local(observation)
+        from .tools.obs_decoder import ObsDecoder
+        local_p5, _ = ObsDecoder(self.robot_id
+                                 ).decode_p5_local(observation)
         return local_p5
 
     def _verify_anchor(self, ctx: Context) -> None:

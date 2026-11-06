@@ -24,7 +24,7 @@ def extract_landmark(observation: np.ndarray,
     """96-dim policy obs -> start SupportLandMark."""
     obs = np.asarray(observation, np.float64)
     if decoder is None:
-        from ..support_planner import ObsDecoder
+        from .obs_decoder import ObsDecoder
         decoder = ObsDecoder("robot_a")
     local_p5, R_loc = decoder.decode_p5_local(obs)
 
