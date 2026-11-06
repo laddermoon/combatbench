@@ -16,9 +16,6 @@ from .algo1_meta import I1, I2, I3, R
 from .contracts import Observation
 
 
-
-
-
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
@@ -37,8 +34,13 @@ def f1(obs: Observation) -> I1:
 
 
 def f2(obs: Observation) -> I2:
-    """f2(Observation) -> I2：obs 解码质心速度 + 角动量。"""
-    raise NotImplementedError
+    """f2(Observation) -> I2：obs 解码质心速度 + 角动量。
+
+    Pose 速度字段经 mj_subtreeVel 出精确子树量，转到锚定局部帧。
+    """
+    from point5.humanoid21.pose import Pose
+    p = Pose.from_obs(np.asarray(obs, np.float64))
+    return I2(com_vel=p.com_vel(), ang_mom=p.ang_mom())
 
 
 def f3(clip: P5Clip) -> I3:

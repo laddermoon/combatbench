@@ -120,6 +120,9 @@ class Pose:
     root_z: float                  # 世界系高度
     g_body: np.ndarray             # (3,) 机体系重力向量
     robot_id: str = "robot_a"
+    qvel: Optional[np.ndarray] = None        # (21,) rad/s（可选）
+    root_linvel: Optional[np.ndarray] = None # (3,) 机体系线速度
+    root_angvel: Optional[np.ndarray] = None # (3,) 机体系角速度
 
     _MODEL = None                  # class-level lazy kinematics
     _DATA = None
@@ -133,6 +136,14 @@ class Pose:
         assert self.g_body.shape == _G, \
             f"g_body expected {_G}, got {self.g_body.shape}"
         self.root_z = float(self.root_z)
+        for n, shp in (("qvel", _JOINTS), ("root_linvel", _G),
+                       ("root_angvel", _G)):
+            v = getattr(self, n)
+            if v is not None:
+                v = np.array(v, np.float64)
+                assert v.shape == shp, \
+                    f"{n} expected {shp}, got {v.shape}"
+                setattr(self, n, v)
 
     @classmethod
     def _kinematics(cls):
@@ -174,10 +185,15 @@ class Pose:
             joint_ranges = cls.joint_ranges(robot_id)
         rng = np.asarray(joint_ranges, np.float64)
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
+        ov = np.asarray(obs[21:42], np.float64)
+        oa = np.asarray(obs[49:52], np.float64)
         return cls(qpos=np.asarray(obs[0:21], np.float64) * sc + ref,
                    root_z=float(obs[45]),
                    g_body=np.asarray(obs[42:45], np.float64),
-                   robot_id=robot_id)
+                   robot_id=robot_id,
+                   qvel=np.sign(ov) * (2.0 * ov) ** 2,
+                   root_linvel=np.asarray(obs[46:49], np.float64),
+                   root_angvel=np.sign(oa) * 2.0 * oa ** 2)
 
     @classmethod
     def from_p5(cls, p5, robot_id: str = "robot_a",
@@ -331,6 +347,36 @@ class Pose:
             im.save(p)
             outs.append(p)
         return outs
+
+    def _momentum_state(self, point: str = "ankle_mid",
+                        xy=(0.0, 0.0), yaw: float = 0.0):
+        """(anchored, subtree_linvel, subtree_angmom) — 需速度字段。"""
+        if self.qvel is None:
+            raise ValueError("pose has no velocity (from_p5 is pose-only)")
+        model, data, r = self._set_fk_pose()
+        data.qvel[:] = 0.0
+        adr = int(r["root_qvel_adr"])
+        # freejoint: linvel WORLD, angvel BODY — obs linvel is body
+        # frame, convert via the leveled quat (consistent w/ anchor)
+        data.qvel[adr:adr + 3] = _level_rot(self.g_body) @ self.root_linvel
+        data.qvel[adr + 3:adr + 6] = self.root_angvel
+        data.qvel[np.asarray(r["qvel_indices"])] = self.qvel
+        mujoco.mj_subtreeVel(model, data)
+        a = self.anchor(point, xy, yaw)
+        ids = np.asarray(r["body_ids_sorted"], int)
+        lv = a.R @ np.asarray(data.subtree_linvel[int(ids[0])],
+                              np.float64)
+        am = a.R @ np.asarray(data.subtree_angmom[int(ids[0])],
+                              np.float64)
+        return a, lv, am
+
+    def com_vel(self, **anchor_kw) -> np.ndarray:
+        """Exact subtree COM velocity (3,) in the anchored local frame."""
+        return self._momentum_state(**anchor_kw)[1]
+
+    def ang_mom(self, **anchor_kw) -> np.ndarray:
+        """Subtree angular momentum (3,) in the anchored local frame."""
+        return self._momentum_state(**anchor_kw)[2]
 
     # ---------- unanchored ----------
 
