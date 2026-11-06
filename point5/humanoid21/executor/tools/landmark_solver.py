@@ -1,7 +1,6 @@
-"""Tool 8: Observation -> the start SupportLandMark.
+"""Observation -> SupportLandMark.
 
-The current state is itself a SupportLandMark — the first element of any
-algorithm-1 output sequence.  Extraction:
+Extraction:
 
     com  = tool1 com_estimate(FK-decoded local P5)
     vel  = obs[46:49] root linear velocity rotated to local frame
@@ -21,7 +20,7 @@ _CONTACT_EPS = 0.05        # force_ratio below this = airborne
 
 def extract_landmark(observation: np.ndarray,
                      decoder=None) -> SupportLandMark:
-    """96-dim policy obs -> start SupportLandMark."""
+    """96-dim policy obs -> SupportLandMark."""
     obs = np.asarray(observation, np.float64)
     if decoder is None:
         from .obs_decoder import ObsDecoder

@@ -12,4 +12,4 @@
 | `landmark_viz.py` | 锚点序列 → MP4 走查动画 | `landmarks, out_mp4` → 视频文件 |
 | `cop_solver.py` | P5 脚点 → CoP 可行域 | `p5 (5,3)` → `cop_ranges [poly|None ×2]`；`foot_cop_range(foot_xy)` |
 | `obs_decoder.py` | obs → 局部 P5（FK 重建） | `obs (96,)` → `(p5 (5,3), R_local (3,3))` |
-| `start_solver.py` | obs → SupportLandMark | `obs (96,)` → `SupportLandMark` |
+| `landmark_solver.py` | obs → SupportLandMark | `obs (96,)` → `SupportLandMark` |

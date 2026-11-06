@@ -70,7 +70,7 @@ def test_capability_physics():
 def test_extract_landmark_standing():
     """standing obs -> landmark: both feet ~50%, com sane, vel~0."""
     from envs.humanoid21.simulator import Humanoid21Simulator
-    from point5.humanoid21.executor.tools.start_solver import extract_landmark
+    from point5.humanoid21.executor.tools.landmark_solver import extract_landmark
     s = Humanoid21Simulator(initial_distance=6.0,
                             initial_pose_a="standing")
     s.reset(0)
@@ -85,7 +85,7 @@ def test_extract_landmark_standing():
 def test_extract_landmark_moving():
     """after motion: vel nonzero, force ratios still sum ~1."""
     from envs.humanoid21.simulator import Humanoid21Simulator
-    from point5.humanoid21.executor.tools.start_solver import extract_landmark
+    from point5.humanoid21.executor.tools.landmark_solver import extract_landmark
     s = Humanoid21Simulator(initial_distance=6.0,
                             initial_pose_a="standing")
     s.reset(0)

@@ -2,7 +2,7 @@
 from .tools.capability_solver import Capability, capability
 from .tools.com_solver import com_estimate, mass_estimate
 from .tools.cop_solver import cop_ranges, foot_cop_range
-from .tools.start_solver import extract_landmark
+from .tools.landmark_solver import extract_landmark
 from .support_planner import SupportPlanner
 from .tools.inertia_solver import inertia_estimate, inertia_per_mass
 from .contracts import (

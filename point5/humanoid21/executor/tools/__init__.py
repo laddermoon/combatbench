@@ -8,7 +8,7 @@ from .pose_solver import Humanoid21PoseSolver
 from .inertia_solver import inertia_estimate, inertia_per_mass
 from .capability_solver import Capability, capability
 from .cop_solver import cop_ranges, foot_cop_range
-from .start_solver import extract_landmark
+from .landmark_solver import extract_landmark
 from .landmark_viz import render_landmarks
 
 __all__ = [
