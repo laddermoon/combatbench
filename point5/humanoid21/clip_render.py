@@ -31,7 +31,7 @@ from point5.trajectory import sample_clip  # noqa: E402
 from point5.humanoid21.fk import Humanoid21FK  # noqa: E402
 from point5.humanoid21.mechanics import (  # noqa: E402
     Skeleton, solve_equilibrium)
-from point5.humanoid21.render import _project  # noqa: E402
+from point5.humanoid21.pose import _project  # noqa: E402
 from scipy.spatial.transform import Rotation as _R  # noqa: E402
 
 PT_COLOR = {"head": (224, 72, 62), "hand_right": (59, 165, 59),

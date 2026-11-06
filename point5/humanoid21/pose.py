@@ -59,6 +59,33 @@ def _quat_wxyz(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+_POINT_RGBA = {
+    "head": (224, 72, 62, 255),
+    "hand_right": (59, 165, 59, 255),
+    "hand_left": (59, 127, 212, 255),
+    "foot_right": (224, 160, 42, 255),
+    "foot_left": (181, 106, 224, 255),
+}
+
+
+def _project(cam, fovy: float, size: tuple, p3: np.ndarray):
+    """Project world point to pixel using a free mjvCamera."""
+    az = np.deg2rad(cam.azimuth)
+    el = np.deg2rad(cam.elevation)
+    fwd = np.array([-np.cos(el) * np.cos(az),
+                    -np.cos(el) * np.sin(az), -np.sin(el)])
+    right = np.array([-np.sin(az), np.cos(az), 0.0])
+    up = np.cross(right, fwd)
+    pos = cam.lookat - fwd * cam.distance
+    rel = p3 - pos
+    x, y = rel @ right, rel @ up
+    z = -(rel @ fwd)
+    if z <= 0:
+        return None
+    f = 0.5 * size[1] / np.tan(np.deg2rad(fovy) / 2)
+    return (size[0] / 2 + f * x / z, size[1] / 2 - f * y / z)
+
+
 @dataclass
 class _Anchored:
     """PoseAnchor resolved into a frame — all outputs live here."""
@@ -216,6 +243,56 @@ class Pose:
         return _Anchored(_p5=np.array([T(p) for p in lm]),
                          _feet=feet, _com=T(com),
                          R=Rz @ R_tilt)
+
+    def render(self, out_path,
+               views=(("front", 0.0, 0.0), ("side", 90.0, 0.0),
+                      ("oblique", 45.0, 18.0)),
+               size=(640, 480), mark_points: bool = True,
+               target_pos: Optional[np.ndarray] = None) -> list:
+        """Render this pose to PNG(s) via MuJoCo offscreen.
+
+        Needs an OpenGL platform (MUJOCO_GL/PYOPENGL_PLATFORM=egl).
+        target_pos: optional (5,3) target drawn as hollow markers.
+        """
+        from pathlib import Path
+        from PIL import Image, ImageDraw
+        from point5.contracts import POINT_NAMES
+
+        fk = self.fk()
+        fk.set_pose(self.robot_id, np.array([0., 0., self.root_z]),
+                    _quat_wxyz(_level_rot(self.g_body)), self.qpos)
+        lm = fk.landmark_positions(self.robot_id)
+        model, data = fk.model, fk.data
+        fovy = float(model.vis.global_.fovy) or 45.0
+        outs = []
+        for label, az, el in views:
+            cam = mujoco.MjvCamera()
+            cam.lookat[:] = np.array([0., 0., self.root_z - 0.35])
+            cam.distance, cam.azimuth, cam.elevation = 3.0, az, el
+            with mujoco.Renderer(model, size[1], size[0]) as rd:
+                rd.update_scene(data, camera=cam)
+                img = rd.render()
+            im = Image.fromarray(img)
+            if mark_points:
+                dr = ImageDraw.Draw(im)
+                if target_pos is not None:
+                    tp = np.asarray(target_pos, dtype=np.float64)
+                    for i in range(len(POINT_NAMES)):
+                        px = _project(cam, fovy, size, tp[i])
+                        if px:
+                            dr.ellipse([px[0]-8, px[1]-8, px[0]+8,
+                                        px[1]+8], outline=(255, 255, 255),
+                                       width=2)
+                for i, n in enumerate(POINT_NAMES):
+                    px = _project(cam, fovy, size, lm[i])
+                    if px:
+                        dr.ellipse([px[0]-6, px[1]-6, px[0]+6, px[1]+6],
+                                   outline=(0, 0, 0),
+                                   fill=_POINT_RGBA[n][:3])
+            p = Path(str(out_path).format(label=label))
+            im.save(p)
+            outs.append(p)
+        return outs
 
     # ---------- unanchored ----------
 
