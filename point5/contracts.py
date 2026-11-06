@@ -42,18 +42,6 @@ class TaskValidationError(Point5Error):
     """Clip/keyframe/state structure is invalid."""
 
 
-class SampleOutOfRange(Point5Error):
-    """Sampling outside the clip's declared domain."""
-
-
-def _vec3(value: Any, name: str) -> np.ndarray:
-    arr = np.asarray(value, dtype=np.float64)
-    if arr.shape != (3,) or not np.all(np.isfinite(arr)):
-        raise TaskValidationError(
-            f"{name} must be a finite (3,) vector, got {arr.shape}")
-    return arr
-
-
 def _pos5(value: Any, name: str = "pos") -> np.ndarray:
     arr = np.asarray(value, dtype=np.float64)
     if arr.shape != (N_POINTS, 3) or not np.all(np.isfinite(arr)):
@@ -66,11 +54,6 @@ def _idx(name: str) -> int:
     if name not in POINT_INDEX:
         raise TaskValidationError(f"unknown point {name!r}")
     return POINT_INDEX[name]
-
-
-def is_planted(pos: np.ndarray, tol: float = PLANT_HEIGHT_TOL) -> bool:
-    """Foot contact convention: pos z at/below ground + tol counts planted."""
-    return bool(np.asarray(pos, dtype=np.float64)[2] <= GROUND_Z + tol)
 
 
 # ---------------------------------------------------------------------------
@@ -122,28 +105,12 @@ def _rot2(yaw_deg: float) -> np.ndarray:
     return np.array([[c, -s], [s, c]])
 
 
-def to_world(pos_local: np.ndarray, origin_xy: np.ndarray,
-             yaw_deg: float) -> np.ndarray:
-    """local -> world under frame pose (origin_xy, yaw_deg)."""
-    p = np.asarray(pos_local, dtype=np.float64).copy()
-    p[..., :2] = p[..., :2] @ _rot2(yaw_deg).T + np.asarray(origin_xy)
-    return p
-
-
 def to_local(pos_world: np.ndarray, origin_xy: np.ndarray,
              yaw_deg: float) -> np.ndarray:
     """world -> local under frame pose (origin_xy, yaw_deg)."""
     p = np.asarray(pos_world, dtype=np.float64).copy()
     p[..., :2] = (p[..., :2] - np.asarray(origin_xy)) @ _rot2(yaw_deg)
     return p
-
-
-def compose_frame(origin: np.ndarray, yaw: float,
-                  transfer: "Transfer") -> Tuple[np.ndarray, float]:
-    """F_k = F_{k-1} ∘ T: child frame pose expressed in parent coords."""
-    o = np.asarray(origin, dtype=np.float64) + _rot2(yaw) @ np.array(
-        [transfer.dx, transfer.dy])
-    return o, yaw + transfer.dyaw
 
 
 # ---------------------------------------------------------------------------
