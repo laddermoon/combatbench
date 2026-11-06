@@ -198,8 +198,11 @@ class P5Clip:
 
     @property
     def transfers(self):
-        """transfers[i] — the transition from frame i to frame i+1."""
-        return self.Transfers
+        """transfers[i] — the transition from frame i to frame i+1.
+
+        Stored deltas are base->frame(i+1); the i->i+1 transition is
+        the difference of consecutive base deltas."""
+        return _TransferSeq(self)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": CLIP_FORMAT,
@@ -237,6 +240,24 @@ class _P5Frames:
 
     def __len__(self) -> int:
         return 1 + len(self._c.Transfers)
+
+
+class _TransferSeq:
+    """Indexable view: clip.transfers[i] -> frame i -> frame i+1."""
+
+    def __init__(self, clip: "P5Clip"):
+        self._c = clip
+
+    def __getitem__(self, i: int) -> "Transfer":
+        cur = self._c.Transfers[i]                  # base -> frame i+1
+        if i == 0:
+            return cur                              # base -> frame 1
+        prev = self._c.Transfers[i - 1]             # base -> frame i
+        return Transfer(delta_pos=cur.delta_pos - prev.delta_pos,
+                        delta_yaw=cur.delta_yaw - prev.delta_yaw)
+
+    def __len__(self) -> int:
+        return len(self._c.Transfers)
 
 
 # ---------------------------------------------------------------------------
