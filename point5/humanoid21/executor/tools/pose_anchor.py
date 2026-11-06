@@ -69,9 +69,9 @@ class _Anchored:
         default_factory=lambda: np.eye(3))
 
     def p5(self):
-        """Point5State — 局部 P5 姿态（含 time/vel/meta 语义）。"""
-        from point5.contracts import Point5State
-        return Point5State(pos=self._p5)
+        """P5 — 局部 P5 姿态（点坐标集合语义）。"""
+        from point5.contracts import P5
+        return P5(pos=self._p5)
 
     def foot_pos(self) -> dict:
         return self._feet

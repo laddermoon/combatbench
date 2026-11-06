@@ -9,7 +9,7 @@ Reads ``episode_options`` params sampled by the experiment:
     {rid}_strike_z         absolute target height (m)
 
 Runs AFTER the state-init plugin, before the observer dispatcher. Computes the initial
-Point5State (v2 local frame), samples the target in that frame (local
+P5 (v2 local frame), samples the target in that frame (local
 +X is the torso facing, +Y the torso left), converts it to world via
 the frame pose ``f1`` stored in the adapter metadata, and issues
 ``set_effector_world[_track]`` via the mutator.  The start P5, f1 and
@@ -57,7 +57,7 @@ class StrikeTargetPlugin(BasePlugin):
             dist = float(opts.get(f"{rid}_strike_dist", 0.6))
             lat = float(opts.get(f"{rid}_strike_lat", 0.0))
             z = float(opts.get(f"{rid}_strike_z", 1.10))
-            p5 = point5_from_view(ds[rid], rid, with_vel=False)
+            p5 = point5_from_view(ds[rid], rid)
             f1 = f1_from_state(p5)
             # Local frame IS the stance frame: +X = torso facing,
             # +Y = torso left, z untouched by the frame transform.

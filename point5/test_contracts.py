@@ -5,7 +5,7 @@ import pytest
 from point5.contracts import (
     Keyframe,
     P5Clip,
-    Point5State,
+    P5,
     TaskValidationError,
     Transfer,
     ankle_mid_xy,
@@ -23,14 +23,14 @@ def _pose(feet=((0., -0.15, 0.05), (0., 0.15, 0.05)),
 
 
 def test_state_accepts_5x3():
-    st = Point5State(pos=_pose())
+    st = P5(pos=_pose())
     assert st.pos.shape == (5, 3)
     assert st.point_pos("head").tolist() == [0., 0., 1.3]
 
 
 def test_state_rejects_bad_shape():
     with pytest.raises(TaskValidationError):
-        Point5State(pos=np.zeros((4, 3)))
+        P5(pos=np.zeros((4, 3)))
 
 
 def test_ankle_mid_and_twist():

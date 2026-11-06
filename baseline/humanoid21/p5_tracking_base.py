@@ -29,7 +29,7 @@ import numpy as np
 from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory)
 from baseline.framework.rollout import extract_per_step_field
-from point5.contracts import P5Clip, POINT_INDEX, Point5State
+from point5.contracts import P5Clip, POINT_INDEX, P5
 from point5.humanoid21.stand_punch import (
     StandPunchConfig, plan_stand_punch, stand_p5)
 
@@ -155,7 +155,7 @@ class P5TrackingBase(CombatExperimentPPOBase):
 
     @staticmethod
     def _sample_target(rng, max_tries: int = 64):
-        st0 = Point5State(pos=stand_p5())
+        st0 = P5(pos=stand_p5())
         for _ in range(max_tries):
             hand = "left" if rng.random() < 0.5 else "right"
             tgt = np.array([rng.uniform(*_TGT_X),
@@ -304,7 +304,7 @@ class P5TrackingBase(CombatExperimentPPOBase):
                 f"Missing P5 observations or punch start/target for "
                 f"{agent_id}")
 
-        st0 = Point5State(
+        st0 = P5(
             pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
         clip = timed_stand_clip(P5Clip.from_dict(clip_d), st0.pos)
         ref_world, ref_yaws = clip_frame_samples(clip, f1, _DT)

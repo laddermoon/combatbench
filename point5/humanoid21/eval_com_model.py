@@ -16,7 +16,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 from scipy.optimize import nnls
 
-from point5.contracts import POINT_INDEX, P5Clip, Point5State, is_degenerate
+from point5.contracts import POINT_INDEX, P5Clip, P5, is_degenerate
 from point5.humanoid21.mechanics import (
     JOINT_NAMES, LANDMARK_ORDER, Skeleton, norm_to_rad, solve_equilibrium)
 from point5.humanoid21.stand_punch import (

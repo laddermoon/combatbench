@@ -10,7 +10,7 @@ pre-validated offline against ``plan_stand_punch``):
                           (+X = torso facing, +Y = torso left)
 
 Runs after episode reset, before the observer dispatcher.  Measures
-the post-reset Point5State (v2 local frame), resolves the pre-planned
+the post-reset P5 (v2 local frame), resolves the pre-planned
 clip under the measured frame pose f1 (the plan runs once, offline, in
 ``build_jobs`` — no re-planning here and no silent fallback), and
 stores the start P5 / f1 / local+world targets as scalar episode
@@ -75,7 +75,7 @@ class StandPunchTargetPlugin(BasePlugin):
                 [float(opts.get(f"{rid}_sp_t{a}", d))
                  for a, d in zip("xyz", (1.05, 0.0, 1.1))],
                 dtype=np.float64)
-            p5 = point5_from_view(ds[rid], rid, with_vel=False)
+            p5 = point5_from_view(ds[rid], rid)
             f1 = f1_from_state(p5)
             tgt = p5_to_world(tgt_local, f1)
             side = 1 if hand == "left" else -1

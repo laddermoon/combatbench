@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from point5.contracts import Keyframe, P5Clip, Point5State
+from point5.contracts import Keyframe, P5Clip, P5
 from point5.humanoid21.stand_punch import stand_p5
 from point5.humanoid21.executor.contracts import (
     AnchorError, Context, Observation, PlanError)

@@ -40,7 +40,7 @@ def main() -> None:
     sys.path.insert(0, str(root))
 
     from point5.contracts import (
-        Point5State, ankle_mid_xy, to_local)
+        P5, ankle_mid_xy, to_local)
     from point5.humanoid21.punch_planner import (
         PunchPlannerConfig, _stance_forward, plan_punch)
     from point5.trajectory import sample_clip
@@ -67,7 +67,7 @@ def main() -> None:
         origin = ankle_mid_xy(p5)
         yaw = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
         f1 = (np.asarray(origin, dtype=np.float64), yaw)
-        st = Point5State(pos=to_local(p5, origin, yaw))
+        st = P5(pos=to_local(p5, origin, yaw))
         right = np.array([fwd[1], -fwd[0], 0.0])
         head = p5[0]
         dist = float(rng.uniform(*args.dist))

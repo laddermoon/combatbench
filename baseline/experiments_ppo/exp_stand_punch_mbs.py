@@ -33,7 +33,7 @@ import numpy as np
 from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory)
 from baseline.framework.rollout import extract_per_step_field
-from point5.contracts import P5Clip, Point5State
+from point5.contracts import P5Clip, P5
 from point5.humanoid21.stand_punch import (
     StandPunchConfig, plan_stand_punch, stand_p5)
 
@@ -147,7 +147,7 @@ class StandPunchMBS(CombatExperimentPPOBase):
         episode_options to both the command plugin and the scorer, so
         nothing downstream re-plans or silently falls back.
         """
-        st0 = Point5State(pos=stand_p5())
+        st0 = P5(pos=stand_p5())
         for _ in range(max_tries):
             hand = "left" if rng.random() < 0.5 else "right"
             tgt = np.array([rng.uniform(*_TGT_X),
@@ -254,7 +254,7 @@ class StandPunchMBS(CombatExperimentPPOBase):
         scores = {p: np.zeros(T, np.float32) for p in _PARTS}
         active_steps = 0
         if len(pos) >= 2:
-            st0 = Point5State(
+            st0 = P5(
                 pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
             # ref_world[t] / ref_yaws[t] = state the robot should reach
             # after action t (time min((t+1)*dt, duration)).

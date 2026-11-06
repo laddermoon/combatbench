@@ -5,7 +5,7 @@ opponent is irrelevant for strike planning (the punch target is
 synthesised relative to the robot's own stance at plan time).  Each
 stored pair state therefore yields TWO entries, one per robot:
 
-    p5            (5,3) measured Point5State positions
+    p5            (5,3) measured P5 positions
     root_pos/rot  (3,)/(4,) robot root — for StaticStartResolver ctx
     src_ep/src_step/robot  provenance
     pair_dist     scalar  (informational only)
@@ -59,7 +59,7 @@ def main() -> None:
         sim.set_core_state(cs)
         ds = sim.get_derived_state(["robot_a", "robot_b"])
         for ri, rid in enumerate(("robot_a", "robot_b")):
-            p5 = point5_from_view(ds[rid], rid, with_vel=False)
+            p5 = point5_from_view(ds[rid], rid)
             p5s.append(p5.pos)
             forig.append(p5.metadata["frame_origin_xy"])
             fyaw.append(p5.metadata["frame_yaw_deg"])

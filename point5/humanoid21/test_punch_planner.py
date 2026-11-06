@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from point5.contracts import POINT_INDEX, Point5State
+from point5.contracts import POINT_INDEX, P5
 from point5.trajectory import keyframe_world
 from point5.humanoid21.punch_planner import (
     PunchPlannerConfig,
@@ -12,14 +12,14 @@ from point5.humanoid21.punch_planner import (
 )
 
 
-def _p5(head, hr, hl, fr, fl) -> Point5State:
+def _p5(head, hr, hl, fr, fl) -> P5:
     pos = np.zeros((5, 3), dtype=np.float64)
     pos[POINT_INDEX["head"]] = head
     pos[POINT_INDEX["hand_right"]] = hr
     pos[POINT_INDEX["hand_left"]] = hl
     pos[POINT_INDEX["foot_right"]] = fr
     pos[POINT_INDEX["foot_left"]] = fl
-    return Point5State(pos=pos)
+    return P5(pos=pos)
 
 
 # A left-lead guard facing +X: left foot/hand forward, feet bladed.

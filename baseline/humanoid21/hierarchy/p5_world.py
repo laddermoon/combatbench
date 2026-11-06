@@ -8,7 +8,7 @@ one.  The library intentionally has no world frame and no clock.
 The experiment side supplies exactly one thing: ``f1 = (origin_xy,
 yaw_deg)``, the world pose of the clip's first local frame, computed
 once from the injected start state (the adapter reports it in
-``Point5State.metadata`` as ``frame_origin_xy`` / ``frame_yaw_deg``).
+``P5.metadata`` as ``frame_origin_xy`` / ``frame_yaw_deg``).
 Everything downstream — world waypoints for command guidance, world
 reference poses for reward scoring — is derived here.
 """
@@ -27,7 +27,7 @@ __all__ = ["f1_from_state", "clip_world_samples", "clip_frame_samples",
 
 
 def f1_from_state(state) -> FramePose:
-    """World pose of a measured ``Point5State``'s local frame."""
+    """World pose of a measured ``P5``'s local frame."""
     origin = np.asarray(state.metadata["frame_origin_xy"],
                         dtype=np.float64)
     return origin, float(state.metadata["frame_yaw_deg"])

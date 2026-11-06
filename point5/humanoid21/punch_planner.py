@@ -50,7 +50,7 @@ from ..contracts import (
     POINT_INDEX,
     Keyframe,
     P5Clip,
-    Point5State,
+    P5,
     Transfer,
     ankle_mid_xy,
     to_local,
@@ -159,7 +159,7 @@ def _spec_meta(w: float, tol: float) -> Dict[str, float]:
     return {"w": float(w), "tol": float(tol)}
 
 
-def plan_punch(initial: Point5State,
+def plan_punch(initial: P5,
                target: np.ndarray,
                hand: str,
                cfg: PunchPlannerConfig = PunchPlannerConfig(),

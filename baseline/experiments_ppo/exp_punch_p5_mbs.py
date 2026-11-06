@@ -28,7 +28,7 @@ import numpy as np
 
 from baseline.framework.ppo.trajectory import ChannelData, Trajectory
 from baseline.framework.rollout import extract_per_step_field
-from point5.contracts import POINT_INDEX, Point5State
+from point5.contracts import POINT_INDEX, P5
 from point5.humanoid21.punch_planner import (
     PunchPlannerConfig, plan_punch)
 
@@ -163,7 +163,7 @@ class PunchP5MBS(HierS2BalanceMBS):
             active_steps = 0
             if len(pos) >= 2:
                 pos = np.asarray(pos).reshape(len(pos), 5, 3)
-                st0 = Point5State(
+                st0 = P5(
                     pos=np.asarray(start_xyz, dtype=np.float64).reshape(5, 3))
                 # ref_world[t] = world P5 pose the robot should reach
                 # after action t (time min((t+1)*dt, duration)).

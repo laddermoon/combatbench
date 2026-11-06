@@ -1,4 +1,4 @@
-"""Humanoid21 adapter: convert derived-state views into local Point5State.
+"""Humanoid21 adapter: convert derived-state views into local P5.
 
 Single function, designed for use inside observer plugins. The input is the
 per-robot view produced by ``Humanoid21Simulator.get_derived_state()``
@@ -25,7 +25,7 @@ from point5.contracts import (
     POINT_INDEX,
     POINT_NAMES,
     Point5Error,
-    Point5State,
+    P5,
     ankle_mid_xy,
     to_local,
 )
@@ -47,9 +47,9 @@ def _torso_facing(view: Mapping[str, Any], suffix: str) -> np.ndarray:
     return fwd / n
 
 
-def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
-                     with_vel: bool = True) -> Point5State:
-    """Convert a ``get_derived_state`` robot view into a ``Point5State``.
+def point5_from_view(view: Mapping[str, Any], robot_id: str,
+                     **_ignored) -> P5:
+    """Convert a ``get_derived_state`` robot view into a ``P5``.
 
     Reads ``body_xpos`` + ``body_xquat`` (required) and
     ``body_linvel_world`` (required when ``with_vel=True``), all keyed by
@@ -63,14 +63,8 @@ def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
     quats = view.get("body_xquat")
     if bodies is None or quats is None:
         raise Point5Error("view lacks 'body_xpos'/'body_xquat'")
-    vels = None
-    if with_vel:
-        vels = view.get("body_linvel_world")
-        if vels is None:
-            raise Point5Error("view lacks 'body_linvel_world'")
-
     world = np.empty((len(POINT_NAMES), 3), dtype=np.float64)
-    wvel = np.empty_like(world) if with_vel else None
+    wvel = None
     for i, name in enumerate(POINT_NAMES):
         body, off = LANDMARKS[name]
         full = f"{body}{suffix}"
@@ -87,8 +81,7 @@ def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
             except KeyError:
                 raise Point5Error(
                     f"body_linvel_world missing {full!r}") from None
-    if not np.all(np.isfinite(world)) or (
-            wvel is not None and not np.all(np.isfinite(wvel))):
+    if not np.all(np.isfinite(world)):
         raise Point5Error(f"{robot_id} has non-finite point data")
 
     # ---- v2 local frame: origin = ankle XY mid, X = torso facing ----
@@ -97,12 +90,4 @@ def point5_from_view(view: Mapping[str, Any], robot_id: str, *,
     yaw_deg = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
 
     pos = to_local(world, origin, yaw_deg)
-    vel = None
-    if wvel is not None:
-        vel = to_local(wvel, np.zeros(2), yaw_deg)   # rotation only
-
-    return Point5State(
-        pos=pos, vel=vel,
-        metadata={"robot_id": robot_id, "source": "derived_view",
-                  "frame_origin_xy": origin.tolist(),
-                  "frame_yaw_deg": yaw_deg})
+    return P5(pos=pos)

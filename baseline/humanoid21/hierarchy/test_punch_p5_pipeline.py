@@ -11,7 +11,7 @@ from baseline.humanoid21.hierarchy.command_simulator import (
     CommandSimulator, TGT_SCALE,
 )
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from point5.contracts import Point5State, to_world
+from point5.contracts import P5, to_world
 from point5.humanoid21.adapter import point5_from_view
 from point5.humanoid21.punch_planner import plan_punch
 from point5.trajectory import keyframe_world
@@ -113,7 +113,7 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
         [0, 0, 1.2], [0.15, -0.1, 1.05], [0.25, 0.1, 1.1],
         [-0.05, -0.15, 0.02], [0.2, 0.15, 0.01],
     ], dtype=np.float64)
-    start = Point5State(pos=pos)
+    start = P5(pos=pos)
     target = np.array([0.7, 0.0, 1.1])
     plan = plan_punch(start, target, "left")
     assert plan.reachable
@@ -188,7 +188,7 @@ def test_strike_reward_scores_final_impact_not_initial_frame(monkeypatch):
 
 
 def test_planned_foot_and_fist_never_reverse_attack_axis():
-    start = Point5State(pos=np.array([
+    start = P5(pos=np.array([
         [0, 0, 1.2], [0.15, -0.1, 1.05], [0.25, 0.1, 1.1],
         [-0.05, -0.15, 0.02], [0.2, 0.15, 0.01],
     ], dtype=np.float64))
@@ -214,11 +214,11 @@ def test_stand_punch_env_issues_track_and_metrics():
         "hier_stand_punch_env.yaml")
     runtime = bp.materialize(max_steps=13).build()
     try:
-        from point5.contracts import Point5State
+        from point5.contracts import P5
         from point5.humanoid21.stand_punch import plan_stand_punch, stand_p5
         tgt = np.array([1.05, 0.0, 1.10])
         plan = plan_stand_punch(tgt, "left",
-                                initial=Point5State(pos=stand_p5()))
+                                initial=P5(pos=stand_p5()))
         runtime.reset(seed=4242, options={
             "robot_a_sp_hand": "left",
             "robot_a_sp_clip": plan.task.to_dict(),

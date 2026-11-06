@@ -40,7 +40,7 @@ from ..contracts import (
     POINT_INDEX,
     Keyframe,
     P5Clip,
-    Point5State,
+    P5,
     Transfer,
     ankle_mid_xy,
     to_local,
@@ -158,7 +158,7 @@ def _rotz(v, deg):
 def plan_stand_punch(target: np.ndarray,
                      hand: str,
                      cfg: StandPunchConfig = StandPunchConfig(),
-                     initial: Optional[Point5State] = None,
+                     initial: Optional[P5] = None,
                      ) -> PunchPlan:
     """Plan a standing jab: standing -> load -> strike."""
     target = np.asarray(target, dtype=np.float64).reshape(3)

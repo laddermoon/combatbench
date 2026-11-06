@@ -258,28 +258,17 @@ class P5Clip:
 
 
 # ---------------------------------------------------------------------------
-# Point5State: a measured/sampled local pose
+# P5: a measured/sampled local pose
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class Point5State:
-    """A local P5 pose.  ``vel`` is optional adapter-side data."""
+class P5:
+    """A local P5 pose — 5 landmark points in the local frame."""
 
     pos: np.ndarray                          # local_pos[5,3]
-    time: float = 0.0
-    vel: Optional[np.ndarray] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "pos", _pos5(self.pos))
-        if self.vel is not None:
-            vel = np.asarray(self.vel, dtype=np.float64)
-            if vel.shape != (N_POINTS, 3) or not np.all(np.isfinite(vel)):
-                raise TaskValidationError(
-                    f"vel must be a finite ({N_POINTS},3) array or None")
-            object.__setattr__(self, "vel", vel)
-        if not np.isfinite(self.time):
-            raise TaskValidationError("time must be finite")
 
     def point_pos(self, name: str) -> np.ndarray:
         return self.pos[_idx(name)]
@@ -294,5 +283,5 @@ class Point5State:
         return {"type": STATE_FORMAT, "p5": self.pos.tolist()}
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "Point5State":
+    def from_dict(cls, d: Mapping[str, Any]) -> "P5":
         return cls(pos=np.asarray(d["p5"], dtype=np.float64))
