@@ -18,7 +18,8 @@ from .contracts import Observation
 
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态（工具8）。"""
-    raise NotImplementedError
+    from .tools.landmark_solver import extract_landmark
+    return I1(lm=extract_landmark(obs))
 
 
 def f2(obs: Observation) -> I2:
