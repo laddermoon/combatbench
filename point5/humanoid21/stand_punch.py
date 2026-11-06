@@ -38,12 +38,9 @@ import numpy as np
 
 from ..contracts import (
     POINT_INDEX,
-    Keyframe,
     P5Clip,
     P5,
     Transfer,
-    ankle_mid_xy,
-    to_local,
 )
 
 _UP = np.array([0.0, 0.0, 1.0])
@@ -355,35 +352,20 @@ def plan_stand_punch(target: np.ndarray,
         ("land",   hp_load,  hg_load, head_load,  t_blade, feet_load),
         ("strike", hp_hit,   hg_hit,  head_hit,   t_strike, feet_load),
     ]
-    kfs, prev_o, prev_yaw = [], None, None
+    # Base+Transfers: all poses computed in the initial local frame,
+    # so each transfer's delta_pos = pos5 - base_pos directly.
+    transfers = []
     for label, hp_t, hg_t, head_t, t_dir, feet_k in rows:
         pos5 = np.empty((5, 3))
         pos5[POINT_INDEX["head"]] = head_t
         pos5[i_hp] = hp_t
         pos5[i_hg] = hg_t
         pos5[i_fr], pos5[i_fl] = feet_k[i_fr], feet_k[i_fl]
-        o_k = ankle_mid_xy(pos5)
-        yaw_k = float(np.degrees(np.arctan2(t_dir[1], t_dir[0])))
-        tr = None
-        if prev_o is not None:
-            do = o_k - prev_o
-            r0 = np.deg2rad(prev_yaw)
-            c0, s0 = np.cos(r0), np.sin(r0)
-            tr = Transfer(dx=c0 * do[0] + s0 * do[1],
-                          dy=-s0 * do[0] + c0 * do[1],
-                          dyaw=yaw_k - prev_yaw, dur=cfg.dur)
-        kfs.append(Keyframe(
-            pos=to_local(pos5, o_k, yaw_k), transfer=tr, label=label,
-            meta={"specs": {
-                hp_name: {"w": cfg.w_punch, "tol": cfg.tol_punch},
-                hg_name: {"w": cfg.w_guard, "tol": cfg.tol_guard},
-                "head": {"w": cfg.w_head, "tol": cfg.tol_head},
-                "foot_right": {"w": cfg.w_feet, "tol": cfg.tol_feet},
-                "foot_left": {"w": cfg.w_feet, "tol": cfg.tol_feet},
-            }}))
-        prev_o, prev_yaw = o_k, yaw_k
+        yaw_k = float(np.arctan2(t_dir[1], t_dir[0]))   # rad vs +x
+        transfers.append(Transfer(delta_pos=pos5 - pos,
+                                  delta_yaw=yaw_k))
+        diag[f"label_{len(transfers)}"] = label
 
-    task = P5Clip(name=f"stand_punch_{hand}", keyframes=tuple(kfs),
-                  metadata={"hand": hand, "target": target.tolist(),
-                            "attack_axis": a.tolist()})
+    task = P5Clip(Base=P5(pos=pos), Transfers=tuple(transfers))
+    diag.update({"hand": hand, "target": target.tolist()})
     return PunchPlan(task=task, reachable=True, diag=diag)
