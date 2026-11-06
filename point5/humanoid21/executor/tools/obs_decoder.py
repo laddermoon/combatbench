@@ -63,9 +63,11 @@ class ObsDecoder:
             self._fk = Humanoid21FK()
         return self._fk
 
-    def decode_p5_local(self, obs: np.ndarray):
-        """obs -> (local_p5 (5,3), R_local(3,3): body->P5 frame)."""
-        from point5.contracts import ankle_mid_xy, to_local
+    def _pose_leveled(self, obs: np.ndarray):
+        """Pose the FK model from obs (tilt-leveled root).
+
+        Returns (landmark positions in the leveled frame, torso yaw deg,
+        R_tilt)."""
         fk, rid = self.fk(), self.robot_id
         rng = fk.joint_ranges(rid).astype(np.float64)
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
@@ -77,28 +79,37 @@ class ObsDecoder:
         torso = next(v for k, v in poses.items() if "torso" in k)
         fwd = torso[1][:, 0]
         yaw = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
+        return lm, yaw, R_tilt
+
+    @staticmethod
+    def _yaw_rot(yaw_deg):
+        ang = np.radians(yaw_deg)
+        return np.array([[np.cos(ang), np.sin(ang), 0],
+                         [-np.sin(ang), np.cos(ang), 0], [0, 0, 1]])
+
+    def decode_p5_local(self, obs: np.ndarray):
+        """obs -> (local_p5 (5,3), R_local(3,3): body->P5 frame)."""
+        from point5.contracts import ankle_mid_xy, to_local
+        lm, yaw, R_tilt = self._pose_leveled(obs)
         local = to_local(lm, ankle_mid_xy(lm), yaw)
-        ang = np.radians(yaw)
-        Rz = np.array([[np.cos(ang), np.sin(ang), 0],
-                       [-np.sin(ang), np.cos(ang), 0], [0, 0, 1]])
-        return local, Rz @ R_tilt
+        return local, self._yaw_rot(yaw) @ R_tilt
 
-    def decode_com_local(self, obs: np.ndarray) -> np.ndarray:
-        """obs -> exact subtree COM (3,) in the P5 local frame.
+    def decode_support_local(self, obs: np.ndarray):
+        """obs -> (feet_xy {'right','left'} (2,), com (3,)) local frame.
 
-        Uses the model's mass-weighted subtree_com — exact, unlike
-        the mass_proxy estimator (~4cm RMSE)."""
+        Direct support-state decode — one FK pass, no P5 framing:
+        foot landmark xy + exact mass-weighted COM.
+        """
         from point5.contracts import ankle_mid_xy
-        _, R_loc = self.decode_p5_local(obs)       # sets fk pose
-        fk, rid = self.fk(), self.robot_id
-        mid = ankle_mid_xy(fk.landmark_positions(rid))
-        r = fk._robots[rid]
+        lm, yaw, _ = self._pose_leveled(obs)
+        Rz = self._yaw_rot(yaw)
+        mid = np.array([*ankle_mid_xy(lm), 0.0])
+        feet_xy = {}
+        for side, fi in (("right", 3), ("left", 4)):
+            feet_xy[side] = (Rz @ (lm[fi] - mid))[:2]
+        r = self.fk()._robots[self.robot_id]
         ids = np.asarray(r["body_ids_sorted"], int)
-        ms = np.asarray(fk.model.body_mass)[ids]
-        xip = np.asarray(fk.data.xipos)[ids]      # kinematics output
-        com_w = (ms[:, None] * xip).sum(0) / ms.sum()
-        # fk pose is already tilt-leveled -> only the yaw part of
-        # R_loc (= Rz @ R_tilt) applies: Rz = R_loc @ R_tilt.T
-        R_tilt = _level_rot(obs[42:45])
-        Rz = R_loc @ R_tilt.T
-        return Rz @ (com_w - np.array([mid[0], mid[1], 0.0]))
+        ms = np.asarray(self.fk().model.body_mass)[ids]
+        xip = np.asarray(self.fk().data.xipos)[ids]
+        com_lev = (ms[:, None] * xip).sum(0) / ms.sum()
+        return feet_xy, Rz @ (com_lev - mid)

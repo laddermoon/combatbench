@@ -31,22 +31,17 @@ def _dec():
 def f1(obs: Observation) -> I1:
     """f1(Observation) -> I1：obs 解码当前支撑状态。
 
-    com  = FK 模型精确子树质心（decode_com_local，非估计）
-    feet = obs[52:54] 实测法向力比例（动态值，含冲击瞬态）；
-           pos = 解码脚 xy；腾空脚 force_ratio<0.05
+    一次 FK 解码出：脚位 xy（leveled landmark）+ 精确质心
+    （模型质量加权）+ obs[52:54] 实测力度分配；不经过 P5。
     """
     from .contracts import FootSupport, SupportLandMark
 
     obs = np.asarray(obs, np.float64)
-    dec = _dec()
-    local_p5, _ = dec.decode_p5_local(obs)
+    feet_xy, com_loc = _dec().decode_support_local(obs)
     fr = obs[52:54]
-    feet = {}
-    for side, fi, k in (("right", 3, 0), ("left", 4, 1)):
-        feet[side] = FootSupport(force_ratio=float(fr[k]),
-                                 pos=local_p5[fi, :2].copy())
-    return I1(lm=SupportLandMark(com=dec.decode_com_local(obs),
-                               feet=feet))
+    feet = {s: FootSupport(force_ratio=float(fr[k]), pos=feet_xy[s])
+            for s, k in (("right", 0), ("left", 1))}
+    return I1(lm=SupportLandMark(com=com_loc, feet=feet))
 
 
 def f2(obs: Observation) -> I2:
