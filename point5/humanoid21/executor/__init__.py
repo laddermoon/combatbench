@@ -9,11 +9,10 @@ from .contracts import (
     Action, AnchorError, Context, ExecutorError,
     Observation, PlanError)
 from .executor import Executor
-from .tools.pose_solver import Humanoid21PoseSolver
 
 __all__ = [
     "Action", "AnchorError", "Context",
-    "Executor", "ExecutorError", "Humanoid21PoseSolver",
+    "Executor", "ExecutorError",
     "Observation", "PlanError", "com_estimate", "mass_estimate",
     "inertia_estimate", "inertia_per_mass", "Capability",
     "capability", "cop_ranges", "foot_cop_range",

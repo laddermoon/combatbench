@@ -4,7 +4,7 @@
     f1(landmarks, clip) -> I2
     f4(i6, i7)          -> I8
     f2(i1, i2, i8)      -> I3
-    f3(i3)              -> I5   （工具2 pose_solver）
+    f3(i3)              -> I5   （solve_equilibrium）
     f5(i8, i5)          -> R    （求解器本体）
 
 旧实现（landmark 走查 CEM）已清空，待 f1-f5 落地后重接。

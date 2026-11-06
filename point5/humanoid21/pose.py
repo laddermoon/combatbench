@@ -126,17 +126,18 @@ class Pose:
     @classmethod
     def from_p5(cls, p5, robot_id: str = "robot_a",
                 tolerance: float = 0.02):
-        """P5 局部姿态 -> Pose（pose_solver 反解关节角）。
+        """P5 局部姿态 -> Pose（solve_equilibrium 反解关节角）。
 
         p5: (5,3) 局部点阵或 P5 对象。g_body = 直立系重力
         [0,0,-9.81]——P5 局部帧本身是重力对齐的。
         """
-        from point5.humanoid21.executor.tools.pose_solver import (
-            Humanoid21PoseSolver)
+        from point5.humanoid21.mechanics import (
+            Skeleton, solve_equilibrium)
         pos = getattr(p5, "pos", p5)
-        res = Humanoid21PoseSolver().solve(np.asarray(pos, np.float64),
-                                           tolerance=tolerance)
-        return cls(qpos=res.q_rad, root_z=float(res.root_pos[2]),
+        res = solve_equilibrium(np.asarray(pos, np.float64),
+                                skeleton=Skeleton(), tolerance=tolerance)
+        return cls(qpos=np.asarray(res["q_rad"]),
+                   root_z=float(res["root_pos"][2]),
                    g_body=np.array([0.0, 0.0, -9.81]), robot_id=robot_id)
 
     def p5(self):
