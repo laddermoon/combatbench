@@ -228,7 +228,12 @@ class _P5Frames:
         c = self._c
         if i == 0:
             return c.Base
-        return P5(pos=c.Base.pos + c.Transfers[i - 1].delta_pos)
+        t = c.Transfers[i - 1]
+        raw = c.Base.pos + t.delta_pos          # Base-frame coords
+        # re-anchor into THIS frame's own local system:
+        # own ankle mid -> origin, own yaw (delta vs base) -> +x
+        return P5(pos=to_local(raw, ankle_mid_xy(raw),
+                               np.degrees(t.delta_yaw)))
 
     def __len__(self) -> int:
         return 1 + len(self._c.Transfers)
