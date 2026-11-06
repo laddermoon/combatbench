@@ -30,7 +30,7 @@ PLANT_HEIGHT_TOL = 0.02   # foot z below this counts as planted
 MIN_FOOT_SEP_XY = 0.02    # feet XY closer than this = degenerate origin
 
 STATE_FORMAT = "p5.v2"          # serialized single-pose tag
-CLIP_FORMAT = "p5clip.v2"       # serialized clip tag
+CLIP_FORMAT = "p5clip.v3"       # serialized clip tag
 FRAMES_FORMAT = "point5.frames.v2"
 
 
@@ -152,98 +152,58 @@ def compose_frame(origin: np.ndarray, yaw: float,
 
 @dataclass(frozen=True)
 class Transfer:
-    """Frame-to-frame motion: this keyframe's local frame in the previous
-    keyframe's local frame.  dur = seconds from previous keyframe."""
+    """One target pose expressed as a delta from Base — in Base's frame.
 
-    dx: float
-    dy: float
-    dyaw: float
-    dur: float
+        pose_i = Base.pos + delta_pos        (point-wise delta, (5,3))
+        yaw_i  = delta_yaw                   (torso-heading delta vs base)
+    """
+
+    delta_pos: np.ndarray                          # (5,3) in Base frame
+    delta_yaw: float = 0.0
 
     def __post_init__(self) -> None:
-        for n in ("dx", "dy", "dyaw", "dur"):
-            if not np.isfinite(getattr(self, n)):
-                raise TaskValidationError(f"transfer.{n} must be finite")
-        if self.dur <= 0.0:
-            raise TaskValidationError("transfer.dur must be positive")
+        object.__setattr__(self, "delta_pos",
+                           _pos5(self.delta_pos, "transfer.delta_pos"))
+        if not np.isfinite(self.delta_yaw):
+            raise TaskValidationError("transfer.delta_yaw must be finite")
+        object.__setattr__(self, "delta_yaw", float(self.delta_yaw))
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"dx": float(self.dx), "dy": float(self.dy),
-                "dyaw": float(self.dyaw), "dur": float(self.dur)}
+        return {"delta_pos": self.delta_pos.tolist(),
+                "delta_yaw": float(self.delta_yaw)}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "Transfer":
-        return cls(dx=float(d["dx"]), dy=float(d["dy"]),
-                   dyaw=float(d["dyaw"]), dur=float(d["dur"]))
-
-
-@dataclass(frozen=True)
-class Keyframe:
-    """One clip keyframe: a local P5 pose + how its frame was reached."""
-
-    pos: np.ndarray                          # local_pos[5,3]
-    transfer: Optional[Transfer] = None      # required unless first frame
-    label: str = ""
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "pos", _pos5(self.pos, "keyframe.pos"))
-        object.__setattr__(self, "meta", dict(self.meta))
-
-    def to_dict(self) -> Dict[str, Any]:
-        d = {"p5": self.pos.tolist()}
-        if self.transfer is not None:
-            d["transfer"] = self.transfer.to_dict()
-        if self.label:
-            d["label"] = self.label
-        if self.meta:
-            d["meta"] = dict(self.meta)
-        return d
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> "Keyframe":
-        return cls(pos=np.asarray(d["p5"], dtype=np.float64),
-                   transfer=(Transfer.from_dict(d["transfer"])
-                             if "transfer" in d else None),
-                   label=str(d.get("label", "")),
-                   meta=dict(d.get("meta", {})))
+        return cls(delta_pos=np.asarray(d["delta_pos"], dtype=np.float64),
+                   delta_yaw=float(d["delta_yaw"]))
 
 
 @dataclass(frozen=True)
 class P5Clip:
-    """A clip: >=1 keyframes forming a transfer chain."""
+    """A clip: a Base pose + ordered pose deltas, all in Base's frame."""
 
-    name: str
-    keyframes: Tuple[Keyframe, ...]
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    Base: P5
+    Transfers: Tuple[Transfer, ...] = ()
 
     def __post_init__(self) -> None:
-        kfs = tuple(self.keyframes)
-        if len(kfs) < 1:
-            raise TaskValidationError("clip needs at least 1 keyframe")
-        if kfs[0].transfer is not None:
-            raise TaskValidationError(
-                "first keyframe must not carry a transfer")
-        for i, k in enumerate(kfs[1:], start=1):
-            if k.transfer is None:
-                raise TaskValidationError(
-                    f"keyframe #{i} must carry a transfer")
-        object.__setattr__(self, "keyframes", kfs)
-        object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "Transfers", tuple(self.Transfers))
+
+    def pose(self, i: int) -> P5:
+        """i-th target pose = Base.pos + Transfers[i].delta_pos."""
+        return P5(pos=self.Base.pos + self.Transfers[i].delta_pos)
+
+    def yaw(self, i: int) -> float:
+        """i-th target torso heading = Transfers[i].delta_yaw (vs base)."""
+        return float(self.Transfers[i].delta_yaw)
 
     @property
-    def n_segments(self) -> int:
-        return len(self.keyframes) - 1
-
-    @property
-    def duration(self) -> float:
-        return float(sum(k.transfer.dur for k in self.keyframes[1:]))
+    def n_targets(self) -> int:
+        return len(self.Transfers)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"type": CLIP_FORMAT,
-                "name": self.name,
-                "keyframes": [k.to_dict() for k in self.keyframes],
-                "metadata": dict(self.metadata)}
+                "base": {"pos": self.Base.pos.tolist()},
+                "transfers": [t.to_dict() for t in self.Transfers]}
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "P5Clip":
@@ -251,10 +211,10 @@ class P5Clip:
         if fmt != CLIP_FORMAT:
             raise TaskValidationError(
                 f"unsupported clip format {fmt!r}; expected {CLIP_FORMAT!r}")
-        return cls(name=str(d.get("name", "")),
-                   keyframes=tuple(Keyframe.from_dict(k)
-                                   for k in d["keyframes"]),
-                   metadata=dict(d.get("metadata", {})))
+        return cls(Base=P5(pos=np.asarray(d["base"]["pos"],
+                                          dtype=np.float64)),
+                   Transfers=tuple(Transfer.from_dict(t)
+                                   for t in d["transfers"]))
 
 
 # ---------------------------------------------------------------------------

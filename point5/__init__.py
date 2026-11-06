@@ -6,7 +6,6 @@ from .contracts import (
     CLIP_FORMAT,
     FRAMES_FORMAT,
     GROUND_Z,
-    Keyframe,
     MIN_FOOT_SEP_XY,
     N_POINTS,
     PLANT_HEIGHT_TOL,
@@ -36,21 +35,15 @@ from .mass_model import (
     mass_proxy,
     virtual_body,
 )
-from .trajectory import (
-    FrameSample,
-    frames_payload,
-    keyframe_frames,
-    keyframe_world,
-    sample_clip,
-)
+# trajectory module still on the old Keyframe model — re-enable when ported
+# from .trajectory import (FrameSample, frames_payload, keyframe_frames,
+#                          keyframe_world, sample_clip)
 
 __all__ = [
     "CLIP_FORMAT",
     "DEFAULT_MASSES",
     "FRAMES_FORMAT",
-    "FrameSample",
     "GROUND_Z",
-    "Keyframe",
     "MIN_FOOT_SEP_XY",
     "MassModelConfig",
     "MassProxy",
@@ -69,13 +62,9 @@ __all__ = [
     "ankle_line_dir",
     "ankle_mid_xy",
     "compose_frame",
-    "frames_payload",
     "is_degenerate",
     "is_planted",
-    "keyframe_frames",
-    "keyframe_world",
     "mass_proxy",
-    "sample_clip",
     "to_local",
     "to_world",
     "twist_deg",
