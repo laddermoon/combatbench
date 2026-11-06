@@ -1,13 +1,12 @@
-"""Tool 5: LandMark sequence -> MP4 walkthrough (MuJoCo render).
+"""Tool 5: SupportLandMark sequence -> MP4 walkthrough (MuJoCo render).
 
 Each anchor is held for ``hold`` frames so the planned support event /
 posture can be read off:
 
 - blue ball at ``lm.com`` + drop line to the ground
-- foot patch at ``feet[f].foot_pos`` — solid when loaded
+- foot patch at ``feet[f].pos`` — solid when loaded
   (force_ratio>0), small floating marker when airborne
-- red dot at ``feet[f].cop`` when a CoP is given
-- cyan arrow along ``lm.vel`` when a velocity constraint exists
+- red dot at ``feet[f].pos`` when the foot is loaded
 - fading com trail through previous anchors, caption with index
 
     render_landmarks(landmarks, out_mp4)
@@ -110,7 +109,7 @@ def _project(cam, fovy_deg, world, size):
 
 def render_landmarks(landmarks: List, out_mp4: str,
                      hold: int = _HOLD) -> Path:
-    """Render an ordered LandMark sequence to MP4."""
+    """Render an ordered SupportLandMark sequence to MP4."""
     cs = np.array([lm.com for lm in landmarks], np.float64)
 
     model = mujoco.MjModel.from_xml_string(_XML.format(r=_BALL_R))
@@ -156,7 +155,7 @@ def render_landmarks(landmarks: List, out_mp4: str,
                 # feet patches / airborne markers + CoP
                 for f in ("right", "left"):
                     fs = lm.feet[f]
-                    fp = np.asarray(fs.foot_pos, np.float64)
+                    fp = np.asarray(fs.pos, np.float64)
                     rgba = _FOOT_RGBA[f].copy()
                     rgba[3] *= 0.25 + 0.75 * float(fs.force_ratio)
                     if fs.force_ratio > 0.05:
@@ -167,21 +166,12 @@ def render_landmarks(landmarks: List, out_mp4: str,
                         _geom(scn, mujoco.mjtGeom.mjGEOM_SPHERE,
                               [0.05, 0, 0], [fp[0], fp[1], 0.07],
                               I3, rgba)
-                    if fs.cop is not None and fs.force_ratio > 0.05:
+                    if fs.force_ratio > 0.05:
                         _geom(scn, mujoco.mjtGeom.mjGEOM_SPHERE,
                               [0.018, 0, 0],
-                              [fs.cop[0], fs.cop[1], 0.02], I3,
+                              [fp[0], fp[1], 0.02], I3,
                               [0.9, 0.1, 0.1, 0.95])
 
-                # velocity constraint arrow (cyan capsule)
-                if lm.vel is not None:
-                    v = np.asarray(lm.vel, np.float64)
-                    vn = np.linalg.norm(v)
-                    if vn > 1e-6:
-                        _geom(scn, mujoco.mjtGeom.mjGEOM_CAPSULE,
-                              [0.012, vn / 2, 0],
-                              c + v / 2, _z2dir(v),
-                              [0.0, 0.85, 0.85, 0.9])
 
                 # drop line ground -> ball
                 _geom(scn, mujoco.mjtGeom.mjGEOM_CAPSULE,

@@ -8,7 +8,7 @@ be reconstructed by forward kinematics:
     FK -> landmarks -> torso yaw -> local P5
 
 ``CentroidalPlanner`` is kept as the holder of this decode path;
-algorithm-1 planning itself lives in the LandMark pipeline
+algorithm-1 planning itself lives in the SupportLandMark pipeline
 (start_solver / support_planner).
 """
 from __future__ import annotations
@@ -87,12 +87,12 @@ class ObsDecoder:
         return local, Rz @ R_tilt
 
 
-def gen_landmarks(lm0: "LandMark", clip, steps
+def gen_landmarks(lm0: "SupportLandMark", clip, steps
                   ) -> "list":
-    """LandMark sequence generation (bootstrip step 4).
+    """SupportLandMark sequence generation (bootstrip step 4).
 
     Inputs:
-        lm0   — start LandMark, extracted from the observation
+        lm0   — start SupportLandMark, extracted from the observation
                 (the sequence's first element)
         clip  — the remaining P5Clip; supplies posture anchors
                 (per-kf recommended COM via tool1) and the
@@ -101,12 +101,12 @@ def gen_landmarks(lm0: "LandMark", clip, steps
                 sub-algorithm (plan_footsteps); each produces a
                 liftoff + touchdown anchor pair
 
-    Output: ordered LandMark list — support-event anchors +
+    Output: ordered SupportLandMark list — support-event anchors +
     posture anchors + terminal anchor, per the composition spec
     in CentroidalPlanner's docstring.
     """
     from .tools.com_solver import com_estimate
-    from .contracts import FootSupport, LandMark
+    from .contracts import FootSupport, SupportLandMark
     from .tools.cop_solver import FLAT_Z as LIFT_Z
     from .tools.capability_solver import _PATCH, _hull2d
     from .support_planner import _inside
@@ -128,9 +128,8 @@ def gen_landmarks(lm0: "LandMark", clip, steps
 
     # virtual state
     com = np.asarray(lm0.com, np.float64).copy()
-    feet_xy = {s: (np.asarray(lm0.feet[s].foot_pos,
-                              np.float64).copy()
-                   if lm0.feet[s].foot_pos is not None else None)
+    feet_xy = {s: np.asarray(lm0.feet[s].pos,
+                             np.float64).copy()
                for s in FIDX}
     loaded = {s: lm0.feet[s].force_ratio > 0.05 for s in FIDX}
     lms = [lm0]
@@ -139,9 +138,7 @@ def gen_landmarks(lm0: "LandMark", clip, steps
         n = sum(loaded.values()) or 1
         return {s: FootSupport(
             force_ratio=(1.0 / n) if loaded[s] else 0.0,
-            cop=(feet_xy[s].copy() if loaded[s] else None),
-            foot_pos=(feet_xy[s].copy()
-                      if feet_xy[s] is not None else None))
+            pos=feet_xy[s].copy())
             for s in FIDX}
 
     def _liftoff(foot, frame=0):
@@ -151,8 +148,8 @@ def gen_landmarks(lm0: "LandMark", clip, steps
         cops = [feet_xy[s] for s in FIDX if loaded[s]]
         if len(cops) == 1:                 # single support left
             com_t[:2] = cops[0]
-        lms.append(LandMark(com=com_t, feet=_feet(), vel=None,
-                            frame=frame))
+        lms.append(SupportLandMark(com=com_t, feet=_feet(),
+                            for_frame=frame))
 
     def _touchdown(foot, target, frame=0):
         nonlocal com
@@ -162,8 +159,8 @@ def gen_landmarks(lm0: "LandMark", clip, steps
         cops = [feet_xy[s] for s in FIDX if loaded[s]]
         if cops:
             com_t[:2] = np.mean(cops, axis=0)
-        lms.append(LandMark(com=com_t, feet=_feet(), vel=None,
-                            frame=frame))
+        lms.append(SupportLandMark(com=com_t, feet=_feet(),
+                            for_frame=frame))
 
     def _project(pt, poly):
         if _inside(pt, poly):
@@ -194,8 +191,7 @@ def gen_landmarks(lm0: "LandMark", clip, steps
                 hull_pts.append(w[fi, :2] + np.asarray(_PATCH))
             feet[s] = FootSupport(
                 force_ratio=(1.0 / n_load) if grounded else 0.0,
-                cop=w[fi, :2].copy() if grounded else None,
-                foot_pos=w[fi, :2].copy())
+                pos=w[fi, :2].copy())
             feet_xy[s] = w[fi, :2].copy()
             loaded[s] = grounded
         com_t = com_estimate(w)
@@ -203,9 +199,7 @@ def gen_landmarks(lm0: "LandMark", clip, steps
             com_t[:2] = _project(com_t[:2], _hull2d(np.vstack(hull_pts)))
         com = com_t.copy()
         settle = (k == len(kfs) - 1) or not for_k.get(k + 1)
-        lms.append(LandMark(com=com_t, feet=feet,
-                            vel=np.zeros(3) if settle else None,
-                            frame=k))
+        lms.append(SupportLandMark(com=com_t, feet=feet, for_frame=k))
 
     for k in range(1, len(kfs)):
         for st in before[k]:
@@ -227,14 +221,14 @@ def gen_landmarks(lm0: "LandMark", clip, steps
 
 
 class CentroidalPlanner:
-    """Algorithm 1 (bootstrip): (Observation, P5Clip) -> LandMark seq.
+    """Algorithm 1 (bootstrip): (Observation, P5Clip) -> SupportLandMark seq.
 
-    Internal stages: 1) extract start LandMark from obs, 2) support
+    Internal stages: 1) extract start SupportLandMark from obs, 2) support
     planning sub-algorithm, 3) target design by priors,
     4) landmark planning.  Every stage marked TODO is a prior that
     still needs design.
 
-    LandMark 序列的锚点组成 = 支撑事件锚点 + 姿态锚点 + 终点锚点。
+    SupportLandMark 序列的锚点组成 = 支撑事件锚点 + 姿态锚点 + 终点锚点。
 
     设计原则：锚点放在支撑状态变化处；相邻两个锚点之间，接触
     方式不变或只发生一次变化——算法2 每段只面对一种接触模式。
@@ -265,14 +259,16 @@ class CentroidalPlanner:
 
     def plan(self, observation: np.ndarray,
              clip) -> list:
-        """(observation, remaining clip) -> ordered LandMark seq.
+        """(observation, remaining clip) -> ordered SupportLandMark seq.
         """
         from .tools.start_solver import extract_landmark
         from .support_planner import plan_footsteps
         from point5.contracts import compose_frame
 
         lm0 = extract_landmark(observation, self._decoder)
-        steps = plan_footsteps(lm0, clip)
+        _, R_loc = self._decoder.decode_p5_local(observation)
+        vel = R_loc @ np.asarray(observation, np.float64)[46:49]
+        steps = plan_footsteps(lm0, clip, vel=vel)
         # 生成Landmark序列
         return gen_landmarks(lm0, clip, steps)
 

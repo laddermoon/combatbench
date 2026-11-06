@@ -1,6 +1,6 @@
-"""Tool 8: Observation -> the start LandMark.
+"""Tool 8: Observation -> the start SupportLandMark.
 
-The current state is itself a LandMark — the first element of any
+The current state is itself a SupportLandMark — the first element of any
 algorithm-1 output sequence.  Extraction:
 
     com  = tool1 com_estimate(FK-decoded local P5)
@@ -14,14 +14,14 @@ from __future__ import annotations
 import numpy as np
 
 from .com_solver import com_estimate
-from ..contracts import FootSupport, LandMark
+from ..contracts import FootSupport, SupportLandMark
 
 _CONTACT_EPS = 0.05        # force_ratio below this = airborne
 
 
 def extract_landmark(observation: np.ndarray,
-                     decoder=None) -> LandMark:
-    """96-dim policy obs -> start LandMark."""
+                     decoder=None) -> SupportLandMark:
+    """96-dim policy obs -> start SupportLandMark."""
     obs = np.asarray(observation, np.float64)
     if decoder is None:
         from ..centroidal_planner import ObsDecoder
@@ -31,10 +31,7 @@ def extract_landmark(observation: np.ndarray,
     fr = obs[52:54]
     feet = {}
     for side, fi, k in (("right", 3, 0), ("left", 4, 1)):
-        touching = fr[k] > _CONTACT_EPS
         feet[side] = FootSupport(
             force_ratio=float(fr[k]),
-            cop=local_p5[fi, :2].copy() if touching else None,
-            foot_pos=local_p5[fi, :2].copy())
-    return LandMark(com=com_estimate(local_p5), feet=feet,
-                    vel=R_loc @ obs[46:49])
+            pos=local_p5[fi, :2].copy())
+    return SupportLandMark(com=com_estimate(local_p5), feet=feet)

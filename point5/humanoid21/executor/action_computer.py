@@ -34,7 +34,7 @@ class ActionComputer:
         return self._decoder
 
     def compute(self, ctx: Context, landmarks: List, wsim) -> np.ndarray:
-        """LandMark seq + obs -> next (21,) normalized action."""
+        """SupportLandMark seq + obs -> next (21,) normalized action."""
         obs = np.asarray(ctx.observation, np.float64)
         if not landmarks or len(landmarks) < 2:
             raise PlanError("algorithm 2 needs >=2 landmarks")

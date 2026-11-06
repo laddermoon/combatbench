@@ -5,7 +5,7 @@ import pytest
 from point5.contracts import Keyframe, P5Clip, Transfer
 from point5.humanoid21.stand_punch import stand_p5, plan_stand_punch
 from point5.humanoid21.executor.contracts import (FootSupport,
-                                                  LandMark)
+                                                  SupportLandMark)
 from point5.humanoid21.executor.support_planner import (
     plan_footsteps, support_transitions)
 
@@ -14,13 +14,11 @@ P = stand_p5()
 
 def _mk(com=(0.03, 0.0, 0.87), vel=(0, 0, 0),
         fr=0.5, fl=0.5):
-    return LandMark(
-        com=np.asarray(com, float), vel=np.asarray(vel, float),
+    return SupportLandMark(
+        com=np.asarray(com, float),
         feet={
-            "right": FootSupport(fr, P[3, :2].copy(),
-                                 P[3, :2].copy()),
-            "left": FootSupport(fl, P[4, :2].copy(),
-                                P[4, :2].copy())})
+            "right": FootSupport(fr, P[3, :2].copy()),
+            "left": FootSupport(fl, P[4, :2].copy())})
 
 
 def _punch(target=(1.05, 0, 1.15), hand="left"):
@@ -62,13 +60,13 @@ def test_no_transition_no_steps():
 # -- capture-point physics ----------------------------------------------------
 def test_slow_drift_inside_hull_no_step():
     """v small enough that xi stays in polygon -> no corrective."""
-    steps = plan_footsteps(_mk(vel=(0, 0.05, 0)), _punch())
+    steps = plan_footsteps(_mk(), _punch(), vel=(0, 0.05, 0))
     assert all(s.kind == "move" for s in steps)
 
 
 def test_strong_lateral_drift_capture_step():
     """v=+0.5y throws xi beyond +y edge -> nearest foot braces."""
-    steps = plan_footsteps(_mk(vel=(0, 0.5, 0)), _punch())
+    steps = plan_footsteps(_mk(), _punch(), vel=(0, 0.5, 0))
     cor = [s for s in steps if s.kind == "corrective"]
     assert cor and cor[0].foot == "left"
     assert cor[0].target[1] > P[4, 1]          # steps further +y
@@ -76,7 +74,7 @@ def test_strong_lateral_drift_capture_step():
 
 def test_backward_momentum_backward_step():
     """COM moving -x while intent is forward -> backward brace step."""
-    steps = plan_footsteps(_mk(vel=(-0.4, 0, 0)), _punch())
+    steps = plan_footsteps(_mk(), _punch(), vel=(-0.4, 0, 0))
     cor = [s for s in steps if s.kind == "corrective"]
     assert cor
     # capture step lands BEHIND the current foot position
@@ -84,10 +82,10 @@ def test_backward_momentum_backward_step():
 
 
 def test_step_length_clamped():
-    steps = plan_footsteps(_mk(vel=(0, 2.0, 0)), _punch())
+    steps = plan_footsteps(_mk(), _punch(), vel=(0, 2.0, 0))
     cor = [s for s in steps if s.kind == "corrective"]
     for s in cor:
-        fp = _mk().feet[s.foot].foot_pos
+        fp = _mk().feet[s.foot].pos
         assert np.linalg.norm(s.target - fp) <= 0.35 + 1e-9
 
 

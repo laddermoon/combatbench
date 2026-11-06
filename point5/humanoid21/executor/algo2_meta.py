@@ -3,7 +3,7 @@
 每个 I 是一个命名信息项（dataclass），承载载荷 + 来源语义；
 功能点 F1-F5 只出现在来源签名里，不在此定义。
 
-    输入: Observation(96,), P5Clip, List[LandMark]
+    输入: Observation(96,), P5Clip, List[SupportLandMark]
     输出: R (Action 21,)
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Optional
 
 import numpy as np
 
-from .contracts import Action, LandMark  # noqa: F401  (re-exported types)
+from .contracts import Action, SupportLandMark  # noqa: F401  (re-exported types)
 
 # ---------- payload shapes ----------
 _P5 = (5, 3)      # 头/左右手/左右脚，重力对齐局部系
@@ -42,7 +42,7 @@ class I1:
 class I2:
     """下一 landmark 的 P5 — F1(landmarks, clip)。
 
-    姿态锚点：经 lm.frame 从 clip 关键帧直接取；
+    姿态锚点：经 lm.for_frame 从 clip 关键帧直接取；
     接触锚点：缺失，由锚点质心态 + 先验/后续姿态 P5 补全。
     """
     p5: np.ndarray

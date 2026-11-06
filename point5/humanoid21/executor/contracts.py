@@ -60,19 +60,15 @@ class FootSupport:
     """One foot's support state inside a LandMark.
 
     ``force_ratio`` is normal load divided by total body weight
-    (matches obs[52:54]); 0 means no contact.  ``cop`` is the
-    equivalent pressure point in the local frame (inside the foot's
-    CoP patch, tool6); meaningless when force_ratio is 0.
+    (matches obs[52:54]); 0 means no contact.
     """
 
     force_ratio: float = 0.0
-    cop: Optional[np.ndarray] = None   # (2,) local; contact only
-    foot_pos: Optional[np.ndarray] = None  # (2,) foot xy position
-                                        # (mainly for airborne)
+    pos: np.ndarray = None   # (2,) local
 
 
 @dataclass
-class LandMark:
+class SupportLandMark:
     """Algorithm 1 output unit — a self-consistent target state.
 
     No time index: describes WHAT state to reach (support + COM +
@@ -82,6 +78,5 @@ class LandMark:
 
     com: np.ndarray                    # (3,) target COM, local frame
     feet: Dict[str, FootSupport]       # 'right'/'left'
-    vel: Optional[np.ndarray] = None   # (3,) desired arrival COM vel
     torso_yaw: Optional[float] = None  # rad; None = not handled (v1)
-    frame: int = 0                     # source clip frame (metadata)
+    for_frame: int = 0                 # for fullfil source clip frame (metadata)

@@ -78,11 +78,9 @@ def test_extract_landmark_standing():
     obs = s.get_derived_state()["robot_a"]["observation"]
     lm = extract_landmark(obs)
     assert 0.7 < lm.com[2] < 1.0
-    assert np.linalg.norm(lm.vel) < 0.2
     r, l = lm.feet["right"], lm.feet["left"]
     assert 0.3 < r.force_ratio < 0.7 and 0.3 < l.force_ratio < 0.7
-    assert r.cop is not None and l.cop is not None
-    assert r.foot_pos is not None and l.foot_pos is not None
+    assert r.pos is not None and l.pos is not None
 
 
 def test_extract_landmark_moving():
@@ -100,6 +98,5 @@ def test_extract_landmark_moving():
             s.physical_step()
     obs = s.get_derived_state()["robot_a"]["observation"]
     lm = extract_landmark(obs)
-    assert np.linalg.norm(lm.vel) > 0.005
     tot = lm.feet["right"].force_ratio + lm.feet["left"].force_ratio
     assert 0.5 < tot < 1.5

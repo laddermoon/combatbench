@@ -34,7 +34,7 @@ Two layers:
    frame).  Detection, not planning.
 
 2. ``plan_footsteps`` — the support-planning sub-algorithm per
-   bootstrip: from the start LandMark + clip emit an ordered
+   bootstrip: from the start SupportLandMark + clip emit an ordered
    Footstep list.  Physics rule: if COM momentum points away from
    where the next support must go, insert a corrective step
    (垫步) on the support side to brake/catch the momentum before
@@ -98,7 +98,9 @@ def support_transitions(clip, xy_eps: float = 0.05,
 # ---------- footstep sub-algorithm (bootstrip) ------------------------------
 @dataclass
 class Footstep:
-    """One planned step: which foot goes to which xy point."""
+    """
+    指定的脚，从原来的地方，到指定的坐标落地。
+    """
 
     foot: str
     target: np.ndarray                  # (2,) local frame xy
@@ -106,7 +108,7 @@ class Footstep:
     reason: str = ""
     # clip frame provenance — exactly ONE is set:
     #   for_frame=k   this step fulfills keyframe k's requirement
-    #   before_frame=k this step must happen before keyframe k
+    #   before_frame=k this step must happen before keyframe k（因为从当前的状态无法直接到keyframe k）
     for_frame: Optional[int] = None
     before_frame: Optional[int] = None
 
@@ -116,8 +118,8 @@ def _foot_patches(feet) -> List[np.ndarray]:
     from .tools.capability_solver import _PATCH
     out = []
     for f in feet.values():
-        if f.force_ratio > 0.05 and f.foot_pos is not None:
-            out.append(np.asarray(f.foot_pos) + np.asarray(_PATCH))
+        if f.force_ratio > 0.05 and f.pos is not None:
+            out.append(np.asarray(f.pos) + np.asarray(_PATCH))
     return out
 
 
@@ -143,7 +145,7 @@ def _outside_polygon(xi, feet) -> bool:
 
 def _nearest_foot(xi, feet) -> str:
     return min(feet, key=lambda s: np.linalg.norm(
-        np.asarray(feet[s].foot_pos) - xi))
+        np.asarray(feet[s].pos) - xi))
 
 
 
@@ -185,10 +187,10 @@ def _walk(steps, todo, w_kf, feet_xy, loaded, t, lead):
 
 
 
-def plan_footsteps(start_landmark, clip,
+def plan_footsteps(start_landmark, clip, vel=None,
                    step_max: float = _STEP_MAX,
                    max_correction: int = 2) -> List[Footstep]:
-    """Start LandMark + clip -> ordered footsteps incl. correction.
+    """Start SupportLandMark + clip -> ordered footsteps incl. correction.
 
     Per transition segment the mover foot steps to the keyframe's
     foot xy (frame0).  Before each transition, physics gate: the
@@ -210,10 +212,10 @@ def plan_footsteps(start_landmark, clip,
 
     # virtual current state — updated as the plan emits steps
     com = np.asarray(start_landmark.com, np.float64)
-    vel = (np.asarray(start_landmark.vel, np.float64)
-           if start_landmark.vel is not None else np.zeros(3))
+    vel = (np.asarray(vel, np.float64)
+           if vel is not None else np.zeros(3))
     feet_xy = {s: np.asarray(
-        start_landmark.feet[s].foot_pos, np.float64).copy()
+        start_landmark.feet[s].pos, np.float64).copy()
         for s in ("right", "left")}
     loaded = {s: start_landmark.feet[s].force_ratio > 0.05
               for s in ("right", "left")}
@@ -381,7 +383,7 @@ if __name__ == "__main__":
     from point5.contracts import Keyframe, P5Clip, Transfer
     from point5.humanoid21.executor.tools.com_solver import com_estimate
     from point5.humanoid21.executor.contracts import (FootSupport,
-                                                      LandMark)
+                                                      SupportLandMark)
     from point5.humanoid21.stand_punch import (plan_stand_punch,
                                                stand_p5)
 
@@ -392,12 +394,10 @@ if __name__ == "__main__":
     P = stand_p5()
 
     def mk(com=(0.03, 0.0, 0.87), vel=(0, 0, 0), fr=0.5, fl=0.5):
-        return LandMark(
-            com=np.asarray(com, float), vel=np.asarray(vel, float),
-            feet={"right": FootSupport(fr, P[3, :2].copy(),
-                                       P[3, :2].copy()),
-                  "left": FootSupport(fl, P[4, :2].copy(),
-                                      P[4, :2].copy())})
+        return SupportLandMark(
+            com=np.asarray(com, float),
+            feet={"right": FootSupport(fr, P[3, :2].copy()),
+                  "left": FootSupport(fl, P[4, :2].copy())})
 
     def punch():
         plan = plan_stand_punch(np.array([1.05, 0, 1.15]), "left")
@@ -489,10 +489,10 @@ if __name__ == "__main__":
 
         # current support: black
         for side, f in lm.feet.items():
-            if f.foot_pos is not None:
-                key = tuple(np.round(f.foot_pos, 2))
-                ax.scatter(*f.foot_pos, s=200, c="black", zorder=5)
-                _lab(f.foot_pos, f"now:{side[0].upper()}", "black")
+            if f.pos is not None:
+                key = tuple(np.round(f.pos, 2))
+                ax.scatter(*f.pos, s=200, c="black", zorder=5)
+                _lab(f.pos, f"now:{side[0].upper()}", "black")
 
         # planned steps
         for i, st in enumerate(steps):
@@ -502,7 +502,7 @@ if __name__ == "__main__":
                        edgecolor=col, linewidth=2.4, zorder=6)
             _lab(st.target,
                  f"{i + 1}:{st.foot[0].upper()}", col)
-            cur = lm.feet[st.foot].foot_pos
+            cur = lm.feet[st.foot].pos
             if cur is not None:
                 ax.annotate("", xy=st.target, xytext=cur,
                             arrowprops=dict(arrowstyle="->",
