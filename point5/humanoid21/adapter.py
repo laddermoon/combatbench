@@ -26,7 +26,6 @@ from point5.contracts import (
     POINT_NAMES,
     Point5Error,
     P5,
-    ankle_mid_xy,
     to_local,
 )
 
@@ -85,7 +84,8 @@ def point5_from_view(view: Mapping[str, Any], robot_id: str,
         raise Point5Error(f"{robot_id} has non-finite point data")
 
     # ---- v2 local frame: origin = ankle XY mid, X = torso facing ----
-    origin = ankle_mid_xy(world)
+    origin = 0.5 * (world[POINT_INDEX["foot_right"], :2]
+                    + world[POINT_INDEX["foot_left"], :2])
     fwd = _torso_facing(view, suffix)
     yaw_deg = float(np.degrees(np.arctan2(fwd[1], fwd[0])))
 

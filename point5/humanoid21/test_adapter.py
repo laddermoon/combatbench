@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from point5 import Point5Error, ankle_mid_xy, twist_deg
+from point5 import Point5Error, twist_deg
 from point5.humanoid21 import point5_from_view
 
 
@@ -35,8 +35,8 @@ class TestFromView:
             z = st.point_pos(f)[2]
             assert 0.05 < z < 0.12   # ankle-center ~0.087, above sole
         # local frame: ankle XY midpoint is the origin by construction
-        np.testing.assert_allclose(ankle_mid_xy(st.pos), [0., 0.],
-                                   atol=1e-9)
+        mid = 0.5 * (st.pos[3, :2] + st.pos[4, :2])
+        np.testing.assert_allclose(mid, [0., 0.], atol=1e-9)
         d = np.linalg.norm(st.point_pos("foot_right")[:2]
                            - st.point_pos("foot_left")[:2])
         assert d > 0.1
@@ -64,5 +64,6 @@ class TestFromView:
 
     def test_returns_copies(self, view_a):
         st = point5_from_view(view_a, "robot_a")
-        st.pos[0, 0] = 999.0
-        assert view_a["body_xpos"]["head_a"][0] != 999.0
+        head0 = st.pos[0, 0]
+        view_a["body_xpos"]["head_a"][0] += 999.0   # mutate source
+        assert st.pos[0, 0] == head0              # state unaffected

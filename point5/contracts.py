@@ -43,11 +43,19 @@ class TaskValidationError(Point5Error):
 
 
 def _pos5(value: Any, name: str = "pos") -> np.ndarray:
-    # np.array (copy): frozen dataclasses must not alias caller arrays
-    arr = np.array(value, dtype=np.float64)
+    if np.iscomplexobj(value):
+        raise TaskValidationError(f"{name} must be real-valued")
+    try:
+        # np.array (copy) + read-only: frozen dataclasses must neither
+        # alias caller arrays nor be mutated through their fields.
+        arr = np.array(value, dtype=np.float64)
+    except (TypeError, ValueError) as e:
+        raise TaskValidationError(
+            f"{name} must be a finite ({N_POINTS},3) array: {e}")
     if arr.shape != (N_POINTS, 3) or not np.all(np.isfinite(arr)):
         raise TaskValidationError(
             f"{name} must be a finite ({N_POINTS},3) array, got {arr.shape}")
+    arr.flags.writeable = False
     return arr
 
 

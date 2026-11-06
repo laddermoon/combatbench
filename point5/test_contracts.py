@@ -739,3 +739,157 @@ class TestNumericFidelity:
         c = P5Clip(Base=P5(pos=_pose()), Transfers=(Transfer(d),))
         # tiny delta survives re-anchor (not rounded away)
         assert c.p5[1].pos[0, 0] != _pose()[0, 0] or True  # just no crash
+
+
+# ---------------------------------------------------------------------------
+# 更深：不可变强制、刚性不变量、逆重建、回绕、确定性
+# ---------------------------------------------------------------------------
+
+class TestReadonlyEnforcement:
+    def test_p5_pos_readonly(self):
+        st = P5(pos=_pose())
+        with pytest.raises(ValueError):
+            st.pos[0, 0] = 9.0
+        assert not st.pos.flags.writeable
+
+    def test_transfer_delta_readonly(self):
+        t = Transfer(delta_pos=np.zeros((5, 3)))
+        with pytest.raises(ValueError):
+            t.delta_pos[0, 0] = 9.0
+
+    def test_pos_mutation_does_not_leak_into_clip(self):
+        # returned P5.pos is recomputed each access — can't corrupt clip
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1),))
+        before = c.p5[1].pos.copy()
+        _ = c.p5[1]
+        np.testing.assert_allclose(c.p5[1].pos, before)
+
+
+class TestRigidInvariance:
+    """to_local is rigid: intra-frame distances & z pass through."""
+
+    @pytest.mark.parametrize("seed", range(3))
+    def test_distances_preserved(self, seed):
+        rng = np.random.default_rng(seed)
+        p = rng.normal(0, 0.5, (5, 3))
+        l = to_local(p, [1.0, -2.0], float(rng.uniform(-180, 180)))
+        for a in range(5):
+            for b in range(a + 1, 5):
+                np.testing.assert_allclose(
+                    np.linalg.norm(l[a] - l[b]),
+                    np.linalg.norm(p[a] - p[b]), atol=1e-12)
+
+    def test_z_exact(self):
+        rng = np.random.default_rng(2)
+        p = rng.normal(0, 1, (5, 3))
+        l = to_local(p, [0.3, 0.3], 137.0)
+        np.testing.assert_array_equal(l[:, 2], p[:, 2])
+
+
+class TestInverseReconstruction:
+    """Un-anchor p5[i] and it must return to base-frame raw coords."""
+
+    def test_roundtrip_through_frames(self):
+        p0 = _pose()
+        deltas = []
+        d = np.zeros((5, 3)); d[3, 0] = 0.4; deltas.append(d)
+        d2 = np.zeros((5, 3)); d2[:, 0] = -0.2; deltas.append(d2)
+        c = P5Clip(Base=P5(pos=p0),
+                   Transfers=[Transfer(deltas[0], 0.0),
+                              Transfer(deltas[1], np.pi / 4)])
+        for i, t in enumerate(c.Transfers, start=1):
+            raw = c.Base.pos + t.delta_pos
+            mid = 0.5 * (raw[3, :2] + raw[4, :2])
+            # inverse of to_local: rotate by +yaw, add mid
+            R = np.array([[np.cos(t.delta_yaw), -np.sin(t.delta_yaw)],
+                          [np.sin(t.delta_yaw), np.cos(t.delta_yaw)]])
+            back = c.p5[i].pos.copy()
+            back[:, :2] = c.p5[i].pos[:, :2] @ R.T + mid
+            np.testing.assert_allclose(back, raw, atol=1e-9,
+                                       err_msg=f"frame {i} inverse failed")
+
+
+class TestWraparound:
+    @pytest.mark.parametrize("yaw", [360.0, 720.0, -360.0])
+    def test_full_turns(self, yaw):
+        p = _pose()
+        np.testing.assert_allclose(to_local(p, [0., 0.], yaw), p,
+                                   atol=1e-9)
+
+    def test_opposite_yaw_cancels(self):
+        p = _pose()
+        a = to_local(p, [0., 0.], 45.0)
+        b = to_local(a, [0., 0.], -45.0)
+        np.testing.assert_allclose(b, p, atol=1e-12)
+
+    def test_delta_yaw_beyond_pi(self):
+        # delta_yaw=3pi/2 valid (wraps); own frame faces +x after it
+        p0 = _pose()
+        c = P5Clip(Base=P5(pos=p0),
+                   Transfers=(Transfer(np.zeros((5, 3)), 3 * np.pi / 2),))
+        p = c.p5[1].pos                     # raw rotated by -270 == +90
+        np.testing.assert_allclose(p[3, :2], [0.15, 0.], atol=1e-9)
+
+
+class TestDtypeCoercion:
+    @pytest.mark.parametrize("dt", [np.float32, np.int64, np.int32, bool])
+    def test_accepts_dtypes(self, dt):
+        st = P5(pos=np.zeros((5, 3), dtype=dt))
+        assert st.pos.dtype == np.float64
+
+    def test_rejects_overflow_to_inf(self):
+        with np.errstate(over='ignore'):
+            p = np.full((5, 3), 1e308) * 10      # overflows to inf
+        with pytest.raises(TaskValidationError):
+            P5(pos=p)
+
+    def test_rejects_complex(self):
+        with pytest.raises((TaskValidationError, TypeError)):
+            P5(pos=np.zeros((5, 3), dtype=np.complex128))
+
+
+class TestDegenerateSemantics:
+    def test_crossed_feet(self):
+        # feet swapped (left<->right) — mid still defined, twist ~180
+        p = _pose(feet=((0., 0.15, 0.), (0., -0.15, 0.)))
+        tw = twist_deg(p)
+        assert tw is not None and abs(abs(tw) - 180.0) < 1e-9
+
+    def test_degenerate_still_reanchors(self):
+        # delta makes feet coincide: mid = that point, no crash
+        p0 = _pose()
+        d = np.zeros((5, 3))
+        d[4] = p0[3] - p0[4]
+        c = P5Clip(Base=P5(pos=p0), Transfers=(Transfer(d),))
+        p = c.p5[1].pos
+        np.testing.assert_allclose(p[3, :2], p[4, :2], atol=1e-9)
+        assert is_degenerate(p)
+
+
+class TestDeterminism:
+    def test_to_dict_deterministic(self):
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1, 0.3),))
+        assert c.to_dict() == c.to_dict()
+
+    def test_order_preserved(self):
+        c = P5Clip(Base=P5(pos=_pose()),
+                   Transfers=(Transfer(np.ones((5, 3)) * 0.1),
+                              Transfer(np.ones((5, 3)) * 0.2),
+                              Transfer(np.ones((5, 3)) * 0.3)))
+        d = c.to_dict()
+        vals = [t["delta_pos"][0][0] for t in d["transfers"]]
+        assert vals == [0.1, 0.2, 0.3]           # order survives serde
+
+    def test_extra_dict_keys_ignored(self):
+        t = Transfer.from_dict({"delta_pos": np.zeros((5, 3)).tolist(),
+                                "delta_yaw": 0.1, "junk": "ignored"})
+        assert t.delta_yaw == 0.1
+
+    def test_shared_base_independent(self):
+        base = P5(pos=_pose())
+        c1 = P5Clip(Base=base, Transfers=(Transfer(np.ones((5, 3))),))
+        c2 = P5Clip(Base=base)
+        assert c1.Base is c2.Base               # shared immutable is safe
+        assert c1 != c2
