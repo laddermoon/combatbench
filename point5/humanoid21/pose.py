@@ -123,6 +123,45 @@ class Pose:
                    g_body=np.asarray(obs[42:45], np.float64),
                    robot_id=robot_id)
 
+    @classmethod
+    def from_p5(cls, p5, robot_id: str = "robot_a",
+                tolerance: float = 0.02):
+        """P5 局部姿态 -> Pose（pose_solver 反解关节角）。
+
+        p5: (5,3) 局部点阵或 P5 对象。g_body = 直立系重力
+        [0,0,-9.81]——P5 局部帧本身是重力对齐的。
+        """
+        from point5.humanoid21.executor.tools.pose_solver import (
+            Humanoid21PoseSolver)
+        pos = getattr(p5, "pos", p5)
+        res = Humanoid21PoseSolver().solve(np.asarray(pos, np.float64),
+                                           tolerance=tolerance)
+        return cls(qpos=res.q_rad, root_z=float(res.root_pos[2]),
+                   g_body=np.array([0.0, 0.0, -9.81]), robot_id=robot_id)
+
+    def p5(self):
+        """自身局部帧 P5（踝中点原点、躯干 +x）。"""
+        return self.anchor('ankle_mid').p5()
+
+    def support_landmark_on_p5_axis(self):
+        """P5 轴系下的 SupportLandMark。
+
+        com 精确质量加权；foot pos 来自锚定帧；force_ratio 按
+        落地脚均分（姿态本身不带接触力——这是支撑语义不是测量）。
+        """
+        from point5.humanoid21.executor.contracts import (
+            FootSupport, SupportLandMark)
+        a = self.anchor('ankle_mid')
+        fp, raw = a.foot_pos(), a.p5().pos
+        # P5 脚点是踝中心——落地时 z≈0.087，不是 0
+        planted = [s for s in ("right", "left")
+                   if raw[_FIDX[s]][2] < 0.12]
+        share = 1.0 / len(planted) if planted else 0.0
+        feet = {s: FootSupport(force_ratio=share if s in planted
+                               else 0.0, pos=fp[s])
+                for s in ("right", "left")}
+        return SupportLandMark(com=a.com(), feet=feet)
+
     def tilt_angles(self) -> np.ndarray:
         """(2,) [roll, pitch] rad — 由 g_body 分解的倾斜角。"""
         gx, gy, gz = self.g_body / (np.linalg.norm(self.g_body) + 1e-12)
