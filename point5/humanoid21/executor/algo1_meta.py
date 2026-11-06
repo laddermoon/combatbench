@@ -49,13 +49,14 @@ class I2:
 
 
 @dataclass
-class I3:
+class I3(SupportPlan):
     """Clip 逐帧目标支撑状态 — F3(Clip)。
 
-    逐帧变换：每帧 P5 → 对应支撑状态（脚位取 P5 踝点、
-    质心经工具1 推荐并投影支撑域）。与 clip 帧一一对齐。
+    即 SupportPlan：landmarks[i] = 第 i 帧支撑状态，与 clip 帧
+    一一对齐（脚位取 P5 踝点、质心经工具1推荐并投影支撑域）。
+    坐标统一首帧 P5 系。
     """
-    targets: List[SupportState]        # len = clip 帧数
+    pass
 
 
 @dataclass
