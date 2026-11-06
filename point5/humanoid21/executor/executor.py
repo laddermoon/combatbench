@@ -3,10 +3,9 @@
 Flow per call (per bootstrip.md):
 
     0. verify clip frame 0 anchored to the observation's P5
-    1. extract the start SupportState from the observation (tool8)
-    2. support planning             (algorithm-1 branch)
-    3. SupportState sequence generation (algorithm 1 — TODO)
-    4. compute the next action      (algorithm 2 — stub)
+    1. support planning  — algorithm-1: SupportPlanner.plan
+         (f12 decode -> f3 clip landmarks -> f4 -> SupportPlan)
+    2. compute the next action — algorithm-2 f1-f5 chain (stub)
 
 The only owned resource is the internal working simulator used for
 rollouts; no progress, plan, or cache survives a call.
@@ -44,7 +43,7 @@ class Executor:
             wsim.reset(seed=0)
         self.wsim = wsim
         self.support = SupportPlanner()
-        self.action_computer = ActionComputer()
+        self.action_computer = ActionComputer(robot_id)
 
     # -- public API ----------------------------------------------------------
     def gen_action(self, ctx: Context) -> Action:
