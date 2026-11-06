@@ -38,34 +38,42 @@ def f12(obs: Observation) -> Tuple[I1, I2]:
 def f3(clip: P5Clip) -> I3:
     """f3(Clip) -> I3：每帧 P5 → 对应支撑状态，统一 Base 帧。
 
-    转换链：clip.p5[i] -> Pose.from_p5 -> anchor 到 Base 帧
-    （帧 i 的踝中点 + delta_yaw）-> support_state 语义照抄。
-    落地判带在 **Base 帧** foot z 上做（锚定不改 z）。
+    转换链：clip.p5[i] -> Pose.from_p5 -> support_state_on_p5_axis
+    （同一套 com/feet/ratio 语义）-> 按帧位姿 (mid_i, yaw_i)
+    旋转+平移到首帧坐标系。SupportState 的语义来源与 f12 一致。
     """
     from point5.humanoid21.pose import Pose
     from .contracts import FootSupport, SupportState
 
-    PLANTED = 0.12
+    def _to_base(lm, mid, yaw):
+        c, s = np.cos(yaw), np.sin(yaw)
+        R = np.array([[c, -s], [s, c]])
+        feet = {sd: FootSupport(force_ratio=f.force_ratio,
+                                pos=R @ f.pos + mid)
+                for sd, f in lm.feet.items()}
+        com = lm.com.copy()
+        com[:2] = R @ com[:2] + mid
+        return SupportState(com=com, feet=feet,
+                            torso_yaw=lm.torso_yaw, for_frame=0)
+
     landmarks = []
     for i in range(len(clip.p5)):
         raw = clip.Base.pos if i == 0 else \
             clip.Base.pos + clip.Transfers[i - 1].delta_pos
         yaw = 0.0 if i == 0 else float(clip.Transfers[i - 1].delta_yaw)
         mid = 0.5 * (raw[3, :2] + raw[4, :2])
-
-        a = Pose.from_p5(clip.p5[i]).anchor("ankle_mid", mid, yaw)
-        com = a.com()
-        fp = a.foot_pos()
-        grounded = {s: raw[k, 2] < PLANTED
-                    for s, k in (("right", 3), ("left", 4))}
+        lm = Pose.from_p5(clip.p5[i]).support_state_on_p5_axis()
+        st = _to_base(lm, mid, yaw)
+        # ratio 取**声明**的落地事件（clip raw 脚 z），不是解算
+        # 残差——f12 用实测力是同一原则：状态语义由来源定。
+        grounded = {sd: raw[k, 2] < 0.12
+                    for sd, k in (("right", 3), ("left", 4))}
         n = sum(grounded.values())
-        feet = {s: FootSupport(
-                    force_ratio=(1.0 / n if n and grounded[s]
-                                 else 0.0),
-                    pos=np.asarray(fp[s], np.float64))
-                for s in ("right", "left")}
-        landmarks.append(SupportState(com=com, feet=feet,
-                                      torso_yaw=yaw, for_frame=i))
+        for sd in ("right", "left"):
+            st.feet[sd].force_ratio = \
+                (1.0 / n) if (n and grounded[sd]) else 0.0
+        st.for_frame = i
+        landmarks.append(st)
     return I3(landmarks=landmarks)
 
 
