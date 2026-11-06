@@ -60,13 +60,6 @@ def _idx(name: str) -> int:
 # Local-frame geometry derivations (all from stored positions only)
 # ---------------------------------------------------------------------------
 
-def ankle_mid_xy(pos: np.ndarray) -> np.ndarray:
-    """Local-frame origin: XY midpoint of the two ankles, shape (2,)."""
-    p = _pos5(pos)
-    return 0.5 * (p[POINT_INDEX["foot_right"], :2]
-                  + p[POINT_INDEX["foot_left"], :2])
-
-
 def ankle_line_dir(pos: np.ndarray) -> Optional[np.ndarray]:
     """Unit XY direction left-ankle -> right-ankle, or None if degenerate."""
     p = _pos5(pos)
@@ -202,7 +195,9 @@ class _P5Frames:
         raw = c.Base.pos + t.delta_pos          # Base-frame coords
         # re-anchor into THIS frame's own local system:
         # own ankle mid -> origin, own yaw (delta vs base) -> +x
-        return P5(pos=to_local(raw, ankle_mid_xy(raw),
+        mid = 0.5 * (raw[POINT_INDEX["foot_right"], :2]
+                     + raw[POINT_INDEX["foot_left"], :2])
+        return P5(pos=to_local(raw, mid,
                                np.degrees(t.delta_yaw)))
 
     def __len__(self) -> int:
