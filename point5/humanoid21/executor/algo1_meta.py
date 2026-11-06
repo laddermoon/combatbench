@@ -13,7 +13,7 @@ from typing import List
 
 import numpy as np
 
-from .contracts import SupportState  # noqa: F401  (re-exported types)
+from .contracts import SupportPlan, SupportState  # noqa: F401  (re-exported types)
 
 _COM = (3,)
 
@@ -59,16 +59,16 @@ class I3:
 
 
 @dataclass
-class R:
+class R(SupportPlan):
     """支撑状态序列 — F4(I1, I2, I3)。
 
-    锚点 = 支撑事件锚点 + 姿态锚点；不带时间、允许重复；
-    长度 ≥3（clip 无换脚需求时以维持平衡的锚点补齐）。
+    即 SupportPlan + ≥3 锚点约束：锚点 = 支撑事件锚点 + 姿态锚点，
+    不带时间、允许重复；长度 ≥3（clip 无换脚需求时以维持平衡的
+    锚点补齐）。坐标统一首帧 P5 系（继承 plan 层约定）。
     """
-    landmarks: List[SupportState]
 
     def __post_init__(self):
-        assert len(self.landmarks) >= 3, "R: sequence must have >=3 anchors"
+        assert len(self.landmarks) >= 3,             "R: sequence must have >=3 anchors"
 
 
 __all__ = ["I1", "I2", "I3", "R"]
