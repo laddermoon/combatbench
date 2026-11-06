@@ -36,12 +36,37 @@ def f12(obs: Observation) -> Tuple[I1, I2]:
 
 
 def f3(clip: P5Clip) -> I3:
-    """f3(Clip) -> I3：每帧 P5 → 对应支撑状态。
+    """f3(Clip) -> I3：每帧 P5 → 对应支撑状态，统一 Base 帧。
 
-    逐帧几何变换，不做事件推断：脚位取 P5 踝点、质心经
-    工具1 推荐并投影支撑域（工具6）。
+    转换链：clip.p5[i] -> Pose.from_p5 -> anchor 到 Base 帧
+    （帧 i 的踝中点 + delta_yaw）-> support_state 语义照抄。
+    落地判带在 **Base 帧** foot z 上做（锚定不改 z）。
     """
-    raise NotImplementedError
+    from point5.humanoid21.pose import Pose
+    from .contracts import FootSupport, SupportState
+
+    PLANTED = 0.12
+    landmarks = []
+    for i in range(len(clip.p5)):
+        raw = clip.Base.pos if i == 0 else \
+            clip.Base.pos + clip.Transfers[i - 1].delta_pos
+        yaw = 0.0 if i == 0 else float(clip.Transfers[i - 1].delta_yaw)
+        mid = 0.5 * (raw[3, :2] + raw[4, :2])
+
+        a = Pose.from_p5(clip.p5[i]).anchor("ankle_mid", mid, yaw)
+        com = a.com()
+        fp = a.foot_pos()
+        grounded = {s: raw[k, 2] < PLANTED
+                    for s, k in (("right", 3), ("left", 4))}
+        n = sum(grounded.values())
+        feet = {s: FootSupport(
+                    force_ratio=(1.0 / n if n and grounded[s]
+                                 else 0.0),
+                    pos=np.asarray(fp[s], np.float64))
+                for s in ("right", "left")}
+        landmarks.append(SupportState(com=com, feet=feet,
+                                      torso_yaw=yaw, for_frame=i))
+    return I3(landmarks=landmarks)
 
 
 def f4(i1: I1, i2: I2, i3: I3) -> R:
