@@ -69,12 +69,12 @@ def test_capability_physics():
 def test_extract_landmark_standing():
     """standing obs -> landmark: both feet ~50%, com sane, vel~0."""
     from envs.humanoid21.simulator import Humanoid21Simulator
-    from point5.humanoid21.executor.algo1_functions import f1
+    from point5.humanoid21.executor.algo1_functions import f12
     s = Humanoid21Simulator(initial_distance=6.0,
                             initial_pose_a="standing")
     s.reset(0)
     obs = s.get_derived_state()["robot_a"]["observation"]
-    lm = f1(obs).lm
+    lm = f12(obs)[0].lm
     assert 0.7 < lm.com[2] < 1.0
     r, l = lm.feet["right"], lm.feet["left"]
     assert 0.3 < r.force_ratio < 0.7 and 0.3 < l.force_ratio < 0.7
@@ -84,7 +84,7 @@ def test_extract_landmark_standing():
 def test_extract_landmark_moving():
     """after motion: vel nonzero, force ratios still sum ~1."""
     from envs.humanoid21.simulator import Humanoid21Simulator
-    from point5.humanoid21.executor.algo1_functions import f1
+    from point5.humanoid21.executor.algo1_functions import f12
     s = Humanoid21Simulator(initial_distance=6.0,
                             initial_pose_a="standing")
     s.reset(0)
@@ -95,6 +95,8 @@ def test_extract_landmark_moving():
         for _ in range(25):
             s.physical_step()
     obs = s.get_derived_state()["robot_a"]["observation"]
-    lm = f1(obs).lm
+    i1, i2 = f12(obs)
+    lm = i1.lm
     tot = lm.feet["right"].force_ratio + lm.feet["left"].force_ratio
     assert 0.5 < tot < 1.5
+    assert i2.com_vel.shape == (3,) and i2.ang_mom.shape == (3,)
