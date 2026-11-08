@@ -20,19 +20,15 @@ from .contracts import Observation
 def f12(obs: Observation) -> Tuple[I1, I2]:
     """f12(Observation) -> (I1, I2)：一次 Pose 解码出支撑态+动量。
 
-    I1.lm 几何经 Pose.support_state_on_p5_axis()（脚位+精确质心），
-    force_ratio 覆盖为 obs[52:54] 实测分配（当前态是测量非设计）；
+    obs→Pose 无损（运动学+速度+实测脚力全携带）；
+    support_state_on_p5_axis() 直接用 Pose 自携带的 force_ratio；
     I2 经 mj_subtreeVel 出精确子树量转锚定局部帧。
     """
     from point5.humanoid21.pose import Pose
 
-    obs = np.asarray(obs, np.float64)
-    p = Pose.from_obs(obs)
-    lm = p.support_state_on_p5_axis()
-    fr = obs[52:54]
-    lm.feet["right"].force_ratio = float(fr[0])
-    lm.feet["left"].force_ratio = float(fr[1])
-    return I1(lm=lm), I2(com_vel=p.com_vel(), ang_mom=p.ang_mom())
+    p = Pose.from_obs(np.asarray(obs, np.float64))
+    return (I1(lm=p.support_state_on_p5_axis()),
+            I2(com_vel=p.com_vel(), ang_mom=p.ang_mom()))
 
 
 def f3(clip: P5Clip) -> I3:

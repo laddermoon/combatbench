@@ -148,10 +148,13 @@ class TestOutputs:
         true_z = float(sim.data.subtree_com[1][2])
         assert pose.com_height() == pytest.approx(true_z, abs=0.01)
 
-    def test_support_landmark_standing(self, pose):
+    def test_support_landmark_standing(self, obs, pose):
         lm = pose.support_state_on_p5_axis()
-        assert lm.feet["right"].force_ratio == pytest.approx(0.5)
-        assert lm.feet["left"].force_ratio == pytest.approx(0.5)
+        # obs-sourced pose carries measured force (≈0.45 each standing)
+        assert lm.feet["right"].force_ratio == \
+            pytest.approx(float(obs[52]))
+        assert lm.feet["left"].force_ratio == \
+            pytest.approx(float(obs[53]))
         assert lm.com[2] == pytest.approx(0.85, abs=0.02)
         for s in ("right", "left"):
             assert lm.feet[s].pos.shape == (2,)
@@ -163,8 +166,9 @@ class TestOutputs:
         s.reset(0)
         obs = s.get_derived_state()["robot_a"]["observation"]
         lm = Pose.from_obs(obs).support_state_on_p5_axis()
-        assert lm.feet["right"].force_ratio == 0.0     # airborne
-        assert lm.feet["left"].force_ratio == pytest.approx(1.0)
+        # measured: right airborne=0, left < 1 (falling dynamics)
+        assert lm.feet["right"].force_ratio == 0.0
+        assert 0.0 < lm.feet["left"].force_ratio < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +325,7 @@ class TestNonStanding:
         p = Pose.from_obs(obs)
         lm = p.support_state_on_p5_axis()
         # com pulled toward the support (left) foot side
-        assert lm.feet["left"].force_ratio == 1.0
+        assert lm.feet["left"].force_ratio > 0.0
         assert lm.feet["right"].force_ratio == 0.0
         # com closer to support foot than airborne foot in xy
         fp = lm.feet
@@ -708,3 +712,44 @@ class TestMomentum:
         np.testing.assert_allclose(pose.root_angvel,
                                    np.sign(oa) * 2.0 * oa ** 2)
         np.testing.assert_allclose(pose.root_linvel, obs[46:49])
+
+
+# ---------------------------------------------------------------------------
+# foot_force_ratio：obs 自携带实测力 / from_p5 缺席回退判带
+# ---------------------------------------------------------------------------
+
+class TestFootForceRatio:
+    def test_from_obs_decodes(self, obs, pose):
+        np.testing.assert_allclose(pose.foot_force_ratio, obs[52:54])
+        assert pose.foot_force_ratio.shape == (2,)
+
+    def test_from_p5_absent(self, pose):
+        p2 = Pose.from_p5(pose.p5())
+        assert p2.foot_force_ratio is None
+
+    def test_support_state_uses_carried_force(self, obs, pose):
+        # obs-sourced pose -> lm force == obs measured (no band split)
+        lm = pose.support_state_on_p5_axis()
+        assert lm.feet["right"].force_ratio == \
+            pytest.approx(float(obs[52]))
+        assert lm.feet["left"].force_ratio == \
+            pytest.approx(float(obs[53]))
+
+    def test_support_state_fallback_band(self, pose):
+        # pose without force (from_p5) -> planted-band split
+        p2 = Pose.from_p5(pose.p5())
+        lm = p2.support_state_on_p5_axis()
+        assert lm.feet["right"].force_ratio == pytest.approx(0.5)
+        assert lm.feet["left"].force_ratio == pytest.approx(0.5)
+
+    def test_force_not_aliased(self):
+        f = np.array([0.5, 0.5])
+        p = Pose(np.zeros(21), 1.0, np.array([0., 0., -9.81]),
+                 foot_force_ratio=f)
+        f[0] = 9.9
+        assert p.foot_force_ratio[0] == 0.5
+
+    def test_force_shape_validation(self):
+        with pytest.raises(AssertionError):
+            Pose(np.zeros(21), 1.0, np.array([0., 0., -9.81]),
+                 foot_force_ratio=np.zeros(3))
