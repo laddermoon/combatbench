@@ -31,7 +31,7 @@ Observation      经过Pose转(精确)   pose.from_obs     经过Pose转(精确)
 |----|-----|------|------|
 | obs → Pose | `Pose.from_obs(obs)` | 精确 | 反归一化关节角 + sqrt 解压速度；com_vel/ang_mom 经 `mj_subtreeVel` 精确 |
 | obs → P5 | `Pose.from_obs(obs).p5()` | 精确 | 过 Pose，不要另写解码器 |
-| obs → LM | `Pose.from_obs(obs).support_landmark_on_p5_axis()` | 精确 | **f1 的实现**；force_ratio 随后被 obs[52:54] 实测值覆盖（当前态是测量） |
+| obs → LM | `Pose.from_obs(obs).support_state_on_p5_axis()` + 力度覆盖 | 几何精确 / **力度 Pose 给不出** | **f12 的实现**：几何经 Pose 精确，但脚接触力在 Pose 里**没有**（动力学量非运动学量）——必须再用 obs[52:54] 实测值覆盖 |
 | P5 → Pose | `Pose.from_p5(p5)` | 近似 | `solve_equilibrium` 反解关节角——**不可逆**，意图→姿态有损 |
 | P5 → LM | `Pose.from_p5(p5).support_landmark_on_p5_axis()` | 近似 | 过 Pose，经 solver 近似 |
 | Pose → P5 | `pose.p5()` | 精确 | 自身局部帧 FK 直读 |
@@ -42,7 +42,8 @@ Observation      经过Pose转(精确)   pose.from_obs     经过Pose转(精确)
 - **位置是 anchor 的事**：Pose 无位置。要世界/局部坐标先 `pose.anchor(point, xy, yaw)`；
   `p5()`/`com_height()` 不需要锚定，`com()`/`foot_pos()`/`com_vel()`/`ang_mom()` 要。
 - **速度只在 Pose**：P5 纯几何。动量来自 obs 速度字段，规划态 Pose（from_p5）调 com_vel 会拒。
-- **force_ratio 两种来源**：实测（obs[52:54]，f1 覆盖后返回）vs 规划（落地判带均分，
+- **⚠️ obs → Pose 丢接触力**：Pose 只还运动学（qpos+速度），脚接触力是动力学量（还依赖当前 ctrl/执行器力矩——obs 里没有动作字段）。所以 `obs→Pose→LM` 几何精确、力度**必须用 obs 实测值补回**，不能指望 Pose 重建（准静态下 mj_forward 重建≈0.44 vs 实测 0.445，动态态偏差大）。
+- **force_ratio 两种来源**：实测（obs[52:54]，f12 覆盖后返回）vs 规划（落地判带均分，
   `support_landmark_on_p5_axis` 默认）——当前态是测量，未来态是设计。
 - **不可逆链**：P5→Pose 有损（solver），所以执行层规划从 obs 侧（精确）出发，
   P5 侧只当意图输入。
