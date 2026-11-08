@@ -33,7 +33,7 @@ Observation      经过Pose转(精确)   pose.from_obs     经过Pose转(精确)
 | obs → P5 | `Pose.from_obs(obs).p5()` | 精确 | 过 Pose，不要另写解码器 |
 | obs → LM | `Pose.from_obs(obs).support_state_on_p5_axis()` + 力度覆盖 | 几何精确 / **力度 Pose 给不出** | **f12 的实现**：几何经 Pose 精确，但脚接触力在 Pose 里**没有**（动力学量非运动学量）——必须再用 obs[52:54] 实测值覆盖 |
 | P5 → Pose | `Pose.from_p5(p5)` | 近似 | `solve_equilibrium` 反解关节角——**不可逆**，意图→姿态有损 |
-| P5 → LM | `Pose.from_p5(p5).support_landmark_on_p5_axis()` | 近似 | 过 Pose，经 solver 近似 |
+| P5 → LM | `Pose.from_p5(p5).support_state_on_p5_axis()` | 近似 | 过 Pose，经 solver 近似 |
 | Pose → P5 | `pose.p5()` | 精确 | 自身局部帧 FK 直读 |
 | Pose → LM | `pose.support_landmark_on_p5_axis()` | 精确 | 质量加权 com + 落地判带均分力度（规划态分配） |
 
