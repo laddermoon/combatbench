@@ -22,26 +22,15 @@ from .contracts import (
     to_local,
     twist_deg,
 )
-from .mass_model import (
-    DEFAULT_MASSES,
-    SEG_NAMES,
-    MassModelConfig,
-    MassProxy,
-    mass_proxy,
-    virtual_body,
-)
 # trajectory module still on the old Keyframe model — re-enable when ported
 # from .trajectory import (FrameSample, frames_payload, keyframe_frames,
 #                          keyframe_world, sample_clip)
 
 __all__ = [
     "CLIP_FORMAT",
-    "DEFAULT_MASSES",
     "FRAMES_FORMAT",
     "GROUND_Z",
     "MIN_FOOT_SEP_XY",
-    "MassModelConfig",
-    "MassProxy",
     "N_POINTS",
     "P5Clip",
     "PLANT_HEIGHT_TOL",
@@ -49,14 +38,11 @@ __all__ = [
     "POINT_NAMES",
     "Point5Error",
     "P5",
-    "SEG_NAMES",
     "STATE_FORMAT",
     "TaskValidationError",
     "Transfer",
     "ankle_line_dir",
     "is_degenerate",
-    "mass_proxy",
     "to_local",
     "twist_deg",
-    "virtual_body",
 ]
