@@ -2,7 +2,7 @@
 
     Pose        静态姿态：qpos + root_z + g_body（无位置——
                 水平位置与 yaw 由 anchor() 解析）
-    RobotState  动态快照 = Pose + 速度 + 实测接触力
+    RobotState  动态快照 = Pose + 速度（全量必带）
 
 与 SupportGeometry/SupportState 同构：静态层管几何，动态层
 叠加测量。obs 是本质动态快照，只经 RobotState.from_obs 进。
@@ -13,14 +13,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
 
 _JOINTS = (21,)
 _G = (3,)
 _VEL = (3,)
-_FORCE = (2,)
 
 
 def _vec(v, shape, name):
@@ -108,24 +106,19 @@ class Pose:
 
 @dataclass
 class RobotState(Pose):
-    """动态快照 = 姿态 + 速度 + 实测接触力。
+    """动态快照 = 姿态 + 速度——全部必带，from_obs 唯一入口。
 
-    qvel/root_linvel/root_angvel/foot_force_ratio 均可缺省——
-    from_p5 的规划态没有动态语义；from_obs 态必带。
+    无动态的场合用 Pose（from_p5），不构造残缺的 RobotState。
     """
-    qvel: Optional[np.ndarray] = None            # (21,) rad/s
-    root_linvel: Optional[np.ndarray] = None     # (3,) 机体系线速度
-    root_angvel: Optional[np.ndarray] = None     # (3,) 机体系角速度
-    foot_force_ratio: Optional[np.ndarray] = None  # (2,) 右/左脚实测力度比
+    qvel: np.ndarray                           # (21,) rad/s
+    root_linvel: np.ndarray                    # (3,) 机体系线速度
+    root_angvel: np.ndarray                    # (3,) 机体系角速度
 
     def __post_init__(self):
         super().__post_init__()
-        for n, shp in (("qvel", _JOINTS), ("root_linvel", _VEL),
-                       ("root_angvel", _VEL),
-                       ("foot_force_ratio", _FORCE)):
-            v = getattr(self, n)
-            if v is not None:
-                setattr(self, n, _vec(v, shp, n))
+        self.qvel = _vec(self.qvel, _JOINTS, "qvel")
+        self.root_linvel = _vec(self.root_linvel, _VEL, "root_linvel")
+        self.root_angvel = _vec(self.root_angvel, _VEL, "root_angvel")
 
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
