@@ -104,8 +104,25 @@ class Pose:
         raise NotImplementedError
 
     def to_p5(self) -> "P5":
-        """转换成 P5 点集。"""
-        raise NotImplementedError
+        """-> P5 点集（所在帧表达）——FK 提取 5 landmark + torso_yaw。"""
+        import mujoco
+        from point5 import P5
+        from point5.humanoid21.mechanics import LANDMARKS
+        model, data, r = self._fk_data()
+        kw = {}
+        for body, p5name in (("head", "head"),
+                             ("hand_left", "left_hand"),
+                             ("hand_right", "right_hand"),
+                             ("foot_left", "left_ankle"),
+                             ("foot_right", "right_ankle")):
+            bid = r["keypoint_body_ids"].get(body)
+            if bid is None:
+                bid = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_BODY, f"{body}{r['suffix']}")
+            kw[p5name] = (np.asarray(data.xpos[bid])
+                          + np.asarray(data.xmat[bid]).reshape(3, 3)
+                          @ LANDMARKS[body][1])
+        return P5(**kw, torso_yaw=float(self.root_orientation[2]))
     # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
     _FK = None      # 懒加载共享 (model, data, robot_a 表)
