@@ -43,6 +43,11 @@ def joint_ranges() -> np.ndarray:
     return np.asarray(Pose._kinematics()[2]["jnt_ranges"], np.float64)
 
 
+def _wrap(a: float) -> float:
+    """角度归一到 (-pi, pi]。"""
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
 def _zyx_to_quat_wxyz(ori: np.ndarray) -> np.ndarray:
     """[pitch,roll,yaw] -> quat (wxyz)，R = Rz(yaw)·Ry(pitch)·Rx(roll)。"""
     p, r, y = ori
@@ -89,6 +94,27 @@ class Pose:
         raise NotImplementedError
 
 
+    def _se2(self, dyaw: float, dxy) -> "Pose":
+        """SE(2) 平面变换：root_position' = Rz(dyaw)·pos + (dxy,0)，
+        orientation 仅 yaw += dyaw——姿态形状不变。"""
+        c, s = np.cos(dyaw), np.sin(dyaw)
+        R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        o = self.root_orientation
+        return Pose(qpos=self.qpos.copy(),
+                    root_position=R @ self.root_position
+                    + np.array([dxy[0], dxy[1], 0.0]),
+                    root_orientation=np.array(
+                        [o[0], o[1], _wrap(o[2] + dyaw)]))
+
+    def standardize(self) -> "Pose":
+        """转成自身 P5 系（踝中点原点、躯干 +x、yaw→0）。"""
+        p5 = self.to_p5()
+        mid = (p5.left_ankle[:2] + p5.right_ankle[:2]) / 2.0
+        yaw = float(self.root_orientation[2])
+        c, s = np.cos(-yaw), np.sin(-yaw)
+        t = -np.array([[c, -s], [s, c]]) @ mid      # -Rz(-yaw)·mid
+        return self._se2(-yaw, t)
+
     def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "Pose":
         """重新锚定到指定位置/朝向（standardize 的逆操作）。
@@ -97,11 +123,7 @@ class Pose:
         内部先 standardize 再做 SE(2) 平面变换，任意帧输入
         都合法，不动姿态形状。
         """
-        raise NotImplementedError
-
-    def standardize(self) -> "Pose":
-        """转成自身 P5 系（踝中点原点、躯干 +x、yaw→0）。"""
-        raise NotImplementedError
+        return self.standardize()._se2(float(yaw), np.asarray(xy, float))
 
     def to_p5(self) -> "P5":
         """-> P5 点集（所在帧表达）——FK 提取 5 landmark + torso_yaw。"""
