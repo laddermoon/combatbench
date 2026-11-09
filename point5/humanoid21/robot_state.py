@@ -118,7 +118,7 @@ class RobotState(Pose):
     """
     qvel: np.ndarray                 # (21,) rad/s — 关节空间，与坐标系无关
     root_linvel: np.ndarray          # (3,) 根线速度（所在帧）
-    ang_mom: np.ndarray              # (3,) 全身角动量（所在帧）
+    ang_mom: np.ndarray              # (3,) 全身角动量，关于质心——换帧平移不变，仅随 yaw 旋转分量
 
     def __post_init__(self):
         super().__post_init__()

@@ -102,7 +102,7 @@ class SupportState(SupportGeometry):
     不构造残缺的 SupportState。
     """
     com_vel: np.ndarray = field(kw_only=True)  # (3,) 质心速度
-    ang_mom: np.ndarray = field(kw_only=True)  # (3,) 角动量
+    ang_mom: np.ndarray = field(kw_only=True)  # (3,) 全身角动量，关于质心——换帧平移不变，仅随 yaw 旋转分量
 
     def __post_init__(self):
         super().__post_init__()
