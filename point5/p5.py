@@ -56,7 +56,12 @@ class P5:
 
     def standardize(self) -> "P5":
         """归一到标准 P5 帧（踝中点原点、躯干 +x、yaw→0）。"""
-        raise NotImplementedError
+        ox, oy = (self.left_ankle[:2] + self.right_ankle[:2]) / 2.0
+        c, s = np.cos(-self.torso_yaw), np.sin(-self.torso_yaw)
+        rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        shift = np.array([ox, oy, 0.0])
+        kw = {n: rot @ (getattr(self, n) - shift) for n in POINT_NAMES}
+        return P5(**kw, torso_yaw=0.0)
 
     def to_image(self, path: Optional[str] = None):
         """渲染参考图——给 path 存 PNG，不给返回 PIL Image。"""
