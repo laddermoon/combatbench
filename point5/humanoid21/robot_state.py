@@ -117,11 +117,12 @@ class Pose:
 class RobotState(Pose):
     """动态快照 = 姿态 + 速度——全部必带，from_obs 唯一入口。
 
-    无动态的场合用 Pose（from_p5），不构造残缺的 RobotState。
+    类型**帧无关**（坐标系约定归持有方）；无动态的场合用
+    Pose（from_p5），不构造残缺的 RobotState。
     """
     qvel: np.ndarray                           # (21,) rad/s
-    root_linvel: np.ndarray                    # (3,) 机体系线速度
-    root_angvel: np.ndarray                    # (3,) 机体系角速度
+    root_linvel: np.ndarray                    # (3,) 线速度（帧由持有方约定）
+    root_angvel: np.ndarray                    # (3,) 角速度（帧由持有方约定）
 
     def __post_init__(self):
         super().__post_init__()
@@ -133,9 +134,11 @@ class RobotState(Pose):
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
         """obs (96,) -> RobotState：关节/速度无损快照。
 
-        生成态位于 **P5 坐标系**：无绝对位置、无绝对 yaw——
-        经 anchor()/to_p5() 解析出踝中点原点、躯干 +x 的
-        标准帧量；g_body/linvel/angvel 为机体系分量。
+        本构造器产 **P5 坐标系**的态（类型本身帧无关——
+        帧约定归持有方）：obs 输入的机体系量
+        （linvel/angvel）在解码时即转 P5 帧存储。
+        例外：g_body 按定义为机体系投影重力——
+        帧本身承载俯仰/侧倾，不转。
         """
         raise NotImplementedError
 
