@@ -131,7 +131,12 @@ class RobotState(Pose):
 
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
-        """obs (96,) -> RobotState：关节/速度/接触力无损快照。"""
+        """obs (96,) -> RobotState：关节/速度无损快照。
+
+        生成态位于 **P5 坐标系**：无绝对位置、无绝对 yaw——
+        经 anchor()/to_p5() 解析出踝中点原点、躯干 +x 的
+        标准帧量；g_body/linvel/angvel 为机体系分量。
+        """
         raise NotImplementedError
 
     def pose(self) -> Pose:
