@@ -225,12 +225,14 @@ class RobotState(Pose):
     """
     qvel: np.ndarray                 # (21,) rad/s — 关节空间，与坐标系无关
     root_linvel: np.ndarray          # (3,) 根线速度（所在帧）
+    root_angvel: np.ndarray          # (3,) 根角速度（所在帧）——FK 速度通道 raw 量
     ang_mom: np.ndarray              # (3,) 全身角动量，关于质心——换帧平移不变，仅随 yaw 旋转分量
 
     def __post_init__(self):
         super().__post_init__()
         self.qvel = _vec(self.qvel, _JOINTS, "qvel")
         self.root_linvel = _vec(self.root_linvel, _VEC3, "root_linvel")
+        self.root_angvel = _vec(self.root_angvel, _VEC3, "root_angvel")
         self.ang_mom = _vec(self.ang_mom, _VEC3, "ang_mom")
 
     @classmethod
@@ -246,13 +248,13 @@ class RobotState(Pose):
         """几何归一 + 动态量随帧旋转——保持动态类型与字段。
 
         qpos/qvel 关节空间不变；root_position 转 SE(2)；
-        orientation 仅 yaw 加 Δ；root_linvel/ang_mom 乘 Rz(Δyaw)。
+        orientation 仅 yaw 加 Δ；linvel/angvel/ang_mom 乘 Rz(Δyaw)。
         """
         raise NotImplementedError
 
     def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "RobotState":
-        """同 standardize——帧变换时 root_linvel/ang_mom 随 Δyaw 旋转。"""
+        """同 standardize——linvel/angvel/ang_mom 随 Δyaw 旋转。"""
         raise NotImplementedError
 
     def pose(self) -> Pose:
@@ -261,10 +263,39 @@ class RobotState(Pose):
                     root_position=self.root_position.copy(),
                     root_orientation=self.root_orientation.copy())
 
-    def to_support_state(self):
-        """-> SupportState：委托 SupportState.from_robot_state(self)。
+    def _fk_vel_data(self):
+        """写完整速度（含 ω）跑前馈 + mj_subtreeVel——FK 速度量。
 
-        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖。
+        MuJoCo freejoint qvel[3:6] 是机体系角速度——存储按所在帧
+        约定，喂模型前用躯干 xmat 转一道。subtree_linvel/angmom
+        依赖速度段管线，须先 mj_forward 再 subtreeVel。
+        """
+        import mujoco
+        model, data, r = self._fk_data()
+        adr = int(r["root_qvel_adr"])
+        data.qvel[adr:adr + 3] = self.root_linvel
+        data.qvel[adr + 3:adr + 6] = (
+            np.asarray(data.xmat[r["root_body_id"]]).reshape(3, 3).T
+            @ self.root_angvel)
+        data.qvel[np.asarray(r["qvel_indices"])] = self.qvel
+        mujoco.mj_forward(model, data)
+        mujoco.mj_subtreeVel(model, data)
+        return model, data, r
+
+    def to_support_state(self):
+        """-> SupportState：FK 提取几何 + 速度量（实现住此）。
+
+        com_vel 取子树质心线速度（subtree_linvel[torso]）；
+        ang_mom 直取本态语义量（应与 subtree_angmom 一致）。
         """
         from .support_state import SupportState
-        return SupportState.from_robot_state(self)
+        g = self.to_support_geometry()
+        model, data, r = self._fk_vel_data()
+        return SupportState(
+            com=g.com, left_foot=g.left_foot, right_foot=g.right_foot,
+            torso_yaw=g.torso_yaw,
+            left_foot_height=g.left_foot_height,
+            right_foot_height=g.right_foot_height,
+            com_vel=np.asarray(
+                data.subtree_linvel[r["root_body_id"]]).copy(),
+            ang_mom=self.ang_mom.copy())

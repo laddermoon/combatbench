@@ -119,9 +119,9 @@ class SupportState(SupportGeometry):
 
     @classmethod
     def from_robot_state(cls, robot_state) -> "SupportState":
-        """RobotState -> SupportState。
-        """
-        raise NotImplementedError
+        """RobotState -> SupportState（薄委托：提取实现住
+        RobotState.to_support_state）。"""
+        return robot_state.to_support_state()
 
     def standardize(self) -> "SupportState":
         """几何归一 + 动量随帧旋转——保持动态字段。"""
