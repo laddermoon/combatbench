@@ -35,6 +35,11 @@ def tilt_angles(g_body: np.ndarray) -> np.ndarray:
                      np.arctan2(g[0], -g[2])])
 
 
+def joint_ranges() -> np.ndarray:
+    """(21,2) 关节弧度范围 — 机器人形态元数据（懒加载）。"""
+    raise NotImplementedError
+
+
 @dataclass
 class AnchoredPose:
     """Pose 解析进坐标系后的视图——所有帧内输出住这里。"""
@@ -72,11 +77,6 @@ class Pose:
     @classmethod
     def from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
         """P5 局部姿态 -> Pose（solve_equilibrium 反解，近似）。"""
-        raise NotImplementedError
-
-    @classmethod
-    def joint_ranges(cls) -> np.ndarray:
-        """(21,2) 关节弧度范围（obs 反归一化用）。"""
         raise NotImplementedError
 
     # ---------- unanchored ----------
