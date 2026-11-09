@@ -134,8 +134,8 @@ class RobotState(Pose):
         """obs (96,) -> RobotState：关节/速度/接触力无损快照。"""
         raise NotImplementedError
 
-    def to_pose(self) -> Pose:
-        """剥动态 → Pose（对应 SupportState.to_geometry）。"""
+    def pose(self) -> Pose:
+        """剥动态 → Pose（对应 SupportState.geometry）。"""
         return Pose(qpos=self.qpos.copy(), root_z=self.root_z,
                     g_body=self.g_body.copy())
 

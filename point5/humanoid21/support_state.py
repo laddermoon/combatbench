@@ -98,7 +98,7 @@ class SupportState(SupportGeometry):
         """Pose -> SupportState：Pose 自带的支撑态输出。"""
         raise NotImplementedError
 
-    def to_geometry(self) -> SupportGeometry:
+    def geometry(self) -> SupportGeometry:
         """获取静态几何锚点（剥掉动量）。"""
         return SupportGeometry(
             com=self.com.copy(),
