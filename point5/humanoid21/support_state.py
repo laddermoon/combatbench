@@ -34,12 +34,15 @@ class SupportGeometry:
     com/双脚位为绝对坐标（在哪个系由持有方约定——
     SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
     推力权威，不记实测分力。torso_yaw v1 不处理。
+
+    foot_height 定义 = 脚踝实际高度 − 平脚贴地时的基准踝高，
+    ≈0 表示落地。
     """
     com: np.ndarray                    # (3,) 质心
     left_foot: np.ndarray              # (2,) 脚踝 xy
     right_foot: np.ndarray             # (2,) 脚踝 xy
-    left_foot_height: float = 0.0      # 左脚底高度
-    right_foot_height: float = 0.0     # 右脚底高度
+    left_foot_height: float = 0.0      # 左脚踝抬升高度（≈0 落地）
+    right_foot_height: float = 0.0     # 右脚踝抬升高度
     torso_yaw: Optional[float] = None
 
     def __post_init__(self):
