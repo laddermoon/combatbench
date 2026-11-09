@@ -22,9 +22,6 @@ _FOOT = (2,)
 _VEL = (3,)
 _MOM = (3,)
 
-# 平脚贴地时的基准踝高（模型形态常数，stand_punch 断言 0.087±0.01）
-ANKLE_Z_PLANTED = 0.087
-
 
 def _vec(v, shape, name):
     v = np.array(v, np.float64)          # copy, never alias
@@ -60,21 +57,12 @@ class SupportGeometry:
 
     @classmethod
     def from_pose(cls, pose) -> "SupportGeometry":
-        """Pose -> 几何锚点（FK 提取，与 pose 同帧表达）。
+        """Pose -> 几何锚点。
 
-        com/踝位经 pose.landmarks()/com() 提取（MuJoCo 层由 Pose
-        持有）；torso_yaw 取 root_orientation 的 yaw 分量；
-        foot_height = 踝高 − ANKLE_Z_PLANTED。
+        P5 侧走 Pose.infer_from_p5 -> from_pose 两段式——不在此
+        重复，避免遮蔽 Geometry 与 Pose 的依赖关系。
         """
-        lm = pose.landmarks()
-        return cls(com=pose.com(),
-                   left_foot=lm["left_ankle"][:2].copy(),
-                   right_foot=lm["right_ankle"][:2].copy(),
-                   torso_yaw=float(pose.root_orientation[2]),
-                   left_foot_height=lm["left_ankle"][2]
-                   - ANKLE_Z_PLANTED,
-                   right_foot_height=lm["right_ankle"][2]
-                   - ANKLE_Z_PLANTED)
+        raise NotImplementedError
 
     def standardize(self) -> "SupportGeometry":
         """转成自身 P5 系（踝中点→原点、torso_yaw→0）。"""
