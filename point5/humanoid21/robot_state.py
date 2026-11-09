@@ -85,9 +85,14 @@ class Pose:
         """自身局部帧 P5（踝中点原点、躯干 +x）。"""
         return self.anchor('ankle_mid').p5()
 
-    def support_geometry(self):
-        """-> SupportGeometry（静态支撑几何：com + 脚位 + yaw）。"""
-        raise NotImplementedError
+    def support_geometry(self) -> "object":
+        """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
+
+        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
+        同 Pose.p5() 先例。
+        """
+        from .support_state import SupportGeometry
+        return SupportGeometry.from_pose(self)
 
     # ---------- anchored outputs ----------
 
@@ -131,5 +136,9 @@ class RobotState(Pose):
                     g_body=self.g_body.copy())
 
     def support_state(self):
-        """-> SupportState（几何 + 足高 + 动量，obs 链无损）。"""
-        raise NotImplementedError
+        """-> SupportState：委托 SupportState.from_pose(self)。
+
+        构造方向归 target 层（X.from_y 惯例）——此方法是便捷别名。
+        """
+        from .support_state import SupportState
+        return SupportState.from_pose(self)
