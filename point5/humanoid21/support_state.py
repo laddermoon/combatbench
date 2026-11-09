@@ -3,7 +3,7 @@
 两种粒度，均**帧无关**（不规定坐标系，任何坐标系下都合法）：
 
     SupportGeometry  静态几何：com + 双脚位 + 躯干朝向
-    SupportState     动态支撑态 = 几何 + 力度分配 + 动量
+    SupportState     动态支撑态 = 几何 + 足高（发力潜力）+ 动量
 
 来源决定内容：obs 解码来的带实测力/动量；规划来的是设计值；
 P5 反解来的没有实测力（给规划默认分配）也没有动量。
@@ -58,24 +58,23 @@ class SupportGeometry:
 
 @dataclass
 class SupportState(SupportGeometry):
-    """动态支撑态 = 几何 + 力度分配 + 动量 — 帧无关。
+    """动态支撑态 = 几何 + 足高（发力潜力）+ 动量 — 帧无关。
 
-    left/right_foot_support_ratio: 左/右脚承重比例（[0,1]，
-    实测或设计值）。com_vel/ang_mom 可缺省——from_p5 的规划
-    态没有动量语义；obs 解码态必带。
+    left/right_foot_height: 左/右脚底高度——不记实测分力，记
+    足部发力潜力的几何表达（贴地才有推力权威）。com_vel/
+    ang_mom 可缺省——from_p5 的规划态没有动量语义；obs 解码
+    态必带。
     """
-    left_foot_support_ratio: float = 0.0
-    right_foot_support_ratio: float = 0.0
+    left_foot_height: float = 0.0  # 并不需要支撑的力度信息，而需要的是足部的高度信息，用来表达足部发力的潜力
+    right_foot_height: float = 0.0
     com_vel: Optional[np.ndarray] = None     # (3,) 质心速度
     ang_mom: Optional[np.ndarray] = None     # (3,) 角动量
     for_frame: int = 0                       # clip 帧索引（元数据）
 
     def __post_init__(self):
         super().__post_init__()
-        self.left_foot_support_ratio = float(
-            self.left_foot_support_ratio)
-        self.right_foot_support_ratio = float(
-            self.right_foot_support_ratio)
+        self.left_foot_height = float(self.left_foot_height)
+        self.right_foot_height = float(self.right_foot_height)
         for n, shp in (("com_vel", _VEL), ("ang_mom", _MOM)):
             v = getattr(self, n)
             if v is not None:
