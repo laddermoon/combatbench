@@ -25,11 +25,17 @@ def _vec(v, shape, name):
 
 
 def tilt_angles(g_body: np.ndarray) -> np.ndarray:
-    """(2,) [roll, pitch] rad — g_body 分解的躯干倾斜（obs 解码用）。"""
+    """(2,) [pitch, roll] rad — g_body 按 ZYX 约定解码躯干倾斜。
+
+    与 yaw 无关（Rz 不改动竖直轴），g_body = g·[sinθ,
+    -sinφ·cosθ, -cosφ·cosθ]（θ=pitch, φ=roll），故：
+    pitch = atan2(gx, √(gy²+gz²))、roll = atan2(-gy, -gz)。
+    obs 投影重力解码用。
+    """
     g = np.asarray(g_body, np.float64)
     g = g / (np.linalg.norm(g) + 1e-12)
-    return np.array([np.arctan2(-g[1], -g[2]),
-                     np.arctan2(g[0], -g[2])])
+    return np.array([np.arctan2(g[0], np.hypot(g[1], g[2])),
+                     np.arctan2(-g[1], -g[2])])
 
 
 def joint_ranges() -> np.ndarray:
@@ -41,12 +47,16 @@ def joint_ranges() -> np.ndarray:
 class Pose:
     """关节角 + 根位置 + 根朝向——机器人姿态的完备静态表达。
 
-    root_orientation = [pitch, roll, yaw] rad：pitch/roll 以竖直为
-    参照（帧族保证 z 向上），yaw 为躯干朝向相对所在帧 +x 的夹角。
+    root_orientation = [pitch, roll, yaw] rad，ZYX 约定：
+        R = Rz(yaw) · Ry(pitch) · Rx(roll)
+    pitch>0 前倾（绕左方 +y）；roll>0 右倾（绕前方 +x）；
+    yaw 为躯干朝向相对所在帧 +x 的夹角。
+    奇异点：|pitch|≈π/2（躺平）时 yaw/roll 退化——下游
+    勿在此区间判读 yaw。
     """
     qpos: np.ndarray                 # (21,) rad — 关节空间，与坐标系无关
     root_position: np.ndarray        # (3,) 根位置（所在帧）
-    root_orientation: np.ndarray     # (3,) [pitch, roll, yaw] rad
+    root_orientation: np.ndarray     # (3,) [pitch,roll,yaw] R=Rz·Ry·Rx
 
     def __post_init__(self):
         self.qpos = _vec(self.qpos, _JOINTS, "qpos")
