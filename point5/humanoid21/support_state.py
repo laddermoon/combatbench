@@ -59,7 +59,7 @@ class SupportGeometry:
     def from_pose(cls, pose) -> "SupportGeometry":
         """Pose -> 几何锚点。
 
-        P5 侧走 Pose.from_p5 -> from_pose 两段式——from_p5 不在此
+        P5 侧走 Pose.infer_from_p5 -> from_pose 两段式——不在此
         重复，避免遮蔽 Geometry 与 Pose 的依赖关系。
         """
         raise NotImplementedError

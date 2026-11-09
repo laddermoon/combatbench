@@ -75,8 +75,12 @@ class Pose:
     # ---------- constructors ----------
 
     @classmethod
-    def from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
-        """P5 局部姿态 -> Pose（solve_equilibrium 反解，近似）。"""
+    def infer_from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
+        """P5 局部姿态 -> Pose（solve_equilibrium 反解关节角）。
+
+        infer_* = 近似推断（源里没有 qpos/root_z，靠 solver 重建），
+        区别于 from_* 的无损解码。
+        """
         raise NotImplementedError
 
     # ---------- unanchored ----------
