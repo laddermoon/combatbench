@@ -49,8 +49,8 @@ class AnchoredPose:
     R: np.ndarray = field(           # world -> anchored rotation
         default_factory=lambda: np.eye(3))
 
-    def p5(self):
-        """锚定局部帧 P5。"""
+    def to_p5(self):
+        """锚定局部帧 -> P5。"""
         raise NotImplementedError
 
     def foot_pos(self) -> dict:
@@ -85,11 +85,11 @@ class Pose:
 
     # ---------- unanchored ----------
 
-    def p5(self):
-        """自身局部帧 P5（踝中点原点、躯干 +x）。"""
-        return self.anchor('ankle_mid').p5()
+    def to_p5(self):
+        """自身局部帧 -> P5（踝中点原点、躯干 +x）。"""
+        return self.anchor('ankle_mid').to_p5()
 
-    def support_geometry(self) -> "object":
+    def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
 
         实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
@@ -139,10 +139,11 @@ class RobotState(Pose):
         return Pose(qpos=self.qpos.copy(), root_z=self.root_z,
                     g_body=self.g_body.copy())
 
-    def support_state(self):
+    def to_support_state(self):
         """-> SupportState：委托 SupportState.from_pose(self)。
 
-        构造方向归 target 层（X.from_y 惯例）——此方法是便捷别名。
+        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
+        同 Pose.to_p5() 先例。
         """
         from .support_state import SupportState
         return SupportState.from_pose(self)
