@@ -240,9 +240,39 @@ class RobotState(Pose):
         """obs (96,) -> RobotState，产 **P5 坐标系**的态。
 
         obs 输入由机体系定义——机体系非 leveled 帧族成员，
-        故解码产物统一表达为 P5 系（leveled）。
+        故解码产物统一表达为 P5 系（leveled）：
+
+          qpos  = obs[0:21]·scale + ref（线性反归一化）
+          qvel  = sign(o)·(2o)²·scale（sqrt 解压 + 归一尺度）
+          pitch/roll = tilt_angles(obs[42:45])；yaw≡0（帧定义）
+          root  = [0,0,obs[45]] 经 standardize 解析踝中点原点
+          linvel/angvel = R @ obs 机体系值（R = 躯干 xmat）
+          ang_mom = mj_subtreeVel 子树角动量（关于质心）
         """
-        raise NotImplementedError
+        obs = np.asarray(obs, np.float64)
+        rng = joint_ranges()
+        ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
+        qpos = obs[0:21] * sc + ref
+        qvel = np.sign(obs[21:42]) * (2.0 * obs[21:42]) ** 2 * sc
+        pit, rol = tilt_angles(obs[42:45])
+        pose = Pose(qpos=qpos,
+                    root_position=np.array([0.0, 0.0, float(obs[45])]),
+                    root_orientation=np.array([pit, rol, 0.0])
+                    ).standardize()
+        _, data, r = pose._fk_data()
+        R = np.asarray(data.xmat[r["root_body_id"]]).reshape(3, 3)
+        linvel = R @ obs[46:49]
+        angvel = R @ (np.sign(obs[49:52]) * 2.0 * obs[49:52] ** 2)
+        tmp = cls(qpos=qpos, root_position=pose.root_position,
+                  root_orientation=pose.root_orientation, qvel=qvel,
+                  root_linvel=linvel, root_angvel=angvel,
+                  ang_mom=np.zeros(3))
+        _, vdata, vr = tmp._fk_vel_data()
+        return cls(qpos=tmp.qpos, root_position=tmp.root_position,
+                   root_orientation=tmp.root_orientation, qvel=tmp.qvel,
+                   root_linvel=tmp.root_linvel, root_angvel=tmp.root_angvel,
+                   ang_mom=np.asarray(
+                       vdata.subtree_angmom[vr["root_body_id"]]).copy())
 
     def _se2(self, dyaw: float, dxy) -> "RobotState":
         """SE(2) 变换：姿态走父类，动态量乘 Rz(dyaw)（qvel 关节空间不变）。"""
