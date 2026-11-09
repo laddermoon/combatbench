@@ -244,18 +244,31 @@ class RobotState(Pose):
         """
         raise NotImplementedError
 
+    def _se2(self, dyaw: float, dxy) -> "RobotState":
+        """SE(2) 变换：姿态走父类，动态量乘 Rz(dyaw)（qvel 关节空间不变）。"""
+        p = super()._se2(dyaw, dxy)
+        c, s = np.cos(dyaw), np.sin(dyaw)
+        R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        return RobotState(
+            qpos=p.qpos, root_position=p.root_position,
+            root_orientation=p.root_orientation,
+            qvel=self.qvel.copy(),
+            root_linvel=R @ self.root_linvel,
+            root_angvel=R @ self.root_angvel,
+            ang_mom=R @ self.ang_mom)
+
     def standardize(self) -> "RobotState":
         """几何归一 + 动态量随帧旋转——保持动态类型与字段。
 
         qpos/qvel 关节空间不变；root_position 转 SE(2)；
         orientation 仅 yaw 加 Δ；linvel/angvel/ang_mom 乘 Rz(Δyaw)。
         """
-        raise NotImplementedError
+        return super().standardize()
 
     def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "RobotState":
         """同 standardize——linvel/angvel/ang_mom 随 Δyaw 旋转。"""
-        raise NotImplementedError
+        return super().reanchor(xy, yaw)
 
     def pose(self) -> Pose:
         """剥动态 → Pose（对应 SupportState.geometry）。"""
