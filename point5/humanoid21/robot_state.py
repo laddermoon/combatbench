@@ -126,32 +126,35 @@ class Pose:
         return self.standardize()._se2(float(yaw), np.asarray(xy, float))
 
     def to_p5(self) -> "P5":
-        """-> P5 点集（所在帧表达）——FK 提取 5 landmark + torso_yaw。"""
+        """-> P5 点集（所在帧表达）——FK 提取 5 landmark + torso_yaw。
+
+        头/手取 body xpos；踝 = foot xpos + xmat·踝偏移
+        （ankle_y/x 关节锚点中点）。
+        """
         import mujoco
         from point5 import P5
-        from point5.humanoid21.mechanics import LANDMARKS
-        model, data, r = self._fk_data()
+        model, data, r, off = self._fk_data()
         kw = {}
-        for body, p5name in (("head", "head"),
-                             ("hand_left", "left_hand"),
-                             ("hand_right", "right_hand"),
-                             ("foot_left", "left_ankle"),
-                             ("foot_right", "right_ankle")):
+        for body, p5name, o in (
+                ("head", "head", np.zeros(3)),
+                ("hand_left", "left_hand", np.zeros(3)),
+                ("hand_right", "right_hand", np.zeros(3)),
+                ("foot_left", "left_ankle", off["left"]),
+                ("foot_right", "right_ankle", off["right"])):
             bid = r["keypoint_body_ids"].get(body)
             if bid is None:
                 bid = mujoco.mj_name2id(
                     model, mujoco.mjtObj.mjOBJ_BODY, f"{body}{r['suffix']}")
             kw[p5name] = (np.asarray(data.xpos[bid])
-                          + np.asarray(data.xmat[bid]).reshape(3, 3)
-                          @ LANDMARKS[body][1])
+                          + np.asarray(data.xmat[bid]).reshape(3, 3) @ o)
         return P5(**kw, torso_yaw=float(self.root_orientation[2]))
     # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
-    _FK = None      # 懒加载共享 (model, data, robot_a 表)
+    _FK = None      # 懒加载共享 (model, data, robot_a 表, 踝偏移)
 
     @classmethod
     def _kinematics(cls):
-        """懒加载共享 FK 模型——只读使用。"""
+        """懒加载共享 FK 模型 + 踝点偏移（ankle_y/x 锚点中点）。"""
         if cls._FK is None:
             import mujoco
             from envs.humanoid21.meta import Humanoid21Meta
@@ -161,32 +164,41 @@ class Pose:
             data = mujoco.MjData(model)
             r = Humanoid21Meta.build_runtime_tables(model)["robots"][
                 "robot_a"]
-            cls._FK = (model, data, r)
+            ankle_off = {}
+            for side in ("left", "right"):
+                jy = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_JOINT,
+                    f"ankle_y_{side}{r['suffix']}")
+                jx = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_JOINT,
+                    f"ankle_x_{side}{r['suffix']}")
+                ankle_off[side] = (np.asarray(model.jnt_pos[jy])
+                                   + np.asarray(model.jnt_pos[jx])) / 2
+            cls._FK = (model, data, r, ankle_off)
         return cls._FK
 
     def _fk_data(self):
         """把本姿态写入共享 FK 模型并跑 mj_kinematics。"""
         import mujoco
-        model, data, r = self._kinematics()
+        model, data, r, off = self._kinematics()
         adr = int(r["root_qpos_adr"])
         data.qpos[adr:adr + 3] = self.root_position
         data.qpos[adr + 3:adr + 7] = _zyx_to_quat_wxyz(
             self.root_orientation)
         data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
         mujoco.mj_kinematics(model, data)
-        return model, data, r
+        return model, data, r, off
 
     def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：MuJoCo FK 提取 com/脚位/足高/yaw。
 
-        踝位 = foot body xpos + xmat·(0,0,0.06)（踝中心，复用
-        mechanics.LANDMARKS 偏移）；com = body_mass 加权 xipos；
+        踝位 = foot body xpos + xmat·踝偏移（ankle_y/x 关节锚点
+        中点，_kinematics 预提取）；com = body_mass 加权 xipos；
         foot_height = 踝高 − ANKLE_Z_PLANTED；yaw 取 orientation[2]。
         """
         import mujoco
-        from point5.humanoid21.mechanics import LANDMARKS
         from .support_state import SupportGeometry, ANKLE_Z_PLANTED
-        model, data, r = self._fk_data()
+        model, data, r, off = self._fk_data()
 
         def _ankle(side):
             bid = r["keypoint_body_ids"].get(f"foot_{side}")
@@ -196,7 +208,7 @@ class Pose:
                     f"foot_{side}{r['suffix']}")
             return (np.asarray(data.xpos[bid])
                     + np.asarray(data.xmat[bid]).reshape(3, 3)
-                    @ LANDMARKS[f"foot_{side}"][1])
+                    @ off[side])
 
         la, ra = _ankle("left"), _ankle("right")
         ids = np.asarray(r["body_ids_sorted"], int)
@@ -259,7 +271,7 @@ class RobotState(Pose):
                     root_position=np.array([0.0, 0.0, float(obs[45])]),
                     root_orientation=np.array([pit, rol, 0.0])
                     ).standardize()
-        _, data, r = pose._fk_data()
+        _, data, r, _ = pose._fk_data()
         R = np.asarray(data.xmat[r["root_body_id"]]).reshape(3, 3)
         linvel = R @ obs[46:49]
         angvel = R @ (np.sign(obs[49:52]) * 2.0 * obs[49:52] ** 2)
@@ -314,7 +326,7 @@ class RobotState(Pose):
         依赖速度段管线，须先 mj_forward 再 subtreeVel。
         """
         import mujoco
-        model, data, r = self._fk_data()
+        model, data, r, _ = self._fk_data()
         adr = int(r["root_qvel_adr"])
         data.qvel[adr:adr + 3] = self.root_linvel
         data.qvel[adr + 3:adr + 6] = (
