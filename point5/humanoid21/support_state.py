@@ -26,6 +26,11 @@ _MOM = (3,)
 ANKLE_Z_PLANTED = 0.087
 
 
+def _wrap(a: float) -> float:
+    """角度归一到 (-pi, pi]。"""
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
 def _vec(v, shape, name):
     v = np.array(v, np.float64)          # copy, never alias
     assert v.shape == shape, f"{name}: expected {shape}, got {v.shape}"
@@ -63,9 +68,26 @@ class SupportGeometry:
         """Pose -> 几何锚点（薄委托：提取实现住 Pose.to_support_geometry）。"""
         return pose.to_support_geometry()
 
+    def _se2(self, dyaw: float, dxy) -> "SupportGeometry":
+        """SE(2) 平面变换：点乘 Rz+平移，yaw += dyaw，足高不变。"""
+        c, s = np.cos(dyaw), np.sin(dyaw)
+        R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        R2 = np.array([[c, -s], [s, c]])
+        return SupportGeometry(
+            com=R @ self.com + np.array([dxy[0], dxy[1], 0.0]),
+            left_foot=R2 @ self.left_foot + np.asarray(dxy, float),
+            right_foot=R2 @ self.right_foot + np.asarray(dxy, float),
+            torso_yaw=_wrap(self.torso_yaw + dyaw),
+            left_foot_height=self.left_foot_height,
+            right_foot_height=self.right_foot_height)
+
     def standardize(self) -> "SupportGeometry":
         """转成自身 P5 系（踝中点→原点、torso_yaw→0）。"""
-        raise NotImplementedError
+        mid = (self.left_foot + self.right_foot) / 2.0
+        yaw = float(self.torso_yaw)
+        c, s = np.cos(-yaw), np.sin(-yaw)
+        t = -np.array([[c, -s], [s, c]]) @ mid
+        return self._se2(-yaw, t)
 
     def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "SupportGeometry":
@@ -74,7 +96,7 @@ class SupportGeometry:
         输出保证踝中点在 xy、躯干朝向 yaw，几何形状不变——
         内部先 standardize 再做 SE(2) 平面变换。
         """
-        raise NotImplementedError
+        return self.standardize()._se2(float(yaw), np.asarray(xy, float))
 
     def com_acc_ankle(self) -> np.ndarray:
         """此几何下脚踝力矩可产生的质心加速度（3,)。"""
@@ -123,14 +145,26 @@ class SupportState(SupportGeometry):
         RobotState.to_support_state）。"""
         return robot_state.to_support_state()
 
+    def _se2(self, dyaw: float, dxy) -> "SupportState":
+        """SE(2) 变换：几何走父类，com_vel/ang_mom 乘 Rz(dyaw)。"""
+        g = super()._se2(dyaw, dxy)
+        c, s = np.cos(dyaw), np.sin(dyaw)
+        R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        return SupportState(
+            com=g.com, left_foot=g.left_foot, right_foot=g.right_foot,
+            torso_yaw=g.torso_yaw,
+            left_foot_height=g.left_foot_height,
+            right_foot_height=g.right_foot_height,
+            com_vel=R @ self.com_vel, ang_mom=R @ self.ang_mom)
+
     def standardize(self) -> "SupportState":
         """几何归一 + 动量随帧旋转——保持动态字段。"""
-        raise NotImplementedError
+        return super().standardize()
 
     def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "SupportState":
         """同 standardize——帧变换时 com_vel/ang_mom 随 yaw 旋转。"""
-        raise NotImplementedError
+        return super().reanchor(xy, yaw)
 
     def geometry(self) -> SupportGeometry:
         """获取静态几何锚点（剥掉动量）。"""
