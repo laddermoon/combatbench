@@ -85,10 +85,6 @@ class Pose:
         """自身局部帧 P5（踝中点原点、躯干 +x）。"""
         return self.anchor('ankle_mid').p5()
 
-    def com_height(self) -> float:
-        """精确质量加权质心高度——绝对量，无需锚定。"""
-        raise NotImplementedError
-
     def support_geometry(self):
         """-> SupportGeometry（静态支撑几何：com + 脚位 + yaw）。"""
         raise NotImplementedError

@@ -10,7 +10,7 @@ P5 反解来的没有实测力（给规划默认分配）也没有动量。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
 import numpy as np
@@ -62,23 +62,20 @@ class SupportState(SupportGeometry):
 
     left/right_foot_height: 左/右脚底高度——不记实测分力，记
     足部发力潜力的几何表达（贴地才有推力权威）。com_vel/
-    ang_mom 可缺省——from_p5 的规划态没有动量语义；obs 解码
-    态必带。
+    ang_mom 必带——动量缺席的场合用 SupportGeometry，不构造
+    残缺的 SupportState。
     """
     left_foot_height: float = 0.0  # 并不需要支撑的力度信息，而需要的是足部的高度信息，用来表达足部发力的潜力
     right_foot_height: float = 0.0
-    com_vel: Optional[np.ndarray] = None     # (3,) 质心速度
-    ang_mom: Optional[np.ndarray] = None     # (3,) 角动量
-    for_frame: int = 0                       # clip 帧索引（元数据）
+    com_vel: np.ndarray = field(kw_only=True)  # (3,) 质心速度
+    ang_mom: np.ndarray = field(kw_only=True)  # (3,) 角动量
 
     def __post_init__(self):
         super().__post_init__()
         self.left_foot_height = float(self.left_foot_height)
         self.right_foot_height = float(self.right_foot_height)
-        for n, shp in (("com_vel", _VEL), ("ang_mom", _MOM)):
-            v = getattr(self, n)
-            if v is not None:
-                setattr(self, n, _vec(v, shp, n))
+        self.com_vel = _vec(self.com_vel, _VEL, "com_vel")
+        self.ang_mom = _vec(self.ang_mom, _MOM, "ang_mom")
 
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "SupportState":
