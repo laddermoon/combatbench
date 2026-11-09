@@ -66,21 +66,24 @@ class Pose:
         """
         raise NotImplementedError
 
-    # ---------- frame transforms ----------
 
-    def to_frame(self, point: str = "ankle_mid",
-                 xy=(0.0, 0.0), yaw: float = 0.0) -> "Pose":
-        """同一姿态换帧表达——原 anchor() 用途。
+    @classmethod
+    def reanchor(cls, pose: "Pose", xy=(0.0, 0.0),
+                 yaw: float = 0.0) -> "Pose":
+        """标准化 Pose -> 指定帧的 Pose（standardize 的逆操作）。
 
-        point: 'ankle_mid' | 'left' | 'right' | 'com' 钉到 xy；
-        yaw: 目标帧里躯干朝向（0 = +x）。只换参照，不改姿态。
+        输入应为 P5 系标准姿态；输出保证踝中点在 xy、躯干朝向
+        yaw，其余不变——纯 SE(2) 平面变换，不动姿态形状。
         """
         raise NotImplementedError
 
-    def to_p5(self):
-        """表达进 P5 帧 = to_frame('ankle_mid', (0,0), 0) 的特例。"""
+    def standardize(self) -> "Pose":
+        """转成自身 P5 系（踝中点原点、躯干 +x、yaw→0）。"""
         raise NotImplementedError
 
+    def to_p5(self) -> "P5":
+        """转换成 P5 点集。"""
+        raise NotImplementedError
     def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
 
@@ -117,9 +120,8 @@ class RobotState(Pose):
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
         """obs (96,) -> RobotState，产 **P5 坐标系**的态。
 
-        obs 机体系输入解码时转 P5 帧存储；root_position/
-        root_orientation 非 obs 观测量——按 P5 帧约定经 FK 派生
-        （踝中点原点、yaw=0、pitch/roll 由投影重力解出）。
+        obs 输入由机体系定义——机体系非 leveled 帧族成员，
+        故解码产物统一表达为 P5 系（leveled）。
         """
         raise NotImplementedError
 
