@@ -243,6 +243,10 @@ class Pose:
                 for s in ("right", "left")}
         return SupportState(com=a.com(), feet=feet)
 
+    def support_geometry(self):
+        """-> SupportGeometry（静态支撑几何：com + 脚位 + yaw）。"""
+        raise NotImplementedError
+
     def tilt_angles(self) -> np.ndarray:
         """(2,) [roll, pitch] rad — 由 g_body 分解的倾斜角。"""
         gx, gy, gz = self.g_body / (np.linalg.norm(self.g_body) + 1e-12)
