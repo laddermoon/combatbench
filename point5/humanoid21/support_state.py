@@ -1,6 +1,8 @@
 """SupportGeometry / SupportState — 支撑语义类型。
 
-两种粒度，均**帧无关**（不规定坐标系，任何坐标系下都合法）：
+两种粒度，均**帧无关**——与坐标系有关的量可表达于任何
+**z=0 为地面、+z 竖直向上的右手系**（leveled 帧族），
+所在帧由持有方约定：
 
     SupportGeometry  静态几何：com + 双脚位/足高 + 躯干朝向
     SupportState     动态支撑态 = 几何 + 动量
@@ -29,10 +31,8 @@ def _vec(v, shape, name):
 
 @dataclass
 class SupportGeometry:
-    """静态几何锚点 — 帧无关。
-
-    com/双脚位/朝向为绝对量（在哪个系由持有方约定——
-    SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
+    """静态几何锚点 — leveled 帧族，所在帧由持有方约定
+    （SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
     推力权威，不记实测分力。
 
     foot_height 定义 = 脚踝实际高度 − 平脚贴地时的基准踝高，
@@ -64,6 +64,19 @@ class SupportGeometry:
         """
         raise NotImplementedError
 
+    def standardize(self) -> "SupportGeometry":
+        """转成自身 P5 系（踝中点→原点、torso_yaw→0）。"""
+        raise NotImplementedError
+
+    def reanchor(self, xy=(0.0, 0.0),
+                 yaw: float = 0.0) -> "SupportGeometry":
+        """重新锚定到指定位置/朝向（standardize 的逆操作）。
+
+        输出保证踝中点在 xy、躯干朝向 yaw，几何形状不变——
+        内部先 standardize 再做 SE(2) 平面变换。
+        """
+        raise NotImplementedError
+
     def reference_p5(self):
         """由几何合成参考 P5 意图——非精确还原。
 
@@ -90,12 +103,29 @@ class SupportState(SupportGeometry):
 
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "SupportState":
-        """obs (96,) -> SupportState：Pose.from_obs 转换链（无损）。"""
+        """obs (96,) -> SupportState，产 **P5 坐标系**的态。
+
+        RobotState.from_obs(obs) -> from_pose 两段式——
+        机体系输入解码时转 P5 帧（同 RobotState 约定）。
+        """
         raise NotImplementedError
 
     @classmethod
     def from_pose(cls, pose) -> "SupportState":
-        """Pose -> SupportState：Pose 自带的支撑态输出。"""
+        """RobotState -> SupportState。
+
+        需 RobotState 而非 Pose——com_vel/ang_mom 必带，
+        只有动态快照供得起（Pose 无动量字段）。
+        """
+        raise NotImplementedError
+
+    def standardize(self) -> "SupportState":
+        """几何归一 + 动量随帧旋转——保持动态字段。"""
+        raise NotImplementedError
+
+    def reanchor(self, xy=(0.0, 0.0),
+                 yaw: float = 0.0) -> "SupportState":
+        """同 standardize——帧变换时 com_vel/ang_mom 随 yaw 旋转。"""
         raise NotImplementedError
 
     def geometry(self) -> SupportGeometry:
