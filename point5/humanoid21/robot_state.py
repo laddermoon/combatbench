@@ -1,24 +1,21 @@
-"""Pose / RobotState — 机器人姿态的静态/动态两级表达。
+"""Pose / RobotState — 机器人状态的静态/动态两级表达。
 
-    Pose        静态姿态：qpos + root_z + g_body（无位置——
-                水平位置与 yaw 由 anchor() 解析）
-    RobotState  动态快照 = Pose + 速度（全量必带）
+    Pose        静态姿态 = qpos + root_position + root_orientation（SE(3) 完备）
+    RobotState  动态快照 = Pose + qvel + root_linvel + ang_mom（全量必带）
 
-与 SupportGeometry/SupportState 同构：静态层管几何，动态层
-叠加测量。obs 是本质动态快照，只经 RobotState.from_obs 进。
-
-    a = pose.anchor('left', xy=(0.3, 0.0), yaw=np.pi/4)
-    a.p5()  a.foot_pos()  a.com()
+帧约定（leveled 帧族）：与坐标系有关的量可表达于任何
+**z=0 为地面、+z 竖直向上的右手系**——帧间自由度只剩
+xy 原点与 yaw（SE(2)）。所在帧由持有方约定；
+from_obs 产 P5 坐标系的态。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 _JOINTS = (21,)
-_G = (3,)
-_VEL = (3,)
+_VEC3 = (3,)
 
 
 def _vec(v, shape, name):
@@ -28,7 +25,7 @@ def _vec(v, shape, name):
 
 
 def tilt_angles(g_body: np.ndarray) -> np.ndarray:
-    """(2,) [roll, pitch] rad — g_body 分解出的躯干倾斜角。"""
+    """(2,) [roll, pitch] rad — g_body 分解的躯干倾斜（obs 解码用）。"""
     g = np.asarray(g_body, np.float64)
     g = g / (np.linalg.norm(g) + 1e-12)
     return np.array([np.arctan2(-g[1], -g[2]),
@@ -41,36 +38,22 @@ def joint_ranges() -> np.ndarray:
 
 
 @dataclass
-class AnchoredPose:
-    """Pose 解析进坐标系后的视图——所有帧内输出住这里。"""
-    _p5: np.ndarray                  # (5,3) anchored local
-    _feet: dict                      # side -> (2,) anchored local
-    _com: np.ndarray                 # (3,) anchored local
-    R: np.ndarray = field(           # world -> anchored rotation
-        default_factory=lambda: np.eye(3))
-
-    def to_p5(self):
-        """锚定局部帧 -> P5。"""
-        raise NotImplementedError
-
-    def foot_pos(self) -> dict:
-        return self._feet
-
-    def com(self) -> np.ndarray:
-        return self._com
-
-
-@dataclass
 class Pose:
-    """关节角 + 高度 + 俯仰——机器人姿态的静态表达。"""
-    qpos: np.ndarray                 # (21,) rad
-    root_z: float                    # 世界系高度
-    g_body: np.ndarray               # (3,) 机体系重力向量
+    """关节角 + 根位置 + 根朝向——机器人姿态的完备静态表达。
+
+    root_orientation = [pitch, roll, yaw] rad：pitch/roll 以竖直为
+    参照（帧族保证 z 向上），yaw 为躯干朝向相对所在帧 +x 的夹角。
+    """
+    qpos: np.ndarray                 # (21,) rad — 关节空间，与坐标系无关
+    root_position: np.ndarray        # (3,) 根位置（所在帧）
+    root_orientation: np.ndarray     # (3,) [pitch, roll, yaw] rad
 
     def __post_init__(self):
         self.qpos = _vec(self.qpos, _JOINTS, "qpos")
-        self.g_body = _vec(self.g_body, _G, "g_body")
-        self.root_z = float(self.root_z)
+        self.root_position = _vec(self.root_position, _VEC3,
+                                  "root_position")
+        self.root_orientation = _vec(self.root_orientation, _VEC3,
+                                     "root_orientation")
 
     # ---------- constructors ----------
 
@@ -78,35 +61,34 @@ class Pose:
     def infer_from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
         """P5 局部姿态 -> Pose（solve_equilibrium 反解关节角）。
 
-        infer_* = 近似推断（源里没有 qpos/root_z，靠 solver 重建），
-        区别于 from_* 的无损解码。
+        infer_* = 近似推断（源里没有 qpos/position，靠 solver 重建），
+        区别于 from_* 的无损解码。产 P5 坐标系的姿态。
         """
         raise NotImplementedError
 
-    # ---------- unanchored ----------
+    # ---------- frame transforms ----------
+
+    def to_frame(self, point: str = "ankle_mid",
+                 xy=(0.0, 0.0), yaw: float = 0.0) -> "Pose":
+        """同一姿态换帧表达——原 anchor() 用途。
+
+        point: 'ankle_mid' | 'left' | 'right' | 'com' 钉到 xy；
+        yaw: 目标帧里躯干朝向（0 = +x）。只换参照，不改姿态。
+        """
+        raise NotImplementedError
 
     def to_p5(self):
-        """自身局部帧 -> P5（踝中点原点、躯干 +x）。"""
-        return self.anchor('ankle_mid').to_p5()
+        """表达进 P5 帧 = to_frame('ankle_mid', (0,0), 0) 的特例。"""
+        raise NotImplementedError
 
     def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
 
         实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
-        同 Pose.p5() 先例。
+        同 Pose.to_p5() 先例。
         """
         from .support_state import SupportGeometry
         return SupportGeometry.from_pose(self)
-
-    # ---------- anchored outputs ----------
-
-    def anchor(self, point: str = "ankle_mid",
-               xy=(0.0, 0.0), yaw: float = 0.0) -> AnchoredPose:
-        """把无位置姿态解析进坐标系。
-
-        point: 'ankle_mid' | 'left' | 'right' | 'com'
-        """
-        raise NotImplementedError
 
     def render(self, out_path, **kw) -> list:
         """渲染为 PNG（需 OpenGL platform）。"""
@@ -117,41 +99,40 @@ class Pose:
 class RobotState(Pose):
     """动态快照 = 姿态 + 速度——全部必带，from_obs 唯一入口。
 
-    类型**帧无关**（坐标系约定归持有方）；无动态的场合用
-    Pose（from_p5），不构造残缺的 RobotState。
+    与坐标系有关的量可在任何 z=0 为地面、+z 竖直向上的右手系
+    中定义（帧族约定见模块头）；无动态用 Pose，不构造残缺
+    RobotState。
     """
-    qvel: np.ndarray                           # (21,) rad/s
-    root_linvel: np.ndarray                    # (3,) 线速度（帧由持有方约定）
-    root_angvel: np.ndarray                    # (3,) 角速度（帧由持有方约定）
+    qvel: np.ndarray                 # (21,) rad/s — 关节空间，与坐标系无关
+    root_linvel: np.ndarray          # (3,) 根线速度（所在帧）
+    ang_mom: np.ndarray              # (3,) 全身角动量（所在帧）
 
     def __post_init__(self):
         super().__post_init__()
         self.qvel = _vec(self.qvel, _JOINTS, "qvel")
-        self.root_linvel = _vec(self.root_linvel, _VEL, "root_linvel")
-        self.root_angvel = _vec(self.root_angvel, _VEL, "root_angvel")
+        self.root_linvel = _vec(self.root_linvel, _VEC3, "root_linvel")
+        self.ang_mom = _vec(self.ang_mom, _VEC3, "ang_mom")
 
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
-        """obs (96,) -> RobotState：关节/速度无损快照。
+        """obs (96,) -> RobotState，产 **P5 坐标系**的态。
 
-        本构造器产 **P5 坐标系**的态（类型本身帧无关——
-        帧约定归持有方）：obs 输入的机体系量
-        （linvel/angvel）在解码时即转 P5 帧存储。
-        例外：g_body 按定义为机体系投影重力——
-        帧本身承载俯仰/侧倾，不转。
+        obs 机体系输入解码时转 P5 帧存储；root_position/
+        root_orientation 非 obs 观测量——按 P5 帧约定经 FK 派生
+        （踝中点原点、yaw=0、pitch/roll 由投影重力解出）。
         """
         raise NotImplementedError
 
     def pose(self) -> Pose:
         """剥动态 → Pose（对应 SupportState.geometry）。"""
-        return Pose(qpos=self.qpos.copy(), root_z=self.root_z,
-                    g_body=self.g_body.copy())
+        return Pose(qpos=self.qpos.copy(),
+                    root_position=self.root_position.copy(),
+                    root_orientation=self.root_orientation.copy())
 
     def to_support_state(self):
         """-> SupportState：委托 SupportState.from_pose(self)。
 
-        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
-        同 Pose.to_p5() 先例。
+        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖。
         """
         from .support_state import SupportState
         return SupportState.from_pose(self)
