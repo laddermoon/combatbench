@@ -61,8 +61,17 @@ class P5:
 
 @dataclass(frozen=True)
 class P5Clip:
-    """P5 序列 — 全部帧共用同一坐标系。"""
+    """P5 序列 — 全部帧共用同一坐标系。可索引/可迭代。"""
     frames: Tuple[P5, ...]
+
+    def __len__(self):
+        return len(self.frames)
+
+    def __iter__(self):
+        return iter(self.frames)
+
+    def __getitem__(self, i):
+        return self.frames[i]
 
     def to_video(self, path: str):
         """序列渲染为 MP4。"""
