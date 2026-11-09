@@ -67,13 +67,13 @@ class Pose:
         raise NotImplementedError
 
 
-    @classmethod
-    def reanchor(cls, pose: "Pose", xy=(0.0, 0.0),
+    def reanchor(self, xy=(0.0, 0.0),
                  yaw: float = 0.0) -> "Pose":
-        """标准化 Pose -> 指定帧的 Pose（standardize 的逆操作）。
+        """重新锚定到指定位置/朝向（standardize 的逆操作）。
 
-        输入应为 P5 系标准姿态；输出保证踝中点在 xy、躯干朝向
-        yaw，其余不变——纯 SE(2) 平面变换，不动姿态形状。
+        输出保证踝中点在 xy、躯干朝向 yaw，其余不变——
+        内部先 standardize 再做 SE(2) 平面变换，任意帧输入
+        都合法，不动姿态形状。
         """
         raise NotImplementedError
 
