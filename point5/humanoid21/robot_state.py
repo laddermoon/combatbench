@@ -40,7 +40,19 @@ def tilt_angles(g_body: np.ndarray) -> np.ndarray:
 
 def joint_ranges() -> np.ndarray:
     """(21,2) 关节弧度范围 — 机器人形态元数据（懒加载）。"""
-    raise NotImplementedError
+    return np.asarray(Pose._kinematics()[2]["jnt_ranges"], np.float64)
+
+
+def _zyx_to_quat_wxyz(ori: np.ndarray) -> np.ndarray:
+    """[pitch,roll,yaw] -> quat (wxyz)，R = Rz(yaw)·Ry(pitch)·Rx(roll)。"""
+    p, r, y = ori
+    cy, sy = np.cos(y / 2), np.sin(y / 2)
+    cp, sp = np.cos(p / 2), np.sin(p / 2)
+    cr, sr = np.cos(r / 2), np.sin(r / 2)
+    return np.array([cy * cp * cr + sy * sp * sr,
+                     cy * cp * sr - sy * sp * cr,
+                     cy * sp * cr + sy * cp * sr,
+                     sy * cp * cr - cy * sp * sr])
 
 
 @dataclass
@@ -94,14 +106,70 @@ class Pose:
     def to_p5(self) -> "P5":
         """转换成 P5 点集。"""
         raise NotImplementedError
-    def to_support_geometry(self) -> "SupportGeometry":
-        """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
+    # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
-        实现住 target 层（X.from_y 惯例），此方法是源侧语法糖——
-        同 Pose.to_p5() 先例。
+    _FK = None      # 懒加载共享 (model, data, robot_a 表)
+
+    @classmethod
+    def _kinematics(cls):
+        """懒加载共享 FK 模型——只读使用。"""
+        if cls._FK is None:
+            import mujoco
+            from envs.humanoid21.meta import Humanoid21Meta
+            from envs.humanoid21.simulator import Humanoid21Simulator
+            model = mujoco.MjSpec.from_file(
+                Humanoid21Simulator.ARENA_XML).compile()
+            data = mujoco.MjData(model)
+            r = Humanoid21Meta.build_runtime_tables(model)["robots"][
+                "robot_a"]
+            cls._FK = (model, data, r)
+        return cls._FK
+
+    def _fk_data(self):
+        """把本姿态写入共享 FK 模型并跑 mj_kinematics。"""
+        import mujoco
+        model, data, r = self._kinematics()
+        adr = int(r["root_qpos_adr"])
+        data.qpos[adr:adr + 3] = self.root_position
+        data.qpos[adr + 3:adr + 7] = _zyx_to_quat_wxyz(
+            self.root_orientation)
+        data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
+        mujoco.mj_kinematics(model, data)
+        return model, data, r
+
+    def to_support_geometry(self) -> "SupportGeometry":
+        """-> SupportGeometry：MuJoCo FK 提取 com/脚位/足高/yaw。
+
+        踝位 = foot body xpos + xmat·(0,0,0.06)（踝中心，复用
+        mechanics.LANDMARKS 偏移）；com = body_mass 加权 xipos；
+        foot_height = 踝高 − ANKLE_Z_PLANTED；yaw 取 orientation[2]。
         """
-        from .support_state import SupportGeometry
-        return SupportGeometry.from_pose(self)
+        import mujoco
+        from point5.humanoid21.mechanics import LANDMARKS
+        from .support_state import SupportGeometry, ANKLE_Z_PLANTED
+        model, data, r = self._fk_data()
+
+        def _ankle(side):
+            bid = r["keypoint_body_ids"].get(f"foot_{side}")
+            if bid is None:
+                bid = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_BODY,
+                    f"foot_{side}{r['suffix']}")
+            return (np.asarray(data.xpos[bid])
+                    + np.asarray(data.xmat[bid]).reshape(3, 3)
+                    @ LANDMARKS[f"foot_{side}"][1])
+
+        la, ra = _ankle("left"), _ankle("right")
+        ids = np.asarray(r["body_ids_sorted"], int)
+        ms = np.asarray(model.body_mass)[ids]
+        com = (ms[:, None] * np.asarray(data.xipos)[ids]).sum(0) / ms.sum()
+        return SupportGeometry(
+            com=com,
+            left_foot=la[:2].copy(),
+            right_foot=ra[:2].copy(),
+            torso_yaw=float(self.root_orientation[2]),
+            left_foot_height=float(la[2] - ANKLE_Z_PLANTED),
+            right_foot_height=float(ra[2] - ANKLE_Z_PLANTED))
 
     def render(self, out_path, **kw) -> list:
         """渲染为 PNG（需 OpenGL platform）。"""
