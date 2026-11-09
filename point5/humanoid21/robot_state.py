@@ -27,6 +27,14 @@ def _vec(v, shape, name):
     return v
 
 
+def tilt_angles(g_body: np.ndarray) -> np.ndarray:
+    """(2,) [roll, pitch] rad — g_body 分解出的躯干倾斜角。"""
+    g = np.asarray(g_body, np.float64)
+    g = g / (np.linalg.norm(g) + 1e-12)
+    return np.array([np.arctan2(-g[1], -g[2]),
+                     np.arctan2(g[0], -g[2])])
+
+
 @dataclass
 class AnchoredPose:
     """Pose 解析进坐标系后的视图——所有帧内输出住这里。"""
@@ -81,10 +89,6 @@ class Pose:
         """精确质量加权质心高度——绝对量，无需锚定。"""
         raise NotImplementedError
 
-    def tilt_angles(self) -> np.ndarray:
-        """(2,) [roll, pitch] rad — 由 g_body 分解。"""
-        raise NotImplementedError
-
     def support_geometry(self):
         """-> SupportGeometry（静态支撑几何：com + 脚位 + yaw）。"""
         raise NotImplementedError
@@ -132,12 +136,4 @@ class RobotState(Pose):
 
     def support_state(self):
         """-> SupportState（几何 + 足高 + 动量，obs 链无损）。"""
-        raise NotImplementedError
-
-    def com_vel(self, **anchor_kw) -> np.ndarray:
-        """子树质心速度 (3,) — 锚定帧，与 com() 同系。"""
-        raise NotImplementedError
-
-    def ang_mom(self, **anchor_kw) -> np.ndarray:
-        """子树角动量 (3,) — 锚定帧。"""
         raise NotImplementedError
