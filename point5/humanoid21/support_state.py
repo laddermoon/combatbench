@@ -64,8 +64,12 @@ class SupportGeometry:
         """
         raise NotImplementedError
 
-    def to_p5(self):
-        """生成参考 P5 姿态（几何 -> 意图点阵）。"""
+    def reference_p5(self):
+        """由几何合成参考 P5 意图——非精确还原。
+
+        几何只含 com/脚/yaw，头与手按标称站姿生成；返回的是
+        可用参照点阵，不做信息保真承诺（故名 reference 非 to_）。
+        """
         raise NotImplementedError
 
 
