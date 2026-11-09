@@ -17,6 +17,11 @@ import numpy as np
 
 _PT = (3,)
 
+# 规范点序：索引稳定协议——[0]头 [1,2]右/左手 [3,4]右/左踝
+POINT_NAMES = ("head", "right_hand", "left_hand",
+               "right_ankle", "left_ankle")
+POINT_INDEX = {n: i for i, n in enumerate(POINT_NAMES)}
+
 
 def _vec(v, name):
     v = np.array(v, np.float64)          # copy, never alias
@@ -46,9 +51,8 @@ class P5:
 
     @property
     def pos(self) -> np.ndarray:
-        """(5,3) 点阵 — POINT_NAMES 序兼容口。"""
-        return np.array([self.head, self.right_hand, self.left_hand,
-                         self.right_ankle, self.left_ankle])
+        """(5,3) 点阵 — POINT_NAMES 序。"""
+        return np.array([getattr(self, n) for n in POINT_NAMES])
 
     def standardize(self) -> "P5":
         """归一到标准 P5 帧（踝中点原点、躯干 +x、yaw→0）。"""

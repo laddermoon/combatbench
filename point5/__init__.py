@@ -2,6 +2,6 @@
 
 This package must not import mujoco / envs.* / baseline.*.
 """
-from .p5 import P5, P5Clip
+from .p5 import P5, P5Clip, POINT_INDEX, POINT_NAMES
 
-__all__ = ["P5", "P5Clip"]
+__all__ = ["P5", "P5Clip", "POINT_INDEX", "POINT_NAMES"]
