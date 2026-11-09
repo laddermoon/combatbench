@@ -55,7 +55,6 @@ class Pose:
     qpos: np.ndarray                 # (21,) rad
     root_z: float                    # 世界系高度
     g_body: np.ndarray               # (3,) 机体系重力向量
-    robot_id: str = "robot_a"
 
     def __post_init__(self):
         self.qpos = _vec(self.qpos, _JOINTS, "qpos")
@@ -65,13 +64,12 @@ class Pose:
     # ---------- constructors ----------
 
     @classmethod
-    def from_p5(cls, p5, robot_id: str = "robot_a",
-                tolerance: float = 0.02) -> "Pose":
+    def from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
         """P5 局部姿态 -> Pose（solve_equilibrium 反解，近似）。"""
         raise NotImplementedError
 
     @classmethod
-    def joint_ranges(cls, robot_id: str = "robot_a") -> np.ndarray:
+    def joint_ranges(cls) -> np.ndarray:
         """(21,2) 关节弧度范围（obs 反归一化用）。"""
         raise NotImplementedError
 
@@ -130,15 +128,14 @@ class RobotState(Pose):
                 setattr(self, n, _vec(v, shp, n))
 
     @classmethod
-    def from_obs(cls, obs: np.ndarray,
-                 robot_id: str = "robot_a") -> "RobotState":
+    def from_obs(cls, obs: np.ndarray) -> "RobotState":
         """obs (96,) -> RobotState：关节/速度/接触力无损快照。"""
         raise NotImplementedError
 
     def to_pose(self) -> Pose:
         """剥动态 → Pose（对应 SupportState.to_geometry）。"""
         return Pose(qpos=self.qpos.copy(), root_z=self.root_z,
-                    g_body=self.g_body.copy(), robot_id=self.robot_id)
+                    g_body=self.g_body.copy())
 
     def support_state(self):
         """-> SupportState（几何 + 足高 + 动量，obs 链无损）。"""
