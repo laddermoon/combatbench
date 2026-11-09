@@ -40,7 +40,19 @@ def tilt_angles(g_body: np.ndarray) -> np.ndarray:
 
 def joint_ranges() -> np.ndarray:
     """(21,2) 关节弧度范围 — 机器人形态元数据（懒加载）。"""
-    raise NotImplementedError
+    return np.asarray(Pose._kinematics()[2]["jnt_ranges"], np.float64)
+
+
+def _zyx_to_quat_wxyz(ori: np.ndarray) -> np.ndarray:
+    """[pitch,roll,yaw] -> quat (wxyz)，R = Rz(yaw)·Ry(pitch)·Rx(roll)。"""
+    p, r, y = ori
+    cy, sy = np.cos(y / 2), np.sin(y / 2)
+    cp, sp = np.cos(p / 2), np.sin(p / 2)
+    cr, sr = np.cos(r / 2), np.sin(r / 2)
+    return np.array([cy * cp * cr + sy * sp * sr,
+                     cy * cp * sr - sy * sp * cr,
+                     cy * sp * cr + sy * cp * sr,
+                     sy * cp * cr - cy * sp * sr])
 
 
 @dataclass
@@ -94,6 +106,7 @@ class Pose:
     def to_p5(self) -> "P5":
         """转换成 P5 点集。"""
         raise NotImplementedError
+        
     def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：委托 SupportGeometry.from_pose(self)。
 
@@ -106,6 +119,66 @@ class Pose:
     def render(self, out_path, **kw) -> list:
         """渲染为 PNG（需 OpenGL platform）。"""
         raise NotImplementedError
+
+    # ---------- MuJoCo FK（simulator 集成层） ----------
+
+    _FK = None      # 懒加载共享 (model, data, robot_a 表)
+
+    @classmethod
+    def _kinematics(cls):
+        """懒加载共享 FK 模型——只读使用，线程间勿并发写。"""
+        if cls._FK is None:
+            import mujoco
+            from envs.humanoid21.meta import Humanoid21Meta
+            from envs.humanoid21.simulator import Humanoid21Simulator
+            model = mujoco.MjSpec.from_file(
+                Humanoid21Simulator.ARENA_XML).compile()
+            data = mujoco.MjData(model)
+            r = Humanoid21Meta.build_runtime_tables(model)["robots"][
+                "robot_a"]
+            cls._FK = (model, data, r)
+        return cls._FK
+
+    def _fk_data(self):
+        """把本姿态写入共享 FK 模型并跑 mj_kinematics。"""
+        import mujoco
+        model, data, r = self._kinematics()
+        adr = int(r["root_qpos_adr"])
+        data.qpos[adr:adr + 3] = self.root_position
+        data.qpos[adr + 3:adr + 7] = _zyx_to_quat_wxyz(
+            self.root_orientation)
+        data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
+        mujoco.mj_kinematics(model, data)
+        return model, data, r
+
+    def landmarks(self) -> dict:
+        """5 landmark 位置（所在帧表达）——{head,left_hand,right_hand,
+        left_ankle,right_ankle}。"""
+        import mujoco
+        from point5.humanoid21.mechanics import LANDMARKS
+        model, data, r = self._fk_data()
+        out = {}
+        for body, off, name in (
+                ("head", LANDMARKS["head"][1], "head"),
+                ("hand_left", LANDMARKS["hand_left"][1], "left_hand"),
+                ("hand_right", LANDMARKS["hand_right"][1], "right_hand"),
+                ("foot_left", LANDMARKS["foot_left"][1], "left_ankle"),
+                ("foot_right", LANDMARKS["foot_right"][1], "right_ankle")):
+            bid = r["keypoint_body_ids"].get(body)
+            if bid is None:
+                bid = mujoco.mj_name2id(
+                    model, mujoco.mjtObj.mjOBJ_BODY, f"{body}{r['suffix']}")
+            out[name] = (np.asarray(data.xpos[bid])
+                         + np.asarray(data.xmat[bid]).reshape(3, 3) @ off)
+        return out
+
+    def com(self) -> np.ndarray:
+        """(3,) 精确质量加权质心（所在帧表达）。"""
+        model, data, r = self._fk_data()
+        ids = np.asarray(r["body_ids_sorted"], int)
+        ms = np.asarray(model.body_mass)[ids]
+        xip = np.asarray(data.xipos)[ids]
+        return (ms[:, None] * xip).sum(0) / ms.sum()
 
 
 @dataclass
