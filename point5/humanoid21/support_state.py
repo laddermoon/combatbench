@@ -77,6 +77,14 @@ class SupportGeometry:
         """
         raise NotImplementedError
 
+    def com_acc_ankle(self) -> np.ndarray:
+        """此几何下脚踝力矩可产生的质心加速度（3,)。"""
+        raise NotImplementedError
+
+    def com_acc_gravity(self) -> np.ndarray:
+        """重力引起的质心加速度分量（3,)。"""
+        raise NotImplementedError
+
     def reference_p5(self):
         """由几何合成参考 P5 意图——非精确还原。
 
@@ -111,11 +119,8 @@ class SupportState(SupportGeometry):
         raise NotImplementedError
 
     @classmethod
-    def from_pose(cls, pose) -> "SupportState":
+    def from_robot_state(cls, robot_state) -> "SupportState":
         """RobotState -> SupportState。
-
-        需 RobotState 而非 Pose——com_vel/ang_mom 必带，
-        只有动态快照供得起（Pose 无动量字段）。
         """
         raise NotImplementedError
 
@@ -140,14 +145,6 @@ class SupportState(SupportGeometry):
 
     def capture_point(self) -> np.ndarray:
         """捕获点（3,) — com + com_vel·√(z/g)。"""
-        raise NotImplementedError
-
-    def com_acc_ankle(self) -> np.ndarray:
-        """此状态下脚踝力矩可产生的质心加速度（3,)。"""
-        raise NotImplementedError
-
-    def com_acc_gravity(self) -> np.ndarray:
-        """重力引起的质心加速度分量（3,)。"""
         raise NotImplementedError
 
     def transition_to(self, anchor: SupportGeometry

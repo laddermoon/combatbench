@@ -132,9 +132,9 @@ class RobotState(Pose):
                     root_orientation=self.root_orientation.copy())
 
     def to_support_state(self):
-        """-> SupportState：委托 SupportState.from_pose(self)。
+        """-> SupportState：委托 SupportState.from_robot_state(self)。
 
         实现住 target 层（X.from_y 惯例），此方法是源侧语法糖。
         """
         from .support_state import SupportState
-        return SupportState.from_pose(self)
+        return SupportState.from_robot_state(self)
