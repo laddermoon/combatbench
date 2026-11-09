@@ -135,6 +135,19 @@ class RobotState(Pose):
         """
         raise NotImplementedError
 
+    def standardize(self) -> "RobotState":
+        """几何归一 + 动态量随帧旋转——保持动态类型与字段。
+
+        qpos/qvel 关节空间不变；root_position 转 SE(2)；
+        orientation 仅 yaw 加 Δ；root_linvel/ang_mom 乘 Rz(Δyaw)。
+        """
+        raise NotImplementedError
+
+    def reanchor(self, xy=(0.0, 0.0),
+                 yaw: float = 0.0) -> "RobotState":
+        """同 standardize——帧变换时 root_linvel/ang_mom 随 Δyaw 旋转。"""
+        raise NotImplementedError
+
     def pose(self) -> Pose:
         """剥动态 → Pose（对应 SupportState.geometry）。"""
         return Pose(qpos=self.qpos.copy(),
