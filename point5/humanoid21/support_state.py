@@ -2,11 +2,11 @@
 
 两种粒度，均**帧无关**（不规定坐标系，任何坐标系下都合法）：
 
-    SupportGeometry  静态几何：com + 双脚位 + 躯干朝向
-    SupportState     动态支撑态 = 几何 + 足高（发力潜力）+ 动量
+    SupportGeometry  静态几何：com + 双脚位/足高 + 躯干朝向
+    SupportState     动态支撑态 = 几何 + 动量
 
-来源决定内容：obs 解码来的带实测力/动量；规划来的是设计值；
-P5 反解来的没有实测力（给规划默认分配）也没有动量。
+来源决定内容：obs 解码态带实测动量；规划态给设计值；
+P5 反解无动量——只能构造 SupportGeometry。
 """
 from __future__ import annotations
 
@@ -32,11 +32,14 @@ class SupportGeometry:
     """静态几何锚点 — 帧无关。
 
     com/双脚位为绝对坐标（在哪个系由持有方约定——
-    SupportPlan 统一首帧 P5 系）。torso_yaw v1 不处理。
+    SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
+    推力权威，不记实测分力。torso_yaw v1 不处理。
     """
-    com: np.ndarray                    # (3,)
-    left_foot: np.ndarray              # (2,) xy
-    right_foot: np.ndarray             # (2,) xy
+    com: np.ndarray                    # (3,) 质心
+    left_foot: np.ndarray              # (2,) 脚踝 xy
+    right_foot: np.ndarray             # (2,) 脚踝 xy
+    left_foot_height: float = 0.0      # 左脚底高度
+    right_foot_height: float = 0.0     # 右脚底高度
     torso_yaw: Optional[float] = None
 
     def __post_init__(self):
@@ -45,6 +48,8 @@ class SupportGeometry:
                               "geometry.left_foot")
         self.right_foot = _vec(self.right_foot, _FOOT,
                                "geometry.right_foot")
+        self.left_foot_height = float(self.left_foot_height)
+        self.right_foot_height = float(self.right_foot_height)
 
     @classmethod
     def from_p5(cls, p5, tolerance: float = 0.02) -> "SupportGeometry":
@@ -58,22 +63,16 @@ class SupportGeometry:
 
 @dataclass
 class SupportState(SupportGeometry):
-    """动态支撑态 = 几何 + 足高（发力潜力）+ 动量 — 帧无关。
+    """动态支撑态 = 几何 + 动量 — 帧无关。
 
-    left/right_foot_height: 左/右脚底高度——不记实测分力，记
-    足部发力潜力的几何表达（贴地才有推力权威）。com_vel/
-    ang_mom 必带——动量缺席的场合用 SupportGeometry，不构造
-    残缺的 SupportState。
+    com_vel/ang_mom 必带——动量缺席的场合用 SupportGeometry，
+    不构造残缺的 SupportState。
     """
-    left_foot_height: float = 0.0  # 并不需要支撑的力度信息，而需要的是足部的高度信息，用来表达足部发力的潜力
-    right_foot_height: float = 0.0
     com_vel: np.ndarray = field(kw_only=True)  # (3,) 质心速度
     ang_mom: np.ndarray = field(kw_only=True)  # (3,) 角动量
 
     def __post_init__(self):
         super().__post_init__()
-        self.left_foot_height = float(self.left_foot_height)
-        self.right_foot_height = float(self.right_foot_height)
         self.com_vel = _vec(self.com_vel, _VEL, "com_vel")
         self.ang_mom = _vec(self.ang_mom, _MOM, "ang_mom")
 
@@ -88,14 +87,17 @@ class SupportState(SupportGeometry):
         raise NotImplementedError
 
     def to_geometry(self) -> SupportGeometry:
-        """获取静态几何锚点（剥掉力度/动量）。"""
-        return SupportGeometry(com=self.com.copy(),
-                               left_foot=self.left_foot.copy(),
-                               right_foot=self.right_foot.copy(),
-                               torso_yaw=self.torso_yaw)
+        """获取静态几何锚点（剥掉动量）。"""
+        return SupportGeometry(
+            com=self.com.copy(),
+            left_foot=self.left_foot.copy(),
+            right_foot=self.right_foot.copy(),
+            left_foot_height=self.left_foot_height,
+            right_foot_height=self.right_foot_height,
+            torso_yaw=self.torso_yaw)
 
     def capture_point(self) -> np.ndarray:
-        """捕获点（3,) — 需 com_vel，缺席则拒（同 Pose.com_vel 规则）。"""
+        """捕获点（3,) — com + com_vel·√(z/g)。"""
         raise NotImplementedError
 
     def com_acc_ankle(self) -> np.ndarray:
