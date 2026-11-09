@@ -11,7 +11,7 @@ P5 反解无动量——只能构造 SupportGeometry。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 
@@ -31,9 +31,9 @@ def _vec(v, shape, name):
 class SupportGeometry:
     """静态几何锚点 — 帧无关。
 
-    com/双脚位为绝对坐标（在哪个系由持有方约定——
+    com/双脚位/朝向为绝对量（在哪个系由持有方约定——
     SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
-    推力权威，不记实测分力。torso_yaw v1 不处理。
+    推力权威，不记实测分力。
 
     foot_height 定义 = 脚踝实际高度 − 平脚贴地时的基准踝高，
     ≈0 表示落地。
@@ -41,9 +41,9 @@ class SupportGeometry:
     com: np.ndarray                    # (3,) 质心
     left_foot: np.ndarray              # (2,) 脚踝 xy
     right_foot: np.ndarray             # (2,) 脚踝 xy
+    torso_yaw: float                   # 躯干朝向 rad
     left_foot_height: float = 0.0      # 左脚踝抬升高度（≈0 落地）
     right_foot_height: float = 0.0     # 右脚踝抬升高度
-    torso_yaw: Optional[float] = None
 
     def __post_init__(self):
         self.com = _vec(self.com, _COM, "geometry.com")
@@ -51,6 +51,7 @@ class SupportGeometry:
                               "geometry.left_foot")
         self.right_foot = _vec(self.right_foot, _FOOT,
                                "geometry.right_foot")
+        self.torso_yaw = float(self.torso_yaw)
         self.left_foot_height = float(self.left_foot_height)
         self.right_foot_height = float(self.right_foot_height)
 
