@@ -160,33 +160,36 @@ class Pose:
     def to_p5(self) -> "P5":
         """-> P5 点集（所在帧表达）——FK 提取 5 landmark + torso_yaw。
 
-        头/手取 body xpos；踝 = foot xpos + xmat·踝偏移
-        （ankle_y/x 关节锚点中点）。
+        头/手取 body xpos；踝 = 踝关节中心 xanchor[ankle_y]
+        （脚绕其旋转的锚点，脚踝铰链运动下不动，随小腿走）。
         """
         import mujoco
         from point5 import P5
-        model, data, r, off = self._fk_data()
+        model, data, r, jid = self._fk_data()
         kw = {}
-        for body, p5name, o in (
-                ("head", "head", np.zeros(3)),
-                ("hand_left", "left_hand", np.zeros(3)),
-                ("hand_right", "right_hand", np.zeros(3)),
-                ("foot_left", "left_ankle", off["left"]),
-                ("foot_right", "right_ankle", off["right"])):
+        for body, p5name in (("head", "head"),
+                             ("hand_left", "left_hand"),
+                             ("hand_right", "right_hand")):
             bid = r["keypoint_body_ids"].get(body)
             if bid is None:
                 bid = mujoco.mj_name2id(
                     model, mujoco.mjtObj.mjOBJ_BODY, f"{body}{r['suffix']}")
-            kw[p5name] = (np.asarray(data.xpos[bid])
-                          + np.asarray(data.xmat[bid]).reshape(3, 3) @ o)
+            kw[p5name] = np.asarray(data.xpos[bid]).copy()
+        kw["left_ankle"] = np.asarray(data.xanchor[jid["left"]]).copy()
+        kw["right_ankle"] = np.asarray(data.xanchor[jid["right"]]).copy()
         return P5(**kw, torso_yaw=_torso_yaw(self.root_orientation))
     # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
-    _FK = None      # 懒加载共享 (model, data, robot_a 表, 踝偏移)
+    _FK = None      # 懒加载共享 (model, data, robot_a 表, 踝铰 joint id)
 
     @classmethod
     def _kinematics(cls):
-        """懒加载共享 FK 模型 + 踝点偏移（ankle_y/x 锚点中点）。
+        """懒加载共享 FK 模型 + 踝铰（ankle_y）joint id。
+
+        踝点 = 踝关节中心 = ankle_y 铰链锚点世界坐标
+        (xanchor)：它是脚绕其旋转的点——脚踝屈伸/侧滚下
+        不动（上游铰链的旋转中心，不受下游 ankle_x 影响），
+        随小腿刚体走，不是脚上的物质点。
 
         注意：**不支持多线程**——_FK 里的 MjData 是全部实例共享的
         可变缓冲区，并行调用 FK 方法会互相覆盖中间结果。
@@ -200,52 +203,39 @@ class Pose:
             data = mujoco.MjData(model)
             r = Humanoid21Meta.build_runtime_tables(model)["robots"][
                 "robot_a"]
-            ankle_off = {}
+            ankle_jid = {}
             for side in ("left", "right"):
-                jy = mujoco.mj_name2id(
+                ankle_jid[side] = mujoco.mj_name2id(
                     model, mujoco.mjtObj.mjOBJ_JOINT,
                     f"ankle_y_{side}{r['suffix']}")
-                jx = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_JOINT,
-                    f"ankle_x_{side}{r['suffix']}")
-                ankle_off[side] = (np.asarray(model.jnt_pos[jy])
-                                   + np.asarray(model.jnt_pos[jx])) / 2
-            cls._FK = (model, data, r, ankle_off)
+            cls._FK = (model, data, r, ankle_jid)
         return cls._FK
 
     def _fk_data(self):
         """把本姿态写入共享 FK 模型并跑 mj_kinematics。"""
         import mujoco
-        model, data, r, off = self._kinematics()
+        model, data, r, jid = self._kinematics()
         adr = int(r["root_qpos_adr"])
         data.qpos[adr:adr + 3] = self.root_position
         data.qpos[adr + 3:adr + 7] = _zyx_to_quat_wxyz(
             self.root_orientation)
         data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
         mujoco.mj_kinematics(model, data)
-        return model, data, r, off
+        return model, data, r, jid
 
     def to_support_geometry(self) -> "SupportGeometry":
         """-> SupportGeometry：MuJoCo FK 提取 com/脚位/足高/yaw。
 
-        踝位 = foot body xpos + xmat·踝偏移（ankle_y/x 关节锚点
-        中点，_kinematics 预提取）；com = body_mass 加权 xipos；
-        foot_height = 踝高 − ANKLE_Z_PLANTED；yaw 取躯干前向
-        水平朝向（_torso_yaw）。
+        脚位 = 踝关节中心 xanchor[ankle_y]（脚绕其旋转的锚点，
+        脚踝铰链运动下不动，随小腿走）；com = body_mass 加权
+        xipos；foot_height = 踝心高 − ANKLE_Z_PLANTED；
+        yaw 取躯干前向水平朝向（_torso_yaw）。
         """
-        import mujoco
         from .support_state import SupportGeometry, ANKLE_Z_PLANTED
-        model, data, r, off = self._fk_data()
+        model, data, r, jid = self._fk_data()
 
         def _ankle(side):
-            bid = r["keypoint_body_ids"].get(f"foot_{side}")
-            if bid is None:
-                bid = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_BODY,
-                    f"foot_{side}{r['suffix']}")
-            return (np.asarray(data.xpos[bid])
-                    + np.asarray(data.xmat[bid]).reshape(3, 3)
-                    @ off[side])
+            return np.asarray(data.xanchor[jid[side]])
 
         la, ra = _ankle("left"), _ankle("right")
         ids = np.asarray(r["body_ids_sorted"], int)

@@ -22,8 +22,8 @@ _FOOT = (2,)
 _VEL = (3,)
 _MOM = (3,)
 
-# 平脚贴地时的基准踝高（模型形态常数，stand_punch 断言 0.087±0.01）
-ANKLE_Z_PLANTED = 0.087
+# 平脚贴地时踝关节中心的基准高度（模型形态常数，实测 0.107）
+ANKLE_Z_PLANTED = 0.107
 
 
 def _wrap(a: float) -> float:
@@ -43,15 +43,16 @@ class SupportGeometry:
     （SupportPlan 统一首帧 P5 系）。足高记发力潜力——贴地才有
     推力权威，不记实测分力。
 
-    foot_height 定义 = 脚踝实际高度 − 平脚贴地时的基准踝高，
-    ≈0 表示落地。
+    脚位/足高的"踝"一律指**踝关节中心**（脚绕其旋转的关节
+    锚点，脚踝铰链运动下不动，随小腿刚体走）。foot_height
+    = 踝心实际高度 − 平脚贴地基准踝心高，≈0 表示落地。
     """
     com: np.ndarray                    # (3,) 质心
-    left_foot: np.ndarray              # (2,) 脚踝 xy
-    right_foot: np.ndarray             # (2,) 脚踝 xy
+    left_foot: np.ndarray              # (2,) 踝关节中心 xy
+    right_foot: np.ndarray             # (2,) 踝关节中心 xy
     torso_yaw: float                   # 躯干朝向 rad
-    left_foot_height: float = 0.0      # 左脚踝抬升高度（≈0 落地）
-    right_foot_height: float = 0.0     # 右脚踝抬升高度
+    left_foot_height: float = 0.0      # 左踝心抬升高度（≈0 落地）
+    right_foot_height: float = 0.0     # 右踝心抬升高度
 
     def __post_init__(self):
         self.com = _vec(self.com, _COM, "geometry.com")
@@ -129,15 +130,6 @@ class SupportState(SupportGeometry):
         super().__post_init__()
         self.com_vel = _vec(self.com_vel, _VEL, "com_vel")
         self.ang_mom = _vec(self.ang_mom, _MOM, "ang_mom")
-
-    @classmethod
-    def from_obs(cls, obs: np.ndarray) -> "SupportState":
-        """obs (96,) -> SupportState，产 **P5 坐标系**的态。
-
-        RobotState.from_obs(obs) -> from_pose 两段式——
-        机体系输入解码时转 P5 帧（同 RobotState 约定）。
-        """
-        raise NotImplementedError
 
     @classmethod
     def from_robot_state(cls, robot_state) -> "SupportState":

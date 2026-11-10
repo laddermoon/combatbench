@@ -35,8 +35,9 @@ P5 → Humanoid21 的**纯力学姿态补全** + 打击规划器 + web 编辑器
 
 `point5_from_view(view, robot_id)`（adapter.py）：`get_derived_state`
 的 per-robot view（body_xpos/body_xquat/body_linvel_world）→ 局部系
-`Point5State`。脚点=踝关节中心（landmarks +0.06z，站姿 z≈0.087），
-不是 foot body 原点；缺数据 fail-loud，不编造点。
+`Point5State`。脚点=踝关节中心（ankle_y 铰链锚点 xanchor，
+脚踝铰链运动下不动，站姿 z≈0.107），不是 foot body 原点；
+缺数据 fail-loud，不编造点。
 
 ## 打击规划器（产出 P5Clip，sim-unaware 几何规划）
 
