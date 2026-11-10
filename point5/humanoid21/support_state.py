@@ -25,6 +25,21 @@ _MOM = (3,)
 # 平脚贴地时踝关节中心的基准高度（模型形态常数，实测 0.107）
 ANKLE_Z_PLANTED = 0.107
 
+# ---- lip_analyze 常量（踝摆能力）----
+# 来源：ankle_pendulum/REPORT.md + battle_circular_v2.xml 脚 geom
+# 参数；模型改动需同步。
+LIP_MASS = 40.84            # kg — 全身质量（body_mass.sum）
+LIP_G = 9.81
+LIP_TAU_ACT = 20.0          # N·m — 踝执行器力矩限（gear=20 直驱，单轴）
+LIP_MARGIN_TOE = 0.167      # m — 踝心到脚尖侧支撑域前缘
+LIP_MARGIN_HEEL = 0.097     # m — 踝心到脚跟侧支撑域后缘
+LIP_MARGIN_SIDE = 0.047     # m — 踝心到侧向支撑域边缘
+LIP_MU_SLIDE = 1.0          # 脚-地滑动摩擦（脚 geom friction[0]）
+LIP_MU_TORSION = 0.02       # m — 扭转摩擦系数（friction[1]），τ_yaw≤μ_t·N
+# 另一脚竖直推力上限：全脚支撑按全重；离地脚按前掌着地满踝矩
+# 的杠杆对地压力 τ_act/margin_toe ≈ 120N（实现里分段取）。
+LIP_F_PUSH_PLANTED = LIP_MASS * LIP_G
+
 
 def _wrap(a: float) -> float:
     """角度归一到 (-pi, pi]。"""
@@ -99,13 +114,123 @@ class SupportGeometry:
         """
         return self.standardize()._se2(float(yaw), np.asarray(xy, float))
 
-    def com_acc_ankle(self) -> np.ndarray:
-        """此几何下脚踝力矩可产生的质心加速度（3,)。"""
+
+    def lip_analyze(self, foot_height_eps: float = 0.02,
+                    inertia_com: np.ndarray = None
+                    ) -> Tuple["PivotAnalysis", ...]:
+        """倒立摆支点分析——每个 foot_height < eps 的脚一份。
+
+        每支点均按**此脚单支撑**分析：支点 = 踝关节中心，
+        N = mg；重力项假定另一脚未支撑。三方向分解（轴按
+        躯干朝向取，踝铰实际轴在脚系——脚近似与朝向对齐）：
+
+          前后摆    绕侧向轴，踝 τ∈[−min(τ_act,N·margin_heel),
+                   +min(τ_act,N·margin_toe)]
+          侧向摆    绕朝向轴，踝 τ∈±min(τ_act,N·margin_side)
+          绕轴转    绕竖直轴，地面扭转摩擦 τ∈±μ_t·N
+
+        每方向分列三来源：支点踝力矩角加速度区间 / 重力项
+        定值 / 另一脚可给区间。另一脚按其当前位置、假定
+        可触地计——全脚支撑时竖直推力上限 mg；有离地高度
+        时按前掌着地满踝矩对地压力 τ_act/margin_toe，触点
+        取踝心 + margin_toe·朝向；水平摩擦 |F_xy|≤μ·F_z。
+
+        inertia_com：关于质心的全身惯量 (3,3) 可选——参考级
+        即可（Geometry→P5→Pose→inertia_matrix 链），缺省退化
+        为质点惯量 m·d⊥²。
+        """
+        feet = (("left", np.asarray(self.left_foot),
+                 self.left_foot_height),
+                ("right", np.asarray(self.right_foot),
+                 self.right_foot_height))
+        cy, sy = np.cos(self.torso_yaw), np.sin(self.torso_yaw)
+        fwd = np.array([cy, sy])
+        lat = np.array([-sy, cy])
+        N = LIP_MASS * LIP_G
+        mg = np.array([0.0, 0.0, -N])
+        out = []
+        for name, fxy, fh in feet:
+            if fh >= foot_height_eps:
+                continue
+            pivot = np.array([fxy[0], fxy[1],
+                              ANKLE_Z_PLANTED + fh])
+            d = self.com - pivot
+            # 另一脚：全脚支撑→推力上限 mg、触点踝心；
+            # 离地→前掌满踝矩压力、触点踝心+margin_toe·朝向
+            oname = "right" if name == "left" else "left"
+            oxy = np.asarray(
+                self.right_foot if name == "left"
+                else self.left_foot)
+            oh = (self.right_foot_height if name == "left"
+                  else self.left_foot_height)
+            if oh < foot_height_eps:
+                f_max, app_xy = LIP_F_PUSH_PLANTED, oxy
+            else:
+                f_max = LIP_TAU_ACT / LIP_MARGIN_TOE
+                app_xy = oxy + LIP_MARGIN_TOE * fwd
+            rxy = app_xy - pivot[:2]
+            rz = -pivot[2]                     # 触点在地面
+
+            axes = {
+                "fore_aft": np.array([lat[0], lat[1], 0.0]),
+                "lateral": np.array([fwd[0], fwd[1], 0.0]),
+                "yaw": np.array([0.0, 0.0, 1.0]),
+            }
+            t_ankle = {
+                "fore_aft": (-min(LIP_TAU_ACT, N * LIP_MARGIN_HEEL),
+                             min(LIP_TAU_ACT, N * LIP_MARGIN_TOE)),
+                "lateral": (-min(LIP_TAU_ACT, N * LIP_MARGIN_SIDE),
+                            min(LIP_TAU_ACT, N * LIP_MARGIN_SIDE)),
+                "yaw": (-LIP_MU_TORSION * N, LIP_MU_TORSION * N),
+            }
+            dirs = {}
+            for dname, e in axes.items():
+                I = LIP_MASS * (d @ d - (d @ e) ** 2)
+                if inertia_com is not None:
+                    I += e @ np.asarray(inertia_com) @ e
+                lo, hi = t_ankle[dname]
+                g_alpha = float(e @ np.cross(d, mg) / I)
+                tz = f_max * (e[0] * rxy[1] - e[1] * rxy[0])
+                if dname == "yaw":          # F_z 无 yaw 分量
+                    txy = LIP_MU_SLIDE * f_max * np.hypot(*rxy)
+                    of_rng = (-txy / I, txy / I)
+                else:
+                    txy = LIP_MU_SLIDE * f_max * abs(rz)
+                    of_rng = ((min(tz, 0.0) - txy) / I,
+                              (max(tz, 0.0) + txy) / I)
+                dirs[dname] = DirectionAlpha(
+                    ankle=(lo / I, hi / I), gravity=g_alpha,
+                    other_foot=of_rng)
+            out.append(PivotAnalysis(foot=name, pivot=pivot, **dirs))
+        return tuple(out)
+
+    def reference_p5(self):
+        """由几何合成参考 P5 意图——非精确还原。
+
+        几何只含 com/脚/yaw，头与手按标称站姿生成；返回的是
+        可用参照点阵，不做信息保真承诺（故名 reference 非 to_）。
+        """
         raise NotImplementedError
 
-    def com_acc_gravity(self) -> np.ndarray:
-        """重力引起的质心加速度分量（3,)。"""
-        raise NotImplementedError
+
+@dataclass
+class DirectionAlpha:
+    """单方向角加速度分解 rad/s²——三来源分列，不代数和。"""
+    ankle: Tuple[float, float]        # 支点踝力矩可给区间
+    gravity: float                    # 重力项（定值）
+    other_foot: Tuple[float, float]   # 另一脚推力+摩擦可给区间
+
+
+@dataclass
+class PivotAnalysis:
+    """单支点倒立摆分析——支点 = 踝关节中心。"""
+    foot: str                         # "left" / "right"
+    pivot: np.ndarray                 # (3,) 踝心
+    fore_aft: DirectionAlpha          # 朝向方向前后摆（绕侧向轴）
+    lateral: DirectionAlpha           # 侧向摆（绕朝向轴）
+    yaw: DirectionAlpha               # 绕竖直轴（摩擦驱动）
+
+
 
     def reference_p5(self):
         """由几何合成参考 P5 意图——非精确还原。
