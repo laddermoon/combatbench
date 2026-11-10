@@ -52,6 +52,28 @@ def _vec(v, shape, name):
     return v
 
 
+def _convex_hull(pts: np.ndarray) -> np.ndarray:
+    """平面点集凸包顶点 CCW（monotone chain）。"""
+    pts = np.unique(np.asarray(pts, np.float64), axis=0)
+    if len(pts) <= 2:
+        return pts
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in pts[::-1]:
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return np.array(lower[:-1] + upper[:-1])
+
+
 @dataclass
 class SupportGeometry:
     """静态几何锚点 — leveled 帧族，所在帧由持有方约定
@@ -114,6 +136,26 @@ class SupportGeometry:
         """
         return self.standardize()._se2(float(yaw), np.asarray(xy, float))
 
+    def support_polygon(self, foot_height_eps: float = 0.02
+                        ) -> np.ndarray:
+        """支撑多边形 (N,2) 顶点 CCW——贴地脚支撑域的凸包。
+
+        每贴地脚（foot_height < eps）贡献脚板支撑域四角
+        （踝心局部系 x∈[−heel,+toe] 前后、y∈±side，脚近似与
+        躯干朝向对齐）；双脚时取八点凸包。无贴地脚返回 (0,2)。
+        """
+        c, s = np.cos(self.torso_yaw), np.sin(self.torso_yaw)
+        R = np.array([[c, -s], [s, c]])
+        corners = np.array([
+            [LIP_MARGIN_TOE, LIP_MARGIN_SIDE],
+            [LIP_MARGIN_TOE, -LIP_MARGIN_SIDE],
+            [-LIP_MARGIN_HEEL, -LIP_MARGIN_SIDE],
+            [-LIP_MARGIN_HEEL, LIP_MARGIN_SIDE]]) @ R.T
+        pts = [np.asarray(fxy) + corners
+               for fxy, fh in ((self.left_foot, self.left_foot_height),
+                               (self.right_foot, self.right_foot_height))
+               if fh < foot_height_eps]
+        return _convex_hull(np.vstack(pts)) if pts else np.empty((0, 2))
 
     def lip_analyze(self, foot_height_eps: float = 0.02,
                     inertia_com: np.ndarray = None
