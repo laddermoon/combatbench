@@ -215,10 +215,21 @@ class SupportGeometry:
 
 @dataclass
 class DirectionAlpha:
-    """单方向角加速度分解 rad/s²——三来源分列，不代数和。"""
+    """单方向角加速度分解 rad/s²——三来源分列，不代数和。
+
+    消费方一般只读 total；分量留给诊断/预算——注意 ankle
+    是可控项、gravity 是不可控负载、other_foot 是反事实
+    项（用了它支撑构型即改变）。
+    """
     ankle: Tuple[float, float]        # 支点踝力矩可给区间
     gravity: float                    # 重力项（定值）
     other_foot: Tuple[float, float]   # 另一脚推力+摩擦可给区间
+
+    @property
+    def total(self) -> Tuple[float, float]:
+        """三来源合并的可行角加速度区间（Minkowski 和）。"""
+        return (self.ankle[0] + self.other_foot[0] + self.gravity,
+                self.ankle[1] + self.other_foot[1] + self.gravity)
 
 
 @dataclass
