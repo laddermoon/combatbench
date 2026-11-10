@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from point5.contracts import POINT_INDEX
+from point5.p5 import POINT_INDEX
 from point5.humanoid21.stand_punch import (
     StandPunchConfig,
     plan_stand_punch,

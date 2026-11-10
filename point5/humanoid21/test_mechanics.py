@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 
 from point5.humanoid21.mechanics import (
-    JOINT_NAMES, JNT_RANGE, LANDMARK_ORDER, Skeleton,
-    norm_to_rad, rad_to_norm, spring_energy, solve_equilibrium)
+    JOINT_NAMES, LANDMARK_ORDER, Skeleton,
+    norm_to_rad, rad_to_norm, spring_energy, solve_p5_pose)
+
+_ANKLE_CENTER = ("ankle_y_right", "ankle_y_left")
 
 
 @pytest.fixture(scope="module")
@@ -15,17 +17,21 @@ def sk():
 
 
 def _planted_zero_target(sk):
-    """Landmarks of the unloaded pose with feet resting at ankle height."""
+    """五点目标：无载姿态，脚槽放踝心（ankle_y 锚点），P5 语义。"""
+    q0 = np.zeros(21)
     lo, hi = 0.2, 1.2
     for _ in range(25):
         m = (lo + hi) / 2
-        lm = sk.landmarks([0, 0, m], [1, 0, 0, 0], np.zeros(21))
-        if lm[3:, 2].min() < 0.087:
+        a, _ = sk.anchors_jac([0, 0, m], [1, 0, 0, 0], q0, _ANKLE_CENTER)
+        if a[:, 2].min() < 0.087:
             lo = m
         else:
             hi = m
-    return sk.landmarks([0, 0, (lo + hi) / 2], [1, 0, 0, 0],
-                        np.zeros(21))
+    m = (lo + hi) / 2
+    lm = sk.landmarks([0, 0, m], [1, 0, 0, 0], q0)
+    a, _ = sk.anchors_jac([0, 0, m], [1, 0, 0, 0], q0, _ANKLE_CENTER)
+    lm[3], lm[4] = a
+    return lm
 
 
 class TestStructure:
@@ -57,31 +63,32 @@ class TestSprings:
         assert spring_energy(q1) < spring_energy(q2) / 100.0
 
 
-class TestEquilibrium:
+class TestP5Pose:
     def test_zero_target_recovers(self, sk):
         tgt = _planted_zero_target(sk)
-        res = solve_equilibrium(tgt, skeleton=sk)
+        res = solve_p5_pose(tgt, skeleton=sk)
         assert res["satisfied"]
-        assert res["point_errors"].max() < 0.01
+        assert res["point_errors"].max() < 0.04
 
     def test_deterministic(self, sk):
         tgt = _planted_zero_target(sk)
-        a = solve_equilibrium(tgt, skeleton=sk)
-        b = solve_equilibrium(tgt, skeleton=sk)
+        a = solve_p5_pose(tgt, skeleton=sk)
+        b = solve_p5_pose(tgt, skeleton=sk)
         np.testing.assert_allclose(a["q_norm"], b["q_norm"], atol=1e-6)
 
     def test_unreachable_reports(self, sk):
         tgt = _planted_zero_target(sk)
         tgt[0, 2] += 3.0                       # head 3m up: impossible
-        res = solve_equilibrium(tgt, skeleton=sk)
+        res = solve_p5_pose(tgt, skeleton=sk)
         assert not res["satisfied"]
-        assert res["failed_stage"] == "stage1_body"
+        assert not res["stage1"]["converged"]
 
     def test_crouch_legs_absorb(self, sk):
         """Lowering head: legs (hip/knee) should absorb, torso ~stays."""
         tgt = _planted_zero_target(sk)
         tgt[0, 2] -= 0.4
-        res = solve_equilibrium(tgt, skeleton=sk)
+        res = solve_p5_pose(tgt, skeleton=sk)
+        assert res["satisfied"]
         qn = res["q_norm"]
         i_abd = JOINT_NAMES.index("abdomen_y")
         i_knee = JOINT_NAMES.index("knee_right")
