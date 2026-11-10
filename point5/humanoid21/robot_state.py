@@ -254,6 +254,34 @@ class Pose:
         raise NotImplementedError
 
 
+    def inertia_matrix(self) -> np.ndarray:
+        """-> (3,3) 全身转动惯量矩阵——**关于质心**，所在帧表达。
+
+        J_com = Σ_b [ R_b·R_i·diag(I_b)·(R_b·R_i)ᵀ
+                      + m_b·(|r_b|²I − r_b·r_bᵀ) ]
+        I_b = body_inertia——**主惯量系**主值，须经 body_iquat
+        旋回 body 系（R_i）；r_b = xipos_b − com。
+        刚体锁定时 H_com = J_com·ω——与 ang_mom 的"关于质心"
+        约定同点；lip_analyze 绕支点惯量经平行轴外推。
+        """
+        import mujoco
+        model, data, r, _ = self._fk_data()
+        ids = np.asarray(r["body_ids_sorted"], int)
+        ms = np.asarray(model.body_mass)[ids]
+        com = (ms[:, None] * np.asarray(data.xipos)[ids]).sum(0) / ms.sum()
+        J = np.zeros((3, 3))
+        for m_b, b in zip(ms, ids):
+            Rb = np.asarray(data.xmat[b]).reshape(3, 3)
+            Ri = np.empty(9)
+            mujoco.mju_quat2Mat(Ri, np.asarray(model.body_iquat[b]))
+            Ri = Ri.reshape(3, 3)
+            Rp = Rb @ Ri                      # 主惯量系 -> 所在帧
+            Ib = Rp @ np.diag(np.asarray(model.body_inertia[b])) @ Rp.T
+            d = np.asarray(data.xipos[b]) - com
+            J += Ib + m_b * ((d @ d) * np.eye(3) - np.outer(d, d))
+        return J
+
+
 @dataclass
 class RobotState(Pose):
     """动态快照 = 姿态 + 速度——全部必带，from_obs 唯一入口。
