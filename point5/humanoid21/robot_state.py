@@ -20,7 +20,10 @@ _VEC3 = (3,)
 
 def _vec(v, shape, name):
     v = np.array(v, np.float64)          # copy, never alias
-    assert v.shape == shape, f"{name}: expected {shape}, got {v.shape}"
+    if v.shape != shape:
+        raise ValueError(f"{name}: expected {shape}, got {v.shape}")
+    if not np.isfinite(v).all():
+        raise ValueError(f"{name}: non-finite values")
     return v
 
 
@@ -317,11 +320,20 @@ class RobotState(Pose):
           ang_mom = mj_subtreeVel 子树角动量（关于质心）
         """
         obs = np.asarray(obs, np.float64)
+        if obs.shape != (96,):
+            raise ValueError(f"obs: expected (96,), got {obs.shape}")
+        if not np.isfinite(obs).all():
+            raise ValueError("obs: non-finite values")
         rng = joint_ranges()
         ref, sc = (rng[:, 0] + rng[:, 1]) / 2, (rng[:, 1] - rng[:, 0]) / 2
         qpos = obs[0:21] * sc + ref
         qvel = np.sign(obs[21:42]) * (2.0 * obs[21:42]) ** 2 * sc
-        pit, rol = tilt_angles(obs[42:45])
+        g = obs[42:45]
+        if np.linalg.norm(g) < 1e-3:
+            raise ValueError(
+                f"obs 投影重力范数≈0 ({np.linalg.norm(g):.2e})"
+                "——姿态不可解码（传感器失效/自由落体）")
+        pit, rol = tilt_angles(g)
         pose = Pose(qpos=qpos,
                     root_position=np.array([0.0, 0.0, float(obs[45])]),
                     root_orientation=np.array([pit, rol, 0.0])

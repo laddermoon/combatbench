@@ -25,7 +25,10 @@ POINT_INDEX = {n: i for i, n in enumerate(POINT_NAMES)}
 
 def _vec(v, name):
     v = np.array(v, np.float64)          # copy, never alias
-    assert v.shape == _PT, f"{name}: expected {_PT}, got {v.shape}"
+    if v.shape != _PT:
+        raise ValueError(f"{name}: expected {_PT}, got {v.shape}")
+    if not np.isfinite(v).all():
+        raise ValueError(f"{name}: non-finite values")
     return v
 
 
@@ -51,6 +54,8 @@ class P5:
         for n in ("head", "left_hand", "right_hand",
                   "left_ankle", "right_ankle"):
             object.__setattr__(self, n, _vec(getattr(self, n), n))
+        if not np.isfinite(self.torso_yaw):
+            raise ValueError("torso_yaw: non-finite")
         object.__setattr__(self, "torso_yaw", float(self.torso_yaw))
 
     @property

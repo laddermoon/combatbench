@@ -48,7 +48,10 @@ def _wrap(a: float) -> float:
 
 def _vec(v, shape, name):
     v = np.array(v, np.float64)          # copy, never alias
-    assert v.shape == shape, f"{name}: expected {shape}, got {v.shape}"
+    if v.shape != shape:
+        raise ValueError(f"{name}: expected {shape}, got {v.shape}")
+    if not np.isfinite(v).all():
+        raise ValueError(f"{name}: non-finite values")
     return v
 
 
@@ -97,6 +100,9 @@ class SupportGeometry:
                               "geometry.left_foot")
         self.right_foot = _vec(self.right_foot, _FOOT,
                                "geometry.right_foot")
+        for n in ("torso_yaw", "left_foot_height", "right_foot_height"):
+            if not np.isfinite(getattr(self, n)):
+                raise ValueError(f"geometry.{n}: non-finite")
         self.torso_yaw = float(self.torso_yaw)
         self.left_foot_height = float(self.left_foot_height)
         self.right_foot_height = float(self.right_foot_height)
