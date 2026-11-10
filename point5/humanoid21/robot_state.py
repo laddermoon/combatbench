@@ -60,6 +60,34 @@ def _zyx_to_quat_wxyz(ori: np.ndarray) -> np.ndarray:
                      sy * cp * cr - cy * sp * sr])
 
 
+def _canonical_zyx(ori: np.ndarray) -> np.ndarray:
+    """[pitch,roll,yaw] -> 标准 ZYX 分支（cos(pitch)>=0）的等价角。
+
+    非标准分支（cos(pitch)<0）的同一旋转写成
+    [π-pitch, roll+π, yaw+π]；奇异点 cos(pitch)=0 原样保留。
+    规范化后 yaw 分量恒等于躯干前向的水平朝向。
+    """
+    p, r, y = ori
+    if np.cos(p) < 0.0:
+        p, r, y = np.pi - p, r + np.pi, y + np.pi
+    return np.array([_wrap(p), _wrap(r), _wrap(y)])
+
+
+def _torso_yaw(ori: np.ndarray) -> float:
+    """躯干前向的水平朝向 rad——与欧拉角分支无关。
+
+    = atan2 对 R@[1,0,0] 的 xy 分量（= [cos(yaw)cos(pitch),
+    sin(yaw)cos(pitch)]，roll 不影响）。躯干前向近竖直
+    （|cos(pitch)|≈0，gimbal lock）时退回存储 yaw 分量——
+    退化区的约定值，下游勿在此区间判读。
+    """
+    cp = np.cos(ori[0])
+    if abs(cp) < 1e-12:
+        return float(ori[2])
+    return float(np.arctan2(np.sin(ori[2]) * cp,
+                            np.cos(ori[2]) * cp))
+
+
 @dataclass
 class Pose:
     """关节角 + 根位置 + 根朝向——机器人姿态的完备静态表达。
@@ -70,17 +98,21 @@ class Pose:
     yaw 为躯干朝向相对所在帧 +x 的夹角。
     奇异点：|pitch|≈π/2（躺平）时 yaw/roll 退化——下游
     勿在此区间判读 yaw。
+
+    构造时 orientation 规范化到标准分支（cos(pitch)>=0，
+    见 _canonical_zyx）——非标准分支输入被改写为同旋转的
+    等价角，使 yaw 分量恒等于躯干前向的水平朝向。
     """
     qpos: np.ndarray                 # (21,) rad — 关节空间，与坐标系无关
     root_position: np.ndarray        # (3,) 根位置（所在帧）
-    root_orientation: np.ndarray     # (3,) [pitch,roll,yaw] R=Rz·Ry·Rx
+    root_orientation: np.ndarray     # (3,) [pitch,roll,yaw] R=Rz·Ry·Rx（标准分支）
 
     def __post_init__(self):
         self.qpos = _vec(self.qpos, _JOINTS, "qpos")
         self.root_position = _vec(self.root_position, _VEC3,
                                   "root_position")
-        self.root_orientation = _vec(self.root_orientation, _VEC3,
-                                     "root_orientation")
+        self.root_orientation = _canonical_zyx(
+            _vec(self.root_orientation, _VEC3, "root_orientation"))
 
     # ---------- constructors ----------
 
@@ -110,7 +142,7 @@ class Pose:
         """转成自身 P5 系（踝中点原点、躯干 +x、yaw→0）。"""
         p5 = self.to_p5()
         mid = (p5.left_ankle[:2] + p5.right_ankle[:2]) / 2.0
-        yaw = float(self.root_orientation[2])
+        yaw = _torso_yaw(self.root_orientation)
         c, s = np.cos(-yaw), np.sin(-yaw)
         t = -np.array([[c, -s], [s, c]]) @ mid      # -Rz(-yaw)·mid
         return self._se2(-yaw, t)
@@ -147,7 +179,7 @@ class Pose:
                     model, mujoco.mjtObj.mjOBJ_BODY, f"{body}{r['suffix']}")
             kw[p5name] = (np.asarray(data.xpos[bid])
                           + np.asarray(data.xmat[bid]).reshape(3, 3) @ o)
-        return P5(**kw, torso_yaw=float(self.root_orientation[2]))
+        return P5(**kw, torso_yaw=_torso_yaw(self.root_orientation))
     # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
     _FK = None      # 懒加载共享 (model, data, robot_a 表, 踝偏移)
@@ -198,7 +230,8 @@ class Pose:
 
         踝位 = foot body xpos + xmat·踝偏移（ankle_y/x 关节锚点
         中点，_kinematics 预提取）；com = body_mass 加权 xipos；
-        foot_height = 踝高 − ANKLE_Z_PLANTED；yaw 取 orientation[2]。
+        foot_height = 踝高 − ANKLE_Z_PLANTED；yaw 取躯干前向
+        水平朝向（_torso_yaw）。
         """
         import mujoco
         from .support_state import SupportGeometry, ANKLE_Z_PLANTED
@@ -222,7 +255,7 @@ class Pose:
             com=com,
             left_foot=la[:2].copy(),
             right_foot=ra[:2].copy(),
-            torso_yaw=float(self.root_orientation[2]),
+            torso_yaw=_torso_yaw(self.root_orientation),
             left_foot_height=float(la[2] - ANKLE_Z_PLANTED),
             right_foot_height=float(ra[2] - ANKLE_Z_PLANTED))
 
