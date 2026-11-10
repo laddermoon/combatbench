@@ -252,7 +252,7 @@ class SupportGeometry:
             out.append(PivotAnalysis(foot=name, pivot=pivot, **dirs))
         return tuple(out)
 
-    def reference_p5(self):
+    def reference_pose(self):
         """由几何合成参考 P5 意图——非精确还原。
 
         几何只含 com/脚/yaw，头与手按标称站姿生成；返回的是

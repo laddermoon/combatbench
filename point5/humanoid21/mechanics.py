@@ -18,6 +18,29 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+# ------------------------------------------------------------- body mass ---
+# name -> (mass kg, local COM offset). battle_circular_v2.xml 单台机器人
+# 导出（*_a 与 *_b 同质量）；整树总质量 40.844 kg。
+BODY_MASS: Dict[str, Tuple[float, Tuple[float, float, float]]] = {
+    "torso":           (5.853834, (-0.003864, 0.0, -0.046369)),
+    "head":            (3.053628, (0.0, 0.0, 0.0)),
+    "waist_lower":     (2.261947, (0.0, 0.0, 0.0)),
+    "pelvis":          (6.616194, (-0.02, 0.0, 0.0)),
+    "thigh_right":     (4.751751, (0.0, 0.005, -0.17)),
+    "shin_right":      (2.755696, (0.0, 0.0, -0.15)),
+    "foot_right":      (1.131141, (0.035, 0.0, 0.0)),
+    "thigh_left":      (4.751751, (0.0, -0.005, -0.17)),
+    "shin_left":       (2.755696, (0.0, 0.0, -0.15)),
+    "foot_left":       (1.131141, (0.035, 0.0, 0.0)),
+    "upper_arm_right": (1.661080, (0.08, -0.08, -0.08)),
+    "lower_arm_right": (0.961458, (0.09, 0.09, 0.09)),
+    "hand_right":      (0.268083, (0.0, 0.0, 0.0)),
+    "upper_arm_left":  (1.661080, (0.08, 0.08, -0.08)),
+    "lower_arm_left":  (0.961458, (0.09, -0.09, 0.09)),
+    "hand_left":       (0.268083, (0.0, 0.0, 0.0)),
+}
+_MASS_TOT = float(sum(m for m, _ in BODY_MASS.values()))
+
 # ---------------------------------------------------------------- bodies ---
 # name -> (parent_name | None, pos_offset_in_parent_frame)
 # body quat is identity for every link in this model.
