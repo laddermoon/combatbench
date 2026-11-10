@@ -13,7 +13,7 @@ P5 反解无动量——只能构造 SupportGeometry。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 
@@ -350,9 +350,32 @@ class SupportState(SupportGeometry):
             right_foot_height=self.right_foot_height,
             torso_yaw=self.torso_yaw)
 
-    def capture_point(self) -> np.ndarray:
-        """捕获点（3,) — com + com_vel·√(z/g)。"""
-        raise NotImplementedError
+    def capture_point(self, foot_height_eps: float = 0.02
+                      ) -> Dict[str, np.ndarray]:
+        """捕获点 {foot: (3,)}——每个支点一个（沿用 lip_analyze
+        支点约定：foot_height < eps 的脚）。
+
+        CP_xy = com_xy + com_vel_xy·√(l/g)，摆长 l = com.z −
+        该支点踝心高；返回 z = 踝心高（落点语义与 pivot 同
+        层）。com_vel.z 不用（LIP 恒高假定）。com.z ≤ 踝心
+        → LIP 失效，ValueError。
+        """
+        out = {}
+        for name, fh in (("left", self.left_foot_height),
+                         ("right", self.right_foot_height)):
+            if fh >= foot_height_eps:
+                continue
+            pz = ANKLE_Z_PLANTED + fh               # 支点踝心高
+            l = self.com[2] - pz
+            if l <= 0:
+                raise ValueError(
+                    f"capture_point[{name}]: com.z {self.com[2]:.3f}"
+                    f" ≤ 踝心 {pz:.3f}——LIP 模型失效")
+            w = np.sqrt(l / LIP_G)
+            out[name] = np.array([self.com[0] + self.com_vel[0] * w,
+                                  self.com[1] + self.com_vel[1] * w,
+                                  pz])
+        return out
 
     def transition_to(self, anchor: SupportGeometry
                       ) -> Tuple[SupportGeometry, "SupportState"]:
