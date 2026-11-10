@@ -284,16 +284,6 @@ class PivotAnalysis:
     yaw: DirectionAlpha               # 绕竖直轴（摩擦驱动）
 
 
-
-    def reference_p5(self):
-        """由几何合成参考 P5 意图——非精确还原。
-
-        几何只含 com/脚/yaw，头与手按标称站姿生成；返回的是
-        可用参照点阵，不做信息保真承诺（故名 reference 非 to_）。
-        """
-        raise NotImplementedError
-
-
 @dataclass
 class SupportState(SupportGeometry):
     """动态支撑态 = 几何 + 动量 — 帧无关。
@@ -314,6 +304,14 @@ class SupportState(SupportGeometry):
         """RobotState -> SupportState（薄委托：提取实现住
         RobotState.to_support_state）。"""
         return robot_state.to_support_state()
+
+    @classmethod
+    def from_pose(cls, pose):
+        """禁用——Pose 无动态字段，构造不出 SupportState；
+        走 from_robot_state。"""
+        raise TypeError(
+            "SupportState.from_pose 不能提供 com_vel/ang_mom；"
+            "用 SupportState.from_robot_state(robot_state)")
 
     def _se2(self, dyaw: float, dxy) -> "SupportState":
         """SE(2) 变换：几何走父类，com_vel/ang_mom 乘 Rz(dyaw)。"""
