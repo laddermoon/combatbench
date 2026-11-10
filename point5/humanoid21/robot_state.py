@@ -154,7 +154,11 @@ class Pose:
 
     @classmethod
     def _kinematics(cls):
-        """懒加载共享 FK 模型 + 踝点偏移（ankle_y/x 锚点中点）。"""
+        """懒加载共享 FK 模型 + 踝点偏移（ankle_y/x 锚点中点）。
+
+        注意：**不支持多线程**——_FK 里的 MjData 是全部实例共享的
+        可变缓冲区，并行调用 FK 方法会互相覆盖中间结果。
+        """
         if cls._FK is None:
             import mujoco
             from envs.humanoid21.meta import Humanoid21Meta
