@@ -171,6 +171,12 @@ def _rot(axis: np.ndarray, angle: float) -> np.ndarray:
         [z * x * C - y * s, z * y * C + x * s, c + z * z * C]])
 
 
+def _drot(axis: np.ndarray, angle: float) -> np.ndarray:
+    """d/dθ R(axis,θ) = cosθ·K + sinθ·K²，K = skew(单位轴)。"""
+    K = _skew(np.asarray(axis, dtype=np.float64))
+    return np.cos(angle) * K + np.sin(angle) * (K @ K)
+
+
 def _quat_mat(q_wxyz: np.ndarray) -> np.ndarray:
     w, x, y, z = np.asarray(q_wxyz, dtype=np.float64)
     n = w * w + x * x + y * y + z * z
@@ -218,6 +224,51 @@ class Skeleton:
             xf[name] = (pos, mat)
             out[name] = (pos, mat)
         return out
+
+    def anchors_jac(self, root_pos, root_quat_wxyz, q, joint_names):
+        """关节锚点世界坐标 + (n,3,21) 对 q 的解析雅可比。
+
+        锚点 a_w[j] 在 FK 中于该关节自身旋转之前求值：只随祖先关节
+        与同窗内先于它的关节动，自身与下游关节不动它。
+        踝心 = ankle_y 锚点——双脚踝旋转下不动，即 P5 踝心语义。
+        """
+        q = np.asarray(q, dtype=np.float64)
+        jis = [self.joint_index[n] for n in joint_names]
+        pending = set(jis)
+        # 每个 body 的祖先关节集（兄弟链不算）——锚点雅可比的非零列域
+        anc_of = {}
+        for name in self.order:
+            par = self.parent[name]
+            anc_of[name] = ([] if par is None else
+                            anc_of[par]
+                            + [j for j, _, _ in self.joints_on[par]])
+        xf = {"__root__": (np.asarray(root_pos, dtype=np.float64),
+                           _quat_mat(root_quat_wxyz))}
+        a_w, k_w, prec = {}, {}, {}
+        for name in self.order:
+            parent = self.parent[name] or "__root__"
+            ppos, pmat = xf[parent]
+            pos = ppos + pmat @ self.bpos[name]
+            mat = pmat.copy()
+            body_seen = list(anc_of[name])
+            for jidx, anchor, axis in self.joints_on[name]:
+                a_w[jidx] = pos + mat @ anchor
+                k_w[jidx] = mat @ axis
+                prec[jidx] = body_seen          # 祖先 + 同 body 先于自己的关节
+                body_seen = body_seen + [jidx]
+                R = _rot(axis, q[jidx])
+                pos = pos + mat @ (anchor - R @ anchor)
+                mat = mat @ R
+            xf[name] = (pos, mat)
+            pending -= set(j for j, _, _ in self.joints_on[name])
+            if not pending:
+                break          # 请求的锚点全部捕获后不再遍历下游 body
+        pos_out = np.stack([a_w[j] for j in jis])
+        jac = np.zeros((len(jis), 3, len(JOINT_NAMES)))
+        for ai, jidx in enumerate(jis):
+            for jp in prec[jidx]:
+                jac[ai, :, jp] = np.cross(k_w[jp], a_w[jidx] - a_w[jp])
+        return pos_out, jac
 
     def landmarks(self, root_pos, root_quat_wxyz, q) -> np.ndarray:
         """(5,3) landmark world positions in LANDMARK_ORDER."""
@@ -685,5 +736,277 @@ def _result(root_pos, root_quat, q_norm, achieved, target,
         "satisfied": failed is None and bool(errs.max() <= tolerance),
         "failed_stage": failed,
         "energy": spring_energy(q_norm),
+        "joint_names": JOINT_NAMES,
+    }
+
+
+# --------------------------------------------- P5 -> Pose solver (v3 spec) --
+# infer_pose_from_p5.md：标准 P5 帧，三阶段，min 弹性能 + 硬位置约束。
+# 求解一变量 = pitch/roll + 11 内部关节（腰 3 + 髋膝 8）；
+# 踝关节对位置约束不可见（踝心=上游锚点）故不参与，留到求解三纯先验；
+# 手臂留到求解二。
+_S1_IDX = np.array([_JIDX[n] for n in (
+    "abdomen_z", "abdomen_y", "abdomen_x",
+    "hip_x_right", "hip_z_right", "hip_y_right", "knee_right",
+    "hip_x_left", "hip_z_left", "hip_y_left", "knee_left")])
+_ANKLE_CENTER = ("ankle_y_right", "ankle_y_left")   # P5 踝心 = 上游锚点
+
+_X_AX = np.array([1.0, 0.0, 0.0])
+_Y_AX = np.array([0.0, 1.0, 0.0])
+
+
+def _egrad_hess(qn_vals: np.ndarray, idx: np.ndarray):
+    """归一化坐标弹性能在 idx 关节上的梯度/对角 Hessian。"""
+    s = np.asarray(qn_vals, dtype=np.float64)
+    k = np.where(s < 0.0, _SPRING_K_LOW[idx], _SPRING_K_HIGH[idx])
+    lin = _SPRING_LIN[idx]
+    g = np.where(lin, k * s, k * s * np.abs(s))
+    h = np.where(lin, k, 2.0 * k * np.abs(s))
+    return g, h
+
+
+def solve_p5_pose(target_pos: np.ndarray,
+                  skeleton: "Skeleton | None" = None,
+                  tolerance: float = 0.02,
+                  max_iter: int = 80,
+                  restarts: int = 2,
+                  max_evals: int = 150) -> dict:
+    """标准 P5 帧 5 点 -> 全身姿态（能量最小 + 硬位置约束，KKT-牛顿）。
+
+    与 solve_equilibrium 的区别：输入 yaw≡0 的标准帧；脚 landmark 换
+    踝心（ankle_y 锚点，踝角不动它）；阶段一用踝心−头相对向量（6 eq），
+    变量 13（pitch/roll + 11 关节）；阶段二躯干冻结、闭式臂 IK、不可达
+    放宽；阶段三踝 = 弹簧中心纯先验；root_pos 由头绝对位置恢复。
+
+    target_pos: (5,3)，LANDMARK_ORDER 序，foot_* 槽位放踝心坐标。
+    satisfied=False 表示阶段一几何不可达（多初值重试后仍未达标）。
+    """
+    sk = skeleton or Skeleton()
+    target = np.asarray(target_pos, dtype=np.float64)
+    if target.shape != (5, 3):
+        raise ValueError(f"target_pos must be (5,3), got {target.shape}")
+    if not np.isfinite(target).all():
+        raise ValueError("target_pos: non-finite values")
+
+    h_t = target[_LM_IDX["head"]]
+    rel_t = np.stack([target[_LM_IDX["foot_right"]] - h_t,
+                      target[_LM_IDX["foot_left"]] - h_t])     # (2,3)
+    zero3 = np.zeros(3)
+
+    head_off = _BODY_OFF["head"]        # head 无关节：头点 = R·offset
+    eval_cnt = [0]                      # 跨初值共享 eval 计数（~0.5ms/次）
+
+    def eval1(v):
+        """stage-1 残差/雅可比/能量梯度。v = (pitch, roll, qn[11])。
+
+        头点只随 root 转（head 体无关节、父为 torso），关节雅可比恒 0；
+        解析算头、只对踝锚点跑一遍 FK——单次遍历拿全部量。
+        """
+        eval_cnt[0] += 1
+        p, r = v[0], v[1]
+        qn = np.zeros(len(JOINT_NAMES))
+        qn[_S1_IDX] = v[2:]
+        cp, sp = np.cos(p / 2), np.sin(p / 2)
+        cr, sr = np.cos(r / 2), np.sin(r / 2)
+        quat = np.array([cp * cr, cp * sr, sp * cr, -sp * sr])  # Ry·Rx
+        qr = norm_to_rad(qn)
+        h = (_rot(_Y_AX, p) @ _rot(_X_AX, r)) @ head_off
+        a, Jq_a = sk.anchors_jac(zero3, quat, qr, _ANKLE_CENTER)
+        rel = np.stack([a[0] - h, a[1] - h])                    # (2,3)
+        res = (rel - rel_t).ravel()                           # (6,)
+        J = np.zeros((6, 13))
+        Ry, Rx = _rot(_Y_AX, p), _rot(_X_AX, r)
+        dRyRt = _drot(_Y_AX, p) @ Rx @ (Ry @ Rx).T
+        dRxRt = Ry @ _drot(_X_AX, r) @ (Ry @ Rx).T
+        for k in range(2):
+            J[3 * k:3 * k + 3, 0] = dRyRt @ rel[k]
+            J[3 * k:3 * k + 3, 1] = dRxRt @ rel[k]
+            # 变量是归一化坐标：d rel/d qn = J_rad · half_range
+            J[3 * k:3 * k + 3, 2:] = (Jq_a[k, :, :][:, _S1_IDX]
+                                      * _HALF[_S1_IDX][None, :])
+        return res, J, rel, h, quat, qr
+
+    def solve1(v0, budget):
+        """两段：LM 最小二乘先求可行（残差单调降）→ KKT-QP 抛能量。
+        budget = 本初值可用的 eval 上限（与全局 eval_cnt 共享）。
+        返回 (v, ok)。"""
+        v = np.asarray(v0, dtype=np.float64).copy()
+        mu = 1e-4
+        # phase A：可行性（残差平方和的 Levenberg-Marquardt）
+        for _ in range(max_iter):
+            if eval_cnt[0] >= budget:
+                return v, False
+            res, J, *_ = eval1(v)
+            cost = float(res @ res)
+            if np.abs(res).max() <= tolerance:
+                break
+            JtJ = J.T @ J
+            Jtr = J.T @ res
+            improved = False
+            for _ in range(10):
+                if eval_cnt[0] >= budget:
+                    return v, False
+                try:
+                    d = np.linalg.solve(
+                        JtJ + mu * np.eye(13), -Jtr)
+                except np.linalg.LinAlgError:
+                    return v, False
+                vn = v + d
+                vn[2:] = np.clip(vn[2:], -1.0, 1.0)
+                res_n = eval1(vn)[0]
+                if res_n @ res_n < cost:
+                    v, mu, improved = vn, max(mu / 3.0, 1e-9), True
+                    break
+                mu *= 5.0
+            if not improved:
+                return v, False                  # LM 局部极小：本初值失败
+        else:
+            return v, False
+        # phase B：KKT-QP 抛能量（保持残差 ≤ tol 且 E 严格下降）
+        for _ in range(20):
+            if eval_cnt[0] >= budget:
+                break
+            res, J, *_ = eval1(v)
+            g = np.zeros(13)
+            H = np.zeros(13)
+            g[2:], H[2:] = _egrad_hess(v[2:], _S1_IDX)
+            A = np.zeros((19, 19))
+            A[:13, :13] = np.diag(H + 1e-4)
+            A[:13, 13:] = J.T
+            A[13:, :13] = J
+            try:
+                d = np.linalg.solve(A, np.concatenate([-g, -res]))[:13]
+            except np.linalg.LinAlgError:
+                break
+            e0 = _energy_of(v[2:], _S1_IDX)
+            for bt in range(9):
+                if eval_cnt[0] >= budget:
+                    break
+                step = 0.5 ** bt
+                vn = v + d * step
+                vn[2:] = np.clip(vn[2:], -1.0, 1.0)
+                res_n = eval1(vn)[0]
+                if np.abs(res_n).max() <= tolerance and \
+                        _energy_of(vn[2:], _S1_IDX) < e0:
+                    v = vn
+                    break
+            else:
+                break
+            if np.linalg.norm(d * step) < 1e-7:
+                break
+        return v, True
+
+    # ---- stage 1：13 变量 6 硬约束，能量最小 --------------------------
+    # 初值序列：几何估计（头−踝倾斜→躯干角、余弦定理→膝角、踝向→髋角，
+    # 覆盖绝大多数姿态的吸引域）→ 两级确定性扰动（邻近流域）→
+    # rad0（直站姿）→ norm0（弹簧中心）→ 可选随机重启。
+    def geo_init():
+        PELVIS_DROP = 0.615          # 头→骨盆落差（直立近似，BODIES 量出）
+        L1, L2 = 0.42, 0.31          # 髋→膝 / 膝→踝心
+        mid = (rel_t[0] + rel_t[1]) / 2.0
+        v = np.zeros(13)
+        down = max(-mid[2], 1e-6)
+        v[0] = np.clip(np.arctan2(-mid[0], down), -1.2, 1.2)
+        v[1] = np.clip(np.arctan2(mid[1], down), -1.0, 1.0)
+
+        def to_qn(rad, name):
+            i = _JIDX[name]
+            return float((rad - _MID[i]) / _HALF[i])
+        for k, leg in enumerate(("right", "left")):
+            pa = rel_t[k] + np.array([0.0, 0.0, PELVIS_DROP])
+            d = np.clip(np.linalg.norm(pa), L1 - L2 + 0.02, L1 + L2 - 0.02)
+            interior = np.arccos((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2))
+            q_knee = -(np.pi - interior)
+            hd = pa / max(np.linalg.norm(pa), 1e-6)
+            q_hipy = -np.arctan2(hd[0], -hd[2])
+            q_hipz = np.arctan2(-hd[1] * (-1.0 if leg == "right" else 1.0),
+                                -hd[2])
+            base = 2 + (3 if leg == "right" else 7)
+            v[base + 0] = 0.0
+            v[base + 1] = np.clip(to_qn(q_hipz, f"hip_z_{leg}"), -1, 1)
+            v[base + 2] = np.clip(to_qn(q_hipy, f"hip_y_{leg}"), -1, 1)
+            v[base + 3] = np.clip(to_qn(q_knee, f"knee_{leg}"), -1, 1)
+        return v
+
+    qn_rad0 = rad_to_norm(np.zeros(len(JOINT_NAMES)))[_S1_IDX]
+    g0 = geo_init()
+    # 直膝变体：抬腿/踢姿下"骨盆垂距"假设失效、膝角估错流域，
+    # 同髋估计＋两膝伸直覆盖该流域。
+    g_straight = g0.copy()
+    for leg in ("right", "left"):
+        i = _JIDX[f"knee_{leg}"]
+        g_straight[(2 + (3 if leg == "right" else 7)) + 3] = np.clip(
+            -_MID[i] / _HALF[i], -1, 1)
+    rng = np.random.default_rng(0)
+    inits = [g0,
+             g_straight,
+             g0 + rng.uniform(-0.12, 0.12, 13),
+             g0 + rng.uniform(-0.25, 0.25, 13),
+             np.concatenate([[0.0, 0.0], qn_rad0]),
+             np.zeros(13)]
+    for _ in range(max(0, restarts - 1)):
+        inits.append(np.concatenate(
+            [rng.uniform(-0.4, 0.4, 2), rng.uniform(-0.5, 0.5, 11)]))
+    v, ok1 = None, False
+    for v0 in inits:
+        if eval_cnt[0] >= max_evals:
+            break
+        v, ok1 = solve1(v0, max_evals)
+        if ok1:
+            break
+
+    res, _, _, h_m, quat, qr_body = eval1(v)
+    r_max = float(np.abs(res).max())
+
+    # ---- stage 4 提前：root 平移 = 目标头 − 模型头（臂/踝不影响头踝）--
+    root_pos = h_t - h_m
+
+    # ---- stage 3：踝关节纯先验 = 弹簧中心（norm 0，该模型即 rad 0）----
+    qn = np.zeros(len(JOINT_NAMES))
+    qn[_S1_IDX] = v[2:]                                  # 踝位已是 0
+
+    # ---- stage 2：冻结躯干+腿，每臂闭式 3x3 IK，不可达放宽 ------------
+    stage2 = {}
+    if ok1:
+        qr_full = norm_to_rad(qn)
+        xf = sk.body_transforms(root_pos, quat, qr_full)
+        t_pos, t_mat = xf["torso"]
+        for side in ("right", "left"):
+            sp = _ARM[side]
+            s0 = t_pos + t_mat @ sp["s_off"]
+            tgt_h = target[_LM_IDX[f"hand_{side}"]]
+            cand = _arm_ik(tgt_h - s0, t_mat, sp)
+            if cand:
+                pick = min(cand, key=lambda c: (c["vio"], c["e"]))
+                qn[np.asarray(sp["ji"])] = pick["qn"]
+                stage2[side] = {"vio": pick["vio"], "e": pick["e"],
+                                "relaxed": bool(pick["vio"] > 1e-9)}
+            else:
+                stage2[side] = {"vio": np.inf, "e": 0.0,
+                                "relaxed": True}          # 退化：留 norm 0
+    else:
+        for side in ("right", "left"):
+            stage2[side] = {"vio": np.inf, "e": 0.0, "relaxed": True}
+
+    qr = norm_to_rad(qn)
+    lms = sk.landmarks(root_pos, quat, qr)
+    a_f, _ = sk.anchors_jac(root_pos, quat, qr, _ANKLE_CENTER)
+    achieved = lms.copy()
+    achieved[_LM_IDX["foot_right"]] = a_f[0]
+    achieved[_LM_IDX["foot_left"]] = a_f[1]
+    errs = np.linalg.norm(achieved - target, axis=1)
+    return {
+        "root_pos": root_pos,
+        "root_quat_wxyz": quat,
+        "pitch": float(v[0]), "roll": float(v[1]),
+        "q_norm": qn,
+        "q_rad": qr,
+        "landmarks": achieved,
+        "point_errors": errs,
+        "satisfied": bool(ok1),
+        "stage1": {"converged": bool(ok1), "evals": eval_cnt[0],
+                   "max_resid": r_max},
+        "stage2": stage2,
+        "energy": spring_energy(qn),
         "joint_names": JOINT_NAMES,
     }

@@ -121,12 +121,33 @@ class Pose:
 
     @classmethod
     def infer_from_p5(cls, p5, tolerance: float = 0.02) -> "Pose":
-        """P5 局部姿态 -> Pose（solve_equilibrium 反解关节角）。
+        """P5 -> Pose（三阶段反解，能量最小+硬位置约束）。
 
         infer_* = 近似推断（源里没有 qpos/position，靠 solver 重建），
         区别于 from_* 的无损解码。产 P5 坐标系的姿态。
+
+        流程（infer_pose_from_p5.md）：standardize → 阶段一 13 变量
+        （pitch/roll+腰3+腿8）min 弹性能 s.t. 踝心−头相对向量 6 eq →
+        阶段二冻结躯干闭式臂 IK（不可达放宽）→ 阶段三踝=弹簧中心 →
+        root 由头绝对位置恢复 → _se2 反变换回原帧。
+
+        阶段一几何不可达（多初值后残差仍超 tolerance）时 ValueError。
         """
-        raise NotImplementedError
+        from .mechanics import solve_p5_pose
+        std = p5.standardize()
+        target = np.stack([std.head, std.right_hand, std.left_hand,
+                           std.right_ankle, std.left_ankle])
+        res = solve_p5_pose(target, tolerance=tolerance)
+        if not res["satisfied"]:
+            raise ValueError(
+                "infer_from_p5: 阶段一不可达 "
+                f"(max_resid={res['stage1']['max_resid']:.4f} m)")
+        pose_std = cls(qpos=res["q_rad"],
+                       root_position=res["root_pos"],
+                       root_orientation=np.array(
+                           [res["pitch"], res["roll"], 0.0]))
+        mid_xy = (p5.left_ankle[:2] + p5.right_ankle[:2]) / 2.0
+        return pose_std._se2(p5.torso_yaw, mid_xy)
 
 
     def _se2(self, dyaw: float, dxy) -> "Pose":
