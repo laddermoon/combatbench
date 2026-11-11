@@ -168,6 +168,56 @@ class TestDriftAlpha:
                                    atol=1e-12)
 
 
+class TestCanBalance:
+    """踝矩可达域判据：ξ 须落在可控 COP 界内。"""
+
+    def test_airborne_false(self):
+        st = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09],
+                 lfh=0.2, rfh=0.2)
+        assert not st.can_balance()
+
+    def test_still_over_pivot(self):
+        st = _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25)
+        assert st.can_balance()
+
+    def test_actuator_bound_not_sole(self):
+        """com 前偏 0.08：在鞋底几何缘(0.167)内但超执行器界
+        (τ_act/mg≈0.050) → False。"""
+        st = _st([0.08, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25)
+        assert not st.can_balance()
+        st2 = _st([0.04, 0.1, 0.95], [0, 0.1], [0.3, -0.3],
+                  rfh=0.25)
+        assert st2.can_balance()
+
+    def test_lateral_sole_bound(self):
+        """侧向 N·margin_side < τ_act → 界 = 0.047 鞋底缘。"""
+        assert not _st([0, 0.16, 0.95], [0, 0.1], [0.3, -0.3],
+                       rfh=0.25).can_balance()
+        assert _st([0, 0.14, 0.95], [0, 0.1], [0.3, -0.3],
+                   rfh=0.25).can_balance()
+
+    def test_moving_xi_out(self):
+        """com 居中但速度把 ξ 顶出界：v=0.4 → ξ≈0.12 > 0.05。"""
+        assert not _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3],
+                       rfh=0.25, v=(0.4, 0, 0)).can_balance()
+        assert _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3],
+                   rfh=0.25, v=(0.15, 0, 0)).can_balance()
+
+    def test_hinge_loadshare_stronger(self):
+        """双脚载重分摊不占踝矩：com 前偏 0.15（单脚必死，
+        双脚在鞋底缘 0.167 内）→ True。"""
+        st = _st([0.15, 0, 0.95], [0, 0.1], [0, -0.1])
+        assert st.can_balance()
+        st2 = _st([0.2, 0, 0.95], [0, 0.1], [0, -0.1])
+        assert not st2.can_balance()
+
+    def test_hinge_along_axis_free(self):
+        """com 沿踝轴偏出双脚端点 ≠ 失衡（锁死方向）——垂直
+        分量在界内即 True。"""
+        st = _st([0.0, 0.9, 0.95], [0, 0.1], [0, -0.1])
+        assert st.can_balance()
+
+
 def _aim(l, r):
     return SupportGeometry(com=np.zeros(3),
         left_foot=np.asarray(l, float),

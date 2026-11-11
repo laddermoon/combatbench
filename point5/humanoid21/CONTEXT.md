@@ -64,6 +64,9 @@ P5 协议见 `../p5.py`。
   不裁剪——预算归 lip_analyze）；
   模式 t=0 定死不切、**摆脚再触地不入模型**（规则），
   但 pivot 报 swing_min_clearance（<0=本会触地，纯诊断）；
+  `can_balance()`：0 步可捕获性——ξ 落在可控 COP 界内
+  （pivot: min(τ_act,N·margin)/N ~5cm 执行器限；hinge:
+  载重分摊=多边形垂直轴全长，沿轴锁死不查）；
   `path_to(aim)`：纯几何脚步序列（相邻差一脚、落点在不动脚
   step_radius 内），贪心交替、aim 站位过宽/不收敛 raise；
   `reference_pose()`：几何→参考 Pose（见 solve_support_pose）。
