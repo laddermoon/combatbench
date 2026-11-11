@@ -273,9 +273,66 @@ class Pose:
             left_foot_height=float(la[2] - ANKLE_Z_PLANTED),
             right_foot_height=float(ra[2] - ANKLE_Z_PLANTED))
 
-    def render(self, out_path, **kw) -> list:
-        """渲染为 PNG（需 OpenGL platform）。"""
-        raise NotImplementedError
+    _RENDERERS = {}   # (height,width) -> mujoco.Renderer 懒缓存
+    _FK_RB_ADR = None  # robot_b root_qpos_adr（render 停置用）
+
+    def render(self, out_path=None, width: int = 1280,
+               height: int = 720, camera=None,
+               distance: float = 2.5, elevation: float = -20.0,
+               azimuth: float = 135.0) -> "PIL.Image.Image":
+        """-> PIL.Image：当前姿态离屏渲染（参照 simulator
+        broadcast-view：mjv_defaultCamera 自定位 + 尺寸缓存
+        Renderer + update_scene/render）。
+
+        camera=None 时用自由相机：lookat=root_position（z
+        clamp [0.2,0.9]），distance/elevation/azimuth 可调；
+        camera=<xml 相机名>（如 "cam_diag_0"/"ceilingcamera"）
+        改用场景相机。robot_b 停置 (10,10) 不入画；out_path
+        给定时另存 PNG。
+
+        需 OpenGL platform——本机 egl/glfw 不可用，未设
+        MUJOCO_GL 时默认 "osmesa"（预设值优先）。共享渲染
+        资源与 FK 缓冲区**非线程安全**（同 _FK 约定）。
+        """
+        import os
+        os.environ.setdefault("MUJOCO_GL", "osmesa")
+        import mujoco
+        from PIL import Image
+        model, data, r, jid = self._kinematics()
+        adr = int(r["root_qpos_adr"])
+        data.qpos[adr:adr + 3] = self.root_position
+        data.qpos[adr + 3:adr + 7] = _zyx_to_quat_wxyz(
+            self.root_orientation)
+        data.qpos[np.asarray(r["qpos_indices"])] = self.qpos
+        if Pose._FK_RB_ADR is None:
+            from envs.humanoid21.meta import Humanoid21Meta
+            Pose._FK_RB_ADR = int(Humanoid21Meta
+                .build_runtime_tables(model)["robots"]
+                ["robot_b"]["root_qpos_adr"])
+        data.qpos[Pose._FK_RB_ADR:Pose._FK_RB_ADR + 3] = (
+            10.0, 10.0, 0.5)                           # robot_b 停置
+        mujoco.mj_kinematics(model, data)
+
+        if camera is None:
+            cam = mujoco.MjvCamera()
+            mujoco.mjv_defaultCamera(cam)
+            lookat = self.root_position.copy()
+            lookat[2] = np.clip(lookat[2], 0.2, 0.9)
+            cam.lookat[:] = lookat
+            cam.distance, cam.elevation, cam.azimuth = (
+                float(distance), float(elevation), float(azimuth))
+            camera = cam
+        key = (int(height), int(width))
+        renderer = Pose._RENDERERS.get(key)
+        if renderer is None:
+            renderer = mujoco.Renderer(model, height=key[0],
+                                       width=key[1])
+            Pose._RENDERERS[key] = renderer
+        renderer.update_scene(data, camera=camera)
+        img = Image.fromarray(renderer.render())
+        if out_path is not None:
+            img.save(out_path)
+        return img
 
 
     def inertia_matrix(self) -> np.ndarray:

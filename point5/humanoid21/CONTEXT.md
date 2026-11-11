@@ -51,7 +51,8 @@ P5 协议见 `../p5.py`。
   root 朝向 = [pitch,roll,yaw]，R=Rz(yaw)·Ry(pitch)·Rx(roll) 标准分支。
   `infer_from_p5(p5)` 走 standardize → solve_p5_pose → _se2 反变换；
   `to_p5()`/`standardize()`/`reanchor()`/`to_support_geometry()`/
-  `render()`/`inertia_matrix()`（后两者走 MuJoCo）。
+  `render()`(→PIL.Image，osmesa 兜底、robot_b 停置)/
+  `inertia_matrix()`（后两者走 MuJoCo）。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`；
   `take_action(action,dt)`=模拟器真值推演（共享 Humanoid21
   Simulator 懒加载、robot_b 停置远处、同帧输出），**返回新

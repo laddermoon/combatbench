@@ -73,3 +73,21 @@ class TestTakeAction:
     def test_bad_action_shape_raises(self, st):
         with pytest.raises(ValueError):
             st.take_action(np.zeros(10))
+
+
+class TestRender:
+    def test_render_pil_and_save(self, st, tmp_path):
+        img = st.render(out_path=tmp_path / "pose.png",
+                        width=640, height=480)
+        from PIL import Image
+        assert isinstance(img, Image.Image)
+        assert img.size == (640, 480)
+        assert (tmp_path / "pose.png").exists()
+        # 非纯黑/纯白——确实渲到了内容
+        arr = np.asarray(img)
+        assert arr.std() > 5.0
+
+    def test_render_named_camera(self, st):
+        img = st.render(camera="ceilingcamera",
+                        width=320, height=240)
+        assert img.size == (320, 240)
