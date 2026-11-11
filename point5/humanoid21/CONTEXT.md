@@ -62,8 +62,19 @@ P5 协议见 `../p5.py`。
   `action_for_*` 逆向查询族（a ∈ [−1,1]²¹ → 单步最优推进，
   全部是"最优化问题"语义）：`action_for_balance` 已实现
   （决策=21 维 action、oracle=take_action、目标
-  J=max(0,M̃)²+w·‖a−a_hold‖²、L-BFGS-B 黑盒 FD、秒级）；
+  J=max(0,M̃+band)²+w·‖a−a_hold‖²、L-BFGS-B 黑盒 FD、秒级）。
+  关键参数：band=深度带（目标 margin≤−band，纯 hinge 会
+  让核内深度无差别、贴边滑出——e2e 实证）；horizon=开环
+  保持步数（50ms 太短看不到踝修正趋势，e2e 用 3）；
+  快路径=margin≤−band 直返 a_hold（J=0 全局下界）。
+  **坑**：balance_margin 返回 +inf 是返回值非异常——
+  必须映射成有限罚，inf² 会经 FD 产生 NaN 梯度假收敛。
   `action_for_pose`/`action_for_support_state` 占位。
+- `e2e_balance_video.py`：连续 action_for_balance 闭环
+  演示视频（站姿→中推→倒地/恢复，帧叠 margin/|Δa|/root_z，
+  ffmpeg|cv2 写 mp4）。e2e 实证：优化器能钉住 margin 但
+  以下蹲换（目标无姿态项——"站桩要直"需加 posture/com_z
+  惩罚项，留作改进）；0.35m/s 推超出踝+姿态权威。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
   `SupportState.drift(dt, alpha=None)`：重力+接触约束演化

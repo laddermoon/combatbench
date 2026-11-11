@@ -591,27 +591,34 @@ class RobotState(Pose):
     def action_for_balance(self, dt: float = 0.05,
                            w_hold: float = 0.01,
                            max_evals: int = 100,
-                           eps: float = 0.02) -> np.ndarray:
+                           eps: float = 0.02,
+                           band: float = 1.0,
+                           horizon: int = 1) -> np.ndarray:
         """-> (21,) 归一化 action：无点目标，只求下一步留在
         平衡核内（"站桩"档）——最优化问题 v1：
 
             决策变量   a ∈ [-1,1]²¹（归一化关节目标）
-            oracle    s'(a) = take_action(s, a)，ξ' 取末端
-                      support_state
-            目标       J = max(0, M̃(s'))² + w_hold·‖a−a_hold‖²
+            oracle    s'(a) = take_action(s, a)（重复 horizon
+                      次 = 开环保持该 action 至 horizon·dt），
+                      ξ' 取末端 support_state
+            目标       J = max(0, M̃(s') + band)²
+                       + w_hold·‖a−a_hold‖²
                        M̃ = balance_margin / reach_ref（无量纲，
                        reach_ref = τ_act/(mg) ≈ 0.05m）；
-                       a_hold = rad_to_norm(qpos)（不动先验——
-                       能不动就不动，核内解收敛到 a_hold）
+                       band = 深度带——目标不是贴边入核而是
+                       margin ≤ −band（核内浅层即启动纠正，
+                       纯 hinge 会让核内深度无差别、贴边滑出）；
+                       a_hold = rad_to_norm(qpos)（不动先验）
             求解       L-BFGS-B 盒界 + 有限差分梯度（eps=0.02
                        action 单位），黑盒 ~22 evals/grad，
                        maxfun 封顶
 
         边界与限制：margin 按末端态贴地脚评估（摆动期以实际
-        stance 计）；50ms 单步 horizon 只见踝/姿态策略——迈步
-        恢复的 payoff 在落地才兑现，不属本档（走
-        action_for_support_state）。oracle 内部异常按 +inf
-        罚回推。求解时长 ~秒级（eval 预算内）。
+        stance 计）；horizon=1 时 50ms 单步只见踝/姿态策略——
+        迈步恢复的 payoff 在落地才兑现，不属本档（走
+        action_for_support_state）；horizon>1 评估的是
+        "保持该 action 的开环推演"，比闭环保守但能看到
+        发散/收敛趋势。oracle 内部异常按 +inf 罚回推。
         """
         from scipy.optimize import minimize
         from .mechanics import rad_to_norm
@@ -619,13 +626,28 @@ class RobotState(Pose):
         a_hold = np.clip(rad_to_norm(self.qpos), -1.0, 1.0)
         ref = LIP_TAU_ACT / (LIP_MASS * LIP_G)
 
+        def margin_of(a):
+            s2 = self
+            for _ in range(int(horizon)):
+                s2 = s2.take_action(a, dt=dt)
+            return s2.to_support_state().balance_margin() / ref
+
+        # 快路径：a_hold 推演后 margin ≤ −band → J=0 已是全局
+        # 下界（两项非负且同时为 0），深度安全的核内态直接返回。
+        try:
+            if margin_of(a_hold) <= -band:
+                return a_hold
+        except Exception:
+            pass
+
         def J(a):
             try:
-                s2 = self.take_action(a, dt=dt)
-                m = s2.to_support_state().balance_margin() / ref
+                m = margin_of(a)
             except Exception:
                 return 1e6
-            return max(0.0, m) ** 2 \
+            if not np.isfinite(m):    # 腾空/LIP 失效——
+                return 1e6            # 大罚而非 inf²（会污染 FD 梯度）
+            return max(0.0, m + band) ** 2 \
                 + w_hold * float(np.sum((a - a_hold) ** 2))
 
         res = minimize(J, a_hold, method="L-BFGS-B",
