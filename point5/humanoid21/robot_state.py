@@ -442,3 +442,88 @@ class RobotState(Pose):
             com_vel=np.asarray(
                 data.subtree_linvel[r["root_body_id"]]).copy(),
             ang_mom=self.ang_mom.copy())
+
+    _SIM = None     # 懒加载共享 (simulator, robot_a 表, robot_b 表)
+
+    @classmethod
+    def _sim(cls):
+        """懒加载共享模拟器 + 双机器人运行时表——take_action
+        的动力学 oracle。
+
+        注意：**不支持多线程**——sim.data 是全部调用共享的
+        可变缓冲区（与 _FK 同约定）。
+        """
+        if cls._SIM is None:
+            from envs.humanoid21.meta import Humanoid21Meta
+            from envs.humanoid21.simulator import Humanoid21Simulator
+            sim = Humanoid21Simulator()
+            rb = Humanoid21Meta.build_runtime_tables(
+                sim.model)["robots"]
+            cls._SIM = (sim, rb["robot_a"], rb["robot_b"])
+        return cls._SIM
+
+    def take_action(self, action, dt: float = 0.05) -> "RobotState":
+        """21 维归一化动作 -> 新 RobotState（模拟器单控制周期
+        真值推演，**返回新对象**——本态保持不变，供其它候选
+        动作在同一底本上评估）。
+
+        action 与 env action 空间一致：[-1,1] 归一化关节目标，
+        PD 伺服逐物理子步驱动（DT=0.002s）。dt = 控制周期，
+        折合 round(dt/DT) 个子步；dt<=0 报 ValueError。
+
+        状态原样写入 sim 世界系（输入属 leveled 帧族、z=0 地面
+        与 sim 一致，输出即同帧表达、免帧簿记）；robot_b 停置
+        (10,10) 不参与。arena 墙体在世界坐标固定位置——输入态
+        xy 远离场心时撞墙是诚实物理而非误差。共享 sim 状态
+        **非线程安全**；推演确定性（同态同动作同输出）。
+        """
+        import mujoco
+        if dt <= 0:
+            raise ValueError(f"take_action: dt<=0 ({dt})")
+        action = np.asarray(action, np.float64)
+        if action.shape != _JOINTS:
+            raise ValueError(
+                f"take_action: action shape {action.shape} != {_JOINTS}")
+        sim, ra, rb = self._sim()
+        model, data = sim.model, sim.data
+
+        adr, vadr = int(ra["root_qpos_adr"]), int(ra["root_qvel_adr"])
+        quat = _zyx_to_quat_wxyz(self.root_orientation)
+        data.qpos[adr:adr + 3] = self.root_position
+        data.qpos[adr + 3:adr + 7] = quat
+        data.qpos[np.asarray(ra["qpos_indices"])] = self.qpos
+        data.qvel[vadr:vadr + 3] = self.root_linvel       # 世界系线速度
+        Rm = np.empty(9)
+        mujoco.mju_quat2Mat(Rm, quat)
+        data.qvel[vadr + 3:vadr + 6] = (
+            Rm.reshape(3, 3).T @ self.root_angvel)        # 存机体系角速度
+        data.qvel[np.asarray(ra["qvel_indices"])] = self.qvel
+        badr, bvadr = int(rb["root_qpos_adr"]), int(rb["root_qvel_adr"])
+        data.qpos[badr:badr + 3] = (10.0, 10.0, 0.5)      # robot_b 停置远处
+        data.qvel[bvadr:bvadr + 6] = 0.0
+        sim._data_cache.clear()
+        mujoco.mj_forward(model, data)
+
+        sim.set_action({"robot_a": action, "robot_b": np.zeros(21)})
+        for _ in range(max(1, int(round(dt / sim.dt)))):
+            sim.physical_step()
+
+        mujoco.mj_subtreeVel(model, data)
+        quat_o = np.asarray(data.qpos[adr + 3:adr + 7], np.float64)
+        Rm_o = np.empty(9)
+        mujoco.mju_quat2Mat(Rm_o, quat_o)
+        Rm_o = Rm_o.reshape(3, 3)
+        zyx = np.array([
+            np.arctan2(-Rm_o[2, 0], np.hypot(Rm_o[0, 0], Rm_o[1, 0])),
+            np.arctan2(Rm_o[2, 1], Rm_o[2, 2]),
+            np.arctan2(Rm_o[1, 0], Rm_o[0, 0])])
+        return RobotState(
+            qpos=data.qpos[np.asarray(ra["qpos_indices"])].copy(),
+            root_position=data.qpos[adr:adr + 3].copy(),
+            root_orientation=zyx,
+            qvel=data.qvel[np.asarray(ra["qvel_indices"])].copy(),
+            root_linvel=data.qvel[vadr:vadr + 3].copy(),
+            root_angvel=Rm_o @ data.qvel[vadr + 3:vadr + 6],
+            ang_mom=np.asarray(
+                data.subtree_angmom[ra["root_body_id"]]).copy())
+        
