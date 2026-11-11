@@ -218,6 +218,41 @@ class TestCanBalance:
         assert st.can_balance()
 
 
+class TestBalanceMargin:
+    """balance_margin：can_balance 的连续化——符号一致 +
+    数值语义（核内深度负、越界量正）。"""
+
+    def test_consistent_with_can_balance(self):
+        cases = [
+            _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25),
+            _st([0.08, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25),
+            _st([0.04, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25),
+            _st([0, 0.16, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25),
+            _st([0.15, 0, 0.95], [0, 0.1], [0, -0.1]),
+            _st([0.2, 0, 0.95], [0, 0.1], [0, -0.1]),
+            _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09],
+                lfh=0.2, rfh=0.2),
+            _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25,
+                v=(0.4, 0, 0))]
+        for st in cases:
+            assert (st.balance_margin() <= 0.0) == st.can_balance()
+
+    def test_signed_semantics(self):
+        """pivot 上静止 → 深度 ≈ −reach_lat（最紧轴是侧向 0.047）。"""
+        st = _st([0, 0.1, 0.95], [0, 0.1], [0.3, -0.3], rfh=0.25)
+        m = st.balance_margin()
+        assert m == pytest.approx(-0.047, abs=1e-3)
+        # com 前偏 0.08：前后向越界 0.08−0.05=0.03
+        st2 = _st([0.08, 0.1, 0.95], [0, 0.1], [0.3, -0.3],
+                  rfh=0.25)
+        assert st2.balance_margin() == pytest.approx(0.03, abs=1e-3)
+
+    def test_airborne_inf(self):
+        st = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09],
+                 lfh=0.2, rfh=0.2)
+        assert st.balance_margin() == float("inf")
+
+
 def _aim(l, r):
     return SupportGeometry(com=np.zeros(3),
         left_foot=np.asarray(l, float),

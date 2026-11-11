@@ -453,6 +453,21 @@ class SupportState(SupportGeometry):
         限制：LIP 恒高近似；com_vel.z / ang_mom 不入判据；
         com 低于踝心（LIP 失效）按 False 处理。
         """
+        return self.balance_margin(foot_height_eps) <= 0.0
+
+    def balance_margin(self, foot_height_eps: float = 0.02
+                       ) -> float:
+        """平衡核有符号距离 m——can_balance 的连续化：
+
+        <0 核内深度（离边界多远），=0 临界，>0 越界量（超出
+        可控 COP 域多少米）。+inf = 无贴地脚或 LIP 失效。
+
+          pivot：最劣轴越界 = max(前后向越界, 侧向越界)，每轴
+                 界 = min(τ_act, N·margin_dir)/N；
+          hinge：ξ 垂直踝轴分量超出支撑多边形投影区间的量
+                 （沿轴锁死不查）；
+          无贴地脚 / com 低于踝心：+inf。
+        """
         feet = (("left", np.asarray(self.left_foot),
                  self.left_foot_height),
                 ("right", np.asarray(self.right_foot),
@@ -460,34 +475,34 @@ class SupportState(SupportGeometry):
         planted = [(n, f, h) for n, f, h in feet
                    if h < foot_height_eps]
         if not planted:
-            return False
+            return float("inf")
         try:
             xi, _, _ = self._cp_terms(planted[0][1], planted[0][2])
         except ValueError:
-            return False
+            return float("inf")
         cy, sy = np.cos(self.torso_yaw), np.sin(self.torso_yaw)
         fwd = np.array([cy, sy])
         lat = np.array([-sy, cy])
         N = LIP_MASS * LIP_G
         if len(planted) == 1:
-            # pivot：踝矩搬 COP，执行器/鞋底缘取小
             off = xi - planted[0][1]
-            reach = {
-                "fwd+": min(LIP_TAU_ACT, N * LIP_MARGIN_TOE) / N,
-                "fwd-": min(LIP_TAU_ACT, N * LIP_MARGIN_HEEL) / N,
-                "lat": min(LIP_TAU_ACT, N * LIP_MARGIN_SIDE) / N}
+            r_plus = min(LIP_TAU_ACT, N * LIP_MARGIN_TOE) / N
+            r_minus = min(LIP_TAU_ACT, N * LIP_MARGIN_HEEL) / N
+            r_lat = min(LIP_TAU_ACT, N * LIP_MARGIN_SIDE) / N
             o_fwd, o_lat = float(off @ fwd), float(off @ lat)
-            return (-reach["fwd-"] <= o_fwd <= reach["fwd+"]
-                    and abs(o_lat) <= reach["lat"])
-        # hinge：载重分摊，COP 可达域 = 支撑多边形垂直轴投影
+            m_fwd = (o_fwd - r_plus if o_fwd > 0
+                     else -r_minus - o_fwd)
+            return max(m_fwd, abs(o_lat) - r_lat)
         p0, p1 = planted[0][1], planted[1][1]
         e = p1 - p0
         e = e / np.linalg.norm(e) if np.linalg.norm(e) > 1e-3 \
             else lat
         e_perp = np.array([-e[1], e[0]])
         proj = self.support_polygon(foot_height_eps) @ e_perp
-        return bool(proj.size
-                    and proj.min() <= xi @ e_perp <= proj.max())
+        if not proj.size:
+            return float("inf")
+        s = float(xi @ e_perp)
+        return max(proj.min() - s, s - proj.max())
         
 
     def drift(self, dt: float = 0.05,

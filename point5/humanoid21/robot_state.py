@@ -543,6 +543,8 @@ class RobotState(Pose):
                 f"take_action: action shape {action.shape} != {_JOINTS}")
         sim, ra, rb = self._sim()
         model, data = sim.model, sim.data
+        mujoco.mj_resetData(model, data)   # 清 warmstart/act/接触
+                                          # 等易变态——跨调用确定性
 
         adr, vadr = int(ra["root_qpos_adr"]), int(ra["root_qvel_adr"])
         quat = _zyx_to_quat_wxyz(self.root_orientation)
@@ -586,17 +588,51 @@ class RobotState(Pose):
         
     # ---------- action_for_*：take_action 的逆向查询族 ----------
 
-    def action_for_balance(self) -> np.ndarray:
+    def action_for_balance(self, dt: float = 0.05,
+                           w_hold: float = 0.01,
+                           max_evals: int = 100,
+                           eps: float = 0.02) -> np.ndarray:
         """-> (21,) 归一化 action：无点目标，只求下一步留在
-        平衡核内（"站桩"档）。
+        平衡核内（"站桩"档）——最优化问题 v1：
 
-        aim = 约束集（ξ ∈ COP 可达域）而非点——支撑层判定走
-        to_support_state().can_balance / lip_analyze，踝权
-        方向映射回踝关节 action + 姿态回中项。
-        单步语义：返回下一控制周期的最优推进 action；
-        序列由 take_action rollout 外层涌现。
+            决策变量   a ∈ [-1,1]²¹（归一化关节目标）
+            oracle    s'(a) = take_action(s, a)，ξ' 取末端
+                      support_state
+            目标       J = max(0, M̃(s'))² + w_hold·‖a−a_hold‖²
+                       M̃ = balance_margin / reach_ref（无量纲，
+                       reach_ref = τ_act/(mg) ≈ 0.05m）；
+                       a_hold = rad_to_norm(qpos)（不动先验——
+                       能不动就不动，核内解收敛到 a_hold）
+            求解       L-BFGS-B 盒界 + 有限差分梯度（eps=0.02
+                       action 单位），黑盒 ~22 evals/grad，
+                       maxfun 封顶
+
+        边界与限制：margin 按末端态贴地脚评估（摆动期以实际
+        stance 计）；50ms 单步 horizon 只见踝/姿态策略——迈步
+        恢复的 payoff 在落地才兑现，不属本档（走
+        action_for_support_state）。oracle 内部异常按 +inf
+        罚回推。求解时长 ~秒级（eval 预算内）。
         """
-        raise NotImplementedError
+        from scipy.optimize import minimize
+        from .mechanics import rad_to_norm
+        from .support_state import LIP_G, LIP_MASS, LIP_TAU_ACT
+        a_hold = np.clip(rad_to_norm(self.qpos), -1.0, 1.0)
+        ref = LIP_TAU_ACT / (LIP_MASS * LIP_G)
+
+        def J(a):
+            try:
+                s2 = self.take_action(a, dt=dt)
+                m = s2.to_support_state().balance_margin() / ref
+            except Exception:
+                return 1e6
+            return max(0.0, m) ** 2 \
+                + w_hold * float(np.sum((a - a_hold) ** 2))
+
+        res = minimize(J, a_hold, method="L-BFGS-B",
+                       bounds=[(-1.0, 1.0)] * 21,
+                       options={"maxfun": int(max_evals),
+                                "eps": float(eps)})
+        return np.clip(np.asarray(res.x, np.float64), -1.0, 1.0)
 
     def action_for_pose(self, aim_pose: "Pose") -> np.ndarray:
         """-> (21,) 归一化 action：朝 aim 关节构型推进。

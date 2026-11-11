@@ -91,3 +91,30 @@ class TestRender:
         img = st.render(camera="ceilingcamera",
                         width=320, height=240)
         assert img.size == (320, 240)
+
+
+class TestActionForBalance:
+    def test_standing_returns_near_hold(self, st):
+        """站姿已可平衡 → 最优解 ≈ a_hold（不动先验）。"""
+        from point5.humanoid21.mechanics import rad_to_norm
+        a = st.action_for_balance(dt=0.05, max_evals=30)
+        a_hold = np.clip(rad_to_norm(st.qpos), -1, 1)
+        assert a.shape == (21,)
+        assert np.all(np.abs(a) <= 1.0)
+        np.testing.assert_allclose(a, a_hold, atol=0.15)
+
+    def test_perturbed_improves_margin(self, st):
+        """核外扰动态（前冲 1 m/s）→ 软罚 best-effort：
+        margin 显著改善且 action 明确偏离 hold。"""
+        import dataclasses
+        pert = dataclasses.replace(
+            st, root_linvel=st.root_linvel + np.array([1.0, 0, 0]))
+        m0 = pert.to_support_state().balance_margin()
+        assert m0 > 0.0                            # 确实在核外
+        a = pert.action_for_balance(dt=0.05, max_evals=80)
+        m_opt = pert.take_action(a, dt=0.05) \
+            .to_support_state().balance_margin()
+        assert m_opt < m0 - 0.03                   # 显著改善
+        from point5.humanoid21.mechanics import rad_to_norm
+        a_hold = np.clip(rad_to_norm(pert.qpos), -1, 1)
+        assert np.abs(a - a_hold).max() > 0.05     # 真动了

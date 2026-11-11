@@ -56,7 +56,14 @@ P5 协议见 `../p5.py`。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`；
   `take_action(action,dt)`=模拟器真值推演（共享 Humanoid21
   Simulator 懒加载、robot_b 停置远处、同帧输出），**返回新
-  对象**供候选动作在同一底本上评估，~20-35ms/控制周期。
+  对象**供候选动作在同一底本上评估，~20-35ms/控制周期；
+  **调用前 mj_resetData**——否则 qacc_warmstart 等易变态
+  跨调用泄漏破坏确定性（踩过坑：三次同输入 eval 第三次爆炸）。
+  `action_for_*` 逆向查询族（a ∈ [−1,1]²¹ → 单步最优推进，
+  全部是"最优化问题"语义）：`action_for_balance` 已实现
+  （决策=21 维 action、oracle=take_action、目标
+  J=max(0,M̃)²+w·‖a−a_hold‖²、L-BFGS-B 黑盒 FD、秒级）；
+  `action_for_pose`/`action_for_support_state` 占位。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
   `SupportState.drift(dt, alpha=None)`：重力+接触约束演化
@@ -71,6 +78,9 @@ P5 协议见 `../p5.py`。
   `can_balance()`：0 步可捕获性——ξ 落在可控 COP 界内
   （pivot: min(τ_act,N·margin)/N ~5cm 执行器限；hinge:
   载重分摊=多边形垂直轴全长，沿轴锁死不查）；
+  `balance_margin()`：can_balance 的连续化（<0 核内深度、
+  >0 越界量、+inf 腾空/LIP 失效），二者符号一致——
+  优化目标/诊断用 margin，判定用 can_balance；
   `path_to(aim)`：纯几何脚步序列（相邻差一脚、落点在不动脚
   step_radius 内），贪心交替、aim 站位过宽/不收敛 raise；
   `reference_pose()`：几何→参考 Pose（见 solve_support_pose）。
