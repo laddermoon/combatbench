@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from point5.humanoid21.support_state import (
-    ANKLE_Z_PLANTED, LIP_G, LIP_MASS, SupportState)
+    ANKLE_Z_PLANTED, LIP_G, LIP_MASS, SupportGeometry, SupportState)
 
 
 def _st(com, lf, rf, lfh=0.0, rfh=0.0, yaw=0.0,
@@ -110,3 +110,48 @@ class TestPassiveDrift:
     def test_swing_clearance_nan_non_pivot(self):
         st = _st([0.1, 0, 0.95], [-0.05, 0.09], [0.05, -0.09])
         assert np.isnan(st.passive_drift().swing_min_clearance)
+
+
+def _aim(l, r):
+    return SupportGeometry(com=np.zeros(3),
+        left_foot=np.asarray(l, float),
+        right_foot=np.asarray(r, float), torso_yaw=0.0)
+
+
+def _cur():
+    return _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09])
+
+
+class TestPathTo:
+    def test_direct_reach_two_items(self):
+        seq = _cur().path_to(_aim((-0.05, 0.09), (0.45, -0.09)))
+        assert len(seq) == 2
+        np.testing.assert_allclose(seq[0][1], [0.05, -0.09])
+        np.testing.assert_allclose(seq[1][1], [0.45, -0.09])
+
+    def test_far_multi_step(self):
+        seq = _cur().path_to(_aim((1.95, 0.09), (2.05, -0.09)))
+        assert len(seq) > 2
+        # 首项=当前 末项=aim
+        np.testing.assert_allclose(seq[0][0], [-0.05, 0.09])
+        np.testing.assert_allclose(seq[-1][0], [1.95, 0.09])
+        np.testing.assert_allclose(seq[-1][1], [2.05, -0.09])
+        # 每转换：恰好一脚动、落点在不动脚 step_radius 内
+        for i in range(1, len(seq)):
+            l0, r0 = seq[i - 1]
+            l1, r1 = seq[i]
+            dl = np.linalg.norm(l1 - l0)
+            dr = np.linalg.norm(r1 - r0)
+            assert (dl > 1e-9) + (dr > 1e-9) == 1
+            reach = (np.linalg.norm(l1 - r0) if dl > 1e-9
+                     else np.linalg.norm(r1 - l0))
+            assert reach <= 0.6 + 1e-9
+
+    def test_aim_stance_too_wide_raises(self):
+        with pytest.raises(ValueError):
+            _cur().path_to(_aim((0, 0.6), (0, -0.6)))
+
+    def test_sidestep(self):
+        seq = _cur().path_to(_aim((-0.05, 0.49), (0.05, 0.31)))
+        assert len(seq) >= 2
+        np.testing.assert_allclose(seq[-1][0], [-0.05, 0.49])

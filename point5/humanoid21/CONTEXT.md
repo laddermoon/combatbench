@@ -60,6 +60,8 @@ P5 协议见 `../p5.py`。
   ~1e-4），返 DriftReport 含贴地/摩擦/切向三项假定体检；
   模式 t=0 定死不切、**摆脚再触地不入模型**（规则），
   但 pivot 报 swing_min_clearance（<0=本会触地，纯诊断）；
+  `path_to(aim)`：纯几何脚步序列（相邻差一脚、落点在不动脚
+  step_radius 内），贪心交替、aim 站位过宽/不收敛 raise；
   `reference_pose()`：几何→参考 Pose（见 solve_support_pose）。
 - `stand_punch.py`：站姿前手拳规划 —— **当前 import 断链**（见下）。
 

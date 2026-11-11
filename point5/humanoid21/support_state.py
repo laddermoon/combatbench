@@ -13,7 +13,7 @@ P5 反解无动量——只能构造 SupportGeometry。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -624,6 +624,55 @@ class SupportState(SupportGeometry):
                                  if mode == "pivot" and swing
                                  and np.isfinite(swing_min)
                                  else float("nan")))
+
+
+    def path_to(self, aim: SupportGeometry,
+                step_radius: float = 0.6,
+                pos_tol: float = 0.01,
+                max_moves: int = 60
+                ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        """双脚 XY 站位序列——纯几何脚步规划（不评稳定性/动力学）。
+
+        每项 (left_xy, right_xy)；相邻项只允许一只脚移动，且
+        落点须在**不动脚** step_radius 水平半径内（腿长包络）。
+        首项 = 当前双脚位，末项 = aim 双脚位；只差一脚且可达
+        时自然只有两项。
+
+        贪心交替：每步动"距各自 aim 更远"的脚；aim 落点可达则
+        直落，否则朝 aim 方向落 0.95·step_radius 处（保证每步
+        单调逼近、必终止）。同脚连动合法（抬-落-抬）。
+        aim 自身双脚距超 step_radius ⇒ 终点站位不可达，ValueError；
+        max_moves 未收敛 ⇒ 规划失败，ValueError。
+
+        边界：点模型无碰撞/越腿检查——双脚换位这类交叉步在
+        本模型下合法；yaw/足高不参与。
+        """
+        al = np.asarray(aim.left_foot, dtype=np.float64)
+        ar = np.asarray(aim.right_foot, dtype=np.float64)
+        if np.linalg.norm(al - ar) > step_radius:
+            raise ValueError(
+                "path_to: aim 双脚距 "
+                f"{np.linalg.norm(al - ar):.3f}m > step_radius "
+                f"{step_radius}——终点站位不可达")
+        cur = [self.left_foot.copy(), self.right_foot.copy()]
+        tgt = [al.copy(), ar.copy()]
+        seq = [(cur[0].copy(), cur[1].copy())]
+        for _ in range(max_moves):
+            diffs = [float(np.linalg.norm(cur[i] - tgt[i]))
+                     for i in range(2)]
+            if max(diffs) <= pos_tol:
+                return seq
+            for i in sorted(range(2), key=lambda i: -diffs[i]):
+                pivot = cur[1 - i]
+                d = float(np.linalg.norm(tgt[i] - pivot))
+                land = (tgt[i].copy() if d <= step_radius
+                        else pivot + (tgt[i] - pivot) / d
+                        * step_radius * 0.95)
+                cur[i] = land
+                seq.append((cur[0].copy(), cur[1].copy()))
+                break
+        raise ValueError(
+            f"path_to: {max_moves} 步内未收敛——aim 不可达")
 
     def transition_to(self, anchor: SupportGeometry
                       ) -> Tuple[SupportGeometry, "SupportState"]:
