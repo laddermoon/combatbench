@@ -527,3 +527,43 @@ class RobotState(Pose):
             ang_mom=np.asarray(
                 data.subtree_angmom[ra["root_body_id"]]).copy())
         
+    # ---------- action_for_*：take_action 的逆向查询族 ----------
+
+    def action_for_balance(self) -> np.ndarray:
+        """-> (21,) 归一化 action：无点目标，只求下一步留在
+        平衡核内（"站桩"档）。
+
+        aim = 约束集（ξ ∈ COP 可达域）而非点——支撑层判定走
+        to_support_state().can_balance / lip_analyze，踝权
+        方向映射回踝关节 action + 姿态回中项。
+        单步语义：返回下一控制周期的最优推进 action；
+        序列由 take_action rollout 外层涌现。
+        """
+        raise NotImplementedError
+
+    def action_for_pose(self, aim_pose: "Pose") -> np.ndarray:
+        """-> (21,) 归一化 action：朝 aim 关节构型推进。
+
+        aim_pose.qpos 给出关节层目标——action 空间本身即
+        归一化关节目标，答案近似闭式 rad_to_norm(aim.qpos)，
+        PD 伺服负责跟踪；aim 的 root_position/orientation 只
+        表达意图（root 不可直接命令，经动力学涌现）。候选
+        实现 = 闭式转换 + take_action 验证/修正。
+        单步语义同上。
+        """
+        raise NotImplementedError
+
+    def action_for_support_state(
+            self, aim_support_state: "SupportState") -> np.ndarray:
+        """-> (21,) 归一化 action：朝 aim 支撑态推进。
+
+        三档中最重——aim 在质心层（com/脚位/动量），须消费
+        step-transition 栈（drift 预测、can_balance 判核、
+        落点可行集、接力映射）再做"支撑层计划 -> 21 维全身
+        action"的全身映射。aim 为 SupportGeometry 时 = 纯
+        几何目标（不含动量）。单步语义同上。
+        """
+        raise NotImplementedError
+
+
+
