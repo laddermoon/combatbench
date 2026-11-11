@@ -90,3 +90,23 @@ class TestPassiveDrift:
         assert isinstance(r.state, SupportState)
         np.testing.assert_allclose(r.state.left_foot,
                                    [-0.05, 0.09])
+
+    def test_swing_recontact_ignored_but_reported(self):
+        """规则：摆脚再触地不进动力学（模式不切换、脚高原样）；
+        诊断：倾倒方向的摆脚轨迹最低间隙 <0 = 本会触地。"""
+        st = _st([0.15, 0, 0.95], [0.0, 0.05], [0.45, -0.1],
+                 rfh=0.08, v=(0.6, 0, 0))
+        r = st.passive_drift(dt=0.3)
+        assert r.mode == "pivot"
+        assert r.swing_min_clearance < 0.0        # 本会穿地
+        # 脚位/足高不受触地影响、原样保留
+        assert r.state.right_foot_height == 0.08
+        np.testing.assert_allclose(r.state.right_foot, [0.45, -0.1])
+        # 反向情形：摆脚在支点后方，前倒时被抬起 → 间隙不降
+        r2 = _st([0.15, 0, 0.95], [0.0, 0.05], [-0.3, -0.15],
+                 rfh=0.08, v=(0.6, 0, 0)).passive_drift(dt=0.3)
+        assert r2.swing_min_clearance > 0.0
+
+    def test_swing_clearance_nan_non_pivot(self):
+        st = _st([0.1, 0, 0.95], [-0.05, 0.09], [0.05, -0.09])
+        assert np.isnan(st.passive_drift().swing_min_clearance)

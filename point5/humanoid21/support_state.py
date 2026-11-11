@@ -448,6 +448,13 @@ class SupportState(SupportGeometry):
           2 脚 → "hinge"：绕双踝连线 1-DOF 铰链——两固定点只剩
                  沿轴旋转自由度，侧向锁死。
 
+        **规则**：模式在 t=0 由贴地脚数一次定死，演化期内不切换；
+        摆动脚的再触地**不被考虑**（轨迹不入模型、输出脚高原样
+        保留）。作为补偿性诊断，pivot 模式顺带给出摆动脚踝心
+        轨迹的最低离地间隙（swing_min_clearance < 0 ⇒ 被忽略
+        的触地本会发生）——纯报告，不改动力学、不进
+        assumption_ok。ballistic / hinge 下该字段为 NaN。
+
         旋转细节（pitch/roll）超出 SupportState 表达域，只经
         com/com_vel/ang_mom/torso_yaw 反映（yaw += ω_z·dt）。
 
@@ -482,6 +489,8 @@ class SupportState(SupportGeometry):
                            ANKLE_Z_PLANTED + self.right_foot_height),
                  self.right_foot_height))
         pivots = [p for p, fh in feet if fh < foot_height_eps]
+        swing = [p for p, fh in feet if fh >= foot_height_eps]
+        swing_min = np.inf               # 摆脚踝心轨迹最低离地间隙
         p0, v0, H0 = self.com.copy(), self.com_vel.copy(), \
             self.ang_mom.copy()
 
@@ -504,9 +513,12 @@ class SupportState(SupportGeometry):
                 v_end = v0 + g * dt
                 H_end = H0
             elif J is None:                        # 点球摆
+                from .mechanics import _skew
                 d_hat = d / r0
                 radial = abs(float(v0 @ d_hat))
                 v = v0 - (v0 @ d_hat) * d_hat      # 投影到切向
+                R_b = np.eye(3)
+                sd = swing[0] - c if swing else None
                 for _ in range(n):
                     d_hat = d / np.linalg.norm(d)
                     beta = float(g @ d_hat + (v @ v) / r0)
@@ -515,14 +527,23 @@ class SupportState(SupportGeometry):
                     v = v + a * h
                     d = d + v * h
                     d *= r0 / np.linalg.norm(d)    # 约束投影
+                    if sd is not None:             # 摆脚踝心轨迹
+                        w = np.cross(d, v) / (r0 * r0)
+                        R_b += _skew(w) @ R_b * h  # 近似：与 com 同角速
+                        swing_min = min(
+                            swing_min,
+                            (c + R_b @ sd)[2] - ANKLE_Z_PLANTED)
                 p_end = c + d
                 v_end = v
                 H_end = H0                         # 无惯量不可更新
             else:                                  # 刚体定点转动（动量式）
+                from .mechanics import _skew
                 d_hat = d / r0
                 radial = abs(float(v0 @ d_hat))
                 H_p = H0 + np.cross(d, m * v0)     # 关于支点的角动量
                 omega = np.zeros(3)
+                R_b = np.eye(3)
+                sd = swing[0] - c if swing else None
                 for _ in range(n):
                     I_p = J + m * ((d @ d) * np.eye(3) - np.outer(d, d))
                     omega = np.linalg.solve(I_p, H_p)
@@ -535,6 +556,11 @@ class SupportState(SupportGeometry):
                     d = d + np.cross(omega, d) * h
                     d *= r0 / np.linalg.norm(d)
                     dyaw += omega[2] * h
+                    if sd is not None:
+                        R_b += _skew(omega) @ R_b * h
+                        swing_min = min(
+                            swing_min,
+                            (c + R_b @ sd)[2] - ANKLE_Z_PLANTED)
                 p_end = c + d
                 v_end = np.cross(omega, d)
                 H_end = J @ omega                  # 刚体 H_com = J·ω
@@ -593,7 +619,11 @@ class SupportState(SupportGeometry):
             radial_violation=radial,
             min_normal=0.0 if mode == "ballistic" else float(min_nz),
             max_friction_ratio=(0.0 if mode == "ballistic"
-                                else float(max_mu)))
+                                else float(max_mu)),
+            swing_min_clearance=(float(swing_min)
+                                 if mode == "pivot" and swing
+                                 and np.isfinite(swing_min)
+                                 else float("nan")))
 
     def transition_to(self, anchor: SupportGeometry
                       ) -> Tuple[SupportGeometry, "SupportState"]:
@@ -613,3 +643,5 @@ class DriftReport:
     radial_violation: float           # 初速与支点约束的不一致分量 m/s
     min_normal: float                 # 演化中最小法向约束力 N（ballistic=0）
     max_friction_ratio: float         # |F_xy|/F_z 峰值（ballistic=0）
+    swing_min_clearance: float = float("nan")  # pivot 摆脚踝心最低离地
+                                      # 间隙（<0 = 本会触地）；非 pivot NaN

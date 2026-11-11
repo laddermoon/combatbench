@@ -58,6 +58,8 @@ P5 协议见 `../p5.py`。
   `SupportState.passive_drift(dt)`：踝无矩+姿态冻结的自然漂移
   （0脚弹道/1脚自由铰/2脚踝线铰链），动量形式积分（能量误差
   ~1e-4），返 DriftReport 含贴地/摩擦/切向三项假定体检；
+  模式 t=0 定死不切、**摆脚再触地不入模型**（规则），
+  但 pivot 报 swing_min_clearance（<0=本会触地，纯诊断）；
   `reference_pose()`：几何→参考 Pose（见 solve_support_pose）。
 - `stand_punch.py`：站姿前手拳规划 —— **当前 import 断链**（见下）。
 
