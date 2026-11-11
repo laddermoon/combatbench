@@ -2,11 +2,13 @@
 
 ## 一句话
 
-P5 → Humanoid21 的**纯力学姿态补全**（`solve_p5_pose`）+ 姿态/状态
-数据类（`robot_state.py`）+ 支撑分析（`support_state.py`）。
+P5 → Humanoid21 的**纯力学姿态补全**（`solve_p5_pose`）+
+SupportGeometry → Pose 的**参考姿态合成**（`solve_support_pose`）
++ 姿态/状态数据类（`robot_state.py`）+ 支撑分析（`support_state.py`）。
 核心是 `mechanics.py`——自包含机械结构（16 刚体/21 铰链/5 标记点）
-+ 弹簧表 + 三阶段反解，运行时零 MuJoCo 依赖（FK 纯 numpy）。
-反解设计见 `infer_pose_from_p5.md`；P5 协议见 `../p5.py`。
++ 弹簧表 + 质量表 + 反解器，运行时零 MuJoCo 依赖（FK 纯 numpy）。
+反解设计见 `infer_pose_from_p5.md` / `reference_pose_for_support_geometry.md`；
+P5 协议见 `../p5.py`。
 
 ## 力学模型（mechanics.py，权威）
 
@@ -30,6 +32,18 @@ P5 → Humanoid21 的**纯力学姿态补全**（`solve_p5_pose`）+ 姿态/状�
     朝向 = 阶段一 pitch/roll + 输入 yaw。
   - 实测：随机可达 60/60，中位 ~27ms、P95 ~38ms（<100ms 预算内）；
     雅可比有限差分 1e-9。
+- `BODY_MASS`：单台质量表（16 体 mass+局部质心偏移，XML 导出，
+  总 40.844kg）。`Skeleton.support_jac()` 单次遍历出 com/头/锚点
+  + 全部雅可比；J_com[:,j] = (M_sub/M)·axis×(com_sub−anchor)。
+- `solve_support_pose(com_t, ankle_r, ankle_l)` 单阶段（标准几何帧）：
+  23 变量（pitch/roll+全 21 关节——com 受全关节影响，勿照搬
+  _S1_IDX）对 6 硬约束（踝心−com 相对向量）；目标
+  min −w_head·|头−com| + E_spring + w_arm·Σ_arm(qn−ref)²，
+  同 LM→KKT 骨架；root 由 com 恢复。
+  **已知形态**：|头−com| 无"向上"偏好 → 产出 ~0.2rad 前倾+腰弯
+  的"杠杆伸展"姿（设计文档记了 max head_z 备选变体）。实测
+  com 误差 0、踝 ~2cm、~50ms；骨架 com 对 MuJoCo 1.7e-7。
+  `SupportGeometry.reference_pose()` 为入口（不可达 raise）。
 
 ## 数据类
 
@@ -62,8 +76,9 @@ P5 → Humanoid21 的**纯力学姿态补全**（`solve_p5_pose`）+ 姿态/状�
 
 ## 测试
 
-`test_mechanics.py`（pytest，已随 solve_p5_pose 更新）：
-结构/弹簧/零目标恢复/确定性/不可达语义/下蹲腿吸能。
+`test_mechanics.py`（pytest，13 项）：
+结构/弹簧/零目标恢复/确定性/不可达语义/下蹲腿吸能（P5）+
+支撑反解的 com/踝恢复、确定性、不可达、屈腿恢复（纯骨架自洽）。
 
 ## ⚠ 当前断链（迁移中的陈旧引用，勿按此编码）
 

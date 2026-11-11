@@ -6,7 +6,8 @@ import pytest
 
 from point5.humanoid21.mechanics import (
     JOINT_NAMES, LANDMARK_ORDER, Skeleton,
-    norm_to_rad, rad_to_norm, spring_energy, solve_p5_pose)
+    norm_to_rad, rad_to_norm, spring_energy, solve_p5_pose,
+    solve_support_pose)
 
 _ANKLE_CENTER = ("ankle_y_right", "ankle_y_left")
 
@@ -96,3 +97,47 @@ class TestP5Pose:
         # knee/hip flex substantially; abdomen stays near 0
         assert abs(qn[i_abd]) < 0.15
         assert abs(qn[i_knee]) > 0.3 or abs(qn[i_hip]) > 0.3
+
+
+def _support_target(sk, q=None, root_z=1.28):
+    """骨架自洽目标：已知 q -> FK -> com/双踝心（纯骨架，无 MuJoCo）。"""
+    if q is None:
+        q = np.zeros(21)
+    com, _, a, *_ = sk.support_jac([0, 0, root_z], [1, 0, 0, 0],
+                                   q, _ANKLE_CENTER)
+    return com, a[0], a[1]
+
+
+class TestSupportPose:
+    def test_zero_target_recovers(self, sk):
+        com, ar, al = _support_target(sk)
+        res = solve_support_pose(com, ar, al, skeleton=sk)
+        assert res["satisfied"]
+        np.testing.assert_allclose(res["com"], com, atol=0.03)
+        np.testing.assert_allclose(res["ankles"][0], ar, atol=0.05)
+        np.testing.assert_allclose(res["ankles"][1], al, atol=0.05)
+
+    def test_deterministic(self, sk):
+        com, ar, al = _support_target(sk)
+        a = solve_support_pose(com, ar, al, skeleton=sk)
+        b = solve_support_pose(com, ar, al, skeleton=sk)
+        np.testing.assert_allclose(a["q_norm"], b["q_norm"], atol=1e-6)
+
+    def test_unreachable_reports(self, sk):
+        com, ar, al = _support_target(sk)
+        res = solve_support_pose(com + [0, 0, 3.0], ar, al, skeleton=sk)
+        assert not res["satisfied"]
+        assert not res["stage1"]["converged"]
+
+    def test_bent_legs_recovers(self, sk):
+        q = np.zeros(21)
+        jn = {n: i for i, n in enumerate(JOINT_NAMES)}
+        q[jn["knee_right"]] = q[jn["knee_left"]] = -0.6
+        q[jn["hip_y_right"]] = q[jn["hip_y_left"]] = 0.35
+        q[jn["ankle_y_right"]] = q[jn["ankle_y_left"]] = 0.25
+        com, ar, al = _support_target(sk, q, root_z=1.12)
+        res = solve_support_pose(com, ar, al, skeleton=sk)
+        assert res["satisfied"]
+        np.testing.assert_allclose(res["com"], com, atol=0.03)
+        # 目标项生效：|头-com| 显著大于塌缩值（~0.2）
+        assert res["head_com_dist"] > 0.45

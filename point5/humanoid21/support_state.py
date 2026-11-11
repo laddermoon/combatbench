@@ -252,13 +252,38 @@ class SupportGeometry:
             out.append(PivotAnalysis(foot=name, pivot=pivot, **dirs))
         return tuple(out)
 
-    def reference_pose(self):
-        """由几何合成参考 P5 意图——非精确还原。
+    def reference_pose(self, tolerance: float = 0.02,
+                       **solver_kw) -> "Pose":
+        """SupportGeometry -> 参考 Pose（单阶段反解，非精确还原）。
 
-        几何只含 com/脚/yaw，头与手按标称站姿生成；返回的是
-        可用参照点阵，不做信息保真承诺（故名 reference 非 to_）。
+        reference_pose_for_support_geometry.md：标准帧 23 变量
+        （pitch/roll + 全 21 关节）对 6 硬约束（踝心−com 相对
+        向量），目标 max|头−com| + 弹性能 + 臂强先验；root 平移
+        由 com 恢复，yaw/锚点经 _se2 反变换还原。
+        阶段一几何不可达（多初值后残差仍超 tolerance）时 ValueError。
+
+        solver_kw 透传 solve_support_pose（w_head / w_arm /
+        arm_ref / max_evals / restarts 等）。
         """
-        raise NotImplementedError
+        from .mechanics import solve_support_pose
+        from .robot_state import Pose
+        std = self.standardize()
+        a_l = np.array([std.left_foot[0], std.left_foot[1],
+                        ANKLE_Z_PLANTED + std.left_foot_height])
+        a_r = np.array([std.right_foot[0], std.right_foot[1],
+                        ANKLE_Z_PLANTED + std.right_foot_height])
+        res = solve_support_pose(std.com, a_r, a_l,
+                                 tolerance=tolerance, **solver_kw)
+        if not res["satisfied"]:
+            raise ValueError(
+                "reference_pose: 几何不可达 "
+                f"(max_resid={res['stage1']['max_resid']:.4f} m)")
+        pose_std = Pose(qpos=res["q_rad"],
+                        root_position=res["root_pos"],
+                        root_orientation=np.array(
+                            [res["pitch"], res["roll"], 0.0]))
+        mid_xy = (self.left_foot + self.right_foot) / 2.0
+        return pose_std._se2(self.torso_yaw, mid_xy)
 
 
 @dataclass
