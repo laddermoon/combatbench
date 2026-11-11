@@ -75,6 +75,13 @@ P5 协议见 `../p5.py`。
   ffmpeg|cv2 写 mp4）。e2e 实证：优化器能钉住 margin 但
   以下蹲换（目标无姿态项——"站桩要直"需加 posture/com_z
   惩罚项，留作改进）；0.35m/s 推超出踝+姿态权威。
+- `joint_response/`：关节响应权威分析（analyze.py +
+  REPORT.md）。杠杆权威 τ_max/(m_load·g)：踝 5.1cm、
+  hip_x 12.7cm、abdomen 16-17cm、knee 22cm、hip_y 38cm；
+  踝 KP=100 软 → 5cm COP 偏移 ≈ 归一化 Δa~1（e2e |Δa|
+  大的来源）；50ms 控制周期 < 承重关节 settle（0.3-1s），
+  目标角要跨周期表达。**坑**：qfrc_bias 量的是关节
+  **下游子树**重力矩——stance 负载在上游侧，勿混用。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
   `SupportState.drift(dt, alpha=None)`：重力+接触约束演化
