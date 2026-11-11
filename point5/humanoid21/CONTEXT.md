@@ -55,6 +55,10 @@ P5 协议见 `../p5.py`。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
+  `SupportState.passive_drift(dt)`：踝无矩+姿态冻结的自然漂移
+  （0脚弹道/1脚自由铰/2脚踝线铰链），动量形式积分（能量误差
+  ~1e-4），返 DriftReport 含贴地/摩擦/切向三项假定体检；
+  `reference_pose()`：几何→参考 Pose（见 solve_support_pose）。
 - `stand_punch.py`：站姿前手拳规划 —— **当前 import 断链**（见下）。
 
 ## 调关节的经验（重要，反复用到）

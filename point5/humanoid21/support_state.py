@@ -430,6 +430,171 @@ class SupportState(SupportGeometry):
             out[name] = np.array([pred[0], pred[1], pz])
         return out
 
+    def passive_drift(self, dt: float = 0.05,
+                      inertia_com: np.ndarray = None,
+                      foot_height_eps: float = 0.02,
+                      substeps: int = 25,
+                      v_tol: float = 0.2) -> "DriftReport":
+        """踝不发力 + 姿态冻结的被动演化——一控制周期的自然漂移。
+
+        刚体化近似：内部构型/惯量冻结，踝 = 无矩铰，外力只有
+        重力 + 接触约束。按贴地脚数（foot_height < eps）分模式：
+
+          0 脚 → "ballistic"：纯弹道，绕 com 角动量守恒；
+          1 脚 → "pivot"：绕踝心自由旋转——动量形式积分
+                 Ḣ_p = d×mg，ω = I_p⁻¹H_p，I_p = J_com + m(|d|²I−ddᵀ)。
+                 inertia_com 缺省时退化为点球摆（lip_analyze 同约定，
+                 此时 ang_mom 无法更新、原样保留）；
+          2 脚 → "hinge"：绕双踝连线 1-DOF 铰链——两固定点只剩
+                 沿轴旋转自由度，侧向锁死。
+
+        旋转细节（pitch/roll）超出 SupportState 表达域，只经
+        com/com_vel/ang_mom/torso_yaw 反映（yaw += ω_z·dt）。
+
+        assumption_ok 三项体检：初速与支点约束一致（径向分量
+        ≤ v_tol）、演化中约束法向力 F_z > 0（脚不被拉起）、
+        |F_xy| ≤ μ_slide·F_z（不打滑；hinge 只验合力，分到
+        每脚不定）。为假时"脚保持贴地"的演化结果不可信。
+        """
+        if dt < 0:
+            raise ValueError(f"passive_drift: dt<0 ({dt})")
+        J = (None if inertia_com is None
+             else _vec(inertia_com, (3, 3), "inertia_com"))
+        m = LIP_MASS
+        g = np.array([0.0, 0.0, -LIP_G])
+        n = max(1, int(substeps))
+        h = dt / n if n else 0.0
+        min_nz, max_mu, dyaw = np.inf, 0.0, 0.0
+
+        def track(F):
+            nonlocal min_nz, max_mu
+            nz = F[2]
+            min_nz = min(min_nz, nz)
+            if nz > 1e-9:
+                max_mu = max(max_mu, float(np.hypot(*F[:2])) / nz)
+            else:
+                max_mu = np.inf
+
+        feet = ((np.append(self.left_foot,
+                           ANKLE_Z_PLANTED + self.left_foot_height),
+                 self.left_foot_height),
+                (np.append(self.right_foot,
+                           ANKLE_Z_PLANTED + self.right_foot_height),
+                 self.right_foot_height))
+        pivots = [p for p, fh in feet if fh < foot_height_eps]
+        p0, v0, H0 = self.com.copy(), self.com_vel.copy(), \
+            self.ang_mom.copy()
+
+        if len(pivots) == 0:                       # ---- ballistic ----
+            mode = "ballistic"
+            radial = 0.0
+            p_end = p0 + v0 * dt + 0.5 * g * dt * dt
+            v_end = v0 + g * dt
+            H_end = H0
+            min_nz = 0.0
+
+        elif len(pivots) == 1:                     # ---- pivot ----
+            mode = "pivot"
+            c = pivots[0]
+            d = p0 - c
+            r0 = float(np.linalg.norm(d))
+            if r0 < 1e-3:                          # com 压在支点上：退化
+                radial = float(np.linalg.norm(v0))
+                p_end = p0 + v0 * dt + 0.5 * g * dt * dt
+                v_end = v0 + g * dt
+                H_end = H0
+            elif J is None:                        # 点球摆
+                d_hat = d / r0
+                radial = abs(float(v0 @ d_hat))
+                v = v0 - (v0 @ d_hat) * d_hat      # 投影到切向
+                for _ in range(n):
+                    d_hat = d / np.linalg.norm(d)
+                    beta = float(g @ d_hat + (v @ v) / r0)
+                    a = g - beta * d_hat
+                    track(m * (a - g))
+                    v = v + a * h
+                    d = d + v * h
+                    d *= r0 / np.linalg.norm(d)    # 约束投影
+                p_end = c + d
+                v_end = v
+                H_end = H0                         # 无惯量不可更新
+            else:                                  # 刚体定点转动（动量式）
+                d_hat = d / r0
+                radial = abs(float(v0 @ d_hat))
+                H_p = H0 + np.cross(d, m * v0)     # 关于支点的角动量
+                omega = np.zeros(3)
+                for _ in range(n):
+                    I_p = J + m * ((d @ d) * np.eye(3) - np.outer(d, d))
+                    omega = np.linalg.solve(I_p, H_p)
+                    alpha = np.linalg.solve(
+                        I_p, np.cross(d, m * g))
+                    acc = (np.cross(alpha, d)
+                           + np.cross(omega, np.cross(omega, d)))
+                    track(m * (acc - g))
+                    H_p = H_p + np.cross(d, m * g) * h
+                    d = d + np.cross(omega, d) * h
+                    d *= r0 / np.linalg.norm(d)
+                    dyaw += omega[2] * h
+                p_end = c + d
+                v_end = np.cross(omega, d)
+                H_end = J @ omega                  # 刚体 H_com = J·ω
+
+        else:                                      # ---- hinge ----
+            mode = "hinge"
+            e = pivots[1] - pivots[0]
+            if np.linalg.norm(e) < 1e-3:
+                e = np.array([0.0, 1.0, 0.0])      # 脚几乎重合：退化轴向
+            else:
+                e = e / np.linalg.norm(e)
+            c = pivots[0]
+            d_par = (p0 - c) @ e * e
+            d_perp = (p0 - c) - d_par
+            r = float(np.linalg.norm(d_perp))
+            ed = np.cross(e, p0 - c)
+            v_rot = float(v0 @ ed / (ed @ ed)) if ed @ ed > 1e-12 else 0.0
+            radial = float(np.linalg.norm(v0 - v_rot * ed))
+            I_e = float(e @ (J if J is not None
+                             else np.zeros((3, 3))) @ e) + m * r * r
+            L_e = float(e @ (H0 + np.cross(p0 - c, m * v0)))
+            phi, phid = 0.0, (L_e / I_e if I_e > 1e-9 else 0.0)
+            e_cross_perp = np.cross(e, d_perp)
+            for _ in range(n):
+                d_rot = d_par + d_perp * np.cos(phi) \
+                    + e_cross_perp * np.sin(phi)
+                tau_e = float(e @ np.cross(d_rot, m * g))
+                phidd = tau_e / I_e if I_e > 1e-9 else 0.0
+                acc = (phidd * np.cross(e, d_rot)
+                       + phid * phid * np.cross(e, np.cross(e, d_rot)))
+                track(m * (acc - g))
+                phid += phidd * h
+                phi += phid * h
+                dyaw += phid * e[2] * h
+            d_end = d_par + d_perp * np.cos(phi) \
+                + e_cross_perp * np.sin(phi)
+            p_end = c + d_end
+            v_end = phid * np.cross(e, d_end)
+            H_end = (J @ (phid * e) if J is not None else H0)
+
+        ok = (radial <= v_tol and min_nz > 0.0
+              and max_mu <= LIP_MU_SLIDE)
+        if mode == "ballistic":
+            ok = True                            # 无接触可违反
+        st = SupportState(
+            com=p_end,
+            left_foot=self.left_foot.copy(),
+            right_foot=self.right_foot.copy(),
+            torso_yaw=_wrap(self.torso_yaw + dyaw),
+            left_foot_height=self.left_foot_height,
+            right_foot_height=self.right_foot_height,
+            com_vel=v_end,
+            ang_mom=H_end)
+        return DriftReport(
+            state=st, mode=mode, assumption_ok=ok,
+            radial_violation=radial,
+            min_normal=0.0 if mode == "ballistic" else float(min_nz),
+            max_friction_ratio=(0.0 if mode == "ballistic"
+                                else float(max_mu)))
+
     def transition_to(self, anchor: SupportGeometry
                       ) -> Tuple[SupportGeometry, "SupportState"]:
         """向目标锚点迈一步。
@@ -437,3 +602,14 @@ class SupportState(SupportGeometry):
         返回 (next_geometry, next_state)：转移语义待 F4 落地。
         """
         raise NotImplementedError
+
+
+@dataclass
+class DriftReport:
+    """passive_drift 报告——演化结果 + 接触假定体检。"""
+    state: "SupportState"             # 演化后的支撑态
+    mode: str                         # "ballistic" / "pivot" / "hinge"
+    assumption_ok: bool               # 贴地/不打滑/切向一致假定成立
+    radial_violation: float           # 初速与支点约束的不一致分量 m/s
+    min_normal: float                 # 演化中最小法向约束力 N（ballistic=0）
+    max_friction_ratio: float         # |F_xy|/F_z 峰值（ballistic=0）
