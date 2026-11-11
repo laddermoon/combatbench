@@ -55,9 +55,13 @@ P5 协议见 `../p5.py`。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
-  `SupportState.passive_drift(dt)`：踝无矩+姿态冻结的自然漂移
+  `SupportState.drift(dt, alpha=None)`：重力+接触约束演化
   （0脚弹道/1脚自由铰/2脚踝线铰链），动量形式积分（能量误差
   ~1e-4），返 DriftReport 含贴地/摩擦/切向三项假定体检；
+  `alpha`=(3,) 世界系绕支点角加速度 = 踝矩通道控制输入
+  （单位同 lip_analyze 的 DirectionAlpha.ankle；pivot 丢 ẑ
+  分量、hinge 取 e·α、ballistic 作绕 com 外力矩 H+=J·α·dt；
+  不裁剪——预算归 lip_analyze）；
   模式 t=0 定死不切、**摆脚再触地不入模型**（规则），
   但 pivot 报 swing_min_clearance（<0=本会触地，纯诊断）；
   `path_to(aim)`：纯几何脚步序列（相邻差一脚、落点在不动脚

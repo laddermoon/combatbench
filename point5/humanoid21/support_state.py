@@ -430,23 +430,48 @@ class SupportState(SupportGeometry):
             out[name] = np.array([pred[0], pred[1], pz])
         return out
 
-    def passive_drift(self, dt: float = 0.05,
-                      inertia_com: np.ndarray = None,
-                      foot_height_eps: float = 0.02,
-                      substeps: int = 25,
-                      v_tol: float = 0.2) -> "DriftReport":
-        """踝不发力 + 姿态冻结的被动演化——一控制周期的自然漂移。
 
-        刚体化近似：内部构型/惯量冻结，踝 = 无矩铰，外力只有
-        重力 + 接触约束。按贴地脚数（foot_height < eps）分模式：
+    def besteffort_to(self, direction) -> List[SupportGeometry]:
+        """最一个方向最大努力尝试
+           从当前状态到尽最大努力到下一个状态，到下一个状态之后
+           再尽最大努力
+        """
 
-          0 脚 → "ballistic"：纯弹道，绕 com 角动量守恒；
-          1 脚 → "pivot"：绕踝心自由旋转——动量形式积分
-                 Ḣ_p = d×mg，ω = I_p⁻¹H_p，I_p = J_com + m(|d|²I−ddᵀ)。
-                 inertia_com 缺省时退化为点球摆（lip_analyze 同约定，
-                 此时 ang_mom 无法更新、原样保留）；
+    def avoid_to(self, direction):
+        raise NotImplementedError
+
+
+    def drift(self, dt: float = 0.05,
+              inertia_com: np.ndarray = None,
+              alpha: np.ndarray = None,
+              foot_height_eps: float = 0.02,
+              substeps: int = 25,
+              v_tol: float = 0.2) -> "DriftReport":
+        """重力 + 接触约束下的支撑态演化——一个控制周期的漂移。
+
+        刚体化近似：内部构型/惯量冻结，踝 = 无矩铰（alpha=None，
+        即被动漂移）或按给定角加速度发力的可控铰。外力 = 重力
+        + 接触约束 + 踝矩贡献。按贴地脚数（foot_height < eps）
+        分模式：
+
+          0 脚 → "ballistic"：纯弹道，绕 com 角动量守恒。无支点
+                 踝矩无意义——alpha 若给，唯一物理解是绕 com
+                 外力矩：有惯量时 H += J·alpha·dt，com 轨迹不变；
+          1 脚 → "pivot"：绕踝心旋转——动量形式积分
+                 Ḣ_p = d×mg + I_p·alpha_eff，ω = I_p⁻¹H_p，
+                 I_p = J_com + m(|d|²I−ddᵀ)。inertia_com 缺省时
+                 退化为点球摆（lip_analyze 同约定，此时 ang_mom
+                 无法更新、原样保留）；
           2 脚 → "hinge"：绕双踝连线 1-DOF 铰链——两固定点只剩
-                 沿轴旋转自由度，侧向锁死。
+                 沿轴旋转自由度，侧向锁死；φ̈ += e·alpha。
+
+        alpha：世界系下绕支点的附加角加速度 (3,) rad/s²——踝矩
+        通道的控制输入，单位与 lip_analyze 的 DirectionAlpha.
+        ankle 一致。投影规则：pivot 砍掉 ẑ 分量（踝 2-DOF 铰
+        无 yaw 矩通道，只有前后/侧向两轴）；hinge 只取沿轴
+        分量 e·alpha。本方法**不裁剪幅度**——预算归 lip_analyze
+        管，调用方自行限幅；超预算的 alpha 会经约束力体现在
+        体检（min_normal / max_friction_ratio）里。
 
         **规则**：模式在 t=0 由贴地脚数一次定死，演化期内不切换；
         摆动脚的再触地**不被考虑**（轨迹不入模型、输出脚高原样
@@ -464,9 +489,11 @@ class SupportState(SupportGeometry):
         每脚不定）。为假时"脚保持贴地"的演化结果不可信。
         """
         if dt < 0:
-            raise ValueError(f"passive_drift: dt<0 ({dt})")
+            raise ValueError(f"drift: dt<0 ({dt})")
         J = (None if inertia_com is None
              else _vec(inertia_com, (3, 3), "inertia_com"))
+        a_ext = (None if alpha is None
+                 else _vec(alpha, (3,), "alpha"))
         m = LIP_MASS
         g = np.array([0.0, 0.0, -LIP_G])
         n = max(1, int(substeps))
@@ -499,7 +526,8 @@ class SupportState(SupportGeometry):
             radial = 0.0
             p_end = p0 + v0 * dt + 0.5 * g * dt * dt
             v_end = v0 + g * dt
-            H_end = H0
+            H_end = (H0 + J @ a_ext * dt
+                     if J is not None and a_ext is not None else H0)
             min_nz = 0.0
 
         elif len(pivots) == 1:                     # ---- pivot ----
@@ -507,11 +535,15 @@ class SupportState(SupportGeometry):
             c = pivots[0]
             d = p0 - c
             r0 = float(np.linalg.norm(d))
+            a_eff = (None if a_ext is None else
+                     np.array([a_ext[0], a_ext[1], 0.0]))  # 踝无 yaw 通道
             if r0 < 1e-3:                          # com 压在支点上：退化
                 radial = float(np.linalg.norm(v0))
                 p_end = p0 + v0 * dt + 0.5 * g * dt * dt
                 v_end = v0 + g * dt
-                H_end = H0
+                H_end = (H0 + J @ a_ext * dt
+                         if J is not None and a_ext is not None
+                         else H0)
             elif J is None:                        # 点球摆
                 from .mechanics import _skew
                 d_hat = d / r0
@@ -523,6 +555,8 @@ class SupportState(SupportGeometry):
                     d_hat = d / np.linalg.norm(d)
                     beta = float(g @ d_hat + (v @ v) / r0)
                     a = g - beta * d_hat
+                    if a_eff is not None:
+                        a = a + r0 * np.cross(a_eff, d_hat)
                     track(m * (a - g))
                     v = v + a * h
                     d = d + v * h
@@ -547,12 +581,13 @@ class SupportState(SupportGeometry):
                 for _ in range(n):
                     I_p = J + m * ((d @ d) * np.eye(3) - np.outer(d, d))
                     omega = np.linalg.solve(I_p, H_p)
-                    alpha = np.linalg.solve(
-                        I_p, np.cross(d, m * g))
-                    acc = (np.cross(alpha, d)
+                    tau = np.cross(d, m * g) + (
+                        I_p @ a_eff if a_eff is not None else 0.0)
+                    alpha_dyn = np.linalg.solve(I_p, tau)
+                    acc = (np.cross(alpha_dyn, d)
                            + np.cross(omega, np.cross(omega, d)))
                     track(m * (acc - g))
-                    H_p = H_p + np.cross(d, m * g) * h
+                    H_p = H_p + tau * h
                     d = d + np.cross(omega, d) * h
                     d *= r0 / np.linalg.norm(d)
                     dyaw += omega[2] * h
@@ -584,11 +619,12 @@ class SupportState(SupportGeometry):
             L_e = float(e @ (H0 + np.cross(p0 - c, m * v0)))
             phi, phid = 0.0, (L_e / I_e if I_e > 1e-9 else 0.0)
             e_cross_perp = np.cross(e, d_perp)
+            a_e = float(e @ a_ext) if a_ext is not None else 0.0
             for _ in range(n):
                 d_rot = d_par + d_perp * np.cos(phi) \
                     + e_cross_perp * np.sin(phi)
                 tau_e = float(e @ np.cross(d_rot, m * g))
-                phidd = tau_e / I_e if I_e > 1e-9 else 0.0
+                phidd = (tau_e / I_e if I_e > 1e-9 else 0.0) + a_e
                 acc = (phidd * np.cross(e, d_rot)
                        + phid * phid * np.cross(e, np.cross(e, d_rot)))
                 track(m * (acc - g))
@@ -685,7 +721,7 @@ class SupportState(SupportGeometry):
 
 @dataclass
 class DriftReport:
-    """passive_drift 报告——演化结果 + 接触假定体检。"""
+    """drift 报告——演化结果 + 接触假定体检。"""
     state: "SupportState"             # 演化后的支撑态
     mode: str                         # "ballistic" / "pivot" / "hinge"
     assumption_ok: bool               # 贴地/不打滑/切向一致假定成立

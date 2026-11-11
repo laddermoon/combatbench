@@ -1,4 +1,4 @@
-"""Tests for support_state.py — passive_drift 与支撑几何工具。"""
+"""Tests for support_state.py — drift 与支撑几何工具。"""
 from __future__ import annotations
 
 import numpy as np
@@ -17,10 +17,10 @@ def _st(com, lf, rf, lfh=0.0, rfh=0.0, yaw=0.0,
         com_vel=np.asarray(v, float), ang_mom=np.asarray(H, float))
 
 
-class TestPassiveDrift:
+class TestDrift:
     def test_balanced_hinge_no_drift(self):
         r = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                ).passive_drift()
+                ).drift()
         assert r.mode == "hinge"
         assert r.assumption_ok
         np.testing.assert_allclose(r.state.com, [0, 0, 0.95], atol=1e-9)
@@ -29,7 +29,7 @@ class TestPassiveDrift:
 
     def test_eccentric_falls_forward(self):
         r = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                ).passive_drift()
+                ).drift()
         assert r.mode == "hinge"
         s = r.state
         assert s.com[0] > 0.10            # 向偏心方向漂
@@ -39,16 +39,16 @@ class TestPassiveDrift:
     def test_single_pivot_falls_faster_than_hinge(self):
         """自由 2 轴铰约束更少 → 同偏心下漂移更大。"""
         a = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.30, -0.30], rfh=0.25
-                ).passive_drift()
+                ).drift()
         b = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                ).passive_drift()
+                ).drift()
         assert a.mode == "pivot" and b.mode == "hinge"
         assert np.linalg.norm(a.state.com_vel) \
             > np.linalg.norm(b.state.com_vel)
 
     def test_ballistic_free_fall(self):
         r = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09],
-                lfh=0.2, rfh=0.2, v=(0.5, 0, 0.3)).passive_drift()
+                lfh=0.2, rfh=0.2, v=(0.5, 0, 0.3)).drift()
         assert r.mode == "ballistic"
         s = r.state
         np.testing.assert_allclose(
@@ -61,7 +61,7 @@ class TestPassiveDrift:
     def test_radial_violation_flagged(self):
         """v 直指远离支点（腿要变长）→ 违反贴地约束，被标记。"""
         r = _st([0, 0, 0.95], [0, 0], [0.3, -0.3], rfh=0.25,
-                v=(0, 0, 1.0)).passive_drift()
+                v=(0, 0, 1.0)).drift()
         assert r.mode == "pivot"
         assert r.radial_violation == pytest.approx(1.0)
         assert not r.assumption_ok
@@ -69,7 +69,7 @@ class TestPassiveDrift:
     def test_tangential_velocity_consistent(self):
         """切向速度合法：不违例，且漂移延续速度方向。"""
         r = _st([0, 0, 0.95], [0, 0], [0.3, -0.3], rfh=0.25,
-                v=(0.3, 0, 0)).passive_drift()
+                v=(0.3, 0, 0)).drift()
         assert r.radial_violation == pytest.approx(0.0)
         assert r.assumption_ok
         assert r.state.com_vel[0] > 0.3   # 重力再加速
@@ -77,16 +77,16 @@ class TestPassiveDrift:
     def test_inertia_slows_and_updates_H(self):
         J = np.diag([1.2, 1.5, 0.3])
         r = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                ).passive_drift(inertia_com=J)
+                ).drift(inertia_com=J)
         assert np.linalg.norm(r.state.ang_mom) > 0.0
         # 无惯量版本不退化、方向一致
         r0 = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                 ).passive_drift()
+                 ).drift()
         assert np.sign(r.state.com_vel[0]) == np.sign(r0.state.com_vel[0])
 
     def test_output_is_supportstate(self):
         r = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09]
-                ).passive_drift()
+                ).drift()
         assert isinstance(r.state, SupportState)
         np.testing.assert_allclose(r.state.left_foot,
                                    [-0.05, 0.09])
@@ -96,7 +96,7 @@ class TestPassiveDrift:
         诊断：倾倒方向的摆脚轨迹最低间隙 <0 = 本会触地。"""
         st = _st([0.15, 0, 0.95], [0.0, 0.05], [0.45, -0.1],
                  rfh=0.08, v=(0.6, 0, 0))
-        r = st.passive_drift(dt=0.3)
+        r = st.drift(dt=0.3)
         assert r.mode == "pivot"
         assert r.swing_min_clearance < 0.0        # 本会穿地
         # 脚位/足高不受触地影响、原样保留
@@ -104,12 +104,68 @@ class TestPassiveDrift:
         np.testing.assert_allclose(r.state.right_foot, [0.45, -0.1])
         # 反向情形：摆脚在支点后方，前倒时被抬起 → 间隙不降
         r2 = _st([0.15, 0, 0.95], [0.0, 0.05], [-0.3, -0.15],
-                 rfh=0.08, v=(0.6, 0, 0)).passive_drift(dt=0.3)
+                 rfh=0.08, v=(0.6, 0, 0)).drift(dt=0.3)
         assert r2.swing_min_clearance > 0.0
 
     def test_swing_clearance_nan_non_pivot(self):
         st = _st([0.1, 0, 0.95], [-0.05, 0.09], [0.05, -0.09])
-        assert np.isnan(st.passive_drift().swing_min_clearance)
+        assert np.isnan(st.drift().swing_min_clearance)
+
+
+class TestDriftAlpha:
+    """alpha = 踝矩通道角加速度输入。"""
+
+    def test_alpha_opposes_pivot_fall(self):
+        """com 偏 +x → 重力矩 +y 前倒；alpha=(0,-k,0) 顶住 → 落得慢。"""
+        st = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.30, -0.30],
+                 rfh=0.25)
+        r0 = st.drift(dt=0.2)
+        r1 = st.drift(dt=0.2, alpha=(0, -2.0, 0))
+        assert r0.mode == r1.mode == "pivot"
+        assert r1.state.com[2] > r0.state.com[2]      # 高度保住更多
+        assert r1.state.com[0] < r0.state.com[0]      # 前漂更少
+
+    def test_alpha_assists_fall(self):
+        """同向 alpha 加速倾倒。"""
+        st = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.30, -0.30],
+                 rfh=0.25)
+        r0 = st.drift(dt=0.2)
+        r1 = st.drift(dt=0.2, alpha=(0, 2.0, 0))
+        assert r1.state.com[2] < r0.state.com[2]
+
+    def test_pivot_yaw_component_dropped(self):
+        """踝无 yaw 矩通道：纯 z 分量 alpha ≡ 被动。"""
+        st = _st([0.10, 0, 0.95], [-0.05, 0.09], [0.30, -0.30],
+                 rfh=0.25)
+        r0 = st.drift(dt=0.2)
+        r1 = st.drift(dt=0.2, alpha=(0, 0, 30.0))
+        np.testing.assert_allclose(r1.state.com, r0.state.com,
+                                   atol=1e-12)
+
+    def test_ballistic_alpha_spins_only(self):
+        """腾空：绕 com 外力矩只改角动量，com 轨迹不变。"""
+        J = np.diag([1.2, 1.5, 0.3])
+        st = _st([0, 0, 0.95], [-0.05, 0.09], [0.05, -0.09],
+                 lfh=0.2, rfh=0.2)
+        r0 = st.drift(dt=0.1, inertia_com=J)
+        r1 = st.drift(dt=0.1, inertia_com=J, alpha=(0, 0, 2.0))
+        np.testing.assert_allclose(r1.state.com, r0.state.com,
+                                   atol=1e-12)
+        np.testing.assert_allclose(
+            r1.state.ang_mom, J @ np.array([0, 0, 2.0]) * 0.1,
+            atol=1e-9)
+
+    def test_hinge_takes_axis_component(self):
+        """hinge 只吸收沿踝轴分量：双脚沿 y 排开时 e=±ŷ，
+        alpha_y 改变演化、alpha_x 无效果。"""
+        st = _st([0.10, 0, 0.95], [0, 0.10], [0, -0.10])
+        r0 = st.drift(dt=0.2)
+        ry = st.drift(dt=0.2, alpha=(0, 30.0, 0))
+        rx = st.drift(dt=0.2, alpha=(30.0, 0, 0))
+        assert ry.mode == "hinge"
+        assert abs(ry.state.com[2] - r0.state.com[2]) > 1e-3
+        np.testing.assert_allclose(rx.state.com, r0.state.com,
+                                   atol=1e-12)
 
 
 def _aim(l, r):
