@@ -898,30 +898,49 @@ class RobotState(Pose):
 
     # ---------- action_for_*：take_action 的逆向查询族 ----------
 
-    def action_for_balance_with_ankle_policy(self) -> np.ndarray:
-        """-> (21,) action：踝策略闭环站桩——核内保持、出核拉回。
+    _BASE_ACT = None  # 懒缓存站姿对应 action——踝策略非踝目标锚点
 
-        双支撑（SupportClass.DOUBLE）铰链模的失稳自由度只有
-        一维：捕获点 ξ 垂直双踝连线（e_perp）分量越出支撑多
-        边形投影区间（balance_margin 的量）。出核时取期望加
-        速度 d = ±e_perp·ω²·deficit 调 ankle_policy——物理
-        上等价"把 CoP 顶到 ξ 逃逸侧的域边界"；核内走
-        corresponding_action 快路径。非双支撑走各形态自己的
-        策略族——NotImplementedError，不在此通吃。
+    @classmethod
+    def _base_action(cls) -> np.ndarray:
+        """-> (21,) 站姿 corresponding_action 快照（懒缓存）。
+
+        踝策略族的非踝目标基准：每次输出 = 站姿 Action +
+        踝改动——把躯干钉回站姿，而不是锚每步当前态（那
+        会棘轮式锁进漂移体态）。
         """
-        from .support_state import SupportClass
+        if cls._BASE_ACT is None:
+            cls._BASE_ACT = cls.standing().corresponding_action()
+        return cls._BASE_ACT.copy()          # 返回拷贝，调用方会改踝位
+
+    def action_for_balance_with_ankle_policy(self) -> np.ndarray:
+        """-> (21,) action：双支撑踝调节闭环——阻尼律稳站。
+
+        双支撑铰链模的可控失稳自由度只有一维：垂直双踝连
+        线 e_perp（沿轴侧向 = 载重分摊通道、非踝职——
+        ankle_policy docstring 的侧向边界）。每步取期望
+        加速度
+
+            d = −ω²·(com−a_mid) − 2ω·com_vel   沿 e_perp 的
+            PD 调节，ω=√(g/l) 摆频、临界阻尼
+
+        调 ankle_policy——理想 LIP 下 ẍ=d，即把 COM 当二
+        阶系统直接镇定到双踝中点。**不用 margin 触发**
+        （核内 hold、出核才拉）：LIP 在核内也指数发散，
+        越界介入时速度已超踝能力——sim 实测证伪。非双支
+        撑 NotImplementedError，走各形态自己的策略族。
+        """
+        from .support_state import (ANKLE_Z_PLANTED, LIP_G,
+                                    SupportClass)
         st = self.to_support_state()
         if st.support_class() != SupportClass.DOUBLE:
             raise NotImplementedError(
                 "action_for_balance_with_ankle_policy: "
                 f"{st.support_class().name} 未实现——v1 只做双脚")
-        m = st.balance_margin()
-        if m <= 0:
-            return self.corresponding_action()
-        if not np.isfinite(m):
+        l = float(st.com[2]) - ANKLE_Z_PLANTED
+        if l <= 0:
             raise ValueError(
                 "action_for_balance_with_ankle_policy: "
-                "balance_margin=inf——LIP 失效，踝策略不可用")
+                f"com.z {st.com[2]:.3f} ≤ 踝心——LIP 失效")
         p0, p1 = np.asarray(st.left_foot), np.asarray(st.right_foot)
         e = p1 - p0
         if np.linalg.norm(e) > 1e-3:
@@ -930,11 +949,12 @@ class RobotState(Pose):
             cy, sy = np.cos(st.torso_yaw), np.sin(st.torso_yaw)
             e = np.array([-sy, cy])
         e_perp = np.array([-e[1], e[0]])
-        xi, tau, _ = st._cp_terms(p0, st.left_foot_height)
-        s = float(xi @ e_perp)
-        proj = st.support_polygon() @ e_perp
-        sgn = -1.0 if s > 0.5 * (proj.min() + proj.max()) else 1.0
-        return self.ankle_policy(sgn * e_perp * (m / (tau * tau)))
+        a_mid = 0.5 * (p0 + p1)
+        x_err = float((st.com[:2] - a_mid) @ e_perp)
+        v = float(st.com_vel[:2] @ e_perp)
+        om2 = LIP_G / l
+        d_perp = -(om2 * x_err + 2.0 * np.sqrt(om2) * v)
+        return self.ankle_policy(d_perp * e_perp)
 
     def action_for_pose(self, aim_pose: "Pose") -> np.ndarray:
         """-> (21,) 归一化 action：朝 aim 关节构型推进。
@@ -984,10 +1004,17 @@ class RobotState(Pose):
           |τ_w| ≤ min(τ_act, N_i·margin_dir) 逐轴 clamp——饱和
                即本原语的能力边界（前后 ±0.1m 级，侧向 ±0.047m）
           target = qpos + (τ_j + KD·qvel)/KP → rad_to_norm——
-               action 是归一化 PD 位置目标，非力矩指令
+               action 是归一化 PD 位置目标，非力矩指令；
+               踝目标锚当前 qpos（力矩精确、脚板贴地、踝角
+               随体转自由浮动）
 
-        非踝关节 = corresponding_action——只踝动，其余关节保
-        持现姿态。
+        非踝关节 = _base_action（站姿 action 快照）——钉回
+        站姿体态；若锚每步当前态则棘轮式锁进漂移。
+
+        侧向边界：双脚踩平时沿双踝连线方向踝无可控力
+        ——ankle_x 只能在己脚板内挪 ±4.7cm 压心，对 COM
+        侧向加速度无控制权；该方向是 hip_x/腹部的载重分
+        摊通道（实测 ankle_x 全关与全开侧向发散无差别）。
         """
         from .mechanics import _HALF, _JIDX, _MID
         from .support_state import (ANKLE_Z_PLANTED, LIP_G,
@@ -1024,7 +1051,7 @@ class RobotState(Pose):
                            / ni,
                            min(LIP_TAU_ACT, ni * LIP_MARGIN_SIDE)
                            / ni))
-        action = self.corresponding_action()
+        action = self._base_action()
         tau_y, tau_x = ni * dx, -ni * dy
         for side, kx in (("right", _ANKLE_AX), ("left", -_ANKLE_AX)):
             for j, t in ((_JIDX[f"ankle_y_{side}"], tau_y),
