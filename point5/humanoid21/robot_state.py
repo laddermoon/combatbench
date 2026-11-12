@@ -63,6 +63,19 @@ def _zyx_to_quat_wxyz(ori: np.ndarray) -> np.ndarray:
                      sy * cp * cr - cy * sp * sr])
 
 
+def _quat_wxyz_to_zyx(q: np.ndarray) -> np.ndarray:
+    """quat (wxyz) -> [pitch,roll,yaw]，_zyx_to_quat_wxyz 之逆。"""
+    w, x, y, z = (float(v) for v in q)
+    return np.array([
+        np.arctan2(-2.0 * (x * z - y * w),
+                   np.hypot(1.0 - 2.0 * (y * y + z * z),
+                            2.0 * (x * y + z * w))),
+        np.arctan2(2.0 * (y * z + x * w),
+                   1.0 - 2.0 * (x * x + y * y)),
+        np.arctan2(2.0 * (x * y + z * w),
+                   1.0 - 2.0 * (y * y + z * z))])
+
+
 def _canonical_zyx(ori: np.ndarray) -> np.ndarray:
     """[pitch,roll,yaw] -> 标准 ZYX 分支（cos(pitch)>=0）的等价角。
 
@@ -383,6 +396,117 @@ class RobotState(Pose):
         self.root_angvel = _vec(self.root_angvel, _VEC3, "root_angvel")
         self.ang_mom = _vec(self.ang_mom, _VEC3, "ang_mom")
 
+
+    # ---------- 标准态工厂：快速生成 RobotState ----------
+    # standing/squat/stand_on_left_leg/prone/supine 取
+    # Humanoid21Meta.INITIAL_POSES（sim reset 权威表）；
+    # ready 为自建格斗准备姿（常量见模块尾 _READY_*）。
+    # 约定：**标准姿态不带速度**——qvel/root_linvel/
+    # root_angvel/ang_mom 恒零；受扰/随机态走 random()。
+
+    STANDARD_POSES = ("standing", "squat", "stand_on_left_leg",
+                      "prone", "supine", "ready")
+
+    @classmethod
+    def standard(cls, name: str) -> "RobotState":
+        """-> RobotState：按名取标准姿态（全零速度静态量）。
+
+        INITIAL_POSES 源数据 = joint_pos rad + root_pos +
+        root_quat(wxyz) 直搬（quat -> [pitch,roll,yaw] 经
+        _quat_wxyz_to_zyx）。root_pos 不含 reset 的双人
+        x_offset——那是占位而非姿态属性；面朝 +x。
+        """
+        name = str(name)
+        if name == "ready":
+            qpos = _READY_QPOS
+            root, ori = _READY_ROOT_POS, _READY_ROOT_ORI
+        else:
+            from envs.humanoid21.meta import Humanoid21Meta
+            cfg = Humanoid21Meta.INITIAL_POSES.get(name)
+            if cfg is None:
+                raise ValueError(
+                    f"standard: unknown pose {name!r} "
+                    f"(expected one of {cls.STANDARD_POSES})")
+            qpos = np.asarray(cfg["joint_pos"], np.float64)
+            root = np.asarray(cfg["root_pos"], np.float64)
+            ori = _quat_wxyz_to_zyx(
+                np.asarray(cfg["root_quat"], np.float64))
+        z3, z21 = np.zeros(3), np.zeros(21)
+        return cls(qpos=qpos, root_position=root,
+                   root_orientation=ori, qvel=z21,
+                   root_linvel=z3, root_angvel=z3.copy(),
+                   ang_mom=z3.copy())
+
+    @classmethod
+    def standing(cls) -> "RobotState":
+        """站姿——standard("standing")。"""
+        return cls.standard("standing")
+
+    @classmethod
+    def squat(cls) -> "RobotState":
+        """深蹲——standard("squat")。"""
+        return cls.standard("squat")
+
+    @classmethod
+    def stand_on_left_leg(cls) -> "RobotState":
+        """左腿独立——standard("stand_on_left_leg")。"""
+        return cls.standard("stand_on_left_leg")
+
+    @classmethod
+    def prone(cls) -> "RobotState":
+        """俯卧——standard("prone")。"""
+        return cls.standard("prone")
+
+    @classmethod
+    def supine(cls) -> "RobotState":
+        """仰卧——standard("supine")。"""
+        return cls.standard("supine")
+
+    @classmethod
+    def ready(cls) -> "RobotState":
+        """运动准备姿——standard("ready")。
+
+        双腿张开、膝微屈、手臂胸前屈收；P5 意图经
+        infer_from_p5 反解后烘焙常量（带前倾 bias——
+        对本姿态语义无害）。
+        """
+        return cls.standard("ready")
+
+    @classmethod
+    def random(cls, seed=None, qpos_scale: float = 0.3,
+               vel_scale: float = 0.0) -> "RobotState":
+        """测试用随机态：关节 = 站姿 ± scale·限位半幅均匀
+        采样；root 在站姿附近小扰动（xy/z ±0.3/±0.2 m，
+        pitch/roll ±0.2 rad，yaw ±π）。vel_scale>0 时各速度
+        维 ±vel_scale 均匀采样，ang_mom 经 FK 真值回填（不
+        是独立噪声）；=0 时与标准姿态同约定全零。
+
+        非物理可达姿态——供 solver/编解码 round-trip 采样，
+        勿当可立姿态用。
+        """
+        rng = np.random.default_rng(seed)
+        st = cls.standing()
+        r = joint_ranges()
+        half = (r[:, 1] - r[:, 0]) / 2.0
+        tmp = cls(
+            qpos=st.qpos + rng.uniform(-1.0, 1.0, 21)
+            * float(qpos_scale) * half,
+            root_position=st.root_position + np.array([
+                rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3),
+                rng.uniform(-0.2, 0.2)]),
+            root_orientation=np.array([
+                rng.uniform(-0.2, 0.2), rng.uniform(-0.2, 0.2),
+                rng.uniform(-np.pi, np.pi)]),
+            qvel=rng.uniform(-vel_scale, vel_scale, 21),
+            root_linvel=rng.uniform(-vel_scale, vel_scale, 3),
+            root_angvel=rng.uniform(-vel_scale, vel_scale, 3),
+            ang_mom=np.zeros(3))
+        if vel_scale > 0.0:
+            _, vdata, vr = tmp._fk_vel_data()
+            tmp.ang_mom = np.asarray(
+                vdata.subtree_angmom[vr["root_body_id"]]).copy()
+        return tmp
+
     @classmethod
     def from_obs(cls, obs: np.ndarray) -> "RobotState":
         """obs (96,) -> RobotState，产 **P5 坐标系**的态。
@@ -679,6 +803,22 @@ class RobotState(Pose):
         几何目标（不含动量）。单步语义同上。
         """
         raise NotImplementedError
+
+
+# ---------------- 标准姿态烘焙常量 ----------------
+# ready 运动准备姿：P5 意图（踝 ±0.15 m 张宽、双手抬至胸前
+# [0.28,±0.18,1.32]、头降 0.03 m）经 Pose.infer_from_p5 反解，
+# root_z 校准至踝心贴地后烘焙。前倾 ~14° 是反解 v1 已知
+# bias，对"准备"语义无害（渲染验证过：腿张膝屈、手臂
+# 胸前屈收）。
+_READY_QPOS = np.array([
+    0.0, -0.3598, 0.0,
+    -0.1000, -0.3027, -0.1709, -0.4474, 0.0, 0.0,
+    -0.1000, -0.3027, -0.1709, -0.4474, 0.0, 0.0,
+    -0.4494, 0.0296, 0.1852,
+    -0.4494, 0.0296, 0.1852])
+_READY_ROOT_POS = np.array([-0.0455, 0.0, 1.2500])
+_READY_ROOT_ORI = np.array([0.2419, 0.0, 0.0])
 
 
 

@@ -9,38 +9,78 @@ from point5.humanoid21.robot_state import RobotState
 
 
 def _standing_state() -> RobotState:
-    """真实 sim reset 态 -> RobotState（测试输入底本）。"""
-    from envs.humanoid21.simulator import Humanoid21Simulator
-    from envs.humanoid21.meta import Humanoid21Meta
-    sim = Humanoid21Simulator()
-    sim.reset()
-    r = Humanoid21Meta.build_runtime_tables(
-        sim.model)["robots"]["robot_a"]
-    d = sim.data
-    adr, vadr = int(r["root_qpos_adr"]), int(r["root_qvel_adr"])
-    quat = np.asarray(d.qpos[adr + 3:adr + 7])
-    Rm = np.empty(9)
-    mujoco.mju_quat2Mat(Rm, quat)
-    Rm = Rm.reshape(3, 3)
-    zyx = np.array([
-        np.arctan2(-Rm[2, 0], np.hypot(Rm[0, 0], Rm[1, 0])),
-        np.arctan2(Rm[2, 1], Rm[2, 2]),
-        np.arctan2(Rm[1, 0], Rm[0, 0])])
-    mujoco.mj_subtreeVel(sim.model, d)
-    return RobotState(
-        qpos=d.qpos[np.asarray(r["qpos_indices"])].copy(),
-        root_position=d.qpos[adr:adr + 3].copy(),
-        root_orientation=zyx,
-        qvel=d.qvel[np.asarray(r["qvel_indices"])].copy(),
-        root_linvel=d.qvel[vadr:vadr + 3].copy(),
-        root_angvel=Rm @ d.qvel[vadr + 3:vadr + 6],
-        ang_mom=np.asarray(
-            d.subtree_angmom[r["root_body_id"]]).copy())
+    """标准站姿 -> RobotState（standard("standing") 同源的
+    测试输入底本）。"""
+    return RobotState.standing()
 
 
 @pytest.fixture(scope="module")
 def st():
     return _standing_state()
+
+
+class TestStandardPoses:
+    @pytest.mark.parametrize("name", RobotState.STANDARD_POSES)
+    def test_constructable_zero_velocity(self, name):
+        st = RobotState.standard(name)
+        assert st.qpos.shape == (21,) and np.isfinite(st.qpos).all()
+        assert np.isfinite(st.root_position).all()
+        assert np.isfinite(st.root_orientation).all()
+        for f in (st.qvel, st.root_linvel, st.root_angvel,
+                  st.ang_mom):
+            assert np.all(f == 0.0)
+
+    def test_deterministic(self):
+        a, b = (RobotState.standard("squat")
+                for _ in range(2))
+        assert np.array_equal(a.qpos, b.qpos)
+        assert np.array_equal(a.root_position, b.root_position)
+        assert np.array_equal(a.root_orientation, b.root_orientation)
+
+    @pytest.mark.parametrize("name", RobotState.STANDARD_POSES)
+    def test_named_wrapper_matches_registry(self, name):
+        named = getattr(RobotState, name)()
+        reg = RobotState.standard(name)
+        assert np.array_equal(named.qpos, reg.qpos)
+        assert np.array_equal(named.root_position, reg.root_position)
+
+    def test_unknown_name(self):
+        with pytest.raises(ValueError):
+            RobotState.standard("bogus")
+
+    def test_standing_matches_sim_reset(self):
+        """standing 的 qpos/root 与 sim reset（robot_a）一致
+        ——仅差双人占位的 x_offset。"""
+        from envs.humanoid21.simulator import Humanoid21Simulator
+        from envs.humanoid21.meta import Humanoid21Meta
+        sim = Humanoid21Simulator()
+        sim.reset()
+        r = Humanoid21Meta.build_runtime_tables(
+            sim.model)["robots"]["robot_a"]
+        st = RobotState.standing()
+        assert np.allclose(st.qpos,
+                           sim.data.qpos[np.asarray(r["qpos_indices"])])
+        adr = int(r["root_qpos_adr"])
+        assert np.isclose(st.root_position[1:],
+                          sim.data.qpos[adr + 1:adr + 3]).all()
+
+
+class TestRandom:
+    def test_seed_deterministic(self):
+        a, b = RobotState.random(7), RobotState.random(7)
+        assert np.array_equal(a.qpos, b.qpos)
+        assert not np.array_equal(a.qpos, RobotState.random(8).qpos)
+
+    def test_zero_vel_default(self):
+        st = RobotState.random(3)
+        for f in (st.qvel, st.root_linvel, st.root_angvel,
+                  st.ang_mom):
+            assert np.all(f == 0.0)
+
+    def test_vel_scale(self):
+        st = RobotState.random(3, vel_scale=0.5)
+        assert np.any(st.qvel != 0.0)
+        assert np.any(st.ang_mom != 0.0)   # FK 真值回填非零
 
 
 class TestTakeAction:

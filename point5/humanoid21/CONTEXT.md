@@ -54,6 +54,15 @@ P5 协议见 `../p5.py`。
   `render()`(→PIL.Image，osmesa 兜底、robot_b 停置)/
   `inertia_matrix()`（后两者走 MuJoCo）。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`；
+  **标准态工厂**：`standard(name)` 注册表消费
+  `Humanoid21Meta.INITIAL_POSES`（standing/squat/
+  stand_on_left_leg/prone/supine，joint_pos rad+root 直搬、
+  quat→zyx）+ 自建 `ready` 准备姿（P5 意图反解烘焙常量
+  _READY_*，腿张膝屈臂收、前倾~14°是反解 v1 bias）——
+  全部**零速度**（qvel/linvel/angvel/ang_mom 恒零）；
+  `random(seed,qpos_scale,vel_scale)` 测试采样（vel>0 时
+  ang_mom 经 FK 真值回填）。具名糖：standing()/squat()/
+  stand_on_left_leg()/prone()/supine()/ready()。
   `take_action(action,dt)`=模拟器真值推演（共享 Humanoid21
   Simulator 懒加载、robot_b 停置远处、同帧输出），**返回新
   对象**供候选动作在同一底本上评估，~20-35ms/控制周期；
