@@ -78,6 +78,11 @@ P5 协议见 `../p5.py`。
   快路径=margin≤−band 直返 a_hold（J=0 全局下界）。
   **坑**：balance_margin 返回 +inf 是返回值非异常——
   必须映射成有限罚，inf² 会经 FD 产生 NaN 梯度假收敛。
+  `joint_reach_range(dt,clamp_pd)`→(21,2) rad 单控制周期
+  各关节独立可达域（"冻住他人"近似）：下游侧 J=M 对角元
+  精确惯量、上游触地腿=补集绕轴惯量+反号重力矩（双腿
+  分摊减半）、τ_eff 按 PD 可发力矩端点截断；stance 走
+  foot_height<0.05。语义边界：单关节域非全身联合包络。
   `action_for_pose`/`action_for_support_state` 占位。
 - `e2e_balance_video.py`：连续 action_for_balance 闭环
   演示视频（站姿→中推→倒地/恢复，帧叠 margin/|Δa|/root_z，

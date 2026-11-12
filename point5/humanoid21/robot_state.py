@@ -643,6 +643,12 @@ class RobotState(Pose):
             cls._SIM = (sim, rb["robot_a"], rb["robot_b"])
         return cls._SIM
 
+
+    # 根据当前状态，在一个控制周期内（50MS），各个关节所能到的范围。每个节关一对范围值。
+    # 假定关节以最大力矩朝那个方向工作，至于如何让关节有哪个力矩，是PD反解的问题。
+    # 不需要做关节关联的分析
+    
+
     def take_action(self, action, dt: float = 0.05) -> "RobotState":
         """21 维归一化动作 -> 新 RobotState（模拟器单控制周期
         真值推演，**返回新对象**——本态保持不变，供其它候选
@@ -709,7 +715,152 @@ class RobotState(Pose):
             root_angvel=Rm_o @ data.qvel[vadr + 3:vadr + 6],
             ang_mom=np.asarray(
                 data.subtree_angmom[ra["root_body_id"]]).copy())
-        
+
+    # ---------- 能力查询：单步可达域 ----------
+
+    _REACH = None   # 懒加载 (names, jid, jb, sub_of, ra, kp, kd, tmax, lim)
+
+    @classmethod
+    def _reach_tables(cls):
+        """懒加载可达域所需的执行器/拓扑表（结构常量，与位形无关）。"""
+        if cls._REACH is None:
+            from envs.humanoid21.meta import Humanoid21Meta
+            sim, ra, _ = cls._sim()
+            m = sim.model
+            pd = sim._pd_tables["robot_a"]
+            names = list(Humanoid21Meta.CONTROLLED_JOINTS)
+            parent = list(m.body_parentid)
+
+            def _sub(root):
+                out, grow = {root}, True
+                while grow:
+                    grow = False
+                    for b in range(m.nbody):
+                        if parent[b] in out and b not in out:
+                            out.add(b)
+                            grow = True
+                return out
+
+            bodies_a = _sub(int(ra["root_body_id"]))
+            jid = {names[k]: int(m.actuator_trnid[a, 0])
+                   for k, a in enumerate(np.asarray(pd["actuator_ids"]))}
+            jb = {n: int(m.jnt_bodyid[j]) for n, j in jid.items()}
+            sub_of = {n: _sub(b) & bodies_a for n, b in jb.items()}
+            tmax = (np.maximum(np.abs(pd["ctrl_lo"]),
+                               np.abs(pd["ctrl_hi"]))
+                    * np.abs(pd["gear"]))
+            lim = np.array([m.jnt_range[jid[n]] for n in names])
+            cls._REACH = dict(names=names, jid=jid, jb=jb,
+                              sub_of=sub_of, bodies_a=bodies_a,
+                              kp=np.asarray(Humanoid21Meta.KP, float),
+                              kd=np.asarray(Humanoid21Meta.KD, float),
+                              tmax=np.asarray(tmax, float), lim=lim)
+        return cls._REACH
+
+    def joint_reach_range(self, dt: float = 0.05,
+                          clamp_pd: bool = True) -> np.ndarray:
+        """-> (21,2) rad：本态起 dt 内各关节**独立**可达角区间。
+
+        模型（"冻住他人"近似，无关节关联）：关节 i 以最大力矩
+        推 ± 方向、其余关节视为 PD 锁死，单关节二阶积分
+
+            θ(T) = θ0 + ω0·T + ½·α·T²
+            α± = (±τ_eff − τ_g) 换向即 (∓τ_eff + τ_g)/J_eff
+
+        - J_eff：动侧绕关节轴惯量。下游侧（腰/臂/摆动腿）= M
+          对角元精确值；上游侧（触地腿驱动上身）= 补集 bodies
+          绕轴惯量（轴惯量+平行轴）。
+        - τ_g：动侧重力矩的关节广义力（上游侧作用反号——
+          关节角 = 子侧相对父侧）；触地腿为上游负载，双腿
+          触地按对称载减半（静不定近似）。
+        - τ_eff：clamp_pd 时用 PD 可发力矩上界
+          min(τ_act, |KP·(θ_t−θ0)−KD·ω0| 端点极值)——θ_t 最多
+          打到关节限位，贴边/反向速度时真实上限收窄；
+          =False 时用裸执行器上限 τ_act（"假设力矩能给满"）。
+        - stance 判定：foot_height < 0.05 m 视为触地
+          （to_support_geometry 的踝心高）。
+
+        输出顺序 = CONTROLLED_JOINTS（qpos 序）；区间 = 时刻 T
+        可达集合（恒力界下即该区间），再与关节限位求交。
+        语义边界：这是单关节可达域，非全身联合可达域——多关节
+        联动的真实包络要 take_action 采样式刻画。
+        """
+        import mujoco
+        if dt <= 0:
+            raise ValueError(f"joint_reach_range: dt<=0 ({dt})")
+        T = self._reach_tables()
+        model, data, r, _ = self._fk_data()
+        mujoco.mj_crb(model, data)
+        Mmat = np.zeros((model.nv, model.nv))
+        mujoco.mj_fullM(model, Mmat, data.qM)
+        Mdiag = np.diag(Mmat)[np.asarray(r["qvel_indices"])]
+
+        g = self.to_support_geometry()
+        planted = {"right": g.right_foot_height < 0.05,
+                   "left": g.left_foot_height < 0.05}
+        both = planted["right"] and planted["left"]
+
+        # 全体 body 的世界系惯量张量/质心（遍历一遍，各关节复用）
+        Iw, mb_, pb = {}, {}, {}
+        for b in T["bodies_a"]:
+            Rb = np.asarray(data.xmat[b]).reshape(3, 3)
+            Ri = np.empty(9)
+            mujoco.mju_quat2Mat(Ri, np.asarray(model.body_iquat[b]))
+            Rp = Rb @ Ri.reshape(3, 3)
+            Iw[b] = Rp @ np.diag(np.asarray(model.body_inertia[b])) @ Rp.T
+            mb_[b] = model.body_mass[b]
+            pb[b] = np.asarray(data.xipos[b])
+
+        def side_stats(bodies, anchor, e):
+            """-> (J_axis, tau_g)：bodies 绕轴 e@anchor 的轴惯量
+            与重力矩（带符号，+ 方向沿 e）。"""
+            J, com, ml = 0.0, np.zeros(3), 0.0
+            for b in bodies:
+                d = pb[b] - anchor
+                dp = d - (d @ e) * e
+                J += float(e @ Iw[b] @ e) + mb_[b] * (dp @ dp)
+                com += mb_[b] * pb[b]
+                ml += mb_[b]
+            com /= ml
+            tau_g = float(e @ np.cross(com - anchor,
+                                       np.array([0., 0., -ml * 9.81])))
+            return J, tau_g
+
+        out = np.empty((21, 2))
+        leg = {"right": T["names"][3:9], "left": T["names"][9:15]}
+        for i, n in enumerate(T["names"]):
+            ax_w = (np.asarray(data.xmat[T["jb"][n]]).reshape(3, 3)
+                    @ np.asarray(model.jnt_axis[T["jid"][n]]))
+            ax_w /= np.linalg.norm(ax_w) + 1e-12
+            anchor = np.asarray(data.xanchor[T["jid"][n]])
+            side = ("right" if n in leg["right"]
+                    else "left" if n in leg["left"] else None)
+            use_complement = side is not None and planted[side]
+            bodies = (T["bodies_a"] - T["sub_of"][n]
+                      if use_complement else T["sub_of"][n])
+            J, tau_g = side_stats(bodies, anchor, ax_w)
+            # 重力矩对关节角的广义力：子侧旋转=+θ，父侧（补集）
+            # 旋转=−θ——上游负载侧作用反号。
+            q_g = -tau_g if use_complement else tau_g
+            if use_complement and both:
+                q_g *= 0.5                  # 双腿分摊重力负载
+            if not use_complement:
+                J = float(Mdiag[i])         # 下游侧精确惯量
+            J = max(J, 1e-9)
+
+            th0, w0 = self.qpos[i], self.qvel[i]
+            lo_lim, hi_lim = T["lim"][i]
+            tp = tn = T["tmax"][i]
+            if clamp_pd:
+                kp, kd = T["kp"][i], T["kd"][i]
+                tp = min(tp, max(0.0, kp * (hi_lim - th0) - kd * w0))
+                tn = min(tn, max(0.0, kp * (th0 - lo_lim) + kd * w0))
+            a_hi = (tp + q_g) / J
+            a_lo = (-tn + q_g) / J
+            out[i, 0] = max(lo_lim, th0 + w0 * dt + 0.5 * a_lo * dt * dt)
+            out[i, 1] = min(hi_lim, th0 + w0 * dt + 0.5 * a_hi * dt * dt)
+        return out
+
     # ---------- action_for_*：take_action 的逆向查询族 ----------
 
     def action_for_balance(self, dt: float = 0.05,

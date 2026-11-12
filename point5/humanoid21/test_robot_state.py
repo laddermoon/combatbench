@@ -65,6 +65,52 @@ class TestStandardPoses:
                           sim.data.qpos[adr + 1:adr + 3]).all()
 
 
+class TestJointReachRange:
+    def test_shape_lo_le_hi_within_limits(self, st):
+        from point5.humanoid21.robot_state import joint_ranges
+        rng = st.joint_reach_range()
+        assert rng.shape == (21, 2)
+        assert (rng[:, 0] <= rng[:, 1]).all()
+        lim = joint_ranges()
+        assert (rng[:, 0] >= lim[:, 0] - 1e-6).all()
+        assert (rng[:, 1] <= lim[:, 1] + 1e-6).all()
+
+    def test_stance_leg_tiny_range_gravity_asymmetry(self, st):
+        """站姿：触地腿单步可达域远小于手臂；膝屈（−，重力
+        折叠方向）比伸（+，对抗负载）容易。"""
+        rng = st.joint_reach_range()
+        knee, elbow = 6, 17
+        assert rng[knee, 1] - rng[knee, 0] < 0.05
+        assert rng[elbow, 1] - rng[elbow, 0] > 1.0
+        assert st.qpos[knee] - rng[knee, 0] \
+            > rng[knee, 1] - st.qpos[knee]
+
+    def test_swing_leg_much_wider(self):
+        """单腿站：摆动腿可达域 ≫ 支撑腿。"""
+        st = RobotState.stand_on_left_leg()
+        rng = st.joint_reach_range()
+        swing_w = rng[7, 1] - rng[7, 0]      # ankle_y_right
+        stance_w = rng[13, 1] - rng[13, 0]   # ankle_y_left
+        assert swing_w > 10.0 * stance_w
+
+    def test_clamp_pd_shrinks_or_equal(self, st):
+        a, b = st.joint_reach_range(clamp_pd=True), \
+            st.joint_reach_range(clamp_pd=False)
+        assert (a[:, 0] >= b[:, 0] - 1e-9).all()
+        assert (a[:, 1] <= b[:, 1] + 1e-9).all()
+
+    def test_velocity_shifts_range(self, st):
+        import dataclasses
+        st2 = dataclasses.replace(
+            st, qvel=st.qvel + np.eye(21)[6] * 5.0)
+        rng = st2.joint_reach_range()
+        assert rng[6].min() > -0.2     # 初速把可达区整体推向 +
+
+    def test_dt_must_be_positive(self, st):
+        with pytest.raises(ValueError):
+            st.joint_reach_range(dt=0.0)
+
+
 class TestRandom:
     def test_seed_deterministic(self):
         a, b = RobotState.random(7), RobotState.random(7)
