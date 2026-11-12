@@ -13,6 +13,7 @@ P5 反解无动量——只能构造 SupportGeometry。
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -75,6 +76,20 @@ def _convex_hull(pts: np.ndarray) -> np.ndarray:
             upper.pop()
         upper.append(p)
     return np.array(lower[:-1] + upper[:-1])
+
+
+class SupportClass(Enum):
+    """支撑形态分类——分治 dispatch key。
+
+    判定 = 与 support_polygon 同源的 foot_height < eps（贴地 =
+    可支撑潜力，非实测承重）。单脚支撑按承力脚分左右；
+    AIRBORNE = 双脚离地腾空（主动跳/失控抛起暂不细分，速度
+    侧细分留给消费侧）。
+    """
+    DOUBLE = "double"
+    SINGLE_LEFT = "single_left"
+    SINGLE_RIGHT = "single_right"
+    AIRBORNE = "airborne"
 
 
 @dataclass
@@ -162,6 +177,24 @@ class SupportGeometry:
                                (self.right_foot, self.right_foot_height))
                if fh < foot_height_eps]
         return _convex_hull(np.vstack(pts)) if pts else np.empty((0, 2))
+
+    def support_class(self, foot_height_eps: float = 0.02
+                      ) -> SupportClass:
+        """-> SupportClass：按贴地脚数分四类。
+
+        与 support_polygon 同阈值同语义（贴地 = 可支撑潜力）。
+        消费侧按枚举分流策略：DOUBLE -> COM-over-polygon；
+        SINGLE_* -> 踝摆 + 空腿规划；AIRBORNE -> 弹道/落地准备。
+        """
+        lg = self.left_foot_height < foot_height_eps
+        rg = self.right_foot_height < foot_height_eps
+        if lg and rg:
+            return SupportClass.DOUBLE
+        if lg:
+            return SupportClass.SINGLE_LEFT
+        if rg:
+            return SupportClass.SINGLE_RIGHT
+        return SupportClass.AIRBORNE
 
     def lip_analyze(self, foot_height_eps: float = 0.02,
                     inertia_com: np.ndarray = None

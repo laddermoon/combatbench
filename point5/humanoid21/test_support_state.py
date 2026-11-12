@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from point5.humanoid21.support_state import (
-    ANKLE_Z_PLANTED, LIP_G, LIP_MASS, SupportGeometry, SupportState)
+    ANKLE_Z_PLANTED, LIP_G, LIP_MASS, SupportClass,
+    SupportGeometry, SupportState)
 
 
 def _st(com, lf, rf, lfh=0.0, rfh=0.0, yaw=0.0,
@@ -15,6 +16,27 @@ def _st(com, lf, rf, lfh=0.0, rfh=0.0, yaw=0.0,
         right_foot=np.asarray(rf, float), torso_yaw=yaw,
         left_foot_height=lfh, right_foot_height=rfh,
         com_vel=np.asarray(v, float), ang_mom=np.asarray(H, float))
+
+
+class TestSupportClass:
+    """support_class：按贴地脚数分类（分治 dispatch key）。"""
+
+    def test_four_cases(self):
+        assert _st([0, 0, 1], [0, 0.1], [0, -0.1]).support_class() \
+            == SupportClass.DOUBLE
+        assert _st([0, 0, 1], [0, 0.1], [0, -0.1],
+                   rfh=0.15).support_class() == SupportClass.SINGLE_LEFT
+        assert _st([0, 0, 1], [0, 0.1], [0, -0.1],
+                   lfh=0.15).support_class() == SupportClass.SINGLE_RIGHT
+        assert _st([0, 0, 1], [0, 0.1], [0, -0.1], lfh=0.15,
+                   rfh=0.15).support_class() == SupportClass.AIRBORNE
+
+    def test_eps_boundary(self):
+        """阈值语义 = 与 support_polygon 同源的 foot_height < eps。"""
+        st = _st([0, 0, 1], [0, 0.1], [0, -0.1], rfh=0.02)
+        assert st.support_class() == SupportClass.SINGLE_LEFT
+        assert st.support_class(foot_height_eps=0.03) \
+            == SupportClass.DOUBLE
 
 
 class TestDrift:
