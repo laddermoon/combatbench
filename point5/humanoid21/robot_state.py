@@ -1062,6 +1062,165 @@ class RobotState(Pose):
                     (tgt - _MID[j]) / _HALF[j], -1.0, 1.0))
         return action
 
+    def arm_swing_policy(self, delta_x: float) -> np.ndarray:
+        """-> (21,) action：双臂同步前后摆原语——矢状面搬移 com。
+
+        只双脚支撑可用（support_class()!=DOUBLE ->
+        NotImplementedError）。delta_x = 期望 com 沿铰链垂向
+        e_perp（垂直双踝连线、水平面内）的搬移量 m——正值
+        朝 +e_perp 搬。
+
+        摆动语义：各臂"肩→手"向量在含 e_perp 的竖直面内摆
+        动，θ 从竖直下垂量起（θ>0 前摆）——两臂同相即对
+        称前后摆；|v| 与侧向分量不变 ⇒ 肘角近似不动，动的
+        是肩（_arm_ik 候选按 vio+弹簧能选支）。θ -> com_e
+        由 Skeleton FK 求值、二分反解——有效段单调（绕轴
+        整圈参数化会抡过头顶折回、非单调，已弃）；可达搬
+        移域截断到 IK 可达边界（双臂 ~5.8kg/40.84kg，实测
+        FK 域约 [−0.025, +0.016] m）。
+
+        输出 = _base_action（站姿快照，**含踝**）+ 肩肘 6 通
+        道 IK 目标——只挥手臂、其余全钉站姿。搬移是准静态
+        通道：直接改写 com 相对支点的水平位置；速度只能经
+        闭环侧 ξ 超前项间接压制（动量效应交给动力学真值）。
+
+        实测能力边界（sim oracle，2026-05）：固定任何摆角
+        都挂不住站姿——双踝 PD 被动刚度 ~200 N·m/rad <
+        重力反刚度 ~340 N·m/rad，平衡点是鞍点；闭环搬移
+        方向正确（后摆→后倒、前摆→前倒）但速率 ~mm/s
+        追不上指数加速的倾翻。臂摆只能做踝/躯干通道的
+        增强，不能单独站桩。
+        """
+        from .mechanics import _HALF, _JIDX, _MID
+        from .support_state import SupportClass
+        dx = float(np.asarray(delta_x).ravel()[0])
+        if not np.isfinite(dx):
+            raise ValueError(
+                f"arm_swing_policy: delta_x 期望有限标量 m——{dx}")
+        g = self.to_support_geometry()
+        if g.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                f"arm_swing_policy: {g.support_class().name} 未实现"
+                "——v1 只做双脚")
+        p0, p1 = np.asarray(g.left_foot), np.asarray(g.right_foot)
+        e = p1 - p0
+        if np.linalg.norm(e) > 1e-3:
+            e = e / np.linalg.norm(e)
+        else:                                   # 双踝重合退化——取躯干侧向
+            cy, sy = np.cos(g.torso_yaw), np.sin(g.torso_yaw)
+            e = np.array([-sy, cy])
+        e_perp = np.array([-e[1], e[0]])
+        e3 = np.array([e[0], e[1], 0.0])
+        ep3 = np.array([-e[1], e[0], 0.0])
+        from .mechanics import Skeleton
+        sk = Skeleton()
+        com, *_ = sk.support_jac(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos,
+            ("ankle_y_right", "ankle_y_left"))
+        x_now = float(com[:2] @ e_perp)                # 当前 com 基线
+        lo, hi = (self._swing_com_e(-_SWING_PHI_MAX, e3, ep3, e_perp,
+                                    sk) - x_now,
+                  self._swing_com_e(_SWING_PHI_MAX, e3, ep3, e_perp,
+                                    sk) - x_now)
+        tgt = float(np.clip(dx, lo, hi))
+        a, b = -_SWING_PHI_MAX, _SWING_PHI_MAX
+        for _ in range(40):                            # com_e 对 θ 单调
+            m = 0.5 * (a + b)
+            if self._swing_com_e(m, e3, ep3, e_perp, sk) - x_now < tgt:
+                a = m
+            else:
+                b = m
+        q = self._arm_swing_qpos(0.5 * (a + b), e3, ep3, sk)
+        action = self._base_action()
+        for i in _ARM_J:
+            action[i] = float(np.clip(
+                (q[i] - _MID[i]) / _HALF[i], -1.0, 1.0))
+        return action
+
+    def _swing_com_e(self, theta, e3, ep3, e_perp, sk) -> float:
+        """com 沿 e_perp 的 FK 求值——θ->com_e 单调映射供二分。"""
+        q = self._arm_swing_qpos(theta, e3, ep3, sk)
+        com, *_ = sk.support_jac(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), q,
+            ("ankle_y_right", "ankle_y_left"))
+        return float(com[:2] @ e_perp)
+
+    def _arm_swing_qpos(self, theta, e3, ep3, sk):
+        """摆角 theta 下替换肩肘 6 通道后的 qpos(21)。
+
+        摆动 = "肩→手"向量在 {ê_perp, ê, ẑ} 系的矢状-竖直面
+        内摆：v(θ) = L_h·sinθ·ê_perp + v_e·ê − L_h·cosθ·ẑ，
+        L_h = |v 的 (e_perp,z) 分量|，θ=0 竖直下垂、θ>0 前
+        摆；侧向分量 v_e 与 |v| 不变（肘角近似不动）。θ 从
+        下垂量起——com_e(θ) 单调（绕轴转整圈的参数化会抡
+        过头顶折回、非单调，已弃）。
+        """
+        from .mechanics import _ARM, _arm_ik
+        xf = sk.body_transforms(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
+        t_pos, t_mat = xf["torso"]
+        ez3 = np.array([0.0, 0.0, 1.0])
+        q = self.qpos.copy()
+        for side in ("left", "right"):
+            sp = _ARM[side]
+            v = (xf[f"hand_{side}"][0]
+                 - (t_pos + t_mat @ sp["s_off"]))       # 肩→手 世界向量
+            v_p, v_e, v_z = (float(v @ ep3), float(v @ e3),
+                             float(v @ ez3))
+            lh = float(np.hypot(v_p, v_z))
+            vt = (lh * np.sin(theta) * ep3 + v_e * e3
+                  - lh * np.cos(theta) * ez3)
+            cand = _arm_ik(vt, t_mat, sp)
+            pick = (min(cand, key=lambda c: (c["vio"], c["e"]))
+                    if cand else None)
+            if pick is not None:
+                rad = np.clip(pick["rad"], sp["rng"][:, 0],
+                              sp["rng"][:, 1])
+                for i, val in zip(sp["ji"], rad):
+                    q[i] = float(val)
+        return q
+
+    def action_for_balance_with_arm_policy(self) -> np.ndarray:
+        """-> (21,) action：双臂摆动闭环——搬移 com 维持在两踝
+        支点上方（不用踝策略）。
+
+        铰链模只调可控自由度 e_perp：搬移指令
+            Δx = clip((a_mid − ξ)·e_perp, ±0.03)
+            ξ = com + com_vel·τ（捕获点，τ=√(l/g)）
+        ξ 偏前则手臂后摆、把 com 往支点拽——静态语义"com 对
+        准 a_mid"；速度经 ξ 超前项折算成更深的搬移。能力边
+        界：双臂 ~±3cm 搬移域，只能接小扰动——躯干/髋载重
+        分摊通道待补。非双支撑 NotImplementedError。
+        """
+        from .support_state import (ANKLE_Z_PLANTED, LIP_G,
+                                    SupportClass)
+        st = self.to_support_state()
+        if st.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                "action_for_balance_with_arm_policy: "
+                f"{st.support_class().name} 未实现——v1 只做双脚")
+        l = float(st.com[2]) - ANKLE_Z_PLANTED
+        if l <= 0:
+            raise ValueError(
+                "action_for_balance_with_arm_policy: "
+                f"com.z {st.com[2]:.3f} ≤ 踝心——LIP 失效")
+        p0, p1 = np.asarray(st.left_foot), np.asarray(st.right_foot)
+        e = p1 - p0
+        if np.linalg.norm(e) > 1e-3:
+            e = e / np.linalg.norm(e)
+        else:
+            cy, sy = np.cos(st.torso_yaw), np.sin(st.torso_yaw)
+            e = np.array([-sy, cy])
+        e_perp = np.array([-e[1], e[0]])
+        a_mid = 0.5 * (p0 + p1)
+        tau = np.sqrt(l / LIP_G)
+        xi = st.com[:2] + st.com_vel[:2] * tau
+        dx = float(np.clip(float((a_mid - xi) @ e_perp),
+                           -0.03, 0.03))
+        return self.arm_swing_policy(dx)
 
 
 
@@ -1086,6 +1245,14 @@ _READY_ROOT_ORI = np.array([0.2419, 0.0, 0.0])
 _ANKLE_KP = 100.0     # N·m/rad — 踝 PD 位置增益
 _ANKLE_KD = 10.0      # N·m·s/rad — 踝 PD 阻尼
 _ANKLE_AX = 0.8944    # ankle_x 轴世界 x 分量（(±.8944,0,±.4472)）
+
+# 臂摆策略：肩肘 6 通道索引与摆角上限
+from .mechanics import _JIDX as _JIDX_
+_ARM_J = frozenset(_JIDX_[n] for n in (
+    "shoulder1_right", "shoulder2_right", "elbow_right",
+    "shoulder1_left", "shoulder2_left", "elbow_left"))
+del _JIDX_
+_SWING_PHI_MAX = 1.2  # rad — 双臂摆角搜索界（±~69°）
 
 
 
