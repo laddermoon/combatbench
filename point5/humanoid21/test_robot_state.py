@@ -65,6 +65,27 @@ class TestStandardPoses:
                           sim.data.qpos[adr + 1:adr + 3]).all()
 
 
+class TestCorrespondingAction:
+    def test_standing_matches_meta_action(self):
+        """standing 的 action 表值 = rad_to_norm(joint_pos=0)。"""
+        from envs.humanoid21.meta import Humanoid21Meta
+        a = RobotState.standing().corresponding_action()
+        np.testing.assert_allclose(
+            a, Humanoid21Meta.INITIAL_POSES["standing"]["action"],
+            atol=1e-3)
+
+    def test_shape_bounds_and_clip(self):
+        a = RobotState.squat().corresponding_action()
+        assert a.shape == (21,) and np.isfinite(a).all()
+        assert (np.abs(a) <= 1.0).all()
+        # 越限 qpos → 目标钉在 ±1
+        import dataclasses
+        st = dataclasses.replace(
+            RobotState.standing(),
+            qpos=RobotState.standing().qpos + 100.0)
+        assert np.all(st.corresponding_action() == 1.0)
+
+
 class TestJointReachRange:
     def test_shape_lo_le_hi_within_limits(self, st):
         from point5.humanoid21.robot_state import joint_ranges

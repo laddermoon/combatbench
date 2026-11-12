@@ -375,6 +375,16 @@ class Pose:
             J += Ib + m_b * ((d @ d) * np.eye(3) - np.outer(d, d))
         return J
 
+    def corresponding_action(self) -> np.ndarray:
+        """-> (21,) 归一化 action：本姿态关节角对应的位置目标。
+
+        rad_to_norm 闭式逆映射 + [-1,1] 截断（qpos 越限部分
+        无法表达为目标）。即 action_for_pose 的闭式解——PD
+        伺服负责跟踪。区别于 INITIAL_POSES['action']：那是
+        全体姿态共用的复位扶持目标，非各姿态自身映射。
+        """
+        from .mechanics import rad_to_norm
+        return np.clip(rad_to_norm(self.qpos), -1.0, 1.0)
 
 @dataclass
 class RobotState(Pose):
@@ -586,6 +596,7 @@ class RobotState(Pose):
         return Pose(qpos=self.qpos.copy(),
                     root_position=self.root_position.copy(),
                     root_orientation=self.root_orientation.copy())
+
 
     def _fk_vel_data(self):
         """写完整速度（含 ω）跑前馈 + mj_subtreeVel——FK 速度量。
@@ -896,9 +907,8 @@ class RobotState(Pose):
         发散/收敛趋势。oracle 内部异常按 +inf 罚回推。
         """
         from scipy.optimize import minimize
-        from .mechanics import rad_to_norm
         from .support_state import LIP_G, LIP_MASS, LIP_TAU_ACT
-        a_hold = np.clip(rad_to_norm(self.qpos), -1.0, 1.0)
+        a_hold = self.corresponding_action()
         ref = LIP_TAU_ACT / (LIP_MASS * LIP_G)
 
         def margin_of(a):

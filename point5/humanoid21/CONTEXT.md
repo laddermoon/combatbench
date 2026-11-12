@@ -52,7 +52,10 @@ P5 协议见 `../p5.py`。
   `infer_from_p5(p5)` 走 standardize → solve_p5_pose → _se2 反变换；
   `to_p5()`/`standardize()`/`reanchor()`/`to_support_geometry()`/
   `render()`(→PIL.Image，osmesa 兜底、robot_b 停置)/
-  `inertia_matrix()`（后两者走 MuJoCo）。
+  `inertia_matrix()`（后两者走 MuJoCo）/
+  `corresponding_action()`（qpos 的归一化位置目标，
+  rad_to_norm+截断；≠INITIAL_POSES['action']——那是
+  全体共用复位扶持目标）。
   `RobotState(Pose)` 加 qvel/root 速度/全身角动量，`from_obs()`；
   **标准态工厂**：`standard(name)` 注册表消费
   `Humanoid21Meta.INITIAL_POSES`（standing/squat/
