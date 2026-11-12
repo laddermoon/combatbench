@@ -200,28 +200,121 @@ class TestRender:
         assert img.size == (320, 240)
 
 
-class TestActionForBalance:
-    def test_standing_returns_near_hold(self, st):
-        """站姿已可平衡 → 最优解 ≈ a_hold（不动先验）。"""
-        from point5.humanoid21.mechanics import rad_to_norm
-        a = st.action_for_balance(dt=0.05, max_evals=30)
-        a_hold = np.clip(rad_to_norm(st.qpos), -1, 1)
-        assert a.shape == (21,)
-        assert np.all(np.abs(a) <= 1.0)
-        np.testing.assert_allclose(a, a_hold, atol=0.15)
+_ANKLE_J = frozenset(
+    __import__("point5.humanoid21.mechanics", fromlist=["_JIDX"])
+    ._JIDX[n] for n in ("ankle_y_right", "ankle_x_right",
+                        "ankle_y_left", "ankle_x_left"))
 
-    def test_perturbed_improves_margin(self, st):
-        """核外扰动态（前冲 1 m/s）→ 软罚 best-effort：
-        margin 显著改善且 action 明确偏离 hold。"""
+
+class TestAnklePolicy:
+    """双支撑踝策略——direction 期望重心水平加速度 (world xy)。"""
+
+    def test_only_ankle_joints_move(self, st):
+        """非踝关节 = corresponding_action 严格保持现姿态。"""
+        a = st.ankle_policy(np.array([0.5, 0.3]))
+        ref = st.corresponding_action()
+        assert a.shape == (21,)
+        for i in range(21):
+            if i not in _ANKLE_J:
+                assert a[i] == ref[i]
+
+    def test_direction_zero_compensates_gravity(self, st):
+        """d=0 ≠ hold——站姿 com 在双踝中点前 ~2.6cm，零加速
+        也须踝矩抗重力前倒：ankle_y 正偏（COP 前移到 com 下）。"""
+        from point5.humanoid21.mechanics import _JIDX
+        g = st.to_support_geometry()
+        a_mid = 0.5 * (g.left_foot + g.right_foot)
+        a = st.ankle_policy(np.zeros(2))
+        ref = st.corresponding_action()
+        for n in ("ankle_y_right", "ankle_y_left"):
+            d_y = a[_JIDX[n]] - ref[_JIDX[n]]
+            assert d_y > 0.0                    # COP 向 com 侧压
+            np.testing.assert_allclose(
+                d_y, (g.com[0] - a_mid[0]) * (0.5 * 40.84 * 9.81)
+                / 100.0 / 0.8727, rtol=0.05)
+
+    def test_sagittal_direction_sign(self, st):
+        """+x 加速需求 -> COP 后置 -> ankle_y 负偏（两角同值，
+        ankle_x 仅随侧向需求动）。"""
+        from point5.humanoid21.mechanics import _JIDX
+        a = st.ankle_policy(np.array([0.5, 0.0]))
+        ref = st.corresponding_action()
+        for n in ("ankle_y_right", "ankle_y_left"):
+            assert a[_JIDX[n]] < ref[_JIDX[n]]
+        np.testing.assert_allclose(a[_JIDX["ankle_y_right"]],
+                                   a[_JIDX["ankle_y_left"]])
+        np.testing.assert_allclose(a[_JIDX["ankle_x_right"]],
+                                   ref[_JIDX["ankle_x_right"]],
+                                   atol=1e-12)
+
+    def test_lateral_antisymmetric(self, st):
+        """+y 加速需求 -> 左右 ankle_x 反号偏（斜轴 kx 镜像：
+        COP 移 −y -> τ_wx>0 -> 右脚正、左脚负）。"""
+        from point5.humanoid21.mechanics import _JIDX
+        a = st.ankle_policy(np.array([0.0, 0.3]))
+        ref = st.corresponding_action()
+        dl = a[_JIDX["ankle_x_left"]] - ref[_JIDX["ankle_x_left"]]
+        dr = a[_JIDX["ankle_x_right"]] - ref[_JIDX["ankle_x_right"]]
+        assert dl < 0 and dr > 0
+        np.testing.assert_allclose(dl, -dr)
+
+    def test_saturation(self, st):
+        """超大 direction -> 踝目标被能力边界 clamp，仍在 [-1,1]。"""
+        a = st.ankle_policy(np.array([1e3, -1e3]))
+        assert np.all(np.isfinite(a)) and np.all(np.abs(a) <= 1.0)
+
+    def test_sim_moves_com_forward(self, st):
+        """sim 真值：+x direction 下 COM 比 hold 更向前加速。"""
+        ref = st.corresponding_action()
+        a = st.ankle_policy(np.array([0.5, 0.0]))
+        com_hold = st.take_action(ref, dt=0.1) \
+            .to_support_geometry().com[0]
+        com_pol = st.take_action(a, dt=0.1) \
+            .to_support_geometry().com[0]
+        assert com_pol > com_hold
+
+    def test_requires_double_support(self, st, monkeypatch):
+        """非双支撑 -> NotImplementedError（各形态各策略族）。"""
+        from point5.humanoid21.support_state import SupportGeometry
+        g = st.to_support_geometry()
+        single = SupportGeometry(
+            com=g.com, left_foot=g.left_foot,
+            right_foot=g.right_foot, torso_yaw=g.torso_yaw,
+            left_foot_height=g.left_foot_height,
+            right_foot_height=0.5)
+        monkeypatch.setattr(st, "to_support_geometry",
+                            lambda: single)
+        with pytest.raises(NotImplementedError):
+            st.ankle_policy(np.array([0.1, 0.0]))
+
+
+class TestActionForBalanceWithAnklePolicy:
+    def test_kernel_returns_hold(self, st):
+        """站姿在平衡核内 -> 快路径 = corresponding_action。"""
+        a = st.action_for_balance_with_ankle_policy()
+        np.testing.assert_allclose(a, st.corresponding_action())
+
+    def test_perturbed_ankle_pushes_cop_forward(self, st):
+        """ξ 前冲出核 -> ankle_y 正偏（COP 前顶刹重心）。"""
         import dataclasses
+        from point5.humanoid21.mechanics import _JIDX
         pert = dataclasses.replace(
             st, root_linvel=st.root_linvel + np.array([1.0, 0, 0]))
-        m0 = pert.to_support_state().balance_margin()
-        assert m0 > 0.0                            # 确实在核外
-        a = pert.action_for_balance(dt=0.05, max_evals=80)
-        m_opt = pert.take_action(a, dt=0.05) \
-            .to_support_state().balance_margin()
-        assert m_opt < m0 - 0.03                   # 显著改善
-        from point5.humanoid21.mechanics import rad_to_norm
-        a_hold = np.clip(rad_to_norm(pert.qpos), -1, 1)
-        assert np.abs(a - a_hold).max() > 0.05     # 真动了
+        assert pert.to_support_state().balance_margin() > 0.0
+        a = pert.action_for_balance_with_ankle_policy()
+        ref = pert.corresponding_action()
+        for n in ("ankle_y_right", "ankle_y_left"):
+            assert a[_JIDX[n]] > ref[_JIDX[n]]
+
+    def test_perturbed_sim_decelerates(self, st):
+        """sim 真值：出核态用踝策略后 com 前冲减速于 hold。"""
+        import dataclasses
+        pert = dataclasses.replace(
+            st, root_linvel=st.root_linvel + np.array([0.8, 0, 0]))
+        a = pert.action_for_balance_with_ankle_policy()
+        hold = pert.corresponding_action()
+        vx_hold = pert.take_action(hold, dt=0.1) \
+            .to_support_state().com_vel[0]
+        vx_pol = pert.take_action(a, dt=0.1) \
+            .to_support_state().com_vel[0]
+        assert vx_pol < vx_hold

@@ -898,72 +898,43 @@ class RobotState(Pose):
 
     # ---------- action_for_*：take_action 的逆向查询族 ----------
 
-    def action_for_balance(self, dt: float = 0.05,
-                           w_hold: float = 0.01,
-                           max_evals: int = 100,
-                           eps: float = 0.02,
-                           band: float = 1.0,
-                           horizon: int = 1) -> np.ndarray:
-        """-> (21,) 归一化 action：无点目标，只求下一步留在
-        平衡核内（"站桩"档）——最优化问题 v1：
+    def action_for_balance_with_ankle_policy(self) -> np.ndarray:
+        """-> (21,) action：踝策略闭环站桩——核内保持、出核拉回。
 
-            决策变量   a ∈ [-1,1]²¹（归一化关节目标）
-            oracle    s'(a) = take_action(s, a)（重复 horizon
-                      次 = 开环保持该 action 至 horizon·dt），
-                      ξ' 取末端 support_state
-            目标       J = max(0, M̃(s') + band)²
-                       + w_hold·‖a−a_hold‖²
-                       M̃ = balance_margin / reach_ref（无量纲，
-                       reach_ref = τ_act/(mg) ≈ 0.05m）；
-                       band = 深度带——目标不是贴边入核而是
-                       margin ≤ −band（核内浅层即启动纠正，
-                       纯 hinge 会让核内深度无差别、贴边滑出）；
-                       a_hold = rad_to_norm(qpos)（不动先验）
-            求解       L-BFGS-B 盒界 + 有限差分梯度（eps=0.02
-                       action 单位），黑盒 ~22 evals/grad，
-                       maxfun 封顶
-
-        边界与限制：margin 按末端态贴地脚评估（摆动期以实际
-        stance 计）；horizon=1 时 50ms 单步只见踝/姿态策略——
-        迈步恢复的 payoff 在落地才兑现，不属本档（走
-        action_for_support_state）；horizon>1 评估的是
-        "保持该 action 的开环推演"，比闭环保守但能看到
-        发散/收敛趋势。oracle 内部异常按 +inf 罚回推。
+        双支撑（SupportClass.DOUBLE）铰链模的失稳自由度只有
+        一维：捕获点 ξ 垂直双踝连线（e_perp）分量越出支撑多
+        边形投影区间（balance_margin 的量）。出核时取期望加
+        速度 d = ±e_perp·ω²·deficit 调 ankle_policy——物理
+        上等价"把 CoP 顶到 ξ 逃逸侧的域边界"；核内走
+        corresponding_action 快路径。非双支撑走各形态自己的
+        策略族——NotImplementedError，不在此通吃。
         """
-        from scipy.optimize import minimize
-        from .support_state import LIP_G, LIP_MASS, LIP_TAU_ACT
-        a_hold = self.corresponding_action()
-        ref = LIP_TAU_ACT / (LIP_MASS * LIP_G)
-
-        def margin_of(a):
-            s2 = self
-            for _ in range(int(horizon)):
-                s2 = s2.take_action(a, dt=dt)
-            return s2.to_support_state().balance_margin() / ref
-
-        # 快路径：a_hold 推演后 margin ≤ −band → J=0 已是全局
-        # 下界（两项非负且同时为 0），深度安全的核内态直接返回。
-        try:
-            if margin_of(a_hold) <= -band:
-                return a_hold
-        except Exception:
-            pass
-
-        def J(a):
-            try:
-                m = margin_of(a)
-            except Exception:
-                return 1e6
-            if not np.isfinite(m):    # 腾空/LIP 失效——
-                return 1e6            # 大罚而非 inf²（会污染 FD 梯度）
-            return max(0.0, m + band) ** 2 \
-                + w_hold * float(np.sum((a - a_hold) ** 2))
-
-        res = minimize(J, a_hold, method="L-BFGS-B",
-                       bounds=[(-1.0, 1.0)] * 21,
-                       options={"maxfun": int(max_evals),
-                                "eps": float(eps)})
-        return np.clip(np.asarray(res.x, np.float64), -1.0, 1.0)
+        from .support_state import SupportClass
+        st = self.to_support_state()
+        if st.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                "action_for_balance_with_ankle_policy: "
+                f"{st.support_class().name} 未实现——v1 只做双脚")
+        m = st.balance_margin()
+        if m <= 0:
+            return self.corresponding_action()
+        if not np.isfinite(m):
+            raise ValueError(
+                "action_for_balance_with_ankle_policy: "
+                "balance_margin=inf——LIP 失效，踝策略不可用")
+        p0, p1 = np.asarray(st.left_foot), np.asarray(st.right_foot)
+        e = p1 - p0
+        if np.linalg.norm(e) > 1e-3:
+            e = e / np.linalg.norm(e)
+        else:                                   # 双踝重合退化——取躯干侧向
+            cy, sy = np.cos(st.torso_yaw), np.sin(st.torso_yaw)
+            e = np.array([-sy, cy])
+        e_perp = np.array([-e[1], e[0]])
+        xi, tau, _ = st._cp_terms(p0, st.left_foot_height)
+        s = float(xi @ e_perp)
+        proj = st.support_polygon() @ e_perp
+        sgn = -1.0 if s > 0.5 * (proj.min() + proj.max()) else 1.0
+        return self.ankle_policy(sgn * e_perp * (m / (tau * tau)))
 
     def action_for_pose(self, aim_pose: "Pose") -> np.ndarray:
         """-> (21,) 归一化 action：朝 aim 关节构型推进。
@@ -989,6 +960,82 @@ class RobotState(Pose):
         """
         raise NotImplementedError
 
+    def ankle_policy(self, direction) -> np.ndarray:
+        """-> (21,) action：双支撑踝策略原语——朝 direction 推重心。
+
+        只在双脚支撑时可用（support_class()!=DOUBLE ->
+        NotImplementedError；单脚/腾空走各自策略族）。
+        direction = 期望重心水平加速度 (2,) m/s²（world xy，
+        带幅值；超出踝能力逐轴饱和）。
+
+        机械链（双踝摆，双脚均摊法向力 N_i = mg/2）：
+          l  = com.z − 踝心平面高     —— LIP 摆长
+          c* = com_xy − l·d/g         —— 目标系统 CoP：想重心
+               朝 +d 加速，CoP 须落在 −d 一侧
+          Δ  = c* − 双踝心中点         —— 各脚 CoP 相对己踝心
+               的同步偏移需求
+          τ_wy = +N_i·Δx，τ_wx = −N_i·Δy
+                                      —— 各脚踝心所需世界系
+               力矩（踝矩平衡）
+          τ_jy = τ_wy；τ_jx = τ_wx/kx  —— ankle_y 纯俯仰轴直
+               通；ankle_x 斜轴 kx=±0.8944（附带 ∓0.4472·τ_jx
+               偏航矩，双脚同侧向需求下相加、靠扭转摩擦吸收，
+               v1 不补偿）
+          |τ_w| ≤ min(τ_act, N_i·margin_dir) 逐轴 clamp——饱和
+               即本原语的能力边界（前后 ±0.1m 级，侧向 ±0.047m）
+          target = qpos + (τ_j + KD·qvel)/KP → rad_to_norm——
+               action 是归一化 PD 位置目标，非力矩指令
+
+        非踝关节 = corresponding_action——只踝动，其余关节保
+        持现姿态。
+        """
+        from .mechanics import _HALF, _JIDX, _MID
+        from .support_state import (ANKLE_Z_PLANTED, LIP_G,
+                                    LIP_MARGIN_HEEL,
+                                    LIP_MARGIN_SIDE,
+                                    LIP_MARGIN_TOE, LIP_MASS,
+                                    LIP_TAU_ACT, SupportClass)
+        d = np.asarray(direction, np.float64).ravel()
+        if d.shape != (2,) or not np.isfinite(d).all():
+            raise ValueError(
+                "ankle_policy: direction 期望有限 (2,) "
+                f"m/s²——got {d}")
+        g = self.to_support_geometry()
+        if g.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                f"ankle_policy: {g.support_class().name} 未实现"
+                "——v1 只做双脚")
+        l = float(g.com[2]) - ANKLE_Z_PLANTED
+        if l <= 0:
+            raise ValueError(f"ankle_policy: com.z {g.com[2]:.3f} "
+                             "≤ 踝心——LIP 失效")
+        c_star = g.com[:2] - (l / LIP_G) * d
+        a_mid = 0.5 * (np.asarray(g.left_foot)
+                       + np.asarray(g.right_foot))
+        dc = c_star - a_mid
+        ni = 0.5 * LIP_MASS * LIP_G
+        dx = float(np.clip(dc[0],
+                           -min(LIP_TAU_ACT, ni * LIP_MARGIN_HEEL)
+                           / ni,
+                           min(LIP_TAU_ACT, ni * LIP_MARGIN_TOE)
+                           / ni))
+        dy = float(np.clip(dc[1],
+                           -min(LIP_TAU_ACT, ni * LIP_MARGIN_SIDE)
+                           / ni,
+                           min(LIP_TAU_ACT, ni * LIP_MARGIN_SIDE)
+                           / ni))
+        action = self.corresponding_action()
+        tau_y, tau_x = ni * dx, -ni * dy
+        for side, kx in (("right", _ANKLE_AX), ("left", -_ANKLE_AX)):
+            for j, t in ((_JIDX[f"ankle_y_{side}"], tau_y),
+                         (_JIDX[f"ankle_x_{side}"], tau_x / kx)):
+                tgt = (self.qpos[j]
+                       + (t + _ANKLE_KD * self.qvel[j]) / _ANKLE_KP)
+                action[j] = float(np.clip(
+                    (tgt - _MID[j]) / _HALF[j], -1.0, 1.0))
+        return action
+
+
 
 
 # ---------------- 标准姿态烘焙常量 ----------------
@@ -1005,6 +1052,13 @@ _READY_QPOS = np.array([
     0.3608, -0.2878, -0.1958])
 _READY_ROOT_POS = np.array([-0.0455, 0.0, 1.2500])
 _READY_ROOT_ORI = np.array([0.2419, 0.0, 0.0])
+
+
+# 踝策略执行器参数——Humanoid21Meta.KP/KD 踝列与 ankle_x
+# 斜轴投影（力矩上限 τ_act=20 已在 support_state.LIP_TAU_ACT）。
+_ANKLE_KP = 100.0     # N·m/rad — 踝 PD 位置增益
+_ANKLE_KD = 10.0      # N·m·s/rad — 踝 PD 阻尼
+_ANKLE_AX = 0.8944    # ankle_x 轴世界 x 分量（(±.8944,0,±.4472)）
 
 
 
