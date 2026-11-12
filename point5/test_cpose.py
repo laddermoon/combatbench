@@ -10,7 +10,8 @@ from point5.cpose import (CPose, CPoseClip, LIMB_NAMES, mat_to_pry,
 
 def _mk(**kw):
     base = dict(left_hand=[0.2, 0.1, -0.6], right_hand=[0.2, -0.1, -0.6],
-                left_ankle=[0.0, 0.1, -0.9], right_ankle=[0.0, -0.1, -0.9])
+                left_ankle=[0.0, 0.1, -0.9], right_ankle=[0.0, -0.1, -0.9],
+                torso_pry=[0.0, 0.0, 0.0])
     base.update(kw)
     return CPose(**base)
 
@@ -42,13 +43,18 @@ class TestPryMat:
 
 
 class TestCPose:
-    def test_defaults_zero(self):
+    def test_pelvis_defaults_zero(self):
         p = _mk()
-        np.testing.assert_allclose(p.torso_pry, 0)
         np.testing.assert_allclose(p.pelvis_pry, 0)
         np.testing.assert_allclose(p.pelvis_pos, 0)
         np.testing.assert_allclose(p.pelvis_mat, np.eye(3), atol=1e-12)
         np.testing.assert_allclose(p.torso_mat, np.eye(3), atol=1e-12)
+
+    def test_torso_pry_required(self):
+        kw = dict(left_hand=[0.2, 0.1, -0.6], right_hand=[0.2, -0.1, -0.6],
+                  left_ankle=[0.0, 0.1, -0.9], right_ankle=[0.0, -0.1, -0.9])
+        with pytest.raises(TypeError):
+            CPose(**kw)
 
     def test_ext_bounds(self):
         with pytest.raises(ValueError):

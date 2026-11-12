@@ -19,12 +19,13 @@ CPose = 肢体端点的身体局部系向量（姿态策略 IR）。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Tuple
 
 import numpy as np
 
 _PT = (3,)
+_ZERO3 = np.zeros(3)
 _EXT_MAX = 1.0 + 1e-6          # 伸展度上限（含数值容差）
 _EXT_MIN = 1e-9                # 伸展度 >0——最小不为 0
 
@@ -108,9 +109,9 @@ class CPose:
     right_hand: np.ndarray
     left_ankle: np.ndarray
     right_ankle: np.ndarray
-    torso_pry: Optional[np.ndarray] = None
-    pelvis_pry: Optional[np.ndarray] = None
-    pelvis_pos: Optional[np.ndarray] = None
+    torso_pry: np.ndarray
+    pelvis_pry: np.ndarray = field(default_factory=_ZERO3.copy)
+    pelvis_pos: np.ndarray = field(default_factory=_ZERO3.copy)
 
     def __post_init__(self):
         for n in LIMB_NAMES:
@@ -120,8 +121,7 @@ class CPose:
                 raise ValueError(f"{n}: ext {e:.4g} out of (0,1]")
             object.__setattr__(self, n, v)
         for n in ("torso_pry", "pelvis_pry", "pelvis_pos"):
-            v = getattr(self, n)
-            v = np.zeros(3) if v is None else _vec(v, n)
+            v = _vec(getattr(self, n), n)
             if n != "pelvis_pos":
                 v = _canonical_pry(v)
             object.__setattr__(self, n, v)
