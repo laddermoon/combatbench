@@ -10,13 +10,13 @@ CPose = 肢体端点的身体局部系向量（姿态策略 IR）。
   故 |v| = 伸展度 ∈ (0,1]——最大为 1，最小不为 0。
 
 轴约定（所有局部系一致）：X+ 身前、Y+ 向左、Z+ 向头——全部右手系。
-朝向编码：pry = (pitch, roll, yaw) rad，R = Rz(yaw)·Ry(pitch)·Rx(roll)，
-  标准分支 cos(pitch)>=0（与 Pose.root_orientation 同约定）；
-  pitch>0 前倾（绕 +y 左轴）、roll>0 右倾（绕 +x 前轴）。
+朝向语义：pry = (pitch, roll, yaw) rad——三个意图通道，参考约定
+  R = Rz(yaw)·Ry(pitch)·Rx(roll)：pitch>0 前倾、roll>0 右倾、yaw>0 左转。
+  三元组只携带意图，机械解释（躯干可含任意复杂度铰链、可无明确
+  torso；关节限位、映射顺序）由各机型适配器自定，不在协议内。
 
 本协议只定义数据与语义，不含几何运算——旋转矩阵、插值、镜像等
-由消费方按本约定实现。构造只做形状/合法性校验，不改写输入：
-pry 的标准分支由产生方负责给出。
+由消费方按本约定实现。构造只做形状/合法性校验，不改写输入。
 
 显式不表达（下游先验补全）：踝策略/脚朝向、髋自旋、头部姿态。
 接地与 Location 语义由持有方约定；纯形状用法可省略 pelvis_* 字段。
@@ -57,8 +57,8 @@ class CPose:
     字段语义：
       left_hand/right_hand : 手球心−肩旋转中心，torso 系分量，单位=LMax
       left_ankle/right_ankle: 踝心−髋旋转中心，pelvis 系分量，单位=LMax
-      torso_pry            : torso 相对 pelvis 朝向（ZYX 标准分支；
-                            R_torso = R_pelvis · R(torso_pry)）
+      torso_pry            : torso 相对 pelvis 朝向意图（p/r/y 三通道；
+                            躯干实现与分解由机型适配器定）
       pelvis_pry/pelvis_pos: pelvis 在所在帧的朝向/位置——Location
                             语义由持有方约定；纯形状可省略（缺省恒零）
     """

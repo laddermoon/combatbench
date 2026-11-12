@@ -10,6 +10,7 @@
 | `left/right_ankle` | 踝心−髋旋转中心，pelvis 系向量 |
 
 - 局部系：X+ 前、Y+ 左、Z+ 上（右手系）
-- `pry` = (pitch, roll, yaw)：R = Rz(yaw)·Ry(pitch)·Rx(roll)
+- `pry` = (pitch, roll, yaw)：意图通道（参考 R=Rz·Ry·Rx）；
+  机械解释由机型适配器自定，躯干可含任意铰链
 - 肢向量单位 = LMax，故 |v| = 伸展度 ∈ (0,1]
 - 不表达：脚朝向、髋自旋、头部姿态
