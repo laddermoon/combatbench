@@ -162,6 +162,19 @@ class Pose:
         mid_xy = (p5.left_ankle[:2] + p5.right_ankle[:2]) / 2.0
         return pose_std._se2(p5.torso_yaw, mid_xy)
 
+    @classmethod
+    def infer_from_cpose(cls, cpose) -> "Pose":
+        """CPose -> Pose——本机对 CPose 语义的闭式解释。
+
+        infer_* = 近似推断（CPose 不表达的自由度由先验补全）。
+        映射约定见 mechanics.py "CPose 适配" 段：torso_pry 1:1 →
+        腹部三铰链；肢向量 ×LMax → 3-DOF 闭式 IK；root 由 pelvis
+        位姿反推。所在帧 = CPose 所在帧；不可达端点按最近可达。
+        """
+        from .mechanics import cpose_to_pose
+        res = cpose_to_pose(cpose)
+        return cls(qpos=res["qpos"], root_position=res["root_pos"],
+                   root_orientation=res["root_zyx"])
 
     def _se2(self, dyaw: float, dxy) -> "Pose":
         """SE(2) 平面变换：root_position' = Rz(dyaw)·pos + (dxy,0)，
@@ -215,6 +228,17 @@ class Pose:
         kw["left_ankle"] = np.asarray(data.xanchor[jid["left"]]).copy()
         kw["right_ankle"] = np.asarray(data.xanchor[jid["right"]]).copy()
         return P5(**kw, torso_yaw=_torso_yaw(self.root_orientation))
+
+
+    def to_cpose(self) -> "CPose":
+        """-> CPose：FK 提取（所在帧表达）——infer_from_cpose 逆读。
+
+        纯骨架 FK（Skeleton，无 MuJoCo）；映射约定见 mechanics.py
+        "CPose 适配" 段。
+        """
+        from .mechanics import pose_to_cpose
+        return pose_to_cpose(self.qpos, self.root_position,
+                             _zyx_to_quat_wxyz(self.root_orientation))
     # ---------- MuJoCo FK（simulator 集成，私有） ----------
 
     _FK = None      # 懒加载共享 (model, data, robot_a 表, 踝铰 joint id)
@@ -964,6 +988,7 @@ class RobotState(Pose):
         几何目标（不含动量）。单步语义同上。
         """
         raise NotImplementedError
+
 
 
 # ---------------- 标准姿态烘焙常量 ----------------

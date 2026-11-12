@@ -955,3 +955,175 @@ def solve_support_pose(com_t: np.ndarray,
         "energy": energy_of(v, dvec),
         "joint_names": JOINT_NAMES,
     }
+
+
+# -------------------------------------------- CPose 适配（本机语义解释） ----
+# point5/cpose.py 只定义数据与语义（见 CPose.md）；本段是 Humanoid21
+# 对协议的落地解释——怎么解释、怎么映射，都是本机的事，不进协议层：
+#   局部帧 = pelvis/torso 体帧（恒等姿态下 +x前 +y左 +z上，与 CPose
+#   轴约定一致）；旋转中心 = 髋/肩关节锚点（全部位于 body 原点）。
+#
+#   torso_pry <-> 腹部三铰链 1:1：abdomen_x=-roll、abdomen_y=-pitch、
+#   abdomen_z=-yaw。链序 z→y→x（waist_lower 上 z,y；pelvis 上 x），
+#   符号与 JOINTSPEC 语义吻合：abdomen_y<0 前弯、abdomen_x<0 右侧
+#   倾、abdomen_z<0 左转。
+#   髋自旋:  hip_x = 0 rad（v1 先验——踝链近似保持脚朝 pelvis 前向；
+#   CPose 不表达该自由度，留待显式先验或后续升级）。
+#   踝:      弹簧中心（本机踝域对称 = 0 rad）。
+#   LMax:    肘/膝限位内 旋转中心-端点 最大距离（常量扫描，左右对称）。
+#
+# 提取方向（pose_to_cpose）即上述映射的逆读：肢向量 = 端点−旋转
+# 中心于所在刚体系表出，除以 LMax → 伸展度。
+
+
+def _zyx_to_mat(pry) -> np.ndarray:
+    """[pitch,roll,yaw] -> R = Rz(yaw)·Ry(pitch)·Rx(roll)。"""
+    p, r, y = (float(v) for v in pry)
+    cp, sp = np.cos(p), np.sin(p)
+    cr, sr = np.cos(r), np.sin(r)
+    cy, sy = np.cos(y), np.sin(y)
+    return np.array([
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr]])
+
+
+def _mat_to_zyx(R) -> np.ndarray:
+    """R -> [pitch,roll,yaw] 标准分支，_zyx_to_mat 之逆。
+
+    奇异 |pitch|=pi/2：roll 归 0，自由度全部折进 yaw。
+    """
+    R = np.asarray(R, dtype=np.float64)
+    sp = float(np.clip(-R[2, 0], -1.0, 1.0))
+    if abs(sp) >= 1.0 - 1e-12:
+        return np.array([np.copysign(np.pi / 2.0, sp), 0.0,
+                         float(np.arctan2(-R[0, 1], R[1, 1]))])
+    return np.array([np.arcsin(sp),
+                     np.arctan2(R[2, 1], R[2, 2]),
+                     np.arctan2(R[1, 0], R[0, 0])])
+
+
+def _mk_leg(side: str) -> dict:
+    """腿闭式 IK 常量——结构同 _mk_arm（R1=hip_z、R2=hip_y、"肘"=膝）。
+
+    hip_x 固定 0 → 髋三铰链退化为 hip_z→hip_y 两铰链球腕。膝锚点
+    (0,0,0.02) 非 shin 原点：并入 u/w 使 R_e 正确绕锚点转。
+    踝心 = ankle_y 铰链锚点（同 P5 踝心语义：脚绕其旋转、踝角
+    不动）= shin 系 (0,0,-0.31)。
+    """
+    th, sh = f"thigh_{side}", f"shin_{side}"
+    js = {j[0]: j for j in JOINTS}
+    hz, hy, kn = (js[f"{n}_{side}"] for n in ("hip_z", "hip_y", "knee"))
+    a_k = np.asarray(kn[2], dtype=np.float64)
+    ankle_in_shin = (_BODY_OFF[f"foot_{side}"]
+                     + np.asarray(js[f"ankle_y_{side}"][2],
+                                  dtype=np.float64))
+    return {
+        "h_off": _BODY_OFF[th],               # 髋旋转中心于 pelvis 系
+        "a_shin": ankle_in_shin,              # 踝心于 shin 系
+        "u": _BODY_OFF[sh] + a_k,             # 膝锚点于 thigh 系
+        "w": ankle_in_shin - a_k,             # 踝心 rel 膝锚于 shin 系
+        "k1": np.asarray(hz[3], dtype=np.float64),
+        "k2": np.asarray(hy[3], dtype=np.float64),
+        "ke": np.asarray(kn[3], dtype=np.float64),
+        "ji": np.array([_JIDX[hz[0]], _JIDX[hy[0]], _JIDX[kn[0]]]),
+        "rng": np.array([hz[4], hy[4], kn[4]], dtype=np.float64),
+    }
+
+
+_LEG = {"right": _mk_leg("right"), "left": _mk_leg("left")}
+
+
+def _lmax(sp: dict) -> float:
+    """限位内 |u + R_e·w| 最大值——旋转中心到端点的最大距离。"""
+    lo, hi = sp["rng"][2]
+    return float(max(np.linalg.norm(
+        sp["u"] + _rot(sp["ke"], t) @ sp["w"])
+        for t in np.linspace(lo, hi, 256)))
+
+
+LMAX_ARM = _lmax(_ARM["right"])      # 左右对称
+LMAX_LEG = _lmax(_LEG["right"])
+
+_IDENT3 = np.eye(3)
+_UNIT_QUAT = np.array([1.0, 0.0, 0.0, 0.0])
+
+
+def pose_to_cpose(qpos, root_pos, root_quat_wxyz,
+                  skeleton=None) -> "CPose":
+    """(qpos rad, root) -> CPose：FK 提取，所在帧表达。"""
+    from point5 import CPose
+    sk = skeleton or Skeleton()
+    xf = sk.body_transforms(root_pos, root_quat_wxyz,
+                            np.asarray(qpos, np.float64))
+    q = np.asarray(qpos, np.float64)
+    t_pos, t_mat = xf["torso"]
+    p_pos, p_mat = xf["pelvis"]
+    kw = {}
+    for side in ("left", "right"):
+        sp = _ARM[side]
+        kw[f"{side}_hand"] = t_mat.T @ (
+            xf[f"hand_{side}"][0] - (t_pos + t_mat @ sp["s_off"])
+            ) / LMAX_ARM
+        lp = _LEG[side]
+        s_pos, s_mat = xf[f"shin_{side}"]
+        kw[f"{side}_ankle"] = p_mat.T @ (
+            s_pos + s_mat @ lp["a_shin"]
+            - (p_pos + p_mat @ lp["h_off"])) / LMAX_LEG
+    return CPose(
+        torso_pry=np.array([-q[_JIDX["abdomen_y"]],
+                            -q[_JIDX["abdomen_x"]],
+                            -q[_JIDX["abdomen_z"]]]),
+        pelvis_pry=_mat_to_zyx(p_mat), pelvis_pos=p_pos, **kw)
+
+
+def cpose_to_pose(cpose, skeleton=None) -> dict:
+    """CPose -> Pose 字段——闭式映射，所在帧表达。
+
+    躯干 1:1（clamp 限位）→ 每肢 _arm_ik 闭式 3-DOF IK（不可达按
+    最近可达：_arm_ik 内部 clip 并记 vio）→ root 由 pelvis 位姿
+    反推（pelvis_rel 只依赖 root+躯干链，四肢在下游无关）。
+    返回 {qpos(21) rad, root_pos(3), root_zyx(3), limbs}；
+    limbs[name] = IK 诊断 {"vio","e"} 或 None（退化无可行解）。
+    """
+    sk = skeleton or Skeleton()
+    q = _MID.copy()                                   # 未解 = 弹簧中心
+    pit, rol, yaw = (float(v) for v in cpose.torso_pry)
+    for name, ang in (("abdomen_x", -rol), ("abdomen_y", -pit),
+                      ("abdomen_z", -yaw)):
+        i = _JIDX[name]
+        q[i] = float(np.clip(ang, *JNT_RANGE[i]))
+    for side in ("left", "right"):                    # 髋自旋先验 v1
+        q[_JIDX[f"hip_x_{side}"]] = 0.0
+
+    limbs = {}
+    for side in ("left", "right"):
+        lp = _LEG[side]                               # 腿：pelvis 系 IK
+        cand = _arm_ik(np.asarray(
+            getattr(cpose, f"{side}_ankle")) * LMAX_LEG, _IDENT3, lp)
+        pick = min(cand, key=lambda c: (c["vio"], c["e"])) if cand else None
+        limbs[f"{side}_ankle"] = None if pick is None else {
+            "vio": pick["vio"], "e": pick["e"]}
+        if pick is not None:
+            rad = np.clip(pick["rad"], lp["rng"][:, 0], lp["rng"][:, 1])
+            for i, v in zip(lp["ji"], rad):
+                q[i] = float(v)
+        sp = _ARM[side]                               # 臂：torso 系 IK
+        cand = _arm_ik(np.asarray(
+            getattr(cpose, f"{side}_hand")) * LMAX_ARM, _IDENT3, sp)
+        pick = min(cand, key=lambda c: (c["vio"], c["e"])) if cand else None
+        limbs[f"{side}_hand"] = None if pick is None else {
+            "vio": pick["vio"], "e": pick["e"]}
+        if pick is not None:
+            rad = np.clip(pick["rad"], sp["rng"][:, 0], sp["rng"][:, 1])
+            for i, v in zip(sp["ji"], rad):
+                q[i] = float(v)
+
+    xf0 = sk.body_transforms(np.zeros(3), _UNIT_QUAT, q)
+    pp0, pm0 = xf0["pelvis"]                          # pelvis 于 root 系
+    root_mat = _zyx_to_mat(cpose.pelvis_pry) @ pm0.T
+    return {"qpos": q,
+            "root_pos": np.asarray(cpose.pelvis_pos, np.float64)
+                        - root_mat @ pp0,
+            "root_zyx": _mat_to_zyx(root_mat),
+            "limbs": limbs}

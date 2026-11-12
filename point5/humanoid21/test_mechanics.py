@@ -141,3 +141,87 @@ class TestSupportPose:
         np.testing.assert_allclose(res["com"], com, atol=0.03)
         # 目标项生效：|头-com| 显著大于塌缩值（~0.2）
         assert res["head_com_dist"] > 0.45
+
+
+class TestCPose:
+    """CPose <-> Pose 适配（纯骨架，无 MuJoCo）。约定见 mechanics
+    "CPose 适配" 段。"""
+
+    def test_ext_within_one(self, sk):
+        """LMax 语义：任意姿态提取的肢向量伸展度 <=1。"""
+        from point5.humanoid21.mechanics import pose_to_cpose
+        rng = np.random.default_rng(0)
+        for _ in range(20):
+            q = rng.uniform(-0.6, 0.6, 21)
+            cp = pose_to_cpose(q, [0, 0, 1.0], [1, 0, 0, 0], skeleton=sk)
+            for n in ("left_hand", "right_hand",
+                      "left_ankle", "right_ankle"):
+                assert np.linalg.norm(getattr(cp, n)) <= 1.0 + 1e-9, n
+
+    def test_roundtrip_fields(self, sk):
+        """c -> pose -> c' 字段级 roundtrip——CPose 未表达自由度
+        （髋自旋/踝）由 infer 先验吸收，字段本身须自洽还原。"""
+        from point5.humanoid21.mechanics import (
+            cpose_to_pose, pose_to_cpose)
+        from point5.humanoid21.robot_state import _zyx_to_quat_wxyz
+        from point5.humanoid21.mechanics import JNT_RANGE
+        rng = np.random.default_rng(1)
+        jn = {n: i for i, n in enumerate(JOINT_NAMES)}
+        for _ in range(20):
+            # 限位内采样 → 目标可达；CPose 未表达的自由度取先验值
+            q = JNT_RANGE[:, 0] + rng.random(21) * np.diff(
+                JNT_RANGE, axis=1)[:, 0]
+            for side in ("left", "right"):
+                q[jn[f"hip_x_{side}"]] = 0.0
+            cp1 = pose_to_cpose(q, [0.1, -0.2, 1.0], [1, 0, 0, 0],
+                                skeleton=sk)
+            res = cpose_to_pose(cp1, skeleton=sk)
+            cp2 = pose_to_cpose(res["qpos"], res["root_pos"],
+                                _zyx_to_quat_wxyz(res["root_zyx"]),
+                                skeleton=sk)
+            for n in ("left_hand", "right_hand", "left_ankle",
+                      "right_ankle"):
+                np.testing.assert_allclose(         # 闭式 IK 分支等价差
+                    getattr(cp2, n), getattr(cp1, n), atol=3e-5,
+                    err_msg=n)
+            for n in ("torso_pry", "pelvis_pry", "pelvis_pos"):
+                np.testing.assert_allclose(
+                    getattr(cp2, n), getattr(cp1, n), atol=1e-9,
+                    err_msg=n)
+
+    def test_pelvis_pose_recovered(self, sk):
+        """root 反推：infer 结果的 pelvis 位姿 == CPose 指定值。"""
+        from point5 import CPose
+        from point5.humanoid21.mechanics import (
+            cpose_to_pose, pose_to_cpose, _zyx_to_mat)
+        from point5.humanoid21.robot_state import _zyx_to_quat_wxyz
+        base = pose_to_cpose(np.zeros(21), [0, 0, 1.0], [1, 0, 0, 0],
+                             skeleton=sk)
+        cp = CPose(left_hand=base.left_hand, right_hand=base.right_hand,
+                   left_ankle=base.left_ankle, right_ankle=base.right_ankle,
+                   torso_pry=base.torso_pry,
+                   pelvis_pry=np.array([0.12, -0.08, 0.4]),
+                   pelvis_pos=np.array([0.3, 0.1, 0.85]))
+        res = cpose_to_pose(cp, skeleton=sk)
+        xf = sk.body_transforms(res["root_pos"],
+                                _zyx_to_quat_wxyz(res["root_zyx"]),
+                                res["qpos"])
+        np.testing.assert_allclose(xf["pelvis"][0], cp.pelvis_pos,
+                                   atol=1e-9)
+        np.testing.assert_allclose(xf["pelvis"][1],
+                                   _zyx_to_mat(cp.pelvis_pry), atol=1e-9)
+
+    def test_torso_pry_one_to_one(self, sk):
+        """躯干 1:1 映射：abdomen_y/x/z = (-pitch,-roll,-yaw)。"""
+        from point5.humanoid21.mechanics import (
+            cpose_to_pose, pose_to_cpose)
+        jn = {n: i for i, n in enumerate(JOINT_NAMES)}
+        q = np.zeros(21)
+        q[jn["abdomen_y"]], q[jn["abdomen_x"]], q[jn["abdomen_z"]] = \
+            -0.4, -0.3, -0.2
+        cp = pose_to_cpose(q, [0, 0, 1.0], [1, 0, 0, 0], skeleton=sk)
+        np.testing.assert_allclose(cp.torso_pry, [0.4, 0.3, 0.2])
+        res = cpose_to_pose(cp, skeleton=sk)
+        for name, want in (("abdomen_y", -0.4), ("abdomen_x", -0.3),
+                           ("abdomen_z", -0.2)):
+            assert res["qpos"][jn[name]] == pytest.approx(want)
