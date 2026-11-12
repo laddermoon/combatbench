@@ -14,6 +14,10 @@ CPose = 肢体端点的身体局部系向量（姿态策略 IR）。
   标准分支 cos(pitch)>=0（与 Pose.root_orientation 同约定）；
   pitch>0 前倾（绕 +y 左轴）、roll>0 右倾（绕 +x 前轴）。
 
+本协议只定义数据与语义，不含几何运算——旋转矩阵、插值、镜像等
+由消费方按本约定实现。构造只做形状/合法性校验，不改写输入：
+pry 的标准分支由产生方负责给出。
+
 显式不表达（下游先验补全）：踝策略/脚朝向、髋自旋、头部姿态。
 接地与 Location 语义由持有方约定；纯形状用法可省略 pelvis_* 字段。
 """
@@ -46,52 +50,6 @@ def _vec(v, name):
     return v
 
 
-def _wrap(a: float) -> float:
-    """角度归一到 (-pi, pi]。"""
-    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
-
-
-def _canonical_pry(pry: np.ndarray) -> np.ndarray:
-    """[pitch,roll,yaw] -> 标准 ZYX 分支（cos(pitch)>=0）的等价角。
-
-    非标准分支（cos(pitch)<0）的同一旋转写成
-    [pi-pitch, roll+pi, yaw+pi]；奇异点 cos(pitch)=0 原样保留。
-    """
-    p, r, y = pry
-    if np.cos(p) < 0.0:
-        p, r, y = np.pi - p, r + np.pi, y + np.pi
-    return np.array([_wrap(p), _wrap(r), _wrap(y)])
-
-
-def pry_to_mat(pry) -> np.ndarray:
-    """(pitch,roll,yaw) -> R = Rz(yaw)·Ry(pitch)·Rx(roll)。"""
-    p, r, y = (float(v) for v in pry)
-    cp, sp = np.cos(p), np.sin(p)
-    cr, sr = np.cos(r), np.sin(r)
-    cy, sy = np.cos(y), np.sin(y)
-    return np.array([
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr]])
-
-
-def mat_to_pry(R) -> np.ndarray:
-    """R -> (pitch,roll,yaw) 标准分支，pry_to_mat 之逆。
-
-    奇异 |pitch|=pi/2：roll 归 0，自由度全部折进 yaw。
-    """
-    R = np.asarray(R, np.float64)
-    sp = float(np.clip(-R[2, 0], -1.0, 1.0))
-    if abs(sp) >= 1.0 - 1e-12:
-        pitch = np.copysign(np.pi / 2.0, sp)
-        roll, yaw = 0.0, float(np.arctan2(-R[0, 1], R[1, 1]))
-    else:
-        pitch = float(np.arcsin(sp))
-        roll = float(np.arctan2(R[2, 1], R[2, 2]))
-        yaw = float(np.arctan2(R[1, 0], R[0, 0]))
-    return np.array([pitch, roll, yaw])
-
-
 @dataclass(frozen=True)
 class CPose:
     """CPose 姿态 — 躯干二元结构 + 4 肢端局部向量。
@@ -100,10 +58,9 @@ class CPose:
       left_hand/right_hand : 手球心−肩旋转中心，torso 系分量，单位=LMax
       left_ankle/right_ankle: 踝心−髋旋转中心，pelvis 系分量，单位=LMax
       torso_pry            : torso 相对 pelvis 朝向（ZYX 标准分支；
-                            R_torso = R_pelvis @ pry_to_mat(torso_pry)）
+                            R_torso = R_pelvis · R(torso_pry)）
       pelvis_pry/pelvis_pos: pelvis 在所在帧的朝向/位置——Location
                             语义由持有方约定；纯形状可省略（缺省恒零）
-    pry 输入构造时规范化到标准分支（同 Pose.root_orientation）。
     """
     left_hand: np.ndarray
     right_hand: np.ndarray
@@ -121,55 +78,27 @@ class CPose:
                 raise ValueError(f"{n}: ext {e:.4g} out of (0,1]")
             object.__setattr__(self, n, v)
         for n in ("torso_pry", "pelvis_pry", "pelvis_pos"):
-            v = _vec(getattr(self, n), n)
-            if n != "pelvis_pos":
-                v = _canonical_pry(v)
-            object.__setattr__(self, n, v)
-
-    # ---- 帧 ----
-    @property
-    def pelvis_mat(self) -> np.ndarray:
-        """pelvis 系 -> 所在帧 的旋转。"""
-        return pry_to_mat(self.pelvis_pry)
-
-    @property
-    def torso_rel_mat(self) -> np.ndarray:
-        """torso 系 -> pelvis 系 的旋转。"""
-        return pry_to_mat(self.torso_pry)
-
-    @property
-    def torso_mat(self) -> np.ndarray:
-        """torso 系 -> 所在帧 的旋转。"""
-        return self.pelvis_mat @ self.torso_rel_mat
-
-    def frame_mat(self, limb: str) -> np.ndarray:
-        """该肢向量所在父刚体系的旋转矩阵（-> 所在帧）。"""
-        return (self.torso_mat if LIMB_FRAME[limb] == "torso"
-                else self.pelvis_mat)
+            object.__setattr__(self, n, _vec(getattr(self, n), n))
 
     # ---- 肢端 ----
     def limb(self, name: str) -> np.ndarray:
+        """肢端向量（3,)——所在父刚体系分量，单位=LMax。"""
         return getattr(self, name)
 
-    @property
-    def vecs(self) -> np.ndarray:
-        """(4,3) 肢端向量阵 — LIMB_NAMES 序。"""
-        return np.array([getattr(self, n) for n in LIMB_NAMES])
+    def limb_extension(self, name: str) -> float:
+        """肢端伸展度 = |v| ∈ (0,1]。"""
+        return float(np.linalg.norm(getattr(self, name)))
 
-    @property
-    def exts(self) -> np.ndarray:
-        """(4,) 伸展度 = 各肢向量模长 ∈(0,1]。"""
-        return np.linalg.norm(self.vecs, axis=1)
+    def limb_direction(self, name: str) -> Tuple[float, float]:
+        """肢端方向的极坐标分解 (azimuth, polar)。
 
-    @property
-    def dirs(self) -> np.ndarray:
-        """(4,3) 肢端单位方向（各父刚体系内）。"""
-        v = self.vecs
-        return v / np.linalg.norm(v, axis=1, keepdims=True)
-
-    def vec_host(self, name: str) -> np.ndarray:
-        """肢端向量表达到所在帧——方向随体旋转、模长不变。"""
-        return self.frame_mat(name) @ getattr(self, name)
+        azimuth = atan2(y, x) ∈ (-π,π]：0=正前、+π/2=正左、±π=正后。
+        polar   = arccos(z/|v|) ∈ [0,π]：0=向头(+z)、π/2=水平、π=下垂。
+        """
+        v = getattr(self, name)
+        x, y, z = v / np.linalg.norm(v)
+        return (float(np.arctan2(y, x)),
+                float(np.arccos(np.clip(z, -1.0, 1.0))))
 
 
 @dataclass(frozen=True)

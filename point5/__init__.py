@@ -3,9 +3,7 @@
 This package must not import mujoco / envs.* / baseline.*.
 """
 from .p5 import P5, P5Clip, POINT_INDEX, POINT_NAMES
-from .cpose import (CPose, CPoseClip, LIMB_FRAME, LIMB_INDEX, LIMB_NAMES,
-                    mat_to_pry, pry_to_mat)
+from .cpose import (CPose, CPoseClip, LIMB_FRAME, LIMB_INDEX, LIMB_NAMES)
 
 __all__ = ["P5", "P5Clip", "POINT_INDEX", "POINT_NAMES",
-           "CPose", "CPoseClip", "LIMB_FRAME", "LIMB_INDEX", "LIMB_NAMES",
-           "mat_to_pry", "pry_to_mat"]
+           "CPose", "CPoseClip", "LIMB_FRAME", "LIMB_INDEX", "LIMB_NAMES"]
