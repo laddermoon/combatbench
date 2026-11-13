@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""e2e：ready 起步的简化步态 FSM 演示视频（前向走 1~2 步）。
+"""e2e：ready 起步的"骨盆横移+回摆承接"第一步演示视频。
 
 用法（仓库根目录）：
 
     PYTHONPATH=. python3 point5/humanoid21/e2e_walk_video.py [out.mp4]
 
-相位机（用户的"让载-接住-摆动-落地"人类机制）：
+机制（对应人横向移重心的真实做法——骨盆滑动，膝几乎不弯）：
 
-    DOUBLE     ready 双支撑
-    YIELD      右膝加深屈曲(让载) + 左膝伸展(推) → com 向右自由漂移
-    CATCH      右膝回弹近伸直 → 接住 com（门控: 距右脚<6cm 且 |vy|<0.2）
-    SWING_L    给目标迈步姿态 → 左腿前摆、右腿后拖、右臂前左臂后
-    SETTLE     落地后冻结当前姿态 → 等 com 漂过左脚 → 镜像第二步
-    SWING_R    镜像迈步姿态（第二步）
-    DONE       落地后冻结，观察能否稳住
+    READY      双支撑（ready 前倾位）
+    SHIFT      髋横移 hxL=−0.15/hxR=+0.15 + 躯干回直(abdomen_y −0.20)
+               → 骨盆滑向右脚，com 到脚内沿即停（约 −0.09）
+    RETURN     等 com 钟摆回正（vy>0 且 com_y>−0.10）
+               —— 单支撑里 com 自然向摆动侧倒
+    SWING      左腿前摆快落（hyL=−0.55/kl=−0.70 浅抬快下，
+               hxL=−0.30 加宽落点接横向漂）
+    LANDED     落地后冻结当前姿态
 
-落地检测：先见摆脚抬升 >4cm 再回落 <2cm（防起点贴地短路）。
+实测：左脚落在 (+0.28,+0.13) 前方偏左，站稳 ~0.7s。
+后续步需要 com 横向动量管理（每步落地接住漂移），开环姿态
+序列到第一步为止是稳定边界。
+
 帧左上叠相位 / 支撑类 / com / 脚高诊断。
 """
 from __future__ import annotations
@@ -41,16 +45,11 @@ def _norm_target(name: str, rad: float) -> float:
     return float(np.clip((rad - _MID[i]) / _HALF[i], -1.0, 1.0))
 
 
-def _set_joints(qpos: np.ndarray, **kwargs) -> np.ndarray:
+def _action(base: np.ndarray, **kwargs) -> np.ndarray:
+    a = base.copy()
     for n, v in kwargs.items():
-        qpos[JOINT_NAMES.index(n)] = v
-    return qpos
-
-
-def _pose_action(st: RobotState, **kwargs) -> np.ndarray:
-    q = st.qpos.copy()
-    _set_joints(q, **kwargs)
-    return np.clip((q - _MID) / _HALF, -1.0, 1.0)
+        a[JOINT_NAMES.index(n)] = _norm_target(n, v)
+    return a
 
 
 class _Writer:
@@ -111,98 +110,65 @@ def annotate(img: np.ndarray, lines) -> np.ndarray:
 
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1
-               else "/data1/dev/combatbench_executor/e2e/walk_fsm.mp4")
+               else "/data1/dev/combatbench_executor/e2e/walk_step1.mp4")
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    dt, max_steps = 0.05, 170          # 8.5s @ 20Hz
+    dt, max_steps = 0.05, 90           # 4.5s @ 20Hz
     W, H = 1280, 720
 
     st = RobotState.ready()
     base = st.corresponding_action()
 
-    # ---- 相位动作（烘焙自 ready 的关节修改） ----
-    # 让载+推: 右膝加深、左膝伸展 → com 右漂
-    act_yield = base.copy()
-    act_yield[JOINT_NAMES.index("knee_right")] = _norm_target("knee_right", -0.80)
-    act_yield[JOINT_NAMES.index("knee_left")] = _norm_target("knee_left", -0.30)
-    # 接住: 右膝回弹至近伸直 + 踝回位
-    act_catch = base.copy()
-    act_catch[JOINT_NAMES.index("knee_right")] = _norm_target("knee_right", -0.20)
-    # 第一步姿态: 左腿前摆、右腿后拖、右臂前左臂后、左髋外摆加宽落点
-    act_step_l = _pose_action(
-        st,
-        hip_x_left=-0.25, hip_y_left=-0.90, knee_left=-0.60,
-        ankle_y_left=-0.10,
-        hip_y_right=+0.10, knee_right=-0.35, ankle_y_right=-0.28,
-        shoulder2_right=+0.55, shoulder2_left=-0.85,
-        shoulder1_right=+0.15, shoulder1_left=+0.20)
-    # 第二步镜像
-    act_step_r = _pose_action(
-        st,
-        hip_x_right=-0.25, hip_y_right=-0.90, knee_right=-0.60,
-        ankle_y_right=-0.10,
-        hip_y_left=+0.10, knee_left=-0.35, ankle_y_left=-0.28,
-        shoulder2_left=+0.55, shoulder2_right=-0.85,
-        shoulder1_left=+0.15, shoulder1_right=+0.20)
+    # ---- 相位动作 ----
+    # SHIFT: 骨盆横移到右脚 + 躯干回直（abdomen_y −0.20 比 ready −0.36 直些）
+    act_shift = _action(base,
+                        hip_x_left=-0.15, hip_x_right=+0.15,
+                        abdomen_y=-0.20)
+    # SWING: 左腿前送+落点加宽、支撑膝保持屈度
+    act_swing = _action(base,
+                        hip_x_left=-0.30, hip_x_right=0.0,
+                        abdomen_y=-0.20,
+                        hip_y_left=-0.75, knee_left=-0.50,
+                        ankle_y_left=0.0, knee_right=-0.30)
 
     wr = _Writer(out, fps=20, size=(W, H))
-    phase = "YIELD"
-    lifted_l = lifted_r = False
-    t0 = td = tc = 0.0
-    hold = None
+    phase = "SHIFT"
+    lifted = fallen = False
+    t0 = td = 0.0
     history = []
 
     for k in range(max_steps):
         g = st.to_support_state()
         t = k * dt
 
-        if phase == "YIELD":
-            act = act_yield
-            if g.com[1] < -0.04 or t > 0.6:
-                phase, tc = "CATCH", t
-        elif phase == "CATCH":
-            act = act_catch
-            d = float(np.linalg.norm(g.com[:2] - g.right_foot))
-            if (d < 0.06 and abs(g.com_vel[1]) < 0.2) or t > tc + 0.9:
-                phase, t0 = "SWING_L", t
-                history.append(f"{t:.2f} SWING_L com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
-        elif phase == "SWING_L":
-            act = act_step_l
-            if g.left_foot_height > 0.04:
-                lifted_l = True
-            if lifted_l and g.left_foot_height < 0.02:
-                phase, td = "SETTLE", t
-                history.append(f"{t:.2f} 左脚落地 com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
-            if t > t0 + 1.6:
-                history.append(f"{t:.2f} 摆动超时"); break
-        elif phase == "SETTLE":
-            act = st.corresponding_action()          # 冻结当前姿态
-            # 躯干回直立：落地瞬间是前弓姿态，冻结会锁住前倾 → 持续前扑。
-            # abdomen_y 回 0 明显延长二步（落地 3.05→3.80s、行程 ~1.5m）。
-            act[JOINT_NAMES.index("abdomen_y")] = _norm_target("abdomen_y", 0.0)
-            if (g.com[1] > 0.05 and g.com_vel[1] > 0) or t > td + 1.2:
-                phase, t0 = "SWING_R", t
-                history.append(f"{t:.2f} SWING_R com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
-        elif phase == "SWING_R":
-            act = act_step_r
-            act[JOINT_NAMES.index("abdomen_y")] = _norm_target("abdomen_y", 0.0)
-            if g.right_foot_height > 0.04:
-                lifted_r = True
-            if lifted_r and g.right_foot_height < 0.02:
-                phase, td = "DONE", t
-                history.append(f"{t:.2f} 右脚落地 com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
-            if t > t0 + 1.6:
-                history.append(f"{t:.2f} 第二步超时"); break
-        else:                                       # DONE
-            if hold is None:
-                hold = st.corresponding_action()
-                hold[JOINT_NAMES.index("abdomen_y")] = _norm_target("abdomen_y", 0.0)
-            act = hold
-            if st.root_position[2] < 0.9:           # 已倒：记一次后收尾
-                history.append(f"{t:.2f} 失稳 com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
+        if phase == "SHIFT":
+            act = act_shift
+            # 到位：com 过右脚内沿且开始回摆（vy 回正）
+            if g.com_vel[1] > 0.02 and g.com[1] > -0.10:
+                phase, t0 = "SWING", t
+                history.append(f"{t:.2f} 回摆→SWING com=({g.com[0]:+.2f},{g.com[1]:+.2f}) vy={g.com_vel[1]:+.2f}")
+            if t > 1.4:
+                phase, t0 = "SWING", t
+                history.append(f"{t:.2f} 超时→SWING com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
+        elif phase == "SWING":
+            act = act_swing
+            if g.left_foot_height > 0.02:
+                lifted = True
+            if lifted and g.left_foot_height < 0.012 and t - t0 > 0.15:
+                phase, td = "LANDED", t
+                history.append(f"{t:.2f} 落地 com=({g.com[0]:+.2f},{g.com[1]:+.2f}) "
+                               f"fL=({g.left_foot[0]:+.2f},{g.left_foot[1]:+.2f})")
+            if t - t0 > 1.3:
+                history.append(f"{t:.2f} 摆超时 fhL={g.left_foot_height:.3f} z={st.root_position[2]:.2f}")
                 break
-            if t > td + 1.6:
-                history.append(f"{t:.2f} 两步后稳住 1.6s"); break
+        else:                                       # LANDED
+            act = st.corresponding_action()
+            if st.root_position[2] < 0.9 and not fallen:
+                fallen = True
+                history.append(f"{t:.2f} 失稳(站了{t-td:.2f}s) com=({g.com[0]:+.2f},{g.com[1]:+.2f})")
+            if t - td > 1.6 or st.root_position[2] < 0.5:
+                history.append(f"{t:.2f} 落地后续 {t-td:.2f}s com=({g.com[0]:+.2f},{g.com[1]:+.2f}) z={st.root_position[2]:.2f}")
+                break
 
         st = st.take_action(act, dt=dt)
 
