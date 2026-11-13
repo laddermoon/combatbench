@@ -1062,9 +1062,16 @@ class RobotState(Pose):
                     (tgt - _MID[j]) / _HALF[j], -1.0, 1.0))
         return action
 
-    def arm_as_reaction_wheel_policy(self, direction: float) -> np.ndarray:
+    def arm_as_reaction_wheel_policy(self, direction: float,
+                                     base: np.ndarray = None
+                                     ) -> np.ndarray:
         """-> (21,) action：双臂当**有界反应轮**——矢状面内满
         扭矩旋转，给本体反向角动量。
+
+        base = 非臂通道的钉住基准 (21,) action——None 用站
+        姿快照 _base_action()；从非站姿起步（如 ready）应
+        传该起步姿的对应 action（corresponding_action），
+        否则 15 个非臂通道被拽向站姿基准、起步即崩。
 
         direction = 期望身体绕铰链轴 e 获得的力矩（N·m，
         带符号）：身体前倒需反向刹时 direction<0，手臂朝
@@ -1126,7 +1133,8 @@ class RobotState(Pose):
                     hi = m
             th_cmd = th + 0.5 * (lo + hi) * lead
         q = self._arm_swing_qpos(th_cmd, e3, ep3, sk, ls)
-        action = self._base_action()
+        action = (np.asarray(base, dtype=np.float64).copy()
+                  if base is not None else self._base_action())
         for i in _ARM_J:
             action[i] = float(np.clip(
                 (q[i] - _MID[i]) / _HALF[i], -1.0, 1.0))
@@ -1149,9 +1157,13 @@ class RobotState(Pose):
             acc += float(np.arctan2(v @ ep3, -(v @ ez3)))
         return 0.5 * acc
 
-    def action_for_balance_with_wheel_policy(self) -> np.ndarray:
+    def action_for_balance_with_wheel_policy(
+            self, base: np.ndarray = None) -> np.ndarray:
         """-> (21,) action：有界反应轮闭环——bang-bang 抡摆
         律：前倒向后摆、后倒向前摆，其余一切钉站姿（含踝）。
+
+        base = 非臂通道基准（None=站姿快照；非站姿起步传
+        起步姿的 corresponding_action）。
 
         ξ = com + com_vel·τ 对 a_mid 的偏移 = 倾倒强度 ⇒
         d = clip(err·K, ±BANG_TAU) 比例律——小误差小摆
@@ -1189,7 +1201,7 @@ class RobotState(Pose):
         err = float((xi - a_mid) @ e_perp)
         d = float(np.clip(err * _WHEEL_GAIN_ERR,
                           -_WHEEL_BANG_TAU, _WHEEL_BANG_TAU))
-        return self.arm_as_reaction_wheel_policy(d)
+        return self.arm_as_reaction_wheel_policy(d, base=base)
 
     def arm_swing_policy(self, delta_x: float) -> np.ndarray:
         """-> (21,) action：双臂同步前后摆原语——矢状面搬移 com。
