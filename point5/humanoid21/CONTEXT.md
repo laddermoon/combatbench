@@ -99,6 +99,19 @@ P5 协议见 `../p5.py`。
   大的来源）；50ms 控制周期 < 承重关节 settle（0.3-1s），
   目标角要跨周期表达。**坑**：qfrc_bias 量的是关节
   **下游子树**重力矩——stance 负载在上游侧，勿混用。
+- 平衡原语族（robot_state.py，均仅双脚支撑）：`ankle_policy`
+  LIP 阻尼律踝矩→PD 反解；`arm_swing_policy(dx)` 矢状面摆臂
+  搬 com（v2 **直臂圆摆**：肘锁全伸 _ARM_LEN=0.6214m、手在
+  过肩锚矢状面、经下方转向前/后——臂摆语义从"保肘角"升级
+  为"伸直杆"，共享求解层 `_swing_arm_ik(straight=)`）；
+  `arm_as_reaction_wheel_policy(d)` 有界反应轮（摆角超前
+  lead↔肩力矩近似线性映射）+ `action_for_balance_with_*
+  _policy` 捕获点闭环。**关键实证**：直臂档在 ready 上 6s
+  站住（com±1.5cm 振荡），standing 上反而漂 0.23m——直臂
+  前悬静态偏置伤站姿；`straight` 做成参数（默认
+  _WHEEL_STRAIGHT），standing 回归走 straight=False。
+  `base` 参数惯例：非站姿起步传起步姿 corresponding_action
+  （ready 上平衡传 ready 的），None 用站姿快照。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
   `SupportState.drift(dt, alpha=None)`：重力+接触约束演化

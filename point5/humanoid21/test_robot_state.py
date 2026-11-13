@@ -367,7 +367,14 @@ class TestArmWheelPolicy:
             th_cmd = st_tgt._swing_theta_now(e3, ep3, sk)
             assert np.sign(th_cmd - th0) == want
         a0 = st.arm_as_reaction_wheel_policy(0.0)
-        assert np.allclose(a0, st._base_action())
+        base0 = st._base_action()
+        non_arm = [i for i in range(21) if i not in _ARM_J]
+        assert np.allclose(a0[non_arm], base0[non_arm])
+        # 直臂模式：零指令臂钉在"肘全伸+θ_now"而非站姿弯肘
+        q0 = st.qpos.copy()
+        for i in _ARM_J:
+            q0[i] = a0[i] * _HALF[i] + _MID[i]
+        assert np.allclose(q0[[17, 20]], -1.7453, atol=0.15)
 
     def test_single_support_raises(self, st):
         """非双脚支撑 -> NotImplementedError。"""
@@ -383,11 +390,28 @@ class TestArmWheelPolicy:
     def test_wheel_closed_loop_2s(self, st):
         """sim 真值：比例抡摆闭环 40 步（2s）——保持双脚支
         撑、com 不漂出 ±0.1m（5s 完整工况实测站住，回归
-        用半程防超时）。"""
+        用半程防超时）。standing 走保肘档（straight=False：
+        直臂前悬的静态前偏在站姿上反伤稳定，实测 com 漂
+        出 0.23m）；ready 走直臂档（实证 6s 站住）。"""
         rs = st
         for _ in range(40):
-            a = rs.action_for_balance_with_wheel_policy()
+            a = rs.action_for_balance_with_wheel_policy(
+                straight=False)
             rs = rs.take_action(a)
             g = rs.to_support_state()
             assert g.support_class().name == "DOUBLE"
         assert abs(g.com[0]) < 0.1 and abs(g.com_vel[0]) < 0.3
+
+    def test_wheel_closed_loop_ready(self):
+        """ready + 直臂抡摆闭环（默认 _WHEEL_STRAIGHT）——
+        钉 ready 基准 40 步保双脚支撑、com 收在踝心附近。"""
+        rs = RobotState.ready()
+        base = rs.corresponding_action()
+        for _ in range(40):
+            a = rs.action_for_balance_with_wheel_policy(base=base)
+            rs = rs.take_action(a)
+            g = rs.to_support_state()
+            assert g.support_class().name == "DOUBLE"
+        g = rs.to_support_state()
+        am = 0.5 * (np.asarray(g.left_foot) + np.asarray(g.right_foot))
+        assert abs(g.com[0] - am[0]) < 0.1

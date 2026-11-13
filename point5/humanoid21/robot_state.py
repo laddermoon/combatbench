@@ -1071,7 +1071,8 @@ class RobotState(Pose):
         return action
 
     def arm_as_reaction_wheel_policy(self, direction: float,
-                                     base: np.ndarray = None
+                                     base: np.ndarray = None,
+                                     straight: bool = None
                                      ) -> np.ndarray:
         """-> (21,) action：双臂当**有界反应轮**——矢状面内满
         扭矩旋转，给本体反向角动量。
@@ -1101,6 +1102,11 @@ class RobotState(Pose):
         （FK 实测：可达方向是前方扇区，无完整圆可塞入，
         **连续风车不可行**），容量一次性 ~5-10 kg·m²/s，
         饱和后无法续力。非双支撑 NotImplementedError。
+
+        straight：None 取模块档 _WHEEL_STRAIGHT——True=直
+        臂圆摆（肘锁全伸、经下方转向，ready 实证 6s 站住）；
+        False=保肘角摆（standing 上更稳——直臂前悬的静态
+        前偏在站姿上反伤稳定，实测 com 漂出 0.23m）。
         """
         from .mechanics import _HALF, _JIDX, _MID, Skeleton
         from .support_state import SupportClass
@@ -1130,17 +1136,20 @@ class RobotState(Pose):
                              -_WHEEL_LEAD, _WHEEL_LEAD))
         th_cmd = th + lead
         ls = _WHEEL_LH_SCALE
-        if not self._swing_theta_feasible(th_cmd, e3, ep3, sk, ls):
+        st_flag = _WHEEL_STRAIGHT if straight is None else straight
+        if not self._swing_theta_feasible(th_cmd, e3, ep3, sk, ls,
+                                          st_flag):
             lo, hi = 0.0, 1.0                     # θ=th+t·lead 上二分
             for _ in range(18):
                 m = 0.5 * (lo + hi)
                 if self._swing_theta_feasible(th + m * lead, e3,
-                                              ep3, sk, ls):
+                                              ep3, sk, ls, st_flag):
                     lo = m
                 else:
                     hi = m
             th_cmd = th + 0.5 * (lo + hi) * lead
-        q = self._arm_swing_qpos(th_cmd, e3, ep3, sk, ls)
+        q = self._arm_swing_qpos(th_cmd, e3, ep3, sk, ls,
+                                 st_flag)
         action = (np.asarray(base, dtype=np.float64).copy()
                   if base is not None else self._base_action())
         for i in _ARM_J:
@@ -1166,7 +1175,8 @@ class RobotState(Pose):
         return 0.5 * acc
 
     def action_for_balance_with_wheel_policy(
-            self, base: np.ndarray = None) -> np.ndarray:
+            self, base: np.ndarray = None,
+            straight: bool = None) -> np.ndarray:
         """-> (21,) action：有界反应轮闭环——bang-bang 抡摆
         律：前倒向后摆、后倒向前摆，其余一切钉站姿（含踝）。
 
@@ -1209,9 +1219,11 @@ class RobotState(Pose):
         err = float((xi - a_mid) @ e_perp)
         d = float(np.clip(err * _WHEEL_GAIN_ERR,
                           -_WHEEL_BANG_TAU, _WHEEL_BANG_TAU))
-        return self.arm_as_reaction_wheel_policy(d, base=base)
+        return self.arm_as_reaction_wheel_policy(
+            d, base=base, straight=straight)
 
-    def arm_swing_policy(self, delta_x: float) -> np.ndarray:
+    def arm_swing_policy(self, delta_x: float,
+                         base: np.ndarray = None) -> np.ndarray:
         """-> (21,) action：双臂同步前后摆原语——矢状面搬移 com。
 
         只双脚支撑可用（support_class()!=DOUBLE ->
@@ -1219,19 +1231,24 @@ class RobotState(Pose):
         e_perp（垂直双踝连线、水平面内）的搬移量 m——正值
         朝 +e_perp 搬。
 
-        摆动语义：各臂"肩→手"向量在含 e_perp 的竖直面内摆
-        动，θ 从竖直下垂量起（θ>0 前摆）——两臂同相即对
-        称前后摆；|v| 与侧向分量不变 ⇒ 肘角近似不动，动的
-        是肩（_arm_ik 候选按 vio+弹簧能选支）。θ -> com_e
-        由 Skeleton FK 求值、二分反解——有效段单调（绕轴
-        整圈参数化会抡过头顶折回、非单调，已弃）；可达搬
-        移域截断到 IK 可达边界（双臂 ~5.8kg/40.84kg，实测
-        FK 域约 [−0.025, +0.016] m）。
+        摆动语义（v2）：手臂保持**全伸直杆**（肘→−100°，
+        |v|=0.6214m 最大伸展），肩→手向量在含 e_perp 的
+        竖直面内沿半径 L 的圆周摆动，θ 从竖直下垂量起
+        （θ>0 前摆、θ<0 后摆）——经最低点转向前后，两臂
+        同相对称。直臂语义三收益：伸展半径最大（com 搬移
+        域）、下垂段重力助转（肩不供矩→身体不吃反踢）、
+        臂惯量最大（动量缓冲容量）。可达摆角不对称：后向
+        ~−0.5rad（手向后 ~0.30m）、前向 +1.2rad+。肘支
+        选按 vio+|elb−伸直限位|+弹簧能排序。θ -> com_e
+        FK 求值二分反解；dx 截到有效域端点。
 
         输出 = _base_action（站姿快照，**含踝**）+ 肩肘 6 通
-        道 IK 目标——只挥手臂、其余全钉站姿。搬移是准静态
-        通道：直接改写 com 相对支点的水平位置；速度只能经
-        闭环侧 ξ 超前项间接压制（动量效应交给动力学真值）。
+        道 IK 目标——只挥手臂、其余钉 base（None=站姿快
+        照；非站姿起步传起步姿的 corresponding_action，
+        语义同 action_for_balance_with_ankle_policy.base）。
+        搬移是准静态通道：直接改写 com 相对支点的水平位
+        置；速度只能经闭环侧 ξ 超前项间接压制（动量效应
+        交给动力学真值——摆臂途中的反踢/制动踢 sim 可见）。
 
         实测能力边界（sim oracle，2026-05）：固定任何摆角
         都挂不住站姿——双踝 PD 被动刚度 ~200 N·m/rad <
@@ -1269,40 +1286,51 @@ class RobotState(Pose):
             ("ankle_y_right", "ankle_y_left"))
         x_now = float(com[:2] @ e_perp)                # 当前 com 基线
         lo, hi = (self._swing_com_e(-_SWING_PHI_MAX, e3, ep3, e_perp,
-                                    sk) - x_now,
+                                    sk, True) - x_now,
                   self._swing_com_e(_SWING_PHI_MAX, e3, ep3, e_perp,
-                                    sk) - x_now)
+                                    sk, True) - x_now)
         tgt = float(np.clip(dx, lo, hi))
         a, b = -_SWING_PHI_MAX, _SWING_PHI_MAX
         for _ in range(40):                            # com_e 对 θ 单调
             m = 0.5 * (a + b)
-            if self._swing_com_e(m, e3, ep3, e_perp, sk) - x_now < tgt:
+            if self._swing_com_e(m, e3, ep3, e_perp, sk,
+                                 True) - x_now < tgt:
                 a = m
             else:
                 b = m
-        q = self._arm_swing_qpos(0.5 * (a + b), e3, ep3, sk)
-        action = self._base_action()
+        q = self._arm_swing_qpos(0.5 * (a + b), e3, ep3, sk,
+                                 straight=True)
+        action = (self._base_action() if base is None
+                  else np.asarray(base, dtype=float).copy())
         for i in _ARM_J:
             action[i] = float(np.clip(
                 (q[i] - _MID[i]) / _HALF[i], -1.0, 1.0))
         return action
 
-    def _swing_com_e(self, theta, e3, ep3, e_perp, sk) -> float:
+    def _swing_com_e(self, theta, e3, ep3, e_perp, sk,
+                     straight=False) -> float:
         """com 沿 e_perp 的 FK 求值——θ->com_e 单调映射供二分。"""
-        q = self._arm_swing_qpos(theta, e3, ep3, sk)
+        q = self._arm_swing_qpos(theta, e3, ep3, sk,
+                                 straight=straight)
         com, *_ = sk.support_jac(
             self.root_position,
             _zyx_to_quat_wxyz(self.root_orientation), q,
             ("ankle_y_right", "ankle_y_left"))
         return float(com[:2] @ e_perp)
 
-    def _swing_arm_ik(self, theta, e3, ep3, sk, lh_scale=1.0):
+    def _swing_arm_ik(self, theta, e3, ep3, sk, lh_scale=1.0,
+                      straight=False):
         """θ 摆角下各臂 IK 最优候选 {side: pick|None}——公共
         求解层，_arm_swing_qpos 与可行性检查共用。
 
         lh_scale 缩放"肩→手"矢状模长（>1 肘趋伸直、惯量
         ~scale² 增大——反应轮模式用，搬移模式保持 1 保
-        持当前肘角）。"""
+        持当前肘角）。
+
+        straight=True：直臂圆摆（v2 语义）——|v| 直接取
+        最大伸展 _ARM_LEN（肘被 |d| 反推到全伸限位）、侧
+        向分量归零（手在过肩锚的矢状面内）；候选按
+        (vio, |elb−全伸|, 弹簧能) 排序锁定全伸支。"""
         from .mechanics import _ARM, _arm_ik
         xf = sk.body_transforms(
             self.root_position,
@@ -1316,33 +1344,43 @@ class RobotState(Pose):
                  - (t_pos + t_mat @ sp["s_off"]))       # 肩→手 世界向量
             v_p, v_e, v_z = (float(v @ ep3), float(v @ e3),
                              float(v @ ez3))
-            lh = float(np.hypot(v_p, v_z)) * lh_scale
+            if straight:
+                lh, v_e = _ARM_LEN, 0.0
+            else:
+                lh = float(np.hypot(v_p, v_z)) * lh_scale
             vt = (lh * np.sin(theta) * ep3 + v_e * e3
                   - lh * np.cos(theta) * ez3)
             cand = _arm_ik(vt, t_mat, sp)
-            picks[side] = (min(cand, key=lambda c: (c["vio"], c["e"]))
-                           if cand else None)
+            key = ((lambda c: (c["vio"],
+                               abs(c["rad"][2] - _ELB_STRAIGHT),
+                               c["e"]))
+                   if straight else
+                   (lambda c: (c["vio"], c["e"])))
+            picks[side] = min(cand, key=key) if cand else None
         return picks
 
     def _swing_theta_feasible(self, theta, e3, ep3, sk,
-                              lh_scale=1.0) -> bool:
+                              lh_scale=1.0, straight=False) -> bool:
         """θ 摆角双臂 IK 均有解（vio<1e-3）则可达。"""
-        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale)
+        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale,
+                                   straight)
         return all(p is not None and p["vio"] < 1e-3
                    for p in picks.values())
 
-    def _arm_swing_qpos(self, theta, e3, ep3, sk, lh_scale=1.0):
+    def _arm_swing_qpos(self, theta, e3, ep3, sk, lh_scale=1.0,
+                        straight=False):
         """摆角 theta 下替换肩肘 6 通道后的 qpos(21)。
 
         摆动 = "肩→手"向量在 {ê_perp, ê, ẑ} 系的矢状-竖直面
         内摆：v(θ) = L_h·sinθ·ê_perp + v_e·ê − L_h·cosθ·ẑ，
-        L_h = |v 的 (e_perp,z) 分量|×lh_scale，θ=0 竖直下
-        垂、θ>0 前摆；侧向分量 v_e 不变（肘角近似不动）。
-        θ 从下垂量起——com_e(θ) 单调（绕轴转整圈的参数化
-        会抡过头顶折回、非单调，已弃）。
+        L_h = |v 的 (e_perp,z) 分量|×lh_scale（straight 时
+        =_ARM_LEN 且 v_e=0——直臂圆周），θ=0 竖直下垂、
+        θ>0 前摆。θ 从下垂量起——com_e(θ) 单调（绕轴转整
+        圈的参数化会抡过头顶折回、非单调，已弃）。
         """
         from .mechanics import _ARM
-        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale)
+        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale,
+                                   straight)
         q = self.qpos.copy()
         for side, sp in _ARM.items():
             pick = picks[side]
@@ -1353,9 +1391,13 @@ class RobotState(Pose):
                     q[i] = float(val)
         return q
 
-    def action_for_balance_with_arm_policy(self) -> np.ndarray:
+    def action_for_balance_with_arm_policy(
+            self, base: np.ndarray = None) -> np.ndarray:
         """-> (21,) action：双臂摆动闭环——搬移 com 维持在两踝
         支点上方（不用踝策略）。
+
+        base = 非臂通道基准（None=站姿快照；非站姿起步传
+        起步姿的 corresponding_action——如 ready 上平衡）。
 
         铰链模只调可控自由度 e_perp：搬移指令
             Δx = clip((a_mid − ξ)·e_perp, ±0.03)
@@ -1390,7 +1432,7 @@ class RobotState(Pose):
         xi = st.com[:2] + st.com_vel[:2] * tau
         dx = float(np.clip(float((a_mid - xi) @ e_perp),
                            -0.03, 0.03))
-        return self.arm_swing_policy(dx)
+        return self.arm_swing_policy(dx, base=base)
 
 
 
@@ -1426,6 +1468,8 @@ _ARM_J = frozenset(_JIDX_[n] for n in (
     "shoulder1_left", "shoulder2_left", "elbow_left"))
 del _JIDX_
 _SWING_PHI_MAX = 1.2  # rad — 双臂摆角搜索界（±~69°）
+_ARM_LEN = 0.6214     # m — 直臂最大伸展 |u+R·w|（elb=-100°）
+_ELB_STRAIGHT = -1.7453  # rad — 肘全伸限位（IK 选支参照）
 _WHEEL_KP = 150.0     # N·m/rad — 肩 PD 位置增益（lead↔矩）
 _WHEEL_GAIN = 3.0     # — lead→平均力矩标定增益（补控制窗
                       # 内臂行程吃掉的误差；oracle 标定）
@@ -1441,6 +1485,10 @@ _WHEEL_LH_SCALE = 1.0    # — 轮模式臂矢状模长倍数。1.45 伸
                          # 直臂实测反而更快倒（伸展臂前悬的
                          # 静态前偏加重 + IK 构型变化），回
                          # 退 1.0；惯量增益的代价不划算
+_WHEEL_STRAIGHT = True   # — 轮模式直臂圆摆（v2 语义：肘锁
+                         # 全伸、侧向归零、经下方转向）。覆盖
+                         # lh_scale；standing 实证需复测——
+                         # 此前 lh_scale=1.45 偏置更快倒
 
 
 
