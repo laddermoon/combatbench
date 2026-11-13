@@ -1114,16 +1114,18 @@ class RobotState(Pose):
                              * _WHEEL_GAIN,
                              -_WHEEL_LEAD, _WHEEL_LEAD))
         th_cmd = th + lead
-        if not self._swing_theta_feasible(th_cmd, e3, ep3, sk):
+        ls = _WHEEL_LH_SCALE
+        if not self._swing_theta_feasible(th_cmd, e3, ep3, sk, ls):
             lo, hi = 0.0, 1.0                     # θ=th+t·lead 上二分
             for _ in range(18):
                 m = 0.5 * (lo + hi)
-                if self._swing_theta_feasible(th + m * lead, e3, ep3, sk):
+                if self._swing_theta_feasible(th + m * lead, e3,
+                                              ep3, sk, ls):
                     lo = m
                 else:
                     hi = m
             th_cmd = th + 0.5 * (lo + hi) * lead
-        q = self._arm_swing_qpos(th_cmd, e3, ep3, sk)
+        q = self._arm_swing_qpos(th_cmd, e3, ep3, sk, ls)
         action = self._base_action()
         for i in _ARM_J:
             action[i] = float(np.clip(
@@ -1148,17 +1150,21 @@ class RobotState(Pose):
         return 0.5 * acc
 
     def action_for_balance_with_wheel_policy(self) -> np.ndarray:
-        """-> (21,) action：有界反应轮闭环——ξ 出界方向决定
-        刹车方向，其余一切钉站姿（含踝）。
+        """-> (21,) action：有界反应轮闭环——bang-bang 抡摆
+        律：前倒向后摆、后倒向前摆，其余一切钉站姿（含踝）。
 
-        direction = −sign((ξ−a_mid)·e_perp)：ξ 前冲（身体
-        向前失稳）→ direction<0 → 手臂向前加速抽走角动量。
-        每步重算；飞轮饱和（手臂到行程界）后失效，退化为
-        站姿保持——诚实返回而非假装能续。非双支撑
+        ξ = com + com_vel·τ 对 a_mid 的偏移 = 倾倒强度 ⇒
+        d = clip(err·K, ±BANG_TAU) 比例律——小误差小摆
+        （抑制 bang-bang 满冲量在近平衡处的超调振荡），
+        大误差自然饱和到满弧。物理即"前倒向后摆、后倒
+        向前摆"：臂摆到位的姿势恰是反向刹车的起始位，
+        自充电。sim 验证：v0=0 站姿偏置下 5s 站稳、com
+        收敛 ~0；v0≥0.05 扰动仍超出臂容量。轮模式肘
+        趋伸直（lh_scale>1 ⇒ 惯量 ~scale²）。非双支撑
         NotImplementedError。
         """
         from .support_state import (ANKLE_Z_PLANTED, LIP_G,
-                                    LIP_MASS, SupportClass)
+                                    SupportClass)
         st = self.to_support_state()
         if st.support_class() != SupportClass.DOUBLE:
             raise NotImplementedError(
@@ -1180,9 +1186,10 @@ class RobotState(Pose):
         a_mid = 0.5 * (p0 + p1)
         tau = np.sqrt(l / LIP_G)
         xi = st.com[:2] + st.com_vel[:2] * tau
-        tau_des = -LIP_MASS * LIP_G * float((xi - a_mid)
-                                          @ e_perp)
-        return self.arm_as_reaction_wheel_policy(tau_des)
+        err = float((xi - a_mid) @ e_perp)
+        d = float(np.clip(err * _WHEEL_GAIN_ERR,
+                          -_WHEEL_BANG_TAU, _WHEEL_BANG_TAU))
+        return self.arm_as_reaction_wheel_policy(d)
 
     def arm_swing_policy(self, delta_x: float) -> np.ndarray:
         """-> (21,) action：双臂同步前后摆原语——矢状面搬移 com。
@@ -1269,9 +1276,13 @@ class RobotState(Pose):
             ("ankle_y_right", "ankle_y_left"))
         return float(com[:2] @ e_perp)
 
-    def _swing_arm_ik(self, theta, e3, ep3, sk):
+    def _swing_arm_ik(self, theta, e3, ep3, sk, lh_scale=1.0):
         """θ 摆角下各臂 IK 最优候选 {side: pick|None}——公共
-        求解层，_arm_swing_qpos 与可行性检查共用。"""
+        求解层，_arm_swing_qpos 与可行性检查共用。
+
+        lh_scale 缩放"肩→手"矢状模长（>1 肘趋伸直、惯量
+        ~scale² 增大——反应轮模式用，搬移模式保持 1 保
+        持当前肘角）。"""
         from .mechanics import _ARM, _arm_ik
         xf = sk.body_transforms(
             self.root_position,
@@ -1285,7 +1296,7 @@ class RobotState(Pose):
                  - (t_pos + t_mat @ sp["s_off"]))       # 肩→手 世界向量
             v_p, v_e, v_z = (float(v @ ep3), float(v @ e3),
                              float(v @ ez3))
-            lh = float(np.hypot(v_p, v_z))
+            lh = float(np.hypot(v_p, v_z)) * lh_scale
             vt = (lh * np.sin(theta) * ep3 + v_e * e3
                   - lh * np.cos(theta) * ez3)
             cand = _arm_ik(vt, t_mat, sp)
@@ -1293,24 +1304,25 @@ class RobotState(Pose):
                            if cand else None)
         return picks
 
-    def _swing_theta_feasible(self, theta, e3, ep3, sk) -> bool:
+    def _swing_theta_feasible(self, theta, e3, ep3, sk,
+                              lh_scale=1.0) -> bool:
         """θ 摆角双臂 IK 均有解（vio<1e-3）则可达。"""
-        picks = self._swing_arm_ik(theta, e3, ep3, sk)
+        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale)
         return all(p is not None and p["vio"] < 1e-3
                    for p in picks.values())
 
-    def _arm_swing_qpos(self, theta, e3, ep3, sk):
+    def _arm_swing_qpos(self, theta, e3, ep3, sk, lh_scale=1.0):
         """摆角 theta 下替换肩肘 6 通道后的 qpos(21)。
 
         摆动 = "肩→手"向量在 {ê_perp, ê, ẑ} 系的矢状-竖直面
         内摆：v(θ) = L_h·sinθ·ê_perp + v_e·ê − L_h·cosθ·ẑ，
-        L_h = |v 的 (e_perp,z) 分量|，θ=0 竖直下垂、θ>0 前
-        摆；侧向分量 v_e 与 |v| 不变（肘角近似不动）。θ 从
-        下垂量起——com_e(θ) 单调（绕轴转整圈的参数化会抡
-        过头顶折回、非单调，已弃）。
+        L_h = |v 的 (e_perp,z) 分量|×lh_scale，θ=0 竖直下
+        垂、θ>0 前摆；侧向分量 v_e 不变（肘角近似不动）。
+        θ 从下垂量起——com_e(θ) 单调（绕轴转整圈的参数化
+        会抡过头顶折回、非单调，已弃）。
         """
         from .mechanics import _ARM
-        picks = self._swing_arm_ik(theta, e3, ep3, sk)
+        picks = self._swing_arm_ik(theta, e3, ep3, sk, lh_scale)
         q = self.qpos.copy()
         for side, sp in _ARM.items():
             pick = picks[side]
@@ -1394,8 +1406,18 @@ _SWING_PHI_MAX = 1.2  # rad — 双臂摆角搜索界（±~69°）
 _WHEEL_KP = 150.0     # N·m/rad — 肩 PD 位置增益（lead↔矩）
 _WHEEL_GAIN = 3.0     # — lead→平均力矩标定增益（补控制窗
                       # 内臂行程吃掉的误差；oracle 标定）
-_WHEEL_LEAD = 0.55    # rad — 反应轮位置目标超前角上限
-                      # （KP·lead>gear ⇒ 饱和到 20N·m 上限）
+_WHEEL_LEAD = 2.6     # rad — 位置目标超前角上限（≈矢状可
+                      # 达弧全长；大指令经此截断+IK 二分落锥界）
+_WHEEL_BANG_TAU = 400.0  # N·m — 力矩指令饱和值（对应满弧
+                       # 抡摆；lead 超界由可达二分限幅）
+_WHEEL_GAIN_ERR = 8000.0  # N·m/m — ξ 误差→指令增益：比例
+                          # 律实测 8000/12000/16000 均 5s 站
+                          # 稳（取最平滑档）；bang-bang 版
+                          # 近平衡超调 ~3.4s 死，已弃
+_WHEEL_LH_SCALE = 1.0    # — 轮模式臂矢状模长倍数。1.45 伸
+                         # 直臂实测反而更快倒（伸展臂前悬的
+                         # 静态前偏加重 + IK 构型变化），回
+                         # 退 1.0；惯量增益的代价不划算
 
 
 

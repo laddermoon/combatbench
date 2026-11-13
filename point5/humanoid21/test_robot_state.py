@@ -379,3 +379,15 @@ class TestArmWheelPolicy:
             pytest.skip("抬高后仍判双脚——换一个构造")
         with pytest.raises(NotImplementedError):
             st1.arm_as_reaction_wheel_policy(1.0)
+
+    def test_wheel_closed_loop_2s(self, st):
+        """sim 真值：比例抡摆闭环 40 步（2s）——保持双脚支
+        撑、com 不漂出 ±0.1m（5s 完整工况实测站住，回归
+        用半程防超时）。"""
+        rs = st
+        for _ in range(40):
+            a = rs.action_for_balance_with_wheel_policy()
+            rs = rs.take_action(a)
+            g = rs.to_support_state()
+            assert g.support_class().name == "DOUBLE"
+        assert abs(g.com[0]) < 0.1 and abs(g.com_vel[0]) < 0.3
