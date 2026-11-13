@@ -333,7 +333,13 @@ class Pose:
         """
         import os
         os.environ.setdefault("MUJOCO_GL", "osmesa")
+        # simulator.py 会把 PYOPENGL_PLATFORM 钉成 egl——本平台 egl
+        # 不可用，osmesa 拒绝在错配的 PYOPENGL_PLATFORM 下加载，
+        # 且 mujoco.renderer 兼容层静默吞掉底层 ImportError（模块
+        # 存在但没有 Renderer）。这里显式配对两变量并直取经典层。
+        os.environ["PYOPENGL_PLATFORM"] = os.environ["MUJOCO_GL"]
         import mujoco
+        from mujoco.rendering.classic.renderer import Renderer
         from PIL import Image
         model, data, r, jid = self._kinematics()
         adr = int(r["root_qpos_adr"])
@@ -362,8 +368,7 @@ class Pose:
         key = (int(height), int(width))
         renderer = Pose._RENDERERS.get(key)
         if renderer is None:
-            renderer = mujoco.Renderer(model, height=key[0],
-                                       width=key[1])
+            renderer = Renderer(model, height=key[0], width=key[1])
             Pose._RENDERERS[key] = renderer
         renderer.update_scene(data, camera=camera)
         img = Image.fromarray(renderer.render())
@@ -1174,6 +1179,149 @@ class RobotState(Pose):
             acc += float(np.arctan2(v @ ep3, -(v @ ez3)))
         return 0.5 * acc
 
+    # ------------------------- 单支撑 2D 摆臂 -------------------------
+    # 单脚 = 球铰倒立摆：前后/侧向两个方向都是失稳自由度，臂要
+    # 一管二。手目标 = 肩锚 + L·d，d = sinθf·ê_fore +
+    # sinθs·ê_side − cosθf·cosθs·ẑ 归一——小角度下手水平位
+    # 移 ≈ L·(θf, θs) 两通道解耦，一次 IK 同解。
+
+    def _swing_arm_ik_2d(self, th_f, th_s, ef3, es3, sk,
+                         straight=True):
+        """单脚 2 角摆臂 IK 候选 {side: pick|None}——{ê_fore,
+        ê_side, ẑ} 球面参数化（ê_fore=支撑脚朝向、ê_side=其
+        水平垂直）。"""
+        from .mechanics import _ARM, _arm_ik
+        xf = sk.body_transforms(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
+        t_pos, t_mat = xf["torso"]
+        ez3 = np.array([0.0, 0.0, 1.0])
+        d = (np.sin(th_f) * ef3 + np.sin(th_s) * es3
+             - np.cos(th_f) * np.cos(th_s) * ez3)
+        d = d / np.linalg.norm(d)
+        picks = {}
+        for side in ("left", "right"):
+            sp = _ARM[side]
+            v = (xf[f"hand_{side}"][0]
+                 - (t_pos + t_mat @ sp["s_off"]))
+            lh = (_ARM_LEN if straight
+                  else float(np.linalg.norm(v)))
+            vt = lh * d
+            cand = _arm_ik(vt, t_mat, sp)
+            key = ((lambda c: (c["vio"],
+                               abs(c["rad"][2] - _ELB_STRAIGHT),
+                               c["e"]))
+                   if straight else
+                   (lambda c: (c["vio"], c["e"])))
+            picks[side] = min(cand, key=key) if cand else None
+        return picks
+
+    def _swing_theta_now_2d(self, ef3, es3, sk):
+        """当前臂摆角分解到前后/侧向两平面（双臂均值）。"""
+        xf = sk.body_transforms(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
+        t_pos, t_mat = xf["torso"]
+        ez3 = np.array([0.0, 0.0, 1.0])
+        af = as_ = 0.0
+        from .mechanics import _ARM
+        for side in ("left", "right"):
+            sp = _ARM[side]
+            v = (xf[f"hand_{side}"][0]
+                 - (t_pos + t_mat @ sp["s_off"]))
+            af += float(np.arctan2(v @ ef3, -(v @ ez3)))
+            as_ += float(np.arctan2(v @ es3, -(v @ ez3)))
+        return 0.5 * af, 0.5 * as_
+
+    def _swing_feasible_2d(self, th_f, th_s, ef3, es3, sk,
+                           straight) -> bool:
+        picks = self._swing_arm_ik_2d(th_f, th_s, ef3, es3, sk,
+                                      straight)
+        return all(p is not None and p["vio"] < 1e-3
+                   for p in picks.values())
+
+    @staticmethod
+    def _wheel_lead(err: float) -> float:
+        """捕获点误差(m) → 摆角超前(rad)——err→力矩指令→
+        lead 的复用映射（同 wheel 单轴闭环）。"""
+        d = float(np.clip(err * _WHEEL_GAIN_ERR,
+                          -_WHEEL_BANG_TAU, _WHEEL_BANG_TAU))
+        return float(np.clip(-d / (2.0 * _WHEEL_KP) * _WHEEL_GAIN,
+                             -_WHEEL_LEAD, _WHEEL_LEAD))
+
+    def _wheel_single_leg(self, st, base, straight):
+        """单支撑反应轮闭环——2D 捕获点误差分解到脚系
+        (ê_fore=脚前向, ê_side=侧向)，各方向独立轮律算
+        lead，2 角球面 IK 合成单组臂目标。
+
+        语义同单轴轮：前倒向后摆（err_f>0 → lead_f<0）、
+        右倒向左摆——臂质心搬到误差反向拖回 com，途中
+        加速/制动踢经 sim 真值兑现。自由腿与非臂通道全
+        钉 base。
+
+        实测边界（2026-11）：单腿 arm-only 全增益档闭环
+        1.3–1.7s 倒，且净有害于"静态平衡臂位钉住"——摆臂
+        本身是边际稳定态上的扰动泵。失效主模态是支撑腿
+        屈曲塌陷把 com 平移出臂搬移域（±4-7cm），不是 com
+        定位（2D 摆臂可把 com 解到脚心残差 ~1mm）。当前
+        最优纯臂策略是静态配重（直臂 θf≈+0.10, θs≈+0.80
+        支撑侧开环钉住 ~3.3s），闭环校正通道待重设计。"""
+        from .mechanics import _ARM, _HALF, _MID, Skeleton
+        from .support_state import ANKLE_Z_PLANTED, LIP_G
+        sc = st.support_class()
+        side = "left" if sc.name == "SINGLE_LEFT" else "right"
+        foot = np.asarray(st.left_foot if side == "left"
+                          else st.right_foot)
+        l = float(st.com[2]) - ANKLE_Z_PLANTED
+        if l <= 0:
+            raise ValueError(
+                f"_wheel_single_leg: com.z {st.com[2]:.3f} ≤ 踝心")
+        sk = Skeleton()
+        xf = sk.body_transforms(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
+        ef3 = xf[f"foot_{side}"][1][:, 0].copy()   # 脚前向轴
+        ef3[2] = 0.0
+        n = float(np.linalg.norm(ef3))
+        if n < 0.3:                               # 脚翻起退化→躯干yaw
+            cy, sy = np.cos(st.torso_yaw), np.sin(st.torso_yaw)
+            ef3 = np.array([cy, sy, 0.0])
+        else:
+            ef3 = ef3 / n
+        es3 = np.array([-ef3[1], ef3[0], 0.0])    # ê_side = ẑ×ê_fore
+        tau = np.sqrt(l / LIP_G)
+        xi = st.com[:2] + st.com_vel[:2] * tau
+        err = xi - foot
+        lf = self._wheel_lead(float(err @ ef3[:2]))
+        ls = self._wheel_lead(float(err @ es3[:2]))
+        thf0, ths0 = self._swing_theta_now_2d(ef3, es3, sk)
+        sf = _WHEEL_STRAIGHT if straight is None else straight
+        tf, ts = thf0 + lf, ths0 + ls
+        if not self._swing_feasible_2d(tf, ts, ef3, es3, sk, sf):
+            lo, hi = 0.0, 1.0
+            for _ in range(18):
+                m = 0.5 * (lo + hi)
+                if self._swing_feasible_2d(thf0 + m * lf,
+                                           ths0 + m * ls,
+                                           ef3, es3, sk, sf):
+                    lo = m
+                else:
+                    hi = m
+            tf, ts = thf0 + 0.5 * (lo + hi) * lf, \
+                ths0 + 0.5 * (lo + hi) * ls
+        picks = self._swing_arm_ik_2d(tf, ts, ef3, es3, sk, sf)
+        action = (np.asarray(base, dtype=np.float64).copy()
+                  if base is not None else self._base_action())
+        for side2, sp in _ARM.items():
+            pick = picks[side2]
+            if pick is not None:
+                rad = np.clip(pick["rad"], sp["rng"][:, 0],
+                              sp["rng"][:, 1])
+                for i, val in zip(sp["ji"], rad):
+                    action[i] = float(np.clip(
+                        (val - _MID[i]) / _HALF[i], -1.0, 1.0))
+        return action
+
     def action_for_balance_with_wheel_policy(
             self, base: np.ndarray = None,
             straight: bool = None) -> np.ndarray:
@@ -1190,13 +1338,20 @@ class RobotState(Pose):
         向前摆"：臂摆到位的姿势恰是反向刹车的起始位，
         自充电。sim 验证：v0=0 站姿偏置下 5s 站稳、com
         收敛 ~0；v0≥0.05 扰动仍超出臂容量。轮模式肘
-        趋伸直（lh_scale>1 ⇒ 惯量 ~scale²）。非双支撑
-        NotImplementedError。
+        趋伸直（lh_scale>1 ⇒ 惯量 ~scale²）。
+
+        单支撑（SINGLE_*）：2D 轮——ξ 误差分解到支撑脚
+        系 (ê_fore=脚前向, ê_side=侧向) 两通道独立算
+        lead，2 角球面 IK 合成臂目标（_wheel_single_leg）。
+        其余支撑类仍 NotImplementedError。
         """
         from .support_state import (ANKLE_Z_PLANTED, LIP_G,
                                     SupportClass)
         st = self.to_support_state()
         if st.support_class() != SupportClass.DOUBLE:
+            if st.support_class().name in ("SINGLE_LEFT",
+                                           "SINGLE_RIGHT"):
+                return self._wheel_single_leg(st, base, straight)
             raise NotImplementedError(
                 "action_for_balance_with_wheel_policy: "
                 f"{st.support_class().name} 未实现——v1 只做双脚")

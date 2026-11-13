@@ -112,6 +112,18 @@ P5 协议见 `../p5.py`。
   _WHEEL_STRAIGHT），standing 回归走 straight=False。
   `base` 参数惯例：非站姿起步传起步姿 corresponding_action
   （ready 上平衡传 ready 的），None 用站姿快照。
+  **单支撑扩展（SINGLE_*）**：`_wheel_single_leg` 把 ξ 误差
+  分解到支撑脚系（ê_fore=脚前向、ê_side=侧向），两通道独立
+  `_wheel_lead` 后 2 角球面 IK（`_swing_arm_ik_2d`）合成单组
+  臂目标。**实测边界（2026-11，arm-only 单腿）**：全增益档
+  闭环 1.3–1.7s 倒，且净有害于静态保持——臂摆动本身是
+  边际态上的扰动泵（6kg 臂来回抡+IK 支跳变）。最优臂用法
+  反而是**静态配重**：直臂锁 (θf=+0.10, θs=+0.80 支撑侧)
+  开环撑 3.3s（基线 1.5s），扫描见 `/data1/dev/…/single_leg
+  _arm_best.mp4`。失效主模态不是 com 定位（可 2D 解到脚心
+  残差 1mm）而是**支撑腿在单脚 40kg 下持续屈曲塌陷**、把
+  com 平移 20+cm 搬出臂搬移域（±4-7cm）——单腿平衡的
+  主通道是支撑腿本身，纯手臂物理上接不住。
 - `support_state.py`：`SupportGeometry`（COM+踝心支撑点+踝高+yaw）
   / `SupportState`（+COM 速度、角动量、capture point）。
   `SupportState.drift(dt, alpha=None)`：重力+接触约束演化
