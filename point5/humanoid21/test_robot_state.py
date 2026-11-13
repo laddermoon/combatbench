@@ -322,3 +322,60 @@ class TestActionForBalanceWithAnklePolicy:
         g = rs.to_support_state()
         assert abs(g.com_vel[0]) < 0.1
         assert g.balance_margin() < 0.0
+
+
+class TestArmWheelPolicy:
+    """arm_as_reaction_wheel_policy（有界反应轮）原语不变量。
+
+    能力边界已 oracle 证伪（sim 见 robot_state 该方法 docstring），
+    这里只固化接口契约。
+    """
+
+    @pytest.fixture(scope="class")
+    def st(self):
+        return RobotState.standing()
+
+    def test_non_arm_equals_standing(self, st):
+        """非臂 15 维与站姿快照逐位相等（含踝钉住）。"""
+        from point5.humanoid21.robot_state import _ARM_J
+        for d in (-10.0, -2.0, 0.0, +2.0, +10.0):
+            a = st.arm_as_reaction_wheel_policy(d)
+            b = st._base_action()
+            for i in range(21):
+                if i not in _ARM_J:
+                    assert a[i] == b[i]
+            assert a.shape == (21,)
+
+    def test_direction_sign_maps_to_swing(self, st):
+        """direction<0（刹前倒）→ 手臂向前加速抽走前倒角
+        动量 ⇒ 摆角目标 θ_cmd > θ_now；d>0 反向；d=0 →
+        全等于站姿。"""
+        import dataclasses
+        from point5.humanoid21.mechanics import (
+            _HALF, _MID, Skeleton)
+        from point5.humanoid21.robot_state import _ARM_J
+        sk = Skeleton()
+        e3 = np.array([0.0, 1.0, 0.0])
+        ep3 = np.array([1.0, 0.0, 0.0])
+        th0 = st._swing_theta_now(e3, ep3, sk)
+        for d, want in ((-10.0, +1), (+10.0, -1)):
+            a = st.arm_as_reaction_wheel_policy(d)
+            q_arm = st.qpos.copy()
+            for i in _ARM_J:
+                q_arm[i] = a[i] * _HALF[i] + _MID[i]
+            st_tgt = dataclasses.replace(st, qpos=q_arm)
+            th_cmd = st_tgt._swing_theta_now(e3, ep3, sk)
+            assert np.sign(th_cmd - th0) == want
+        a0 = st.arm_as_reaction_wheel_policy(0.0)
+        assert np.allclose(a0, st._base_action())
+
+    def test_single_support_raises(self, st):
+        """非双脚支撑 -> NotImplementedError。"""
+        import dataclasses
+        g = st.to_support_state()
+        st1 = dataclasses.replace(
+            st, root_position=st.root_position + np.array([0, 0, 0.5]))
+        if st1.to_support_state().support_class().name == "DOUBLE":
+            pytest.skip("抬高后仍判双脚——换一个构造")
+        with pytest.raises(NotImplementedError):
+            st1.arm_as_reaction_wheel_policy(1.0)

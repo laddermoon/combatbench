@@ -1062,6 +1062,128 @@ class RobotState(Pose):
                     (tgt - _MID[j]) / _HALF[j], -1.0, 1.0))
         return action
 
+    def arm_as_reaction_wheel_policy(self, direction: float) -> np.ndarray:
+        """-> (21,) action：双臂当**有界反应轮**——矢状面内满
+        扭矩旋转，给本体反向角动量。
+
+        direction = 期望身体绕铰链轴 e 获得的力矩（N·m，
+        带符号）：身体前倒需反向刹时 direction<0，手臂朝
+        前加速把角动量抽进手臂（臂 L 增长方向 = 倾倒方
+        向，反作用给身体反向矩）。
+
+        实现：矢状摆角目标 = 当前摆角 + lead。位置 PD 下
+        关节误差 ≈lead − 臂在控制窗内的行程 ⇒ 平均力矩
+        ≈ KP·(lead − δ_travel)；lead 取
+        −direction/(2·KP_shoulder)·GAIN（GAIN≈3 补回被
+        行程吃掉的部分，oracle 标定），即"位置超前量=力
+        矩指令"的近似线性映射。|lead| 截断 _WHEEL_LEAD
+        （饱和输出 gear 上限的最大角加速度——实测
+        bang-bang 满扭矩反冲直接踹翻站姿，必须按比例
+        给）。双臂同相镜像；肘保持（|v| 不变 ⇒ 惯量不
+        变）。非臂通道 = _base_action（站姿快照，含踝）。
+
+        本质是有界飞轮——方向矢量在矢状面可达弧仅 ~130°
+        （FK 实测：可达方向是前方扇区，无完整圆可塞入，
+        **连续风车不可行**），容量一次性 ~5-10 kg·m²/s，
+        饱和后无法续力。非双支撑 NotImplementedError。
+        """
+        from .mechanics import _HALF, _JIDX, _MID, Skeleton
+        from .support_state import SupportClass
+        d = float(np.asarray(direction).ravel()[0])
+        if not np.isfinite(d):
+            raise ValueError(
+                "arm_as_reaction_wheel_policy: direction 期望"
+                f"有限标量 N·m——{d}")
+        g = self.to_support_geometry()
+        if g.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                "arm_as_reaction_wheel_policy: "
+                f"{g.support_class().name} 未实现——v1 只做双脚")
+        p0, p1 = np.asarray(g.left_foot), np.asarray(g.right_foot)
+        e = p1 - p0
+        if np.linalg.norm(e) > 1e-3:
+            e = e / np.linalg.norm(e)
+        else:
+            cy, sy = np.cos(g.torso_yaw), np.sin(g.torso_yaw)
+            e = np.array([-sy, cy])
+        e3 = np.array([e[0], e[1], 0.0])
+        ep3 = np.array([-e[1], e[0], 0.0])
+        sk = Skeleton()
+        th = self._swing_theta_now(e3, ep3, sk)
+        lead = float(np.clip(-d / (2.0 * _WHEEL_KP)
+                             * _WHEEL_GAIN,
+                             -_WHEEL_LEAD, _WHEEL_LEAD))
+        th_cmd = th + lead
+        if not self._swing_theta_feasible(th_cmd, e3, ep3, sk):
+            lo, hi = 0.0, 1.0                     # θ=th+t·lead 上二分
+            for _ in range(18):
+                m = 0.5 * (lo + hi)
+                if self._swing_theta_feasible(th + m * lead, e3, ep3, sk):
+                    lo = m
+                else:
+                    hi = m
+            th_cmd = th + 0.5 * (lo + hi) * lead
+        q = self._arm_swing_qpos(th_cmd, e3, ep3, sk)
+        action = self._base_action()
+        for i in _ARM_J:
+            action[i] = float(np.clip(
+                (q[i] - _MID[i]) / _HALF[i], -1.0, 1.0))
+        return action
+
+    def _swing_theta_now(self, e3, ep3, sk) -> float:
+        """当前臂摆角（"肩→手"矢量在 {ep3,ez} 面内从下垂
+        量起的角度），双臂取平均。"""
+        xf = sk.body_transforms(
+            self.root_position,
+            _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
+        t_pos, t_mat = xf["torso"]
+        ez3 = np.array([0.0, 0.0, 1.0])
+        acc = 0.0
+        from .mechanics import _ARM
+        for side in ("left", "right"):
+            sp = _ARM[side]
+            v = (xf[f"hand_{side}"][0]
+                 - (t_pos + t_mat @ sp["s_off"]))
+            acc += float(np.arctan2(v @ ep3, -(v @ ez3)))
+        return 0.5 * acc
+
+    def action_for_balance_with_wheel_policy(self) -> np.ndarray:
+        """-> (21,) action：有界反应轮闭环——ξ 出界方向决定
+        刹车方向，其余一切钉站姿（含踝）。
+
+        direction = −sign((ξ−a_mid)·e_perp)：ξ 前冲（身体
+        向前失稳）→ direction<0 → 手臂向前加速抽走角动量。
+        每步重算；飞轮饱和（手臂到行程界）后失效，退化为
+        站姿保持——诚实返回而非假装能续。非双支撑
+        NotImplementedError。
+        """
+        from .support_state import (ANKLE_Z_PLANTED, LIP_G,
+                                    LIP_MASS, SupportClass)
+        st = self.to_support_state()
+        if st.support_class() != SupportClass.DOUBLE:
+            raise NotImplementedError(
+                "action_for_balance_with_wheel_policy: "
+                f"{st.support_class().name} 未实现——v1 只做双脚")
+        l = float(st.com[2]) - ANKLE_Z_PLANTED
+        if l <= 0:
+            raise ValueError(
+                "action_for_balance_with_wheel_policy: "
+                f"com.z {st.com[2]:.3f} ≤ 踝心——LIP 失效")
+        p0, p1 = np.asarray(st.left_foot), np.asarray(st.right_foot)
+        e = p1 - p0
+        if np.linalg.norm(e) > 1e-3:
+            e = e / np.linalg.norm(e)
+        else:
+            cy, sy = np.cos(st.torso_yaw), np.sin(st.torso_yaw)
+            e = np.array([-sy, cy])
+        e_perp = np.array([-e[1], e[0]])
+        a_mid = 0.5 * (p0 + p1)
+        tau = np.sqrt(l / LIP_G)
+        xi = st.com[:2] + st.com_vel[:2] * tau
+        tau_des = -LIP_MASS * LIP_G * float((xi - a_mid)
+                                          @ e_perp)
+        return self.arm_as_reaction_wheel_policy(tau_des)
+
     def arm_swing_policy(self, delta_x: float) -> np.ndarray:
         """-> (21,) action：双臂同步前后摆原语——矢状面搬移 com。
 
@@ -1147,23 +1269,16 @@ class RobotState(Pose):
             ("ankle_y_right", "ankle_y_left"))
         return float(com[:2] @ e_perp)
 
-    def _arm_swing_qpos(self, theta, e3, ep3, sk):
-        """摆角 theta 下替换肩肘 6 通道后的 qpos(21)。
-
-        摆动 = "肩→手"向量在 {ê_perp, ê, ẑ} 系的矢状-竖直面
-        内摆：v(θ) = L_h·sinθ·ê_perp + v_e·ê − L_h·cosθ·ẑ，
-        L_h = |v 的 (e_perp,z) 分量|，θ=0 竖直下垂、θ>0 前
-        摆；侧向分量 v_e 与 |v| 不变（肘角近似不动）。θ 从
-        下垂量起——com_e(θ) 单调（绕轴转整圈的参数化会抡
-        过头顶折回、非单调，已弃）。
-        """
+    def _swing_arm_ik(self, theta, e3, ep3, sk):
+        """θ 摆角下各臂 IK 最优候选 {side: pick|None}——公共
+        求解层，_arm_swing_qpos 与可行性检查共用。"""
         from .mechanics import _ARM, _arm_ik
         xf = sk.body_transforms(
             self.root_position,
             _zyx_to_quat_wxyz(self.root_orientation), self.qpos)
         t_pos, t_mat = xf["torso"]
         ez3 = np.array([0.0, 0.0, 1.0])
-        q = self.qpos.copy()
+        picks = {}
         for side in ("left", "right"):
             sp = _ARM[side]
             v = (xf[f"hand_{side}"][0]
@@ -1174,8 +1289,31 @@ class RobotState(Pose):
             vt = (lh * np.sin(theta) * ep3 + v_e * e3
                   - lh * np.cos(theta) * ez3)
             cand = _arm_ik(vt, t_mat, sp)
-            pick = (min(cand, key=lambda c: (c["vio"], c["e"]))
-                    if cand else None)
+            picks[side] = (min(cand, key=lambda c: (c["vio"], c["e"]))
+                           if cand else None)
+        return picks
+
+    def _swing_theta_feasible(self, theta, e3, ep3, sk) -> bool:
+        """θ 摆角双臂 IK 均有解（vio<1e-3）则可达。"""
+        picks = self._swing_arm_ik(theta, e3, ep3, sk)
+        return all(p is not None and p["vio"] < 1e-3
+                   for p in picks.values())
+
+    def _arm_swing_qpos(self, theta, e3, ep3, sk):
+        """摆角 theta 下替换肩肘 6 通道后的 qpos(21)。
+
+        摆动 = "肩→手"向量在 {ê_perp, ê, ẑ} 系的矢状-竖直面
+        内摆：v(θ) = L_h·sinθ·ê_perp + v_e·ê − L_h·cosθ·ẑ，
+        L_h = |v 的 (e_perp,z) 分量|，θ=0 竖直下垂、θ>0 前
+        摆；侧向分量 v_e 与 |v| 不变（肘角近似不动）。θ 从
+        下垂量起——com_e(θ) 单调（绕轴转整圈的参数化会抡
+        过头顶折回、非单调，已弃）。
+        """
+        from .mechanics import _ARM
+        picks = self._swing_arm_ik(theta, e3, ep3, sk)
+        q = self.qpos.copy()
+        for side, sp in _ARM.items():
+            pick = picks[side]
             if pick is not None:
                 rad = np.clip(pick["rad"], sp["rng"][:, 0],
                               sp["rng"][:, 1])
@@ -1253,6 +1391,11 @@ _ARM_J = frozenset(_JIDX_[n] for n in (
     "shoulder1_left", "shoulder2_left", "elbow_left"))
 del _JIDX_
 _SWING_PHI_MAX = 1.2  # rad — 双臂摆角搜索界（±~69°）
+_WHEEL_KP = 150.0     # N·m/rad — 肩 PD 位置增益（lead↔矩）
+_WHEEL_GAIN = 3.0     # — lead→平均力矩标定增益（补控制窗
+                      # 内臂行程吃掉的误差；oracle 标定）
+_WHEEL_LEAD = 0.55    # rad — 反应轮位置目标超前角上限
+                      # （KP·lead>gear ⇒ 饱和到 20N·m 上限）
 
 
 
