@@ -912,8 +912,13 @@ class RobotState(Pose):
             cls._BASE_ACT = cls.standing().corresponding_action()
         return cls._BASE_ACT.copy()          # 返回拷贝，调用方会改踝位
 
-    def action_for_balance_with_ankle_policy(self) -> np.ndarray:
+    def action_for_balance_with_ankle_policy(
+            self, base: np.ndarray = None) -> np.ndarray:
         """-> (21,) action：双支撑踝调节闭环——阻尼律稳站。
+
+        base = 非踝通道基准（None=站姿快照；非站姿起步传
+        起步姿的 corresponding_action——钉住的是起步体态
+        而非站姿）。
 
         双支撑铰链模的可控失稳自由度只有一维：垂直双踝连
         线 e_perp（沿轴侧向 = 载重分摊通道、非踝职——
@@ -954,7 +959,7 @@ class RobotState(Pose):
         v = float(st.com_vel[:2] @ e_perp)
         om2 = LIP_G / l
         d_perp = -(om2 * x_err + 2.0 * np.sqrt(om2) * v)
-        return self.ankle_policy(d_perp * e_perp)
+        return self.ankle_policy(d_perp * e_perp, base=base)
 
     def action_for_pose(self, aim_pose: "Pose") -> np.ndarray:
         """-> (21,) 归一化 action：朝 aim 关节构型推进。
@@ -980,11 +985,13 @@ class RobotState(Pose):
         """
         raise NotImplementedError
 
-    def ankle_policy(self, direction) -> np.ndarray:
+    def ankle_policy(self, direction,
+                     base: np.ndarray = None) -> np.ndarray:
         """-> (21,) action：双支撑踝策略原语——朝 direction 推重心。
 
-        只在双脚支撑时可用（support_class()!=DOUBLE ->
-        NotImplementedError；单脚/腾空走各自策略族）。
+        base = 非踝通道的钉住基准 (21,) action——None 用站
+        姿快照；非站姿起步应传起步姿的 corresponding_action
+        （钉住的是"初始姿态"而非"站姿"）。
         direction = 期望重心水平加速度 (2,) m/s²（world xy，
         带幅值；超出踝能力逐轴饱和）。
 
@@ -1051,7 +1058,8 @@ class RobotState(Pose):
                            / ni,
                            min(LIP_TAU_ACT, ni * LIP_MARGIN_SIDE)
                            / ni))
-        action = self._base_action()
+        action = (np.asarray(base, dtype=np.float64).copy()
+                  if base is not None else self._base_action())
         tau_y, tau_x = ni * dx, -ni * dy
         for side, kx in (("right", _ANKLE_AX), ("left", -_ANKLE_AX)):
             for j, t in ((_JIDX[f"ankle_y_{side}"], tau_y),
