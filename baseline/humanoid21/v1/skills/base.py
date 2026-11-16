@@ -3,13 +3,13 @@
 ``Skill`` = 无状态技能规约：描述"这个技能是什么"，不是控制器——
 执行器是共享的技能条件策略。
 
-第一阶段语义（2026-11-16 简化讨论）：
+第一阶段语义（2026-11-16 简化讨论，DECISION_LOG D3）：
 
 - 技能按**完整执行**训练：从候选起点出发执行到固定步数或明确失败，
   不支持中途切换。某技能的候选起点 = 其前序技能终止状态集的并集。
 - **不设计过程参考轨迹，只定义结果**（姿态设计问题→奖励引导问题）。
-  技能契约只含三个整段评分函数：输入为一次完整执行的 clip
-  （RobotState 序列），输出一个分数；实现方式不限，不要求 CPose。
+  技能契约只含三个整段评分函数：输入为一次完整执行的 clip，
+  输出一个分数；实现方式不限。
 - 评分是 clip 级单次输出，但可以使用 clip 内任意帧的信息。
   per-step 奖励分配、合格判定、尾状态入池规则由训练侧消费这些
   分数决定，不属于本契约。
@@ -17,29 +17,77 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from dataclasses import dataclass
+from typing import Tuple
 
 import numpy as np
 
-from point5.humanoid21.robot_state import RobotState
 
-# 一次技能执行的完整轨迹：从起点状态到结束（固定步数/失败）的逐帧状态
-Clip = Sequence[RobotState]
+@dataclass
+class Clip:
+    """一次技能执行的逐帧特征记录（世界系）。
+
+    由训练侧从 observer 每步输出组装成 (T,…) 数组；评分方法只读。
+    ``ego()`` 把世界 xy 量变换到指定帧的机体系（x 前、y 左）；
+    z 不变换（地面水平），高度直接用世界 z。
+    """
+
+    com: np.ndarray          # (T,3) world
+    ankle_l: np.ndarray      # (T,3) 踝心
+    ankle_r: np.ndarray      # (T,3)
+    hand_l: np.ndarray       # (T,3)
+    hand_r: np.ndarray       # (T,3)
+    root_pos: np.ndarray     # (T,3) torso
+    root_pry: np.ndarray     # (T,3) pitch/roll/yaw (rad)
+    root_vel: np.ndarray     # (T,3) world
+    contact: np.ndarray      # (T,2) float (left,right)
+
+    def __len__(self) -> int:
+        return int(self.com.shape[0])
+
+    def ego(self, p_world: np.ndarray, frame: int = 0) -> np.ndarray:
+        """世界 (…,2) 点 → 第 frame 帧机体系 xy（x 前、y 左）。"""
+        p = np.asarray(p_world, np.float64)[..., :2]
+        d = p - self.root_pos[frame, :2]
+        yaw = float(self.root_pry[frame, 2])
+        c, s = np.cos(yaw), np.sin(yaw)
+        return np.stack([c * d[..., 0] + s * d[..., 1],
+                         -s * d[..., 0] + c * d[..., 1]], axis=-1)
+
+
+def end_support_score(clip: Clip, ori_tol: float = 0.25,
+                      vel_tol: float = 0.5) -> float:
+    """末帧支撑质量（v0 通用件）：com 在双踝中点附近、躯干直立、
+    速度低 → (0,1]。供各技能 score_com 复用或参考。"""
+    mid = 0.5 * (clip.ankle_l[-1, :2] + clip.ankle_r[-1, :2])
+    d = float(np.linalg.norm(clip.com[-1, :2] - mid))
+    pitch = float(clip.root_pry[-1, 0])
+    roll = float(clip.root_pry[-1, 1])
+    v = float(np.linalg.norm(clip.root_vel[-1]))
+    return float(np.exp(-0.5 * (d / 0.12) ** 2)
+                 * np.exp(-0.5 * (pitch / ori_tol) ** 2)
+                 * np.exp(-0.5 * (roll / ori_tol) ** 2)
+                 * np.exp(-0.5 * (v / vel_tol) ** 2))
 
 
 class Skill:
     """技能契约基类。
 
     类属性：
-      name        技能名
-      instruction 6 维技能码（DECISION_LOG D1）
-      step_budget 一次执行的固定时长上限（控制步数）
+      name         技能名
+      family       技能族（分组/采样用）
+      instruction  6 维技能码（DECISION_LOG D1）
+      predecessors 前序技能名列表——本技能候选起点 = 这些技能
+                   终止状态集的并集（D3 简化一）
+      step_budget  一次执行的固定时长上限（控制步数）
 
     子类按技能需要实现三个评分方法；不关心某维度的可保持默认 0.0。
     """
 
     name: str = ""
+    family: str = ""
     instruction: np.ndarray = np.zeros(6, np.float64)
+    predecessors: Tuple[str, ...] = ()
     step_budget: int = 40
 
     def score_com(self, clip: Clip) -> float:

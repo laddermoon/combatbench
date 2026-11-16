@@ -16,7 +16,13 @@ _REGISTRY: Dict[str, Type[ExperimentPPO]] = {}
 def _discover() -> None:
     pkg_dir = Path(__file__).parent
     for f in sorted(pkg_dir.glob("exp_*.py")):
-        mod = importlib.import_module(f".{f.stem}", package=__package__)
+        try:
+            mod = importlib.import_module(f".{f.stem}", package=__package__)
+        except Exception as exc:  # 单个断链实验不拖垮整个注册表
+            import sys
+            print(f"[experiments_ppo] skip {f.stem}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            continue
         exp_cls = getattr(mod, "EXPERIMENT_CLASS", None)
         if exp_cls is not None:
             _REGISTRY[exp_cls.name] = exp_cls

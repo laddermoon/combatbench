@@ -1,0 +1,46 @@
+# V1 技能训练环境（66-dim，D3 简化版）
+#
+# - V1SkillSimulator：episode_options["v1_snapshot"] 快照起点 +
+#   ["v1_cmd"] 技能指令（cmd[0:6]=D1 技能码）
+# - DualImbalanceTerminationPlugin：非脚部位触地 → 该 agent 提前终止
+#   （episode 另一侧继续），明确的"倒下=失败"边界
+# - V1ClipObserver ×2：逐帧世界系特征（clip 评分输入）+ core_state
+#   快照（终点池回收）
+
+parameters:
+  initial_distance:
+    default: 4.0
+    description: "两机器人初始间距（互不接触即可）"
+  max_steps:
+    default: 40
+    description: "一次技能执行的固定时长上限"
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.simulator:V1SkillSimulator"
+  config:
+    cmd_version: "v2"
+    initial_distance: ${initial_distance}
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    debug_torque: false
+
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:DualImbalanceTerminationPlugin"
+    config:
+      force_threshold: 1.0
+      min_height: 0.0
+
+observer_plugins:
+  v1_clip_a:
+    cls: "baseline.humanoid21.v1.observers:V1ClipObserver"
+    config:
+      agent_id: "robot_a"
+  v1_clip_b:
+    cls: "baseline.humanoid21.v1.observers:V1ClipObserver"
+    config:
+      agent_id: "robot_b"
