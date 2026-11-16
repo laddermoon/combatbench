@@ -8,8 +8,9 @@
 2. episode 内 ``V1SkillSimulator`` 重置到快照并持续下发
    cmd[0:6]=技能码的 9 维指令；失衡提前终止。
 3. ``build_trajectories``：V1ClipObserver 逐帧世界系特征 → Clip →
-   三个整段 score → 末帧结算（r_com/r_step/r_posture，
-   actor_weight 全程放开，见 D3 奖励传递约定）。
+   ``trim_clip`` 找到"任务已完成"的最早帧 → traj 截断到该帧 →
+   三个整段 score 在裁剪段上评、结算在裁剪末帧（D4：
+   γ=λ=1.0 蒙特卡洛 advantage，A_t = S − V(s_t)）。
 4. 合格执行（未失衡终止 且 min(scores) ≥ QUALIFY_MIN）的末帧
    core_state 快照写回该技能的**终止状态集**，成为其后继技能
    下一轮迭代的候选起点。
@@ -95,7 +96,10 @@ class ExpV1Skill(CombatExperimentPPOBase):
     # ------------------------------------------------------------------
 
     def reward_channels(self) -> Tuple[RewardChannel, ...]:
-        return tuple(RewardChannel(k, gamma=0.99, gae_lambda=0.95)
+        # D4：整段评分任务用 MC advantage（γ=λ=1）——末端稀疏分在
+        # (γλ)^T 双重衰减下到第 0 帧只剩 ~9%；40 步定长任务里
+        # A_t = S − V(s_t) 是最干净的 credit 形态，V 目标也平稳。
+        return tuple(RewardChannel(k, gamma=1.0, gae_lambda=1.0)
                      for k in self._CLIP_KEYS)
 
     # ------------------------------------------------------------------
@@ -196,9 +200,6 @@ class ExpV1Skill(CombatExperimentPPOBase):
         T = int(ep.agent_frame_boundary.get(aid, ep.num_frames))
         if T <= 0:
             return []
-        obs = np.asarray(ep.observations[aid][:T], np.float32)
-        acts = np.asarray(ep.actions[aid][:T], np.float32)
-        last = np.asarray(ep.final_observation[aid], np.float32)
 
         opts = ep.episode_options or {}
         sk_name = str((opts.get("skills") or {}).get(aid, ""))
@@ -207,6 +208,17 @@ class ExpV1Skill(CombatExperimentPPOBase):
         if sk is None or clip is None or len(clip) == 0:
             return []
 
+        # D4：trim_clip → "任务已完成"的最早帧 → traj 截断。
+        # 裁剪点在技能 MDP 里是真终止（非 timeout），V=0 bootstrap 正确。
+        k = sk.trim_clip(clip)
+        T_eff = max(1, min(T, int(k))) if k else T
+        if T_eff < T:
+            clip = clip.head(T_eff)
+
+        obs = np.asarray(ep.observations[aid][:T_eff], np.float32)
+        acts = np.asarray(ep.actions[aid][:T_eff], np.float32)
+        last = np.asarray(ep.final_observation[aid], np.float32)
+
         scores = {
             "r_com": float(sk.score_com(clip)),
             "r_step": float(sk.score_step(clip)),
@@ -214,19 +226,20 @@ class ExpV1Skill(CombatExperimentPPOBase):
         }
 
         channels = {}
-        for k, v in scores.items():
-            r = np.zeros(T, np.float32)
+        for c, v in scores.items():
+            r = np.zeros(T_eff, np.float32)
             r[-1] = v
-            channels[k] = ChannelData(
+            channels[c] = ChannelData(
                 reward=r, is_terminated=True,
-                actor_weight=np.ones(T, np.float32))
+                actor_weight=np.ones(T_eff, np.float32))
 
-        # 合格判定 + 终止状态回收（D3：未失衡 且 min(scores) ≥ 阈值）
+        # 合格判定 + 终止状态回收（D3/D4：未失衡 且 min(scores) ≥
+        # 阈值；快照取完成帧状态，不再是 ep 末尾的漂移态）
         reason = str(ep.agent_termination_reason.get(aid, ""))
         fell = reason.startswith("imbalance")
         qualified = (not fell) and min(scores.values()) >= self.QUALIFY_MIN
         if qualified:
-            snap = self._terminal_snapshot(ep, aid, T)
+            snap = self._terminal_snapshot(ep, aid, T_eff)
             if snap:
                 self._pool().record_terminal(sk_name, snap,
                                              getattr(self, "_update", 0))
@@ -241,7 +254,7 @@ class ExpV1Skill(CombatExperimentPPOBase):
         return [Trajectory(
             obs=obs, actions=acts, last_obs=last,
             channels=channels, importance=1.0,
-            sampling_ctx=self.extract_sampling_ctx(ep, aid, T),
+            sampling_ctx=self.extract_sampling_ctx(ep, aid, T_eff),
         )]
 
     # ------------------------------------------------------------------
@@ -263,6 +276,9 @@ class ExpV1Skill(CombatExperimentPPOBase):
                 clip = self._clip_fields(ep, aid, T)
                 if clip is None or len(clip) == 0:
                     continue
+                k = sk.trim_clip(clip)          # 与训练同口径评分
+                if k and int(k) < T:
+                    clip = clip.head(min(T, int(k)))
                 s3 = (float(sk.score_com(clip)),
                       float(sk.score_step(clip)),
                       float(sk.score_posture(clip)))

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 
 from .base import Clip, Skill, end_support_score
@@ -26,6 +28,8 @@ class JabSkill(Skill):
     punch_y = 0.10               # 起步系打击点 |y|（侧向按 side 取号）
     punch_z = 1.30               # 打击点高度（world z, m）
     reach_tol = 0.08             # 到位容差 σ (m)
+    complete_tol = 0.16          # 完成判定：最优到位误差须 ≤ 此值 (m)
+    settle_steps = 5             # 到位后保留的回收余量帧数
     foot_drift_sigma = 0.20      # 脚位移惩罚 σ (m)：高斯衰减,
     # 任何漂移量都有非零梯度（截断线性会在 σ 外恒零、饿死通道）
     predecessors = ("step_l", "step_r", "jab_l", "jab_r")
@@ -41,12 +45,24 @@ class JabSkill(Skill):
                 ego_xy - ego_xy[0], axis=1).max()))
         return float(np.exp(-0.5 * (d / self.foot_drift_sigma) ** 2))
 
-    def score_posture(self, clip: Clip) -> float:
+    def _reach_err(self, clip: Clip) -> np.ndarray:
+        """出拳手到打击点的逐帧 3D 误差 (T,)。"""
         hand = clip.hand_l if self.side > 0 else clip.hand_r
         ego_xy = clip.ego(hand, frame=0)
         tgt_xy = np.array([self.punch_x, self.side * self.punch_y])
-        err = np.sqrt(((ego_xy - tgt_xy[None, :]) ** 2).sum(-1)
-                      + (hand[:, 2] - self.punch_z) ** 2)
+        return np.sqrt(((ego_xy - tgt_xy[None, :]) ** 2).sum(-1)
+                       + (hand[:, 2] - self.punch_z) ** 2)
+
+    def trim_clip(self, clip: Clip) -> Optional[int]:
+        """到位最优帧（须真的接近过目标）+ 回收余量帧。"""
+        err = self._reach_err(clip)
+        k = int(np.argmin(err))
+        if float(err[k]) > self.complete_tol:
+            return None                       # 从未接近目标——未完成
+        return min(len(clip), k + self.settle_steps)
+
+    def score_posture(self, clip: Clip) -> float:
+        err = self._reach_err(clip)
         reach = float(np.exp(-0.5 * (err.min() / self.reach_tol) ** 2))
         p, r = float(clip.root_pry[-1, 0]), float(clip.root_pry[-1, 1])
         end = float(np.exp(

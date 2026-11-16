@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -44,6 +44,10 @@ class Clip:
 
     def __len__(self) -> int:
         return int(self.com.shape[0])
+
+    def head(self, n: int) -> "Clip":
+        """前 n 帧子段（裁剪用）。"""
+        return Clip(**{k: np.asarray(v)[:n] for k, v in vars(self).items()})
 
     def ego(self, p_world: np.ndarray, frame: int = 0) -> np.ndarray:
         """世界 (…,2) 点 → 第 frame 帧机体系 xy（x 前、y 左）。"""
@@ -89,6 +93,18 @@ class Skill:
     instruction: np.ndarray = np.zeros(6, np.float64)
     predecessors: Tuple[str, ...] = ()
     step_budget: int = 40
+
+    def trim_clip(self, clip: Clip) -> "Optional[int]":
+        """判定本 clip 中"任务已完成"的最早裁剪点。
+
+        返回应保留的帧数 k：clip[:k] 为有效执行段，奖励结算在
+        第 k-1 帧，该帧的 core_state 快照即终止状态候选。
+        返回 None = 未完成/不裁剪，训练侧使用完整 clip。
+
+        语义上裁剪点即"技能任务完成"——对该技能的 MDP 是真终止
+        （不是 timeout 截断），bootstrap 取 V=0。
+        """
+        return None
 
     def score_com(self, clip: Clip) -> float:
         """质心运动评价：质心运动状态与支撑稳定性。"""
