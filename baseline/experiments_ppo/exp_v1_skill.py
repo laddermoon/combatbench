@@ -33,7 +33,8 @@ from baseline.framework.ppo.trajectory import (
     ChannelData, RewardChannel, Trajectory)
 from baseline.humanoid21.v1.pool import StartPool
 from baseline.humanoid21.v1.skills import SKILLS, Clip
-from baseline.humanoid21.v1.state import ready_core_state, to_jsonable
+from baseline.humanoid21.v1.state import (
+    ready_core_state, standing_core_state, to_jsonable)
 from .base import CombatExperimentPPOBase
 
 _ENV_YAML = (Path(__file__).resolve().parent.parent
@@ -57,9 +58,17 @@ class ExpV1Skill(CombatExperimentPPOBase):
     # v0：短 episode（≤40 步）→ 每 update 少量 episode 即可
     episodes_per_update = 256
     eval_episodes = 16
+    initial_distance = 4.0     # 与 v1_skill_env.yaml 一致；
+    # 双机快照注入时按 ±distance/2 平移到各自出生槽位（防止重叠互斥）
 
     # 合格线：min(三个 score) ≥ 才记为可用执行（v0 单一阈值）
     QUALIFY_MIN = 0.40
+
+    # ── 消融开关（诊断 warm-start 归因，训练用默认值）──
+    cmd_mode: str = "skill"      # "skill"=技能码 | "zero"=全零指令
+    start_mode: str = "pool"     # "pool"=快照起点 | "standing"=不注快照
+    pool_seed: str = "ready"     # 池种子: "ready" | "standing"
+    # ready=point5 备战姿（设计起点）；standing=仿真站姿（消融用）
 
     _CLIP_KEYS = ("r_com", "r_step", "r_posture")
 
@@ -70,7 +79,9 @@ class ExpV1Skill(CombatExperimentPPOBase):
     def _pool(self) -> StartPool:
         p = getattr(self, "_pool_inst", None)
         if p is None:
-            p = StartPool(to_jsonable(ready_core_state()))
+            seed_fn = (standing_core_state if self.pool_seed == "standing"
+                       else ready_core_state)
+            p = StartPool(to_jsonable(seed_fn()))
             self._pool_inst = p
         return p
 
@@ -105,7 +116,10 @@ class ExpV1Skill(CombatExperimentPPOBase):
         rng = np.random.default_rng(base_seed)
         sampling = self._sampling_spec()
         max_steps = max(sk.step_budget for sk in SKILLS.values())
-        env_bp = self._env_pb().materialize(max_steps=max_steps)
+        env_bp = self._env_pb().materialize(
+            max_steps=max_steps, initial_distance=self.initial_distance)
+        slot_x = {"robot_a": -self.initial_distance / 2.0,
+                  "robot_b": +self.initial_distance / 2.0}
         names = list(SKILLS)
 
         jobs = []
@@ -122,9 +136,19 @@ class ExpV1Skill(CombatExperimentPPOBase):
                 entry = self._pool().sample(sk, rng)
                 ep_opts["skills"][rid] = sk
                 ep_opts["v1_start_key"][rid] = entry.key
-                ep_opts["v1_cmd"][rid] = np.concatenate(
-                    [SKILLS[sk].instruction, np.zeros(3)]).tolist()
-                ep_opts["v1_snapshot"][rid] = entry.state
+                if self.cmd_mode == "zero":
+                    ep_opts["v1_cmd"][rid] = np.zeros(9).tolist()
+                else:
+                    ep_opts["v1_cmd"][rid] = np.concatenate(
+                        [SKILLS[sk].instruction, np.zeros(3)]).tolist()
+                if self.start_mode == "pool":
+                    # 池条目是单机体状态；注入时平移到该机的出生槽位，
+                    # 否则两机同一 root_pos 会重叠互斥（已踩坑）
+                    st = dict(entry.state)
+                    rp = list(st["root_pos"])
+                    rp[0] = slot_x[rid]
+                    st["root_pos"] = rp
+                    ep_opts["v1_snapshot"][rid] = st
             jobs.append(Job(
                 policy_a_bp=policy_bp, policy_b_bp=policy_bp,
                 env_bp=env_bp, seed=int(base_seed + i),

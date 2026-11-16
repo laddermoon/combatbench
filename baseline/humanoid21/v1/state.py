@@ -57,8 +57,31 @@ def robot_state_to_core(rs: RobotState) -> Dict[str, np.ndarray]:
 
 
 def ready_core_state() -> Dict[str, np.ndarray]:
-    """全部技能的初始候选起点：point5 READY 准备姿（零速度）。"""
+    """point5 READY 准备姿（零速度）。
+
+    注意：实测 s42i_b 策略从该姿态起步 ~0.4s 前倾扑倒（READY 的
+    蹲姿前倾是其平衡控制器的 OOD 定点）。v0 起点池默认用
+    ``standing_core_state``；READY 保留给后续"站立→READY"过渡。
+    """
     return robot_state_to_core(RobotState.standard("ready"))
+
+
+def standing_core_state() -> Dict[str, np.ndarray]:
+    """仿真器 ``initial_pose=standing`` 的 core_state。
+
+    s42i_b 训练分布内的稳定站姿（实测任意指令下 40 步不倒）。
+    建一个临时 V1SkillSimulator 取 robot_a 复位态；x/y 归零使
+    快照与出生点无关。"""
+    from baseline.humanoid21.v1.simulator import V1SkillSimulator
+    sim = V1SkillSimulator(cmd_version="v2", initial_distance=4.0,
+                           initial_pose_a="standing",
+                           initial_pose_b="standing")
+    sim.reset(seed=0, options={})
+    st = {k: np.asarray(v, np.float64)
+          for k, v in sim.get_core_state()["robot_a"].items()}
+    st["root_pos"][0] = 0.0
+    st["root_pos"][1] = 0.0
+    return st
 
 
 def to_jsonable(state: Dict[str, np.ndarray]) -> Dict[str, Any]:
