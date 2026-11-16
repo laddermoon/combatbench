@@ -26,8 +26,8 @@ class JabSkill(Skill):
     punch_y = 0.10               # 起步系打击点 |y|（侧向按 side 取号）
     punch_z = 1.30               # 打击点高度（world z, m）
     reach_tol = 0.08             # 到位容差 σ (m)
-    foot_drift_free = 0.10       # 脚位移免费区 (m)
-    foot_drift_full = 0.40       # 脚位移满分区上限
+    foot_drift_sigma = 0.20      # 脚位移惩罚 σ (m)：高斯衰减,
+    # 任何漂移量都有非零梯度（截断线性会在 σ 外恒零、饿死通道）
     predecessors = ("step_l", "step_r", "jab_l", "jab_r")
 
     def score_com(self, clip: Clip) -> float:
@@ -39,9 +39,7 @@ class JabSkill(Skill):
             ego_xy = clip.ego(ank, frame=0)
             d = max(d, float(np.linalg.norm(
                 ego_xy - ego_xy[0], axis=1).max()))
-        span = self.foot_drift_full - self.foot_drift_free
-        return float(np.clip(
-            1.0 - (d - self.foot_drift_free) / span, 0.0, 1.0))
+        return float(np.exp(-0.5 * (d / self.foot_drift_sigma) ** 2))
 
     def score_posture(self, clip: Clip) -> float:
         hand = clip.hand_l if self.side > 0 else clip.hand_r
