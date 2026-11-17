@@ -6,10 +6,14 @@ s42i_b 平衡策略在手臂被接管后能否维持站立。
 
 语义约定（与用户对齐）：
 - 初始全身姿态 = READY；**抱架不是 READY 手位**——READY 双手偏低
-  （torso_local z≈-0.12），本模块抱架把拳举到面部高度
-  （torso_local (0.24,±0.14,0.24)），闭式臂 IK 在 READY 躯干姿态下
-  求解，左右镜像对称，限位内 vio=0。
-- 出拳目标：torso_local (0.45,±0.03,0.30)，vio=0。
+  （torso_local z≈-0.12），本模块用 **CPose 手向量**设计抱架
+  （手−肩旋转中心，torso 系，单位 LMax=0.6214m）：
+  拳在颏部高、肘自然下垂贴身——向量 (0.418,±0.193,0.145)，ext≈0.48。
+- 出拳：向量 (0.773,±0.241,0.193)，ext≈0.83（近伸展留微屈），
+  伸展位 IK 单支解无歧义。
+- **IK 分支选择 = 肘部最低**：`_arm_ik` 对手向量返回多支解，
+  能量最小支对高位手目标会选出"肘外张上抬"的鸡翅构型；
+  本模块在合法支内取肘部 torso_local z 最低者（抱架语义）。
 - 接管方式：一次性把臂关节 action 切到目标值并保持，无插值；
   PD 控制器自行尽力追踪。另一只手保持抱架。
 - 关节划分：臂 6 关节（action[15:21]）由脚本覆盖，其余 15 关节
@@ -42,19 +46,21 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 # ------------------------------------------------------------ 臂目标设计 --
 
-# 手部目标，躯干局部系（x 前, y 左, z 上），在 READY 躯干姿态下 IK 求解。
-_GUARD_TGT = (0.24, 0.14, 0.24)
-_PUNCH_TGT = (0.45, 0.03, 0.30)
+# CPose 手向量（手−肩旋转中心，torso 系，单位 LMax），按左侧写，
+# 右侧取 y 镜像。抱架=颏部高肘下垂(ext~0.48)，出拳=前伸(ext~0.83)。
+_GUARD_CVEC = np.array([0.418, 0.193, 0.145])
+_PUNCH_CVEC = np.array([0.773, 0.241, 0.193])
 
 # action 索引：右 [15,16,17]=shoulder1/2/elbow_r，左 [18,19,20]。
 ARM_IDX = {"right": np.array([15, 16, 17]),
            "left": np.array([18, 19, 20])}
 
 
-def _solve_arm(hand_loc, side: str) -> np.ndarray:
-    """READY 躯干系下手部目标 → 臂关节 rad(3)（闭式 IK，限位内解）。"""
+def _solve_arm(cvec, side: str) -> np.ndarray:
+    """CPose 手向量 → 臂关节 rad(3)：限位内支中取肘部最低者。"""
     from point5.humanoid21.robot_state import RobotState, _zyx_to_quat_wxyz
-    from point5.humanoid21.mechanics import Skeleton, _ARM, _arm_ik
+    from point5.humanoid21.mechanics import (
+        Skeleton, _ARM, _arm_ik, LMAX_ARM)
 
     rs = RobotState.standard("ready")
     sk = Skeleton()
@@ -63,25 +69,36 @@ def _solve_arm(hand_loc, side: str) -> np.ndarray:
         rs.root_position, quat, rs.qpos)["torso"]
     sp = _ARM[side]
     s0 = t_pos + t_mat @ sp["s_off"]
-    loc = np.asarray(hand_loc, np.float64).copy()
+    v = np.asarray(cvec, np.float64).copy()
     if side == "right":
-        loc[1] = -loc[1]                 # 常量按左侧写，右侧取镜像
-    cand = _arm_ik(t_pos + t_mat @ loc - s0, t_mat, sp)
+        v[1] = -v[1]
+    tgt_w = s0 + t_mat @ (v * LMAX_ARM)
+    cand = _arm_ik(tgt_w - s0, t_mat, sp)
     if not cand:
-        raise ValueError(f"arm IK 无解: side={side} tgt={hand_loc}")
-    pick = min(cand, key=lambda c: (c["vio"], c["e"]))
-    if pick["vio"] > 1e-3:
+        raise ValueError(f"arm IK 无解: side={side} cvec={cvec}")
+    best, best_z, best_vio = None, np.inf, np.inf
+    for c in cand:
+        if c["vio"] > 1e-3:
+            continue
+        q = rs.qpos.copy()
+        q[sp["ji"]] = c["rad"]
+        elb = t_mat.T @ (sk.body_transforms(
+            rs.root_position, quat, q)[f"lower_arm_{side}"][0] - t_pos)
+        if elb[2] < best_z:
+            best_z, best = elb[2], c
+        best_vio = min(best_vio, c["vio"])
+    if best is None:
         raise ValueError(
-            f"arm IK 超限位 vio={pick['vio']:.3f}: side={side} "
-            f"tgt={hand_loc}（换目标或放宽限位语义）")
-    return np.asarray(pick["rad"], np.float64)
+            f"arm IK 全部超限位 min_vio={best_vio:.3f}: side={side} "
+            f"cvec={cvec}（换向量或放宽限位语义）")
+    return np.asarray(best["rad"], np.float64)
 
 
 def _arm_targets() -> Dict[str, Dict[str, np.ndarray]]:
     """{pose: {side: rad(3)}} — 模块加载时求解一次，确定性。"""
     return {
-        "guard": {s: _solve_arm(_GUARD_TGT, s) for s in ("right", "left")},
-        "punch": {s: _solve_arm(_PUNCH_TGT, s) for s in ("right", "left")},
+        "guard": {s: _solve_arm(_GUARD_CVEC, s) for s in ("right", "left")},
+        "punch": {s: _solve_arm(_PUNCH_CVEC, s) for s in ("right", "left")},
     }
 
 
