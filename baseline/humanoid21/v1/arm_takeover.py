@@ -5,15 +5,16 @@
 s42i_b 平衡策略在手臂被接管后能否维持站立。
 
 语义约定（与用户对齐）：
-- 初始全身姿态 = READY；**抱架不是 READY 手位**——READY 双手偏低
-  （torso_local z≈-0.12），本模块用 **CPose 手向量**设计抱架
-  （手−肩旋转中心，torso 系，单位 LMax=0.6214m）：
-  拳在颏部高、肘自然下垂贴身——向量 (0.418,±0.193,0.145)，ext≈0.48。
-- 出拳：向量 (0.773,±0.241,0.193)，ext≈0.83（近伸展留微屈），
-  伸展位 IK 单支解无歧义。
-- **IK 分支选择 = 肘部最低**：`_arm_ik` 对手向量返回多支解，
-  能量最小支对高位手目标会选出"肘外张上抬"的鸡翅构型；
-  本模块在合法支内取肘部 torso_local z 最低者（抱架语义）。
+- 初始全身姿态 = READY；**抱架不是 READY 手位**——READY 双手偏低。
+  抱架/出拳直接用**归一化关节角**指定（即 action 空间值，
+  ``norm_to_rad = norm*half+mid``），不经 IK——IK 分支选择对高位
+  手目标不可控（能量最小支选出鸡翅构型），关节角直接可控。
+  每臂 (shoulder1, shoulder2, elbow)，左右同值即镜像
+  （左右关节轴已按镜像设计，同 norm 值=镜像运动）：
+  - 抱架 ``(0.4, -0.3, 0.8)``：shoulder1 pos=夹肘收臂贴肋、
+    shoulder2 neg=上臂略后收锁肘于体侧、elbow pos=屈肘前臂竖护脸
+  - 出拳 ``(0.4, 0.8, -0.8)``：上臂前抬 + 肘近全伸（留 0.2 余量
+    不顶限位）的直拳
 - 接管方式：一次性把臂关节 action 切到目标值并保持，无插值；
   PD 控制器自行尽力追踪。另一只手保持抱架。
 - 关节划分：臂 6 关节（action[15:21]）由脚本覆盖，其余 15 关节
@@ -46,79 +47,24 @@ from envs.framework.policy import Policy, PolicyBlueprint
 
 # ------------------------------------------------------------ 臂目标设计 --
 
-# CPose 手向量（手−肩旋转中心，torso 系，单位 LMax），按左侧写，
-# 右侧取 y 镜像。抱架=颏部高肘下垂(ext~0.48)，出拳=前伸(ext~0.83)。
-_GUARD_CVEC = np.array([0.418, 0.193, 0.145])
-_PUNCH_CVEC = np.array([0.773, 0.241, 0.193])
+# 归一化关节角（=action 空间值）：每臂 (shoulder1, shoulder2, elbow)，
+# 左右同值——关节轴按镜像设计，同 norm 值即镜像动作。
+# 抱架：肘贴肋 + 前臂竖护脸（用户指定并渲染确认）。
+# 出拳：上臂前抬 + 肘近全伸的直拳（留余量不顶限位）。
+_GUARD_JOINT = (0.4, -0.3, 0.8)
+_PUNCH_JOINT = (0.4, 0.8, -0.8)
 
 # action 索引：右 [15,16,17]=shoulder1/2/elbow_r，左 [18,19,20]。
 ARM_IDX = {"right": np.array([15, 16, 17]),
            "left": np.array([18, 19, 20])}
 
 
-def _solve_arm(cvec, side: str) -> np.ndarray:
-    """CPose 手向量 → 臂关节 rad(3)：限位内支中取肘部最低者。"""
-    from point5.humanoid21.robot_state import RobotState, _zyx_to_quat_wxyz
-    from point5.humanoid21.mechanics import (
-        Skeleton, _ARM, _arm_ik, LMAX_ARM)
-
-    rs = RobotState.standard("ready")
-    sk = Skeleton()
-    quat = _zyx_to_quat_wxyz(rs.root_orientation)
-    t_pos, t_mat = sk.body_transforms(
-        rs.root_position, quat, rs.qpos)["torso"]
-    sp = _ARM[side]
-    s0 = t_pos + t_mat @ sp["s_off"]
-    v = np.asarray(cvec, np.float64).copy()
-    if side == "right":
-        v[1] = -v[1]
-    tgt_w = s0 + t_mat @ (v * LMAX_ARM)
-    cand = _arm_ik(tgt_w - s0, t_mat, sp)
-    if not cand:
-        raise ValueError(f"arm IK 无解: side={side} cvec={cvec}")
-    best, best_z, best_vio = None, np.inf, np.inf
-    for c in cand:
-        if c["vio"] > 1e-3:
-            continue
-        q = rs.qpos.copy()
-        q[sp["ji"]] = c["rad"]
-        elb = t_mat.T @ (sk.body_transforms(
-            rs.root_position, quat, q)[f"lower_arm_{side}"][0] - t_pos)
-        if elb[2] < best_z:
-            best_z, best = elb[2], c
-        best_vio = min(best_vio, c["vio"])
-    if best is None:
-        raise ValueError(
-            f"arm IK 全部超限位 min_vio={best_vio:.3f}: side={side} "
-            f"cvec={cvec}（换向量或放宽限位语义）")
-    return np.asarray(best["rad"], np.float64)
-
-
-def _arm_targets() -> Dict[str, Dict[str, np.ndarray]]:
-    """{pose: {side: rad(3)}} — 模块加载时求解一次，确定性。"""
-    return {
-        "guard": {s: _solve_arm(_GUARD_CVEC, s) for s in ("right", "left")},
-        "punch": {s: _solve_arm(_PUNCH_CVEC, s) for s in ("right", "left")},
-    }
-
-
-_TARGETS = _arm_targets()
-
-
-def _rad_to_action(rad: np.ndarray, idx: np.ndarray) -> np.ndarray:
-    """臂关节 rad → action 归一化值（rad_to_norm 同约定）。"""
-    from point5.humanoid21.mechanics import rad_to_norm
-    full = np.zeros(21, np.float64)
-    full[idx] = rad
-    return rad_to_norm(full)[idx].astype(np.float32)
-
-
 def _phase_action(phase: str) -> np.ndarray:
     """该相位下 6 关节的 action 覆盖值。"""
     out = np.zeros(6, np.float32)
     for side, idx in (("right", slice(0, 3)), ("left", slice(3, 6))):
-        pose = "punch" if phase.endswith("_" + side[0]) else "guard"
-        out[idx] = _rad_to_action(_TARGETS[pose][side], ARM_IDX[side])
+        out[idx] = (_PUNCH_JOINT if phase.endswith("_" + side[0])
+                    else _GUARD_JOINT)
     return out
 
 
@@ -174,9 +120,8 @@ class ArmTakeoverPolicy(Policy):
 def _guard_snapshot(robot_id: str, distance: float = 4.0) -> Dict:
     """READY 全身 + 抱架臂，平移到出生槽位；robot_b 旋转 yaw=π 面向 a。"""
     st = ready_core_state()
-    for side, idx in ARM_IDX.items():
-        st["joint_pos_norm"][idx] = _rad_to_action(
-            _TARGETS["guard"][side], idx)
+    for idx in ARM_IDX.values():
+        st["joint_pos_norm"][idx] = _GUARD_JOINT
     sign = -1.0 if robot_id == "robot_a" else 1.0
     st["root_pos"] = st["root_pos"].copy()
     st["root_pos"][0] += sign * distance / 2.0
