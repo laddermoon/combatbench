@@ -2,7 +2,7 @@
 
 几何参数（拍定第一版，s42i 实测依据）：
     width_normal = 0.475 s42i 0.76 过宽，取 5/8
-    stagger_unit = 0.22  一档前后错位（双支撑 |stagger| 中位~0.25）
+    stagger_unit = 0.264 一档前后错位（渲染偏小 ×1.2）
     width_wide   = 0.625 同缩保持 1.3×，待仿真实测校
     ankle_z      = 0.107 踝锚（ankle_y xanchor，站姿态实测）
 
@@ -29,7 +29,7 @@ from point5.humanoid21.robot_state import Pose
 
 # ---- 拍定几何参数 v1 -------------------------------------------------
 WIDTH_N, WIDTH_W = 0.475, 0.625
-STAGGER_UNIT = 0.22
+STAGGER_UNIT = 0.264
 ANKLE_Z = 0.107
 
 # s42i 标准化均值模板（踝中点原点、躯干+x、yaw=0）

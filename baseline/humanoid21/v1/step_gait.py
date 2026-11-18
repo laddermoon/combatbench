@@ -164,7 +164,7 @@ def step_cost(src: GaitPosture, dst: GaitPosture) -> int:
 
 WIDTH_N = 0.475     # 常距横向脚距 m：s42i 0.76 太宽，取 5/8
 WIDTH_W = 0.625     # 宽距横向脚距 m：同缩 5/8 保持 1.3× 比例
-STAGGER_UNIT = 0.22 # 一档前后错位 m：双支撑 |stagger| 中位~0.25
+STAGGER_UNIT = 0.264# 一档前后错位 m：渲染偏小，0.22×1.2
 ANKLE_Z = 0.107     # 踝锚（ankle_y xanchor）站姿态高度 m
 TURN_RAD = 0.52     # 每步转向角 rad（±30°，暂定）
 
