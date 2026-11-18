@@ -58,7 +58,9 @@ def main() -> None:
         tag = f"#{i:03d}  az={az:+.0f}  pol={pol:.0f}  ext={ext:.2f}"
         if sol.clipped:
             tag += f"  clip:{sol.clipped}"
-        if sol.dir_err_deg > 1:
+        if sol.pos_err > 0.01:
+            tag += f"  pos_err:{sol.pos_err:.2f}m"
+        elif sol.dir_err_deg > 1:
             tag += f"  err:{sol.dir_err_deg:.0f}deg"
         ImageDraw.Draw(im).text(
             (10, 8), tag, fill=(255, 255, 0), font=font,

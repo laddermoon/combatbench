@@ -24,8 +24,11 @@
        一维求根；d(e) 非单调时枚举全部根。
     2. (s1,s2)：R_a1(s1)·R_a2(s2)·p_e = w 的双轴指向闭式解
        ——两圆交点 ≤2 支；选支：prev（序列连续）> 显式 hint > 自然肘。
-    3. 不可达：方向不可达/距离超限 → 投影到最近可达 + clipped 标记，
-       残差随返回值上报，绝不静默。
+    3. 可达性分两层（用户拍板）：闭式解在限位内 → 精确命中零开销；
+       不可达 → 可达集内**笛卡尔最近点** min|FK(q)−P|²（3-DOF 箱
+       约束 LM，多起点确定性），非"解出再钳"——最近点可能换分支/
+       换 e。clipped 三标志（extension/direction/limits）保留作诊断，
+       pos_err=|hand−P| 报真残差。
 
 用法：
     ik = ArmIK()
@@ -164,9 +167,10 @@ class ArmSolution:
     hand: np.ndarray            # 拳心 torso 系位置
     elbow: np.ndarray           # 肘 torso 系位置
     candidates: int             # 本描述符的可行解支数
-    clipped: Optional[str]      # None|extension|direction|limits
+    clipped: Optional[str]      # None|extension|direction|limits（诊断）
     dir_err_deg: float          # 实际拳方向与目标方向的角误差
     dist_err: float             # 实际伸展距离与目标距离之差（m）
+    pos_err: float = 0.0        # |hand−目标点P|（m，真残差——0=精确命中）
 
 
 # ------------------------------------------------------------ 求解器 ------
@@ -253,6 +257,49 @@ class ArmIK:
                 best, best_err = s.copy(), err
         return best[0], best[1]
 
+    # ---- 不可达点：可达集内最近点（3-DOF 箱约束 LM，确定性多起点）----
+    @staticmethod
+    def _fk_hand(sp, s: np.ndarray) -> np.ndarray:
+        R = _rodrigues(sp.a1, s[0]) @ _rodrigues(sp.a2, s[1])
+        return R @ (sp.E + _rodrigues(sp.ae, s[2]) @ sp.H)
+
+    def _nearest_point(self, sp, P: np.ndarray,
+                       seeds: List[np.ndarray]
+                       ) -> List[Tuple[np.ndarray, float]]:
+        """min |FK(q)−P|² s.t. q∈joint box。返回 [(angles, 残差m)]。"""
+        lo = np.array([sp.s_range[0], sp.s_range[0], sp.e_range[0]])
+        hi = np.array([sp.s_range[1], sp.s_range[1], sp.e_range[1]])
+        out = []
+        for s0 in seeds:
+            s = np.clip(np.asarray(s0, np.float64), lo, hi)
+            hand = self._fk_hand(sp, s)
+            err = float(((hand - P) ** 2).sum())
+            lam = 1e-4
+            for _ in range(60):
+                if err < 1e-14:
+                    break
+                J = np.empty((3, 3))
+                for j in range(3):
+                    ds = s.copy()
+                    ds[j] += 1e-6
+                    J[:, j] = (self._fk_hand(sp, ds) - hand) / 1e-6
+                A = J.T @ J + lam * np.eye(3)
+                step = np.linalg.solve(A, -J.T @ (hand - P))
+                if np.linalg.norm(step) < 1e-11:
+                    break
+                s_new = np.clip(s + step, lo, hi)
+                hand_new = self._fk_hand(sp, s_new)
+                err_new = float(((hand_new - P) ** 2).sum())
+                if err_new < err:          # 接受：降阻尼加速
+                    s, hand, err = s_new, hand_new, err_new
+                    lam = max(lam / 3.0, 1e-8)
+                else:                      # 拒绝：升阻尼重试
+                    lam *= 4.0
+                    if lam > 1e2:
+                        break
+            out.append((s.copy(), math.sqrt(err)))
+        return out
+
     # ---- 主入口 ----
     def solve(self, side: str, pose: ArmPose,
               prev: Optional[np.ndarray] = None,
@@ -262,18 +309,15 @@ class ArmIK:
         d_hat = np.array([d[0], sp.out_sigma * d[1], d[2]])  # 约定系→torso系
         clipped: List[str] = []
 
-        # --- 1. 距离 → e（ext∈(0,1] 已校验；<d_min 是合法但不可达→投影）---
-        dist_req = pose.extension * self.LMax       # 原始请求（残差基准）
-        dist = dist_req
-        if dist > self.LMax:
-            dist = self.LMax
+        # --- 目标点 P = ρ·LMax·d̂；ext∈(0,1] 已校验 ---
+        dist_req = pose.extension * self.LMax
+        dist = min(max(dist_req, self.d_min), self.LMax)
+        if dist != dist_req:
             clipped.append("extension")
-        if dist < self.d_min:
-            dist = self.d_min
-            clipped.append("extension")
+        P = dist_req * d_hat                       # 残差基准（原始请求）
         e_roots = self._solve_e(sp, dist)
-
         w = dist * d_hat
+
         # 分支评分模式：显式 hint_dir > hint 预设 > 自然肘（肘 z 最低）
         if hint_dir is not None:
             hd: Optional[np.ndarray] = hint_dir
@@ -282,45 +326,65 @@ class ArmIK:
         else:
             hd = None
 
-        # --- 2&3. (s1,s2) 指向解 × e 根 → 候选集 ---
-        cands: List[Tuple[np.ndarray, np.ndarray, float]] = []
+        def _score(elbow: np.ndarray) -> float:
+            if hd is None:
+                return -float(elbow[2])
+            off = elbow - (elbow @ d_hat) * d_hat
+            return float(off @ hd / (np.linalg.norm(off) + 1e-9))
+
+        # --- 闭式候选：(s1,s2) 指向解 × e 根（LS 兜底仅作种子） ---
+        cands: List[np.ndarray] = []
         exact = True
         for e in e_roots:
             p = sp.E + _rodrigues(sp.ae, e) @ sp.H
             sols = self._pointing(sp.a1, sp.a2, p, w)
             if not sols:
                 exact = False
-                seeds = [(0.0, 0.0), (-0.8, -0.8), (-0.8, 0.8),
-                         (0.8, -0.8), (0.8, 0.8)]
-                sols = [self._pointing_ls(sp, p, d_hat, seeds)]
+                sols = [self._pointing_ls(
+                    sp, p, d_hat,
+                    [(0.0, 0.0), (-0.8, -0.8), (-0.8, 0.8),
+                     (0.8, -0.8), (0.8, 0.8)])]
             for s1, s2 in sols:
-                hand, elbow = self.fk(side, s1, s2, e)
-                if hd is None:
-                    score = -float(elbow[2])      # 自然肘：肘最低支
-                else:
-                    # 肘偏离 肩→目标线 的垂距方向 = 支的特征
-                    off = elbow - (elbow @ d_hat) * d_hat
-                    score = off @ hd / (np.linalg.norm(off) + 1e-9)
-                cands.append((np.array([s1, s2, e]), elbow, score))
+                cands.append(np.array([s1, s2, e]))
         if not exact:
             clipped.append("direction")
 
-        # --- 选支：prev 连续优先，其次评分（hint/自然肘） ---
-        if prev is not None:
-            i = int(np.argmin([np.linalg.norm(c[0] - prev) for c in cands]))
-        else:
-            i = int(np.argmax([c[2] for c in cands]))
-        ang, elbow, _ = cands[i]
-
-        # --- 限位钳制 ---
+        # --- 快路径：闭式解在限位内 = 精确命中/边界命中（即最优） ---
         lo_s, hi_s = sp.s_range
         lo_e, hi_e = sp.e_range
-        ang_c = np.array([np.clip(ang[0], lo_s, hi_s),
-                          np.clip(ang[1], lo_s, hi_s),
-                          np.clip(ang[2], lo_e, hi_e)])
-        if np.abs(ang_c - ang).max() > 1e-3:
-            clipped.append("limits")
-            ang = ang_c
+
+        def _in_lim(a: np.ndarray) -> bool:
+            return (lo_s - 1e-9 <= a[0] <= hi_s + 1e-9 and
+                    lo_s - 1e-9 <= a[1] <= hi_s + 1e-9 and
+                    lo_e - 1e-9 <= a[2] <= hi_e + 1e-9)
+
+        if exact and any(_in_lim(c) for c in cands):
+            pool = [c for c in cands if _in_lim(c)]
+            if prev is not None:
+                i = int(np.argmin([np.linalg.norm(c - prev) for c in pool]))
+            else:
+                i = int(np.argmax([_score(self.fk(side, *c)[1])
+                                   for c in pool]))
+            ang = pool[i]
+        else:
+            # --- 投影：可达集内笛卡尔最近点 min|FK(q)−P|² ---
+            if exact:
+                clipped.append("limits")       # 有解但全超限位
+            seeds = list(cands)
+            seeds += [np.zeros(3),
+                      np.array([sp.s_range[1] * 0.8] * 2 + [0.0]),
+                      np.array([sp.s_range[0] * 0.8] * 2 + [0.0])]
+            if prev is not None:
+                seeds.append(np.asarray(prev, np.float64))
+            opt = self._nearest_point(sp, P, seeds)
+            res_best = min(r for _, r in opt)
+            pool = [s for s, r in opt if r <= res_best + 1e-3]
+            if prev is not None:
+                i = int(np.argmin([np.linalg.norm(c - prev) for c in pool]))
+            else:
+                i = int(np.argmax([_score(self.fk(side, *c)[1])
+                                   for c in pool]))
+            ang = pool[i]
 
         hand, elbow = self.fk(side, *ang)
         achieved = hand / np.linalg.norm(hand)
@@ -334,7 +398,8 @@ class ArmIK:
             candidates=len(cands),
             clipped="+".join(clipped) if clipped else None,
             dir_err_deg=dir_err,
-            dist_err=float(np.linalg.norm(hand) - dist_req))
+            dist_err=float(np.linalg.norm(hand) - dist_req),
+            pos_err=float(np.linalg.norm(hand - P)))
 
     # d(e)=dist 全部根（采样+二分）
     def _solve_e(self, sp: ArmSpec, dist: float) -> List[float]:

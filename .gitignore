@@ -23,6 +23,7 @@ nohup.out
 *.bak
 debug_approach/
 bootstrip.md
+review.md
 
 # Review/retrospective files (not committed)
 REVIEW_*.md
