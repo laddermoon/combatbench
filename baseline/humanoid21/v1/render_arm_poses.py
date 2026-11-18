@@ -37,16 +37,11 @@ DIST = 1.9
 # 工作空间实测（polar≈90°，外展+）：ext>0.8 时 az∈[−32°,+140°]，
 # ext .4-.7 时 az∈[−60°,+70°]；真后摆仅 ext≈0.95 极限位可达。
 ANCHORS = {
-    "guard":  ArmPose(azimuth=math.radians(-20), polar=math.radians(105),
-                      extension=0.34),
-    "backswing": ArmPose(azimuth=math.radians(140), polar=math.radians(80),
-                         extension=0.95),
-    "jab":    ArmPose(azimuth=math.radians(-5),  polar=math.radians(92),
-                      extension=0.95),
-    "cross":  ArmPose(azimuth=math.radians(35),  polar=math.radians(95),
-                      extension=0.90),
-    "hook":   ArmPose(azimuth=math.radians(60),  polar=math.radians(92),
-                      extension=0.62),
+    "guard":  ArmPose.deg(-20, 105, 0.34),
+    "backswing": ArmPose.deg(140, 80, 0.95),
+    "jab":    ArmPose.deg(-5, 92, 0.95),
+    "cross":  ArmPose.deg(35, 95, 0.90),
+    "hook":   ArmPose.deg(60, 92, 0.62),
 }
 
 JOINTS = {

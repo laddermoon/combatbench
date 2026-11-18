@@ -127,6 +127,13 @@ class ArmPose:
         """镜像 = 同一描述符（按臂约定天然镜像）。恒等，仅 API 兼容。"""
         return ArmPose(self.azimuth, self.polar, self.extension, self.hint)
 
+    @classmethod
+    def deg(cls, azimuth: float, polar: float, extension: float,
+            hint: Optional[str] = None) -> "ArmPose":
+        """度数控构造：ArmPose.deg(-5, 92, 0.95)（锚点/生成端人读面）。"""
+        return cls(math.radians(azimuth), math.radians(polar),
+                   extension, hint)
+
 
 @dataclass
 class ArmSolution:
