@@ -69,3 +69,43 @@
   - 续训起点：`checkpoints/checkpoint_u01680.pt`（供 S3
     warm-start）；最佳导出 `policy/`；快照
     `exp/v2_s2_balance_20261118_005049`（commit `068865aa`）
+
+---
+
+## 2026-11-18 `v2_s3_balance_arm` — 随机臂脚本接管推力平衡（S3）🔄 续训中
+
+- **实验名**：`v2_s3_balance_arm`（`experiments_ppo/exp_v2_s3_balance_arm.py`，
+  继承 V2S2Balance）
+- **Run 目录**：`baseline/runs/v2_s3_balance_arm`（原始）→
+  `v2_s3_balance_arm_r2`（u1450 停后续训）
+- **启动命令**（warm-start S2 最强 ckpt u1680，`--reset-update`）：
+  ```bash
+  PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
+    python3 -B baseline/framework/train.py \
+    --experiment v2_s3_balance_arm --algo ppo \
+    --resume-from baseline/runs/v2_s2_balance/checkpoints/checkpoint_u01680.pt \
+    --reset-update --run-name v2_s3_balance_arm --background
+  ```
+- **目的**：S2 收敛权重上重训同一 12 级推力课程，加随机臂脚本接管：
+  站稳后 flag=1，env 覆写 act[15:21] 为随机脚本目标——抗推同时撤掉
+  双臂，逼出纯腿部平衡策略（为 S4 步令打基础）。
+- **u1450 误停**（11-18 ~10:23 起 ~11h）：实验级早停
+  `Step._no_improvement_limit=200` 触发——level 7 长推平台期
+  quality 长期不涨被误判收敛失败。停时指标仍在线：
+  success=1.000、max_pot=0.983、recovery=0.639、falls=1.13、
+  level=7.0。
+- **修复**：`V2S3BalanceArm` 覆盖 `no_improvement_limit=1e9` 关闭
+  早停（仅本实验；best 追踪/保存不变），commit `9dc89b78`。
+- **续训**（11-18 晚）：
+  ```bash
+  PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
+    python3 -B baseline/framework/train.py \
+    --experiment v2_s3_balance_arm --algo ppo \
+    --resume-from baseline/runs/v2_s3_balance_arm/checkpoints/checkpoint_u01450.pt \
+    --run-name v2_s3_balance_arm_r2 --background
+  ```
+  无 `--reset-update` → u1451 续编，实验状态（level=7、
+  best 追踪）完整恢复。
+- **备注**：重启时发现全部 8 卡被外来 `wildrig-multi` 矿工
+  （pearlhash → 155.133.196.229，cwd `/var/lib/prl/gpu-*`，
+  ~974MiB/卡）占用——自 11-18 17:34 起在跑，待排查处置。
