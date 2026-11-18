@@ -1,14 +1,14 @@
 """手臂反解器：CPose 式描述符 → 三关节角（D6 指令表的生成端）。
 
 描述符（每臂各自约定系，torso 局部系 X+身前/Y+向左/Z+向头）：
-    azimuth θ   : **按臂约定的方位角**——手向量在水平面（⊥极轴）
-                  的投影相对身体前向的夹角：θ>0=外展（远离中线）、
-                  θ<0=内收（穿向中线），0=正前、±180°=正后。
-                  左臂 θ=atan2(+y,x)、右臂 θ=atan2(−y,x)：同一描述符
-                  在两臂产出镜像动作，锚点表/生成端无需分左右。
-    polar φ     : 手−肩连线与**向下极轴**的夹角（极轴=肩心沿 torso
-                  系 −z 向下）：0=手垂下、90°=水平、180°=向头，
-                  恒正 ∈[0,180°]。注：θ 在 φ≈0/180°（纯竖直）退化。
+    azimuth θ   : 矢状面扫掠角——手向量在 ⊥极轴平面（x−z 面）内
+                  相对身体前向的夹角 atan2(z,x)：0=前水平、+90°=向天、
+                  −90°=向地、±180°=正后。整圆连续（jab→上勾→后摆
+                  是同一参数单向走）。两臂同式无 σ。
+    polar φ     : 摆开度——手−肩连线与**外展极轴**的夹角（极轴=肩心
+                  沿外侧向：右臂 −y、左臂 +y）：0=纯外展、90°=前平面、
+                  180°=穿中线（物理近不可达），恒正∈[0,180°]。
+                  同一描述符在两臂产出镜像动作。注：θ 在 φ≈0/180°退化。
     extension ρ : |手−肩|/LMax ∈ (0,1]（LMax=该臂最大伸展距离）
     hint        : 肘分支选择器（3 值描述符在 3-DOF 臂上至多两支解，
                   非连续冗余）：None=自然肘（肘 z 最低支，默认）、
@@ -58,7 +58,7 @@ class ArmSpec:
     ae: np.ndarray   # elbow 轴（lower_arm 局部系=上臂系）
     E: np.ndarray    # 肘在上臂系中的偏移
     H: np.ndarray    # 拳心在肘系中的偏移
-    az_sigma: float  # 方位角约定：+1=atan2(+y,x) 左臂；−1=atan2(−y,x) 右臂
+    out_sigma: float  # 外展极轴符号：+1=+y 左臂；−1=−y 右臂
     s_range: Tuple[float, float] = (math.radians(-85), math.radians(60))
     e_range: Tuple[float, float] = (math.radians(-100), math.radians(50))
 
@@ -69,14 +69,14 @@ _SPECS = {
                      a1=_u([2, 1, 1]), a2=_u([0, -1, 1]), ae=_u([0, -1, 1]),
                      E=np.array([0.18, -0.18, -0.18]),
                      H=np.array([0.18, 0.18, 0.18]),
-                     az_sigma=-1.0),
+                     out_sigma=-1.0),
     "left": ArmSpec("left",
                     S=np.array([0, 0.17, 0.06]),
                     a1=_u([-2, 1, -1]), a2=_u([0, -1, -1]),
                     ae=_u([0, -1, -1]),
                     E=np.array([0.18, 0.18, -0.18]),
                     H=np.array([0.18, -0.18, 0.18]),
-                    az_sigma=+1.0),
+                    out_sigma=+1.0),
 }
 
 # 肘 Hint 预设方向（torso 系，肘偏离肩→拳连线的期望方向）
@@ -110,13 +110,13 @@ def _atan2_rot(axis: np.ndarray, p: np.ndarray, x: np.ndarray) -> float:
 
 @dataclass
 class ArmPose:
-    """单臂姿态描述符（按臂约定：+az=外展、−az=内收穿中线）。
+    """单臂姿态描述符（按臂约定：θ 矢状扫掠两臂同式、φ 按臂外展）。
 
     重表意对象：构造即校验合法性，域外值响亮拒绝（调用方 bug）。
     域内合法但物理不可达不在此判定——solve() 投影到最近可达
     并在 ArmSolution.clipped/dir_err/dist_err 上报残差。"""
-    azimuth: float             # rad，0=正前、+90°=外展侧、−90°=穿中线
-    polar: float               # rad，0=垂下（沿−z极轴）、90°=水平、180°=向头
+    azimuth: float             # rad，atan2(z,x)：0=前、+90°=天、−90°=地、±180°=后
+    polar: float               # rad，与外展轴夹角：0=纯外展、90°=前平面、180°=穿中线
     extension: float           # |手−肩|/LMax ∈(0,1]
     hint: Optional[str] = None  # None=自然肘；"tuck"|"flare" 显式选支
 
@@ -137,11 +137,13 @@ class ArmPose:
             raise ValueError(f"hint 非法: {self.hint!r}")
 
     def dir_vec(self) -> np.ndarray:
-        """约定系方向（+y=外展侧、+z=向上）；solve 内按 az_sigma 映射。"""
+        """约定系方向（+y=外展分量、+z=向上）；solve 内按 out_sigma 映射。
+
+        dir = cosφ·外展轴 + sinφ·(cosθ·前 + sinθ·上)"""
         s = math.sin(self.polar)
         return np.array([s * math.cos(self.azimuth),
-                         s * math.sin(self.azimuth),
-                         -math.cos(self.polar)])   # polar 自向下轴量
+                         math.cos(self.polar),
+                         s * math.sin(self.azimuth)])
 
     def mirrored(self) -> "ArmPose":
         """镜像 = 同一描述符（按臂约定天然镜像）。恒等，仅 API 兼容。"""
@@ -257,7 +259,7 @@ class ArmIK:
               hint_dir: Optional[np.ndarray] = None) -> ArmSolution:
         sp = _SPECS[side]
         d = pose.dir_vec()
-        d_hat = np.array([d[0], sp.az_sigma * d[1], d[2]])  # 约定系→torso系
+        d_hat = np.array([d[0], sp.out_sigma * d[1], d[2]])  # 约定系→torso系
         clipped: List[str] = []
 
         # --- 1. 距离 → e（ext∈(0,1] 已校验；<d_min 是合法但不可达→投影）---
@@ -361,8 +363,8 @@ class ArmIK:
         hand, _ = self.fk(side, *angles_rad)
         r = np.linalg.norm(hand)
         x, y, z = hand / r
-        return ArmPose(azimuth=math.atan2(sp.az_sigma * y, x),
-                       polar=math.acos(float(np.clip(-z, -1, 1))),
+        return ArmPose(azimuth=math.atan2(z, x),
+                       polar=math.acos(float(np.clip(sp.out_sigma * y, -1, 1))),
                        extension=r / self.LMax)
 
 

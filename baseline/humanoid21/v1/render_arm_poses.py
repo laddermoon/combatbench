@@ -31,17 +31,16 @@ W, H = 640, 720
 LOOKAT = np.array([-1.5, 0.0, 1.15])
 DIST = 1.9
 
-# 锚点描述符（按臂约定，左右臂同值=镜像动作）。azimuth: 0正前/
-# +90外展/−90穿中线/±180后；polar（自向下极轴量）: 0垂下/
-# 90水平/180向头；extension: |手−肩|/LMax；hint=None=自然肘。
-# 工作空间实测（polar≈90°，外展+）：ext>0.8 时 az∈[−32°,+140°]，
-# ext .4-.7 时 az∈[−60°,+70°]；真后摆仅 ext≈0.95 极限位可达。
+# 锚点描述符（按臂约定，左右臂同值=镜像动作）。azimuth θ:
+# atan2(z,x) 矢状扫掠 0前/+90天/−90地/±180后；polar φ:
+# 与外展轴夹角 0纯外展/90前平面/180穿中线；extension: |手−肩|
+# /LMax；hint=None=自然肘。拳击区 φ≈[25°,115°]。
 ANCHORS = {
-    "guard":  ArmPose.deg(-20, 105, 0.34),
-    "backswing": ArmPose.deg(140, 80, 0.95),
-    "jab":    ArmPose.deg(-5, 92, 0.95),
-    "cross":  ArmPose.deg(35, 95, 0.90),
-    "hook":   ArmPose.deg(60, 92, 0.62),
+    "guard":  ArmPose.deg(+15, 110, 0.34),
+    "backswing": ArmPose.deg(-171, 47, 0.95),
+    "jab":    ArmPose.deg(+2, 95, 0.95),
+    "cross":  ArmPose.deg(+6, 55, 0.90),
+    "hook":   ArmPose.deg(+3, 30, 0.62),
 }
 
 JOINTS = {
