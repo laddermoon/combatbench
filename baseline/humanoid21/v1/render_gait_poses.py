@@ -1,9 +1,9 @@
 """10 步态姿态可视化：GaitPosture → P5 → Pose.infer_from_p5 → PNG。
 
 几何参数（拍定第一版，s42i 实测依据）：
-    width_normal = 0.76  s42i 双支撑横向脚距中位
+    width_normal = 0.475 s42i 0.76 过宽，取 5/8
     stagger_unit = 0.22  一档前后错位（双支撑 |stagger| 中位~0.25）
-    width_wide   = 1.00  s42i 无样本外推，~1.3×，待仿真实测校
+    width_wide   = 0.625 同缩保持 1.3×，待仿真实测校
     ankle_z      = 0.107 踝锚（ankle_y xanchor，站姿态实测）
 
 头/手 landmark 取 s42i 5 clips 标准化均值（guard 抱架）；
@@ -28,7 +28,7 @@ from point5 import P5
 from point5.humanoid21.robot_state import Pose
 
 # ---- 拍定几何参数 v1 -------------------------------------------------
-WIDTH_N, WIDTH_W = 0.76, 1.00
+WIDTH_N, WIDTH_W = 0.475, 0.625
 STAGGER_UNIT = 0.22
 ANKLE_Z = 0.107
 
