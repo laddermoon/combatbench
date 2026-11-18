@@ -474,5 +474,25 @@ class ArmIK:
             polar=math.acos(float(np.clip(sp.out_sigma * y, -1, 1))),
             dist=r, extension=r / self.LMax, point=rel)
 
+    # ---- 描述符 → 躯干系点（正变换：请求点位置）----
+    def pose_point(self, side: str, pose: ArmPose) -> np.ndarray:
+        """ArmPose → torso 系请求点坐标 = S + ρLMax·d̂。
+
+        注意是**请求点**：不可达时实际落点见 sol.hand（肩心系）。"""
+        sp = _SPECS[side]
+        d = pose.dir_vec()
+        d_torso = np.array([d[0], sp.out_sigma * d[1], d[2]])
+        return sp.S + pose.extension * self.LMax * d_torso
+
+    # ---- 关节角 → 躯干系位置（FK 平移到 torso 原点）----
+    def fk_torso(self, side: str, s1: float, s2: float, e: float
+                 ) -> Tuple[np.ndarray, np.ndarray]:
+        """(hand, elbow) torso 系 = fk 输出 + 肩心 S。
+
+        用途：查询一组关节角实际把拳/肘放在本体系哪里。"""
+        hand, elbow = self.fk(side, s1, s2, e)
+        S = _SPECS[side].S
+        return hand + S, elbow + S
+
 
 __all__ = ["ArmIK", "ArmPose", "ArmSolution", "ArmTarget"]
