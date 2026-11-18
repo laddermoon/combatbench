@@ -1,10 +1,14 @@
 """手臂反解器：CPose 式描述符 → 三关节角（D6 指令表的生成端）。
 
-描述符（每臂，torso 局部系，X+身前/Y+向左/Z+向头，与 point5/cpose.py 一致）：
-    azimuth θ   : 拳方向方位角 atan2(y,x)：0=正前、+90°=向左、±180°=正后
+描述符（每臂各自约定系，torso 局部系 X+身前/Y+向左/Z+向头）：
+    azimuth θ   : **按臂约定的方位角**——θ>0 = 外展（远离中线）、
+                  θ<0 = 内收（穿向中线），θ=0 正前、±180° 正后。
+                  左臂 θ=atan2(+y,x)、右臂 θ=atan2(−y,x)：同一描述符
+                  在两臂产出镜像动作，锚点表/生成端无需分左右。
     polar φ     : 拳方向极角 arccos(z/r)：0=向头、90°=水平、180°=下垂
     extension ρ : |手−肩|/LMax ∈ (0,1]（LMax=该臂最大伸展距离）
-    hint        : 肘位置偏好——(s1,s2) 双支解的离散选择器
+    hint        : 肘分支选择器（3 值描述符在 3-DOF 臂上至多两支解，
+                  非连续冗余）：None=自然肘（肘 z 最低支，默认）、
                   "tuck"=肘向内下（贴肋）/"flare"=肘向外上（张开）
 
 运动学（battle_circular_v2.xml，torso 系，左臂为右臂对 y 镜像）：
@@ -16,13 +20,13 @@
     1. e：|手−肩| 与肩部双轴无关（肩绕肩心旋转保距）→ d(e)=ρ·LMax
        一维求根；d(e) 非单调时枚举全部根。
     2. (s1,s2)：R_a1(s1)·R_a2(s2)·p_e = w 的双轴指向闭式解
-       ——两圆交点 ≤2 支；hint 按肘位置偏好选支，prev 提供序列连续性。
+       ——两圆交点 ≤2 支；选支：prev（序列连续）> 显式 hint > 自然肘。
     3. 不可达：方向不可达/距离超限 → 投影到最近可达 + clipped 标记，
        残差随返回值上报，绝不静默。
 
 用法：
     ik = ArmIK()
-    sol = ik.solve("right", azimuth=0.1, polar=1.5, extension=0.9, hint="flare")
+    sol = ik.solve("right", ArmPose(azimuth=0.1, polar=1.5, extension=0.9))
     sol.norm      # (s1,s2,e) 归一化目标（=action/obs 空间值）
     sol.angles    # 弧度
     sol.clipped   # None | "extension" | "direction" | "limits"
@@ -51,6 +55,7 @@ class ArmSpec:
     ae: np.ndarray   # elbow 轴（lower_arm 局部系=上臂系）
     E: np.ndarray    # 肘在上臂系中的偏移
     H: np.ndarray    # 拳心在肘系中的偏移
+    az_sigma: float  # 方位角约定：+1=atan2(+y,x) 左臂；−1=atan2(−y,x) 右臂
     s_range: Tuple[float, float] = (math.radians(-85), math.radians(60))
     e_range: Tuple[float, float] = (math.radians(-100), math.radians(50))
 
@@ -60,13 +65,15 @@ _SPECS = {
                      S=np.array([0, -0.17, 0.06]),
                      a1=_u([2, 1, 1]), a2=_u([0, -1, 1]), ae=_u([0, -1, 1]),
                      E=np.array([0.18, -0.18, -0.18]),
-                     H=np.array([0.18, 0.18, 0.18])),
+                     H=np.array([0.18, 0.18, 0.18]),
+                     az_sigma=-1.0),
     "left": ArmSpec("left",
                     S=np.array([0, 0.17, 0.06]),
                     a1=_u([-2, 1, -1]), a2=_u([0, -1, -1]),
                     ae=_u([0, -1, -1]),
                     E=np.array([0.18, 0.18, -0.18]),
-                    H=np.array([0.18, -0.18, 0.18])),
+                    H=np.array([0.18, -0.18, 0.18]),
+                    az_sigma=+1.0),
 }
 
 # 肘 Hint 预设方向（torso 系，肘偏离肩→拳连线的期望方向）
@@ -100,21 +107,22 @@ def _atan2_rot(axis: np.ndarray, p: np.ndarray, x: np.ndarray) -> float:
 
 @dataclass
 class ArmPose:
-    """单臂姿态描述符。"""
-    azimuth: float      # rad，0=正前、+90°=向左
-    polar: float        # rad，0=向头、90°=水平、180°=下垂
-    extension: float    # |手−肩|/LMax
-    hint: str = "tuck"
+    """单臂姿态描述符（按臂约定：+az=外展、−az=内收穿中线）。"""
+    azimuth: float             # rad，0=正前、+90°=外展侧、−90°=穿中线
+    polar: float               # rad，0=向头、90°=水平、180°=下垂
+    extension: float           # |手−肩|/LMax
+    hint: Optional[str] = None  # None=自然肘；"tuck"|"flare" 显式选支
 
     def dir_vec(self) -> np.ndarray:
+        """约定系方向（+y=外展侧）；solve 内按 az_sigma 映射 torso 系。"""
         s = math.sin(self.polar)
         return np.array([s * math.cos(self.azimuth),
                          s * math.sin(self.azimuth),
                          math.cos(self.polar)])
 
     def mirrored(self) -> "ArmPose":
-        """右臂描述符 → 镜像左臂（方位角对 y 取反）。"""
-        return ArmPose(-self.azimuth, self.polar, self.extension, self.hint)
+        """镜像 = 同一描述符（按臂约定天然镜像）。恒等，仅 API 兼容。"""
+        return ArmPose(self.azimuth, self.polar, self.extension, self.hint)
 
 
 @dataclass
@@ -218,7 +226,8 @@ class ArmIK:
               prev: Optional[np.ndarray] = None,
               hint_dir: Optional[np.ndarray] = None) -> ArmSolution:
         sp = _SPECS[side]
-        d_hat = pose.dir_vec()
+        d = pose.dir_vec()
+        d_hat = np.array([d[0], sp.az_sigma * d[1], d[2]])  # 约定系→torso系
         clipped: List[str] = []
 
         # --- 1. 距离 → e ---
@@ -232,7 +241,13 @@ class ArmIK:
         e_roots = self._solve_e(sp, dist)
 
         w = dist * d_hat
-        hd = hint_dir if hint_dir is not None else _HINT_DIRS[side][pose.hint]
+        # 分支评分模式：显式 hint_dir > hint 预设 > 自然肘（肘 z 最低）
+        if hint_dir is not None:
+            hd: Optional[np.ndarray] = hint_dir
+        elif pose.hint is not None:
+            hd = _HINT_DIRS[side][pose.hint]
+        else:
+            hd = None
 
         # --- 2&3. (s1,s2) 指向解 × e 根 → 候选集 ---
         cands: List[Tuple[np.ndarray, np.ndarray, float]] = []
@@ -247,14 +262,17 @@ class ArmIK:
                 sols = [self._pointing_ls(sp, p, d_hat, seeds)]
             for s1, s2 in sols:
                 hand, elbow = self.fk(side, s1, s2, e)
-                # 肘偏离 肩→目标线 的垂距方向 = 支的特征
-                off = elbow - (elbow @ d_hat) * d_hat
-                score = off @ hd / (np.linalg.norm(off) + 1e-9)
+                if hd is None:
+                    score = -float(elbow[2])      # 自然肘：肘最低支
+                else:
+                    # 肘偏离 肩→目标线 的垂距方向 = 支的特征
+                    off = elbow - (elbow @ d_hat) * d_hat
+                    score = off @ hd / (np.linalg.norm(off) + 1e-9)
                 cands.append((np.array([s1, s2, e]), elbow, score))
         if not exact:
             clipped.append("direction")
 
-        # --- 选支：prev 连续优先，其次 hint 分 ---
+        # --- 选支：prev 连续优先，其次评分（hint/自然肘） ---
         if prev is not None:
             i = int(np.argmin([np.linalg.norm(c[0] - prev) for c in cands]))
         else:
@@ -307,11 +325,12 @@ class ArmIK:
         return roots
 
     def describe(self, side: str, angles_rad: np.ndarray) -> ArmPose:
-        """关节角 → 描述符（反变换/校验用）。"""
+        """关节角 → 描述符（反变换/校验用；azimuth 按臂约定）。"""
+        sp = _SPECS[side]
         hand, _ = self.fk(side, *angles_rad)
         r = np.linalg.norm(hand)
         x, y, z = hand / r
-        return ArmPose(azimuth=math.atan2(y, x),
+        return ArmPose(azimuth=math.atan2(sp.az_sigma * y, x),
                        polar=math.acos(float(np.clip(z, -1, 1))),
                        extension=r / self.LMax)
 

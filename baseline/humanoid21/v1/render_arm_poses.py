@@ -31,21 +31,22 @@ W, H = 640, 720
 LOOKAT = np.array([-1.5, 0.0, 1.15])
 DIST = 1.9
 
-# 锚点描述符（右臂；左臂镜像）。azimuth: 0前/+90左/−90右/±180后；
-# polar: 0向头/90水平/180垂；extension: |手−肩|/LMax。
-# 工作空间实测（右臂，polar≈90°）：ext>0.8 时 az∈[-140°,+32°]，
-# ext .4-.7 时 az∈[-70°,+60°]；真后摆仅 ext≈0.95 极限位可达。
+# 锚点描述符（按臂约定，左右臂同值=镜像动作）。azimuth: 0正前/
+# +90外展/−90穿中线/±180后；polar: 0向头/90水平/180垂；
+# extension: |手−肩|/LMax；hint=None=自然肘（肘最低支）。
+# 工作空间实测（polar≈90°，外展+）：ext>0.8 时 az∈[−32°,+140°]，
+# ext .4-.7 时 az∈[−60°,+70°]；真后摆仅 ext≈0.95 极限位可达。
 ANCHORS = {
-    "guard":  ArmPose(azimuth=math.radians(20),  polar=math.radians(75),
-                      extension=0.34, hint="tuck"),
-    "backswing": ArmPose(azimuth=math.radians(-140), polar=math.radians(100),
-                         extension=0.95, hint="tuck"),
-    "jab":    ArmPose(azimuth=math.radians(5),   polar=math.radians(88),
-                      extension=0.95, hint="flare"),
-    "cross":  ArmPose(azimuth=math.radians(-35), polar=math.radians(85),
-                      extension=0.90, hint="flare"),
-    "hook":   ArmPose(azimuth=math.radians(-60), polar=math.radians(88),
-                      extension=0.62, hint="flare"),
+    "guard":  ArmPose(azimuth=math.radians(-20), polar=math.radians(75),
+                      extension=0.34),
+    "backswing": ArmPose(azimuth=math.radians(140), polar=math.radians(100),
+                         extension=0.95),
+    "jab":    ArmPose(azimuth=math.radians(-5),  polar=math.radians(88),
+                      extension=0.95),
+    "cross":  ArmPose(azimuth=math.radians(35),  polar=math.radians(85),
+                      extension=0.90),
+    "hook":   ArmPose(azimuth=math.radians(60),  polar=math.radians(88),
+                      extension=0.62),
 }
 
 JOINTS = {
@@ -145,7 +146,7 @@ def main() -> None:
     print("\n[anchors]")
     for name, pose in ANCHORS.items():
         sol_r = ik.solve("right", pose)
-        sol_l = ik.solve("left", pose.mirrored())
+        sol_l = ik.solve("left", pose)      # 按臂约定：同值=镜像
         print(f"  {name:9s} R norm=({sol_r.norm[0]:+.2f},{sol_r.norm[1]:+.2f},"
               f"{sol_r.norm[2]:+.2f}) rad=({sol_r.angles[0]:+.2f},"
               f"{sol_r.angles[1]:+.2f},{sol_r.angles[2]:+.2f}) "
