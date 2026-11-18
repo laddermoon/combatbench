@@ -1,22 +1,22 @@
-"""步态姿态集与转移矩阵（S4 步令调度基础）。
+"""步态姿态集与步令编码（S4 步令调度基础，`STEP_GAIT.md` 代码化）。
 
-`STEP_GAIT.md` 的代码化：10 姿态 = 5 交错档 × 2 宽距；
-单步转移 = 恰好一脚移动（矢状 ±1/±2 档，可选横向 ±1 换宽距）；
-同一转移的等价步令集 = 双脚对称指令（如平步→左领 =
-{左前小, 右后小}）。转向为修饰符，不在表内。
-
-⚠ 本表为**几何可达性枚举**，Markov 权重/裁剪规则未定稿。
+**步令 = 声明式终态指令**（6 维）：脚动(±1) 转向(±1/0)
+终态(前脚±1/0 × 纵档±1/0 × 横宽±1)。描述完成后的姿态与朝向，
+不描述动作轨迹。脚动维 0 不合法——每条步令必有一脚迈动；
+全零向量是"无指令"哨兵（IDLE_VEC），不是步令。
 
 用法：
-    TRANSITIONS[FLAT][L_LEAD]                 # → 等价步令 tuple
-    transitions_from(FLAT)                    # → {目标姿态: 步令集}
-    order_name(order)                         # → "左前小" 读法名
-    order.to_vec()                            # → 6 维 D7 编码
+    POSTURE_ORDERS[L1n]              # → (左→左领, 右→左领)
+    orders_to(HORSE, turn=+1)        # → 目标马步带右转的全部步令
+    o = StepOrder(-1, 0, +1, +1, -1) # 左脚动→右弓常距
+    o.target                          # → GaitPosture 右弓
+    o.to_vec()                        # → (6,) D7 编码填 step_cur/next
+    step_cost(FLAT, L2n)              # → 动脚位移代价(档)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -24,146 +24,148 @@ import numpy as np
 # 姿态集
 # ---------------------------------------------------------------------------
 
-# 交错档：正号 = 左脚在前；单位 = 小步长档
-_L2, _L1, _E, _R1, _R2 = 2, 1, 0, -1, -2
+# 交错档符号 = 维2 编码：负 = 左脚在前，正 = 右脚在前，0 = 齐平
 _N, _W = 0, 1
 
 
 @dataclass(frozen=True)
 class GaitPosture:
-    """步态姿态：交错档 × 宽距。"""
+    """步态姿态：交错档(负=左前) × 宽距(0=N 1=W)。"""
 
-    stagger: int          # ∈ {-2..+2}，正 = 左脚在前
+    stagger: int          # ∈ {-2..+2}，负=左前/正=右前/0=齐平
     width: int            # 0 = 常距 N，1 = 宽距 W
 
     @property
+    def lead(self) -> int:
+        """维2 编码：−1 左前 / 0 齐 / +1 右前。"""
+        return (self.stagger > 0) - (self.stagger < 0)
+
+    @property
+    def sag(self) -> int:
+        """维3 编码：−1 小 / +1 大 / 0 不迈(lead=0 时必0)。"""
+        a = abs(self.stagger)
+        return 0 if a == 0 else (-1 if a == 1 else +1)
+
+    @property
     def code(self) -> str:
-        s_name = {_L2: "L2", _L1: "L1", _E: "E", _R1: "R1", _R2: "R2"}
+        s_name = {-2: "L2", -1: "L1", 0: "E", 1: "R1", 2: "R2"}
         return f"{s_name[self.stagger]}{'w' if self.width else 'n'}"
 
     @property
     def name(self) -> str:
-        s_name = {_L2: "左弓", _L1: "左领", _E: "平步", _R1: "右领", _R2: "右弓"}
-        if (self.stagger, self.width) == (_E, _W):
+        s_name = {-2: "左弓", -1: "左领", 0: "平步", 1: "右领", 2: "右弓"}
+        if (self.stagger, self.width) == (0, _W):
             return "马步"
         return s_name[self.stagger] + ("宽" if self.width else "")
 
 
-# 10 姿态常量（交错升序命名）
-L2n = GaitPosture(_L2, _N)
-L1n = GaitPosture(_L1, _N)
-FLAT = GaitPosture(_E, _N)     # 平步——枢纽/基准
-R1n = GaitPosture(_R1, _N)
-R2n = GaitPosture(_R2, _N)
-L2w = GaitPosture(_L2, _W)
-L1w = GaitPosture(_L1, _W)
-HORSE = GaitPosture(_E, _W)    # 马步
-R1w = GaitPosture(_R1, _W)
-R2w = GaitPosture(_R2, _W)
+# 10 姿态常量
+L2n = GaitPosture(-2, _N)
+L1n = GaitPosture(-1, _N)
+FLAT = GaitPosture(0, _N)      # 平步——基准/枢纽
+R1n = GaitPosture(+1, _N)
+R2n = GaitPosture(+2, _N)
+L2w = GaitPosture(-2, _W)
+L1w = GaitPosture(-1, _W)
+HORSE = GaitPosture(0, _W)     # 马步
+R1w = GaitPosture(+1, _W)
+R2w = GaitPosture(+2, _W)
 
-#: 全部姿态（文档矩阵顺序：常距系 | 宽距系）
+#: 全部姿态（文档顺序：常距系 | 宽距系）
 POSTURES: Tuple[GaitPosture, ...] = (
     L2n, L1n, FLAT, R1n, R2n,
     L2w, L1w, HORSE, R1w, R2w,
 )
 
 # ---------------------------------------------------------------------------
-# 步令（6 维 D7 编码）
+# 步令（6 维终态编码）
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class StepOrder:
-    """一条步令 = 到目标姿态的单步转移指令。
+    """一条步令 = 脚动 + 转向 + 终态姿态。
 
-    语义按 D7：脚(−1左/0/+1右) 矢状(−1后/+1前) 横向(−1内/+1外,
-    anatomical) 步幅(−1小/+1大) 转向(−1左/+1右) 预留(0)。
-    转向为修饰符——不改变目标姿态，叠加在同一转移上。
+    foot: −1 左脚动 / +1 右脚动（0 不合法）
+    turn: −1 左转 / 0 不转 / +1 右转
+    lead: −1 终态左脚前 / 0 齐平 / +1 右脚前
+    sag:  −1 纵小 / 0 不迈 / +1 纵大（lead=0 时必 0）
+    width: −1 常距 / +1 宽距
     """
 
-    foot: int             # −1 左 / 0 无 / +1 右
-    sag: int              # −1 后 / 0 / +1 前
-    lat: int              # −1 内 / 0 / +1 外
-    stride: int           # −1 小 / +1 大
-    turn: int = 0         # −1 左转 / 0 / +1 右转
+    foot: int
+    turn: int
+    lead: int
+    sag: int
+    width: int
+
+    def __post_init__(self) -> None:
+        assert self.foot in (-1, +1), f"脚动维非法: {self.foot}"
+        assert self.turn in (-1, 0, +1)
+        assert self.lead in (-1, 0, +1)
+        assert self.sag in (-1, 0, +1)
+        assert self.width in (-1, +1)
+        assert not (self.lead == 0 and self.sag != 0), "齐平时纵档必为0"
+
+    @property
+    def target(self) -> GaitPosture:
+        """终态姿态。"""
+        a = 0 if self.lead == 0 else (1 if self.sag < 0 else 2)
+        return GaitPosture(self.lead * a, 0 if self.width < 0 else 1)
 
     def to_vec(self) -> np.ndarray:
         return np.array(
-            [self.foot, self.sag, self.lat, self.stride, self.turn, 0],
+            [self.foot, self.turn, self.lead, self.sag, self.width, 0],
             dtype=np.float32,
         )
 
+    def with_turn(self, turn: int) -> "StepOrder":
+        return StepOrder(self.foot, turn, self.lead, self.sag, self.width)
 
-#: 脚=0 自环步令（原地碎步保平衡）
-IDLE = StepOrder(0, 0, 0, -1, 0)
+
+#: 无指令哨兵（全零，非合法步令——碎步保平衡默认）
+IDLE_VEC = np.zeros(6, dtype=np.float32)
 
 
 def order_name(o: StepOrder) -> str:
-    """步令读法：`脚+矢状+横向+幅·转`；纯横向（矢状=0）幅省略。"""
-    if o.foot == 0:
-        base = "原宽" if o.lat > 0 else "原"
-        if o.turn:
-            base += "·左" if o.turn < 0 else "·右"
-        return base
+    """步令读法：`脚→终态姿态[·转]`。"""
     foot = "左" if o.foot < 0 else "右"
-    sag = {-1: "后", 0: "", 1: "前"}[o.sag]
-    lat = {-1: "内", 0: "", 1: "外"}[o.lat]
-    mag = "" if o.sag == 0 else ("大" if o.stride > 0 else "小")
     turn = "" if o.turn == 0 else ("·左" if o.turn < 0 else "·右")
-    return f"{foot}{sag}{lat}{mag}{turn}"
+    return f"{foot}→{o.target.name}{turn}"
 
 
 # ---------------------------------------------------------------------------
-# 转移矩阵（程序化枚举：单步 = 一脚矢状±1/±2 可选横向±1）
+# 姿态→步令生成表（列均匀：终态只由指令决定，可达性不交表管）
 # ---------------------------------------------------------------------------
 
 
-def _build_transitions() -> Dict[GaitPosture, Dict[GaitPosture, Tuple[StepOrder, ...]]]:
-    """枚举所有 (姿态 → 姿态) 的一步可达转移及其等价步令集。
-
-    左脚前移 a 档 → 交错档 +a；右脚前移 a 档 → 交错档 −a
-    （stagger 正号 = 左前）。横向 anatomical 外→宽+1 / 内→宽−1。
-    """
-    table: Dict[GaitPosture, Dict[GaitPosture, Tuple[StepOrder, ...]]] = {
-        p: {} for p in POSTURES
-    }
-    for src in POSTURES:
-        for foot, sign in ((-1, +1), (+1, -1)):          # 左脚 +1, 右脚 −1
-            for a in (-2, -1, 0, 1, 2):                  # 矢状位移（档），+前 −后
-                for b in (-1, 0, 1):                     # 横向：+1 外 / −1 内
-                    if a == 0 and b == 0:
-                        continue
-                    ns = src.stagger + sign * a
-                    nw = src.width + b
-                    if not (-2 <= ns <= 2) or nw not in (0, 1):
-                        continue
-                    order = StepOrder(
-                        foot=foot,
-                        sag=(a > 0) - (a < 0),
-                        lat=b,
-                        stride=+1 if abs(a) == 2 else -1,
-                    )
-                    dst = GaitPosture(ns, nw)
-                    table[src][dst] = table[src].get(dst, ()) + (order,)
-    return table
+def orders_to(dst: GaitPosture, turn: int = 0) -> Tuple[StepOrder, StepOrder]:
+    """达成目标姿态的全部步令：左/右脚各一（转向可叠加）。"""
+    return (
+        StepOrder(-1, turn, dst.lead, dst.sag, -1 if dst.width == 0 else +1),
+        StepOrder(+1, turn, dst.lead, dst.sag, -1 if dst.width == 0 else +1),
+    )
 
 
-#: TRANSITIONS[src][dst] = 等价步令 tuple；dst 缺席 = 一步不可达
-TRANSITIONS = _build_transitions()
+#: POSTURE_ORDERS[p] = 达成 p 的无转向等价步令对
+POSTURE_ORDERS: Dict[GaitPosture, Tuple[StepOrder, StepOrder]] = {
+    p: orders_to(p) for p in POSTURES
+}
 
 
-def transitions_from(src: GaitPosture) -> Dict[GaitPosture, Tuple[StepOrder, ...]]:
-    """src 姿态一步可达的全部目标及其等价步令集。"""
-    return TRANSITIONS[src]
+def step_cost(src: GaitPosture, dst: GaitPosture) -> int:
+    """动脚位移代价（采样权重输入）：矢状 |Δ交错档| + 宽距切换 1。"""
+    return abs(src.stagger - dst.stagger) + (src.width != dst.width)
 
 
 __all__ = [
     "GaitPosture",
     "StepOrder",
-    "IDLE",
+    "IDLE_VEC",
     "POSTURES",
-    "TRANSITIONS",
-    "transitions_from",
+    "POSTURE_ORDERS",
+    "orders_to",
+    "step_cost",
     "order_name",
     "L2n", "L1n", "FLAT", "R1n", "R2n",
     "L2w", "L1w", "HORSE", "R1w", "R2w",
