@@ -48,9 +48,9 @@ ANCHORS = {
     "guard_side":  ArmPose.deg(+30, 95, 0.27),
     "jab_pre":     ArmPose.deg(-5, 105, 0.25),
     "hook_pre":    ArmPose.deg(-150, 50, 0.75),
-    "jab_front":   ArmPose.deg(+2, 95, 0.95),
-    "jab_45":      ArmPose.deg(+4, 45, 0.95),
-    "jab_side":    ArmPose.deg(+4, 25, 0.95),
+    "jab_front":   ArmPose.deg(+2, 95, 1.0),
+    "jab_45":      ArmPose.deg(+4, 45, 1.0),
+    "jab_side":    ArmPose.deg(+4, 25, 1.0),
 }
 
 JOINTS = {
