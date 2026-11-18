@@ -441,6 +441,57 @@ v3 抱架/出拳（关节角直接指定）：
 启动）。收敛判据对照 s42i：success→1.0、clip→0.6+、cad→0.9+、
 h→1.20、cycles→17+；~10.5s/update，参考 u380/~1h 收敛。
 
+## D10 — S3 随机臂脚本接管：sim 内覆写 + apply-then-advance
+
+> 目的：在 S2 收敛平衡模型上重训同一 12 级推力课程，随机臂
+> 脚本既作扰动也撤掉双臂抗扰手段。实验 `v2_s3_balance_arm`。
+
+### 决定
+
+1. **覆写点在 sim 内**：`V2Simulator.set_action` 是
+   `EnvRuntime` 每 action step 恰好一次的调用点，flag=1 时把
+   `act[15:21]` 替换为脚本目标——不需要策略封装，也不需要
+   插件跨对象读回 pending action；eval/demo 同 env 生效，
+   训练-部署零差异（D6 同源契约的实现形式）。
+
+2. **apply-then-advance**：`set_action` 先按当前 flag/tgt 兑现
+   obs[t] 的承诺，再推进 flag 状态机与调度器（为 obs[t+1]
+   生产承诺）。`get_observation` 纯读无副作用——任意时刻/
+   频次调用安全（runtime/recorder/observer 多处会调）。
+
+3. **轨迹存覆写前 action**：`a_raw` 是变换 MDP（转移核
+   P∘override）上的真行为策略采样——PPO ratio/GAE 标准成立；
+   flag=1 时臂维成"死动作维"（advantage≈0，仅 KL 内的有界
+   漂移）。**优于**存覆写后值（wrapper 路线）：后者会把脚本
+   随机目标混入策略 ratio 并产生"把臂头拉向随机目标"的垃圾
+   梯度。已知风险：flag 回落（摔倒）时漂移过的臂头可能拖累
+   再起身——先接受，必要时加 imitation 项贴脚本目标。
+
+4. **flag 判据复用推力插件站立状态机**：h>1.10 计时+1、
+   连续 >grace(5) 帧低于阈值清零、满 settle(20) 步→flag=1；
+   起身/摔倒期 flag=0 策略自控双臂。与推力插件同源保证
+   "站稳"语义一致，数值镜像实现（sim 内 ~20 行）保持 sim
+   自包含。
+
+5. **arm_tgt 常显**：flag=0 时 obs 仍填脚本当前目标（非零
+   填充）——语义统一 + 策略可预判接管瞬间的目标值。
+
+6. **扰动参数**：每臂 U(2,20) 步（0.1–1.0s）独立倒计时重
+   采样、U(−1,1)³ norm 目标（无意义动作，扰动最强实现最简）、
+   双臂/双机独立 rng（避免相位同步）、reset(seed) 可溯源。
+   2 步下限时 PD 基本追不到目标即换 → 等效随机游走，是
+   预期内的强扰动。
+
+7. **warm-start**：S2 最强 ckpt + `--reset-update`；三通道
+   相同故 critic 全量可加载（比 S1→S2 还干净）。
+
+### 验证
+
+sim 级（S1 收敛策略驱动）：跌倒(h→0.18)→再站起→站稳 20 步
+flag=1→覆写生效（applied[15:21]=tgt、0:15 透传、双机独立）；
+调度器 25 步内右臂跳变 5 次（hold∈[2,20] 吻合）。实验 smoke
+通过。`v2_s3_balance_arm` 待 S2 收敛后启动。
+
 ## 关联文档
 
 - [`arm_takeover.py`](arm_takeover.py) — D5 实现（IK 姿态设计 + 接管策略 + 三场景 runner）
