@@ -44,7 +44,7 @@ DIST = 1.9
 #   jab_*       出拳参照——打击点不固定，仅示意方向（φ 递减=更侧向）
 ANCHORS = {
     "ready":       ArmPose.deg(+12, 105, 0.36),
-    "guard_front": ArmPose.deg(+18, 115, 0.40),
+    "guard_front": ArmPose.deg(+30, 115, 0.40),
     "guard_side":  ArmPose.deg(+30, 95, 0.27),
     "jab_pre":     ArmPose.deg(-90, 105, 0.32),   # 0.2m 下后拉→垂收胸侧
     "hook_pre":    ArmPose.deg(170, 35, 0.64),    # 0.4m 侧后拉→肩后20cm
