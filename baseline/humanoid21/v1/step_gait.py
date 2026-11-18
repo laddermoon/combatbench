@@ -158,6 +158,17 @@ def step_cost(src: GaitPosture, dst: GaitPosture) -> int:
     return abs(src.stagger - dst.stagger) + (src.width != dst.width)
 
 
+# ---------------------------------------------------------------------------
+# 几何参数（拍定 v1 — s42i 实测依据，render_gait_poses.py 同值）
+# ---------------------------------------------------------------------------
+
+WIDTH_N = 0.76      # 常距横向脚距 m：s42i 双支撑中位 0.764
+WIDTH_W = 1.00      # 宽距横向脚距 m：~1.3×，s42i 无样本外推待校
+STAGGER_UNIT = 0.22 # 一档前后错位 m：双支撑 |stagger| 中位~0.25
+ANKLE_Z = 0.107     # 踝锚（ankle_y xanchor）站姿态高度 m
+TURN_RAD = 0.52     # 每步转向角 rad（±30°，暂定）
+
+
 __all__ = [
     "GaitPosture",
     "StepOrder",
@@ -167,6 +178,7 @@ __all__ = [
     "orders_to",
     "step_cost",
     "order_name",
+    "WIDTH_N", "WIDTH_W", "STAGGER_UNIT", "ANKLE_Z", "TURN_RAD",
     "L2n", "L1n", "FLAT", "R1n", "R2n",
     "L2w", "L1w", "HORSE", "R1w", "R2w",
 ]
