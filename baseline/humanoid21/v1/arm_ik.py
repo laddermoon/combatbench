@@ -110,11 +110,31 @@ def _atan2_rot(axis: np.ndarray, p: np.ndarray, x: np.ndarray) -> float:
 
 @dataclass
 class ArmPose:
-    """单臂姿态描述符（按臂约定：+az=外展、−az=内收穿中线）。"""
+    """单臂姿态描述符（按臂约定：+az=外展、−az=内收穿中线）。
+
+    重表意对象：构造即校验合法性，域外值响亮拒绝（调用方 bug）。
+    域内合法但物理不可达不在此判定——solve() 投影到最近可达
+    并在 ArmSolution.clipped/dir_err/dist_err 上报残差。"""
     azimuth: float             # rad，0=正前、+90°=外展侧、−90°=穿中线
     polar: float               # rad，0=垂下（沿−z极轴）、90°=水平、180°=向头
-    extension: float           # |手−肩|/LMax
+    extension: float           # |手−肩|/LMax ∈(0,1]
     hint: Optional[str] = None  # None=自然肘；"tuck"|"flare" 显式选支
+
+    def __post_init__(self) -> None:
+        vals = (self.azimuth, self.polar, self.extension)
+        if not all(math.isfinite(v) for v in vals):
+            raise ValueError(f"ArmPose 非有限值: {self}")
+        # azimuth 是周期量：wrap 归一到 (−π, π]（非拒绝项）
+        self.azimuth = (self.azimuth + math.pi) % (2 * math.pi) - math.pi
+        if not (0.0 <= self.polar <= math.pi):
+            raise ValueError(
+                f"polar 越域（须∈[0°,180°]）: {math.degrees(self.polar):.1f}°")
+        if self.extension <= 0.0 or self.extension > 1.0 + 1e-3:
+            raise ValueError(
+                f"extension 越域（须∈(0,1]）: {self.extension}")
+        self.extension = min(self.extension, 1.0)   # describe 浮点噪声容差
+        if self.hint not in (None, "tuck", "flare"):
+            raise ValueError(f"hint 非法: {self.hint!r}")
 
     def dir_vec(self) -> np.ndarray:
         """约定系方向（+y=外展侧、+z=向上）；solve 内按 az_sigma 映射。"""
@@ -240,8 +260,9 @@ class ArmIK:
         d_hat = np.array([d[0], sp.az_sigma * d[1], d[2]])  # 约定系→torso系
         clipped: List[str] = []
 
-        # --- 1. 距离 → e ---
-        dist = float(np.clip(pose.extension, 1e-6, 1.5)) * self.LMax
+        # --- 1. 距离 → e（ext∈(0,1] 已校验；<d_min 是合法但不可达→投影）---
+        dist_req = pose.extension * self.LMax       # 原始请求（残差基准）
+        dist = dist_req
         if dist > self.LMax:
             dist = self.LMax
             clipped.append("extension")
@@ -311,7 +332,7 @@ class ArmIK:
             candidates=len(cands),
             clipped="+".join(clipped) if clipped else None,
             dir_err_deg=dir_err,
-            dist_err=float(np.linalg.norm(hand) - dist))
+            dist_err=float(np.linalg.norm(hand) - dist_req))
 
     # d(e)=dist 全部根（采样+二分）
     def _solve_e(self, sp: ArmSpec, dist: float) -> List[float]:

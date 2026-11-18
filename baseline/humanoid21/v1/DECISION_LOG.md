@@ -524,6 +524,15 @@ flag=1→覆写生效（applied[15:21]=tgt、0:15 透传、双机独立）；
    hint 全部改 None 验证自然肘——渲染确认自然肘分支对
    jab/guard/backswing 形态均正确（肘低位=似人放松态）。
 
+4. **合法性分层（用户拍板）**：`ArmPose` 是重表意对象——
+   构造即校验、域外响亮拒绝：`polar∈[0°,180°]`、
+   `extension∈(0,1]`（1.0+1e-3 容差吸收 describe 浮点噪声）、
+   全量有限、`hint∈{None,tuck,flare}`；azimuth 为周期量
+   wrap 归一 (−π,π] 不拒绝。**域内合法但物理不可达不判
+   非法**——solve() 投影最近可达 + clipped/残差上报
+   （dist_err 对原始请求而非投影后目标）。单位约定：内部
+   一律 rad，`ArmPose.deg()` 度数控构造供人读面。
+
 ### 验证
 
 FK 对拍 3.6e-16 不变；L/R 同描述符→相同 norm→镜像形态
