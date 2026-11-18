@@ -36,6 +36,10 @@ _V1 = Path(__file__).resolve().parent.parent / "humanoid21" / "v1"
 class V2S3BalanceArm(V2S2Balance):
     name = "v2_s3_balance_arm"
 
+    # 关闭实验级早停：level 6+ 长推平台期 quality 可长期不涨，
+    # 200-eval 无改善判停过早（u1450 误停）。仍保留 best 追踪/保存。
+    _no_improvement_limit = 10 ** 9
+
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
             _V1 / "v2_balance_arm_env.yaml")
