@@ -1,11 +1,14 @@
 """手臂反解器：CPose 式描述符 → 三关节角（D6 指令表的生成端）。
 
 描述符（每臂各自约定系，torso 局部系 X+身前/Y+向左/Z+向头）：
-    azimuth θ   : **按臂约定的方位角**——θ>0 = 外展（远离中线）、
-                  θ<0 = 内收（穿向中线），θ=0 正前、±180° 正后。
+    azimuth θ   : **按臂约定的方位角**——手向量在水平面（⊥极轴）
+                  的投影相对身体前向的夹角：θ>0=外展（远离中线）、
+                  θ<0=内收（穿向中线），0=正前、±180°=正后。
                   左臂 θ=atan2(+y,x)、右臂 θ=atan2(−y,x)：同一描述符
                   在两臂产出镜像动作，锚点表/生成端无需分左右。
-    polar φ     : 拳方向极角 arccos(z/r)：0=向头、90°=水平、180°=下垂
+    polar φ     : 手−肩连线与**向下极轴**的夹角（极轴=肩心沿 torso
+                  系 −z 向下）：0=手垂下、90°=水平、180°=向头，
+                  恒正 ∈[0,180°]。注：θ 在 φ≈0/180°（纯竖直）退化。
     extension ρ : |手−肩|/LMax ∈ (0,1]（LMax=该臂最大伸展距离）
     hint        : 肘分支选择器（3 值描述符在 3-DOF 臂上至多两支解，
                   非连续冗余）：None=自然肘（肘 z 最低支，默认）、
@@ -109,16 +112,16 @@ def _atan2_rot(axis: np.ndarray, p: np.ndarray, x: np.ndarray) -> float:
 class ArmPose:
     """单臂姿态描述符（按臂约定：+az=外展、−az=内收穿中线）。"""
     azimuth: float             # rad，0=正前、+90°=外展侧、−90°=穿中线
-    polar: float               # rad，0=向头、90°=水平、180°=下垂
+    polar: float               # rad，0=垂下（沿−z极轴）、90°=水平、180°=向头
     extension: float           # |手−肩|/LMax
     hint: Optional[str] = None  # None=自然肘；"tuck"|"flare" 显式选支
 
     def dir_vec(self) -> np.ndarray:
-        """约定系方向（+y=外展侧）；solve 内按 az_sigma 映射 torso 系。"""
+        """约定系方向（+y=外展侧、+z=向上）；solve 内按 az_sigma 映射。"""
         s = math.sin(self.polar)
         return np.array([s * math.cos(self.azimuth),
                          s * math.sin(self.azimuth),
-                         math.cos(self.polar)])
+                         -math.cos(self.polar)])   # polar 自向下轴量
 
     def mirrored(self) -> "ArmPose":
         """镜像 = 同一描述符（按臂约定天然镜像）。恒等，仅 API 兼容。"""
@@ -331,7 +334,7 @@ class ArmIK:
         r = np.linalg.norm(hand)
         x, y, z = hand / r
         return ArmPose(azimuth=math.atan2(sp.az_sigma * y, x),
-                       polar=math.acos(float(np.clip(z, -1, 1))),
+                       polar=math.acos(float(np.clip(-z, -1, 1))),
                        extension=r / self.LMax)
 
 

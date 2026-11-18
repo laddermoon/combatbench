@@ -32,20 +32,20 @@ LOOKAT = np.array([-1.5, 0.0, 1.15])
 DIST = 1.9
 
 # 锚点描述符（按臂约定，左右臂同值=镜像动作）。azimuth: 0正前/
-# +90外展/−90穿中线/±180后；polar: 0向头/90水平/180垂；
-# extension: |手−肩|/LMax；hint=None=自然肘（肘最低支）。
+# +90外展/−90穿中线/±180后；polar（自向下极轴量）: 0垂下/
+# 90水平/180向头；extension: |手−肩|/LMax；hint=None=自然肘。
 # 工作空间实测（polar≈90°，外展+）：ext>0.8 时 az∈[−32°,+140°]，
 # ext .4-.7 时 az∈[−60°,+70°]；真后摆仅 ext≈0.95 极限位可达。
 ANCHORS = {
-    "guard":  ArmPose(azimuth=math.radians(-20), polar=math.radians(75),
+    "guard":  ArmPose(azimuth=math.radians(-20), polar=math.radians(105),
                       extension=0.34),
-    "backswing": ArmPose(azimuth=math.radians(140), polar=math.radians(100),
+    "backswing": ArmPose(azimuth=math.radians(140), polar=math.radians(80),
                          extension=0.95),
-    "jab":    ArmPose(azimuth=math.radians(-5),  polar=math.radians(88),
+    "jab":    ArmPose(azimuth=math.radians(-5),  polar=math.radians(92),
                       extension=0.95),
-    "cross":  ArmPose(azimuth=math.radians(35),  polar=math.radians(85),
+    "cross":  ArmPose(azimuth=math.radians(35),  polar=math.radians(95),
                       extension=0.90),
-    "hook":   ArmPose(azimuth=math.radians(60),  polar=math.radians(88),
+    "hook":   ArmPose(azimuth=math.radians(60),  polar=math.radians(92),
                       extension=0.62),
 }
 
