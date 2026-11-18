@@ -35,12 +35,22 @@ DIST = 1.9
 # atan2(z,x) 矢状扫掠 0前/+90天/−90地/±180后；polar φ:
 # 与外展轴夹角 0纯外展/90前平面/180穿中线；extension: |手−肩|
 # /LMax；hint=None=自然肘。拳击区 φ≈[25°,115°]。
+# 预置姿态集（v1 草案，待用户看图调参）：
+#   ready       抱架中枢——颏旁微前送，去其它姿态的共同起点
+#   guard_front 防直——拳护脸前中线（φ 大=更靠中线，θ 抬到面高）
+#   guard_side  防摆——拳贴太阳穴侧前（θ 更高、ρ 更贴身）
+#   jab_pre     直拳蓄力——从 ready 沿拳路后收（θ 降、ρ 收近）
+#   hook_pre    摆拳蓄力——侧向水平后拉（θ 入后半区、φ 半开、较伸）
+#   jab_*       出拳参照——打击点不固定，仅示意方向（φ 递减=更侧向）
 ANCHORS = {
-    "guard":  ArmPose.deg(+15, 110, 0.34),
-    "backswing": ArmPose.deg(-171, 47, 0.95),
-    "jab":    ArmPose.deg(+2, 95, 0.95),
-    "cross":  ArmPose.deg(+6, 55, 0.90),
-    "hook":   ArmPose.deg(+3, 30, 0.62),
+    "ready":       ArmPose.deg(+12, 105, 0.36),
+    "guard_front": ArmPose.deg(+18, 115, 0.40),
+    "guard_side":  ArmPose.deg(+30, 95, 0.27),
+    "jab_pre":     ArmPose.deg(-5, 105, 0.25),
+    "hook_pre":    ArmPose.deg(-150, 50, 0.75),
+    "jab_front":   ArmPose.deg(+2, 95, 0.95),
+    "jab_45":      ArmPose.deg(+4, 45, 0.95),
+    "jab_side":    ArmPose.deg(+4, 25, 0.95),
 }
 
 JOINTS = {
@@ -145,7 +155,7 @@ def main() -> None:
               f"{sol_r.norm[2]:+.2f}) rad=({sol_r.angles[0]:+.2f},"
               f"{sol_r.angles[1]:+.2f},{sol_r.angles[2]:+.2f}) "
               f"cands={sol_r.candidates} clip={sol_r.clipped} "
-              f"dir_err={sol_r.dir_err_deg:.1f}° "
+              f"dir_err={sol_r.dir_err_deg:.1f}° pos_err={sol_r.pos_err:.3f}m "
               f"hand={np.round(sol_r.hand, 2).tolist()}")
         print(f"  {'':9s} L norm=({sol_l.norm[0]:+.2f},{sol_l.norm[1]:+.2f},"
               f"{sol_l.norm[2]:+.2f}) cands={sol_l.candidates} "
