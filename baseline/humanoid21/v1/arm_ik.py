@@ -161,6 +161,32 @@ class ArmPose:
 
 
 @dataclass
+class ArmTarget:
+    """躯干系观测点（如 obs 对手关键点）的描述符表征——给上层策略。
+
+    与 ArmPose 的区别：ArmPose 是"我臂要摆成的形状"（ext∈(0,1] 表意
+    合法）；ArmTarget 是"外界有个点在哪"——ext 可 >1（超臂展），
+    属观测事实不是格式错。to_pose() 截到臂展内即得可解描述符：
+    `ik.solve(side, ik.describe_point(side, p).to_pose())`。"""
+    azimuth: float         # rad，同 ArmPose 约定
+    polar: float           # rad，同 ArmPose 约定
+    dist: float            # |点−肩心|（m）
+    extension: float       # dist/LMax（>1 = 超臂展）
+    point: np.ndarray      # 肩心系原始向量
+
+    @property
+    def reachable(self) -> bool:
+        """粗略可及：仅距离判据（不含方向可行性）。"""
+        return self.extension <= 1.0 + 1e-3
+
+    def to_pose(self, ext_cap: float = 1.0,
+                hint: Optional[str] = None) -> ArmPose:
+        """方向照搬、距离截臂展 → 合法 ArmPose（喂 solve 打向该点）。"""
+        return ArmPose(self.azimuth, self.polar,
+                       min(self.extension, ext_cap), hint)
+
+
+@dataclass
 class ArmSolution:
     angles: np.ndarray          # (3,) rad (s1,s2,e)
     norm: np.ndarray            # (3,) 归一化目标 = action/obs 空间值
@@ -432,5 +458,21 @@ class ArmIK:
                        polar=math.acos(float(np.clip(sp.out_sigma * y, -1, 1))),
                        extension=r / self.LMax)
 
+    # ---- 观测点 → 描述符（上层策略工具）----
+    def describe_point(self, side: str, p_torso: np.ndarray) -> ArmTarget:
+        """躯干系点（obs 对手关键点即此系）→ 描述符表征。
 
-__all__ = ["ArmIK", "ArmPose", "ArmSolution"]
+        原点=肩心（spec.S 同系）；ext 如实可>1——对手常在臂展外。"""
+        sp = _SPECS[side]
+        rel = np.asarray(p_torso, np.float64) - sp.S
+        r = float(np.linalg.norm(rel))
+        if r < 1e-9:
+            raise ValueError("观测点与肩心重合，方向无定义")
+        x, y, z = rel / r
+        return ArmTarget(
+            azimuth=math.atan2(z, x),
+            polar=math.acos(float(np.clip(sp.out_sigma * y, -1, 1))),
+            dist=r, extension=r / self.LMax, point=rel)
+
+
+__all__ = ["ArmIK", "ArmPose", "ArmSolution", "ArmTarget"]
