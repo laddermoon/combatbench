@@ -77,7 +77,8 @@
 - **实验名**：`v2_s3_balance_arm`（`experiments_ppo/exp_v2_s3_balance_arm.py`，
   继承 V2S2Balance）
 - **Run 目录**：`baseline/runs/v2_s3_balance_arm`（原始）→
-  `v2_s3_balance_arm_r2`（u1450 停后续训）
+  `v2_s3_balance_arm_r2`（u1450 停后续训）→
+  `v2_s3_balance_arm_r3`（重启掉线续训）
 - **启动命令**（warm-start S2 最强 ckpt u1680，`--reset-update`）：
   ```bash
   PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
@@ -105,7 +106,18 @@
     --run-name v2_s3_balance_arm_r2 --background
   ```
   无 `--reset-update` → u1451 续编，实验状态（level=7、
-  best 追踪）完整恢复。
+  best 追踪）完整恢复。跑到 u2290 时**机器重启**被杀
+  （22:32 关机、23:22 二次重启、23:33 起——日志无报错，
+  纯外部 kill）。11-19 00:3x 以 u2290 ckpt 起 r3：
+  ```bash
+  PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
+    python3 -B baseline/framework/train.py \
+    --experiment v2_s3_balance_arm --algo ppo \
+    --resume-from baseline/runs/v2_s3_balance_arm_r2/checkpoints/checkpoint_u02290.pt \
+    --run-name v2_s3_balance_arm_r3 --background
+  ```
+  u2291 续编恢复。注意：level 卡在 7.0 已达 ~800 update，
+  r2 全程 eval success=1.0/recovery≈0.64 平台——待观察。
 - **备注**：重启时发现全部 8 卡被外来 `wildrig-multi` 矿工
   （pearlhash → 155.133.196.229，cwd `/var/lib/prl/gpu-*`，
   ~974MiB/卡）占用——自 11-18 17:34 起在跑，待排查处置。
