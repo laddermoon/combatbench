@@ -798,5 +798,13 @@ off-policy 污染——策略臂维优化从未执行的动作或 logprob
   aw 比重让 fall/potential 主导
 - warm-start：S2 u1680（无臂接管史的干净底座）
 
+**扰动（追加）**：躯干推力固定 **40N 档最高级**——每推
+40N × 持续 31-40 帧（1.55-2.0s），不接受 100N。原 12 级
+课程被覆盖为单级（`LEVEL_FORCES=(40.0,)`、
+`LEVEL_DURATION_RANGES=((31,40),)`；S4 on_eval 无晋级逻辑，
+_level 恒 0 → 全程同强度）。训练与 eval 同走 build_jobs →
+eval 的 arm_err/foot_rate/falls 即"推力下兼顾度"的直接读数。
+目的：检验策略能否在中等扰动下兼顾平衡与臂令。
+
 **对照**：armcmd(GPU2) vs noarm(GPU1) vs 已废接管组——隔离
 "臂令载体形式"变量。

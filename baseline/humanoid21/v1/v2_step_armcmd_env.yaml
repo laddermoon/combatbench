@@ -8,6 +8,9 @@
 # 奖励通道见 experiments_ppo/exp_v2_s4_armcmd.py：
 #   r_potential·3 + r_fall·2 + r_step_foot/mv/st/yaw（到期稀疏）
 #   + r_arm_r / r_arm_l（逐帧 -w·err 稠密）。
+# 扰动：StandingTriggeredForcePlugin 复用 S2/S3 配置——推力参数由
+#   episode_options["impulse_params"] 供给；本实验固定 40N 档最高级
+#   （duration 31-40 帧），见 exp_v2_s4_armcmd.py LEVEL_* 覆盖。
 
 parameters:
   initial_distance:
@@ -52,6 +55,16 @@ plugins:
       max_phy_steps: 1000
       height_threshold: 0.3
       reset_interval: 5
+  - cls: "baseline.humanoid21.end2end.standing_triggered_force:StandingTriggeredForcePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      standing_height_threshold: 1.10
+      standing_grace_steps: 5
+      standing_settle_steps: 20
+      random_delay_max_steps: 10
+      observe_steps: 20
+      impulse_body: "torso"
+      force_threshold: 1.0
 
 observer_plugins:
   standing_balance_a:
@@ -92,5 +105,13 @@ observer_plugins:
       agent_id: "robot_a"
   wall_contact_b:
     cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  push_state_a:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
+    config:
+      agent_id: "robot_a"
+  push_state_b:
+    cls: "baseline.humanoid21.end2end.push_state_observer:PushStateObserver"
     config:
       agent_id: "robot_b"

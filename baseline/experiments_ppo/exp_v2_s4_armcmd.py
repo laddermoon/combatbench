@@ -18,6 +18,12 @@
 （与步令同构）。arm_override=False 消除了接管方案的
 off-policy 污染——执行动作=策略输出，臂学习信用分配干净。
 
+扰动（D17 追加）：躯干推力固定 40N 档最高级——每推 40N ×
+持续 31-40 帧（1.55-2.0s）。不接受 100N；目的=检验策略能否
+在中等扰动下兼顾平衡与臂令（训练与 eval 同走 build_jobs，
+eval 指标即推力条件下的兼顾度）。S4 on_eval 不跑晋级，
+_level 恒 0 → 全程同一扰动强度。
+
 warm-start: --resume-from v2_s2_balance/checkpoints/
 checkpoint_u01680.pt --reset-update（S2 best，无臂接管史）
 """
@@ -41,6 +47,10 @@ _V1 = Path(__file__).resolve().parent.parent / "humanoid21" / "v1"
 
 class V2S4ArmCmd(V2S4Step):
     name = "v2_s4_armcmd"
+
+    # 扰动封顶：40N 档最高级（原 12 级课程取第 3 级强度固定）。
+    LEVEL_FORCES = (40.0,)
+    LEVEL_DURATION_RANGES = ((31, 40),)
 
     _channel_names = V2S4Step._channel_names + ("r_arm_r", "r_arm_l")
     _channel_gammas = dict(V2S4Step._channel_gammas,
