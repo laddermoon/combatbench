@@ -18,7 +18,7 @@ import numpy as np
 
 from baseline.humanoid21.v1.step_gait import (
     FLAT, GaitPosture, StepOrder, order_name,
-    WIDTH_N, WIDTH_W, STAGGER_UNIT, TURN_RAD,
+    TURN_RAD, apply_order, foot_slot,
 )
 from baseline.humanoid21.v1.step_scheduler import (
     StepScheduler, SchedState,
@@ -49,13 +49,6 @@ def inside_arena(p: np.ndarray, margin: float = MARGIN) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _slot(p: GaitPosture, side: int) -> np.ndarray:
-    """机体系脚槽：side=−1 左/+1 右；+x 前 +y 左。s<0 左前。"""
-    w = WIDTH_W if p.width else WIDTH_N
-    sx = p.stagger * STAGGER_UNIT / 2
-    return np.array([-sx, +w / 2]) if side < 0 else np.array([+sx, -w / 2])
-
-
 def _rot(yaw: float) -> np.ndarray:
     c, s = math.cos(yaw), math.sin(yaw)
     return np.array([[c, -s], [s, c]])
@@ -69,28 +62,21 @@ class GaitWalker:
         self.yaw = float(yaw)
         self.sched = SchedState.initial(posture)
         R = _rot(yaw)
-        self.foot_l = pos + R @ _slot(posture, -1)
-        self.foot_r = pos + R @ _slot(posture, +1)
+        self.foot_l = pos + R @ foot_slot(posture, -1)
+        self.foot_r = pos + R @ foot_slot(posture, +1)
 
     @property
     def mid(self) -> np.ndarray:
         return (self.foot_l + self.foot_r) / 2
 
     def target_foot_pos(self, o: StepOrder) -> np.ndarray:
-        """动脚目标世界位：stance 脚锚定 + 新朝向框架槽差。"""
-        yaw_new = self.yaw + o.turn * TURN_RAD
-        mv, st = (-1, +1) if o.foot < 0 else (+1, -1)
-        stance = self.foot_l if st < 0 else self.foot_r
-        d = _slot(o.target, mv) - _slot(o.target, st)
-        return stance + _rot(yaw_new) @ d
+        """动脚落地目标世界位（step_gait.apply_order 的动脚分量）。"""
+        fl, fr, _ = apply_order(self.foot_l, self.foot_r, self.yaw, o)
+        return fl if o.foot < 0 else fr
 
     def apply(self, o: StepOrder) -> None:
-        new_pos = self.target_foot_pos(o)
-        if o.foot < 0:
-            self.foot_l = new_pos
-        else:
-            self.foot_r = new_pos
-        self.yaw += o.turn * TURN_RAD
+        self.foot_l, self.foot_r, self.yaw = apply_order(
+            self.foot_l, self.foot_r, self.yaw, o)
         self.sched = StepScheduler.advance(self.sched, o)
 
 

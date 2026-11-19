@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
@@ -168,6 +169,43 @@ STAGGER_UNIT = 0.264# 一档前后错位 m：渲染偏小，0.22×1.2
 ANKLE_Z = 0.107     # 踝锚（ankle_y xanchor）站姿态高度 m
 TURN_RAD = 0.52     # 每步转向角 rad（±30°，暂定）
 
+# ---------------------------------------------------------------------------
+# 平面落地运动学：步令 → (脚位, 朝向) 预测
+# ---------------------------------------------------------------------------
+
+
+def foot_slot(posture: GaitPosture, side: int) -> np.ndarray:
+    """机体系脚槽坐标（m）：side=−1 左 / +1 右；+x 朝前 +y 朝左。
+
+    stagger>0 右脚在前：右 x=+s·档/2，左 x=−s·档/2。
+    """
+    w = WIDTH_W if posture.width else WIDTH_N
+    sx = posture.stagger * STAGGER_UNIT / 2
+    return np.array([-sx, +w / 2]) if side < 0 else np.array([+sx, -w / 2])
+
+
+def apply_order(
+    foot_l: np.ndarray,
+    foot_r: np.ndarray,
+    yaw: float,
+    order: StepOrder,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """声明式步令的落地预测：(脚位_L, 脚位_R, yaw) → (脚位'_L, 脚位'_R, yaw')。
+
+    语义：stance 脚原地锚定不动；动脚落到「目标姿态中动脚相对
+    stance 脚的槽位差」按新朝向旋转后的世界位置。yaw 加 turn·TURN_RAD。
+    纯函数，不修改输入。
+    """
+    yaw_new = yaw + order.turn * TURN_RAD
+    mv, st = (-1, +1) if order.foot < 0 else (+1, -1)
+    stance = np.asarray(foot_l if st < 0 else foot_r, dtype=float)
+    d = foot_slot(order.target, mv) - foot_slot(order.target, st)
+    c, s = math.cos(yaw_new), math.sin(yaw_new)
+    mv_new = stance + np.array([c * d[0] - s * d[1], s * d[0] + c * d[1]])
+    if order.foot < 0:
+        return mv_new, np.asarray(foot_r, dtype=float), yaw_new
+    return np.asarray(foot_l, dtype=float), mv_new, yaw_new
+
 
 __all__ = [
     "GaitPosture",
@@ -178,6 +216,8 @@ __all__ = [
     "orders_to",
     "step_cost",
     "order_name",
+    "foot_slot",
+    "apply_order",
     "WIDTH_N", "WIDTH_W", "STAGGER_UNIT", "ANKLE_Z", "TURN_RAD",
     "L2n", "L1n", "FLAT", "R1n", "R2n",
     "L2w", "L1w", "HORSE", "R1w", "R2w",
