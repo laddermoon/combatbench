@@ -29,14 +29,13 @@ simulator:
     flag_height: 1.10
     flag_grace: 5
     flag_settle: 20
-    # —— 步令系统 ——
+    # —— 步令系统（D16 时限预算） ——
     step_enabled: true
     steps_per_action: 25            # 必须与上面 runtime 一致
-    lift_thr: 0.1                   # 摆动脚选举: force<0.1×BW
-    land_thr: 0.4                   # 落地判定: force>0.4×BW
-    lift_deb: 2                     # 连续卸力帧数
-    timeout_age: 6.0                # 指令超时 (age)
-    age_inc: 0.1                    # 步龄/帧
+    budget_min_s: 0.15              # 不动令时限 (20Hz→3帧)
+    budget_max_s: 0.50              # 满行程令时限 (20Hz→10帧)
+    budget_travel_m: 0.53           # 满行程标称距离 (2×STAGGER_UNIT)
+    foot_tol: 0.10                  # 到位判定阈值 m
     wall_margin: 0.30
 
 plugins:
