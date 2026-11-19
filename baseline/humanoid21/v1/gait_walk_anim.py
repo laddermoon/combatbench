@@ -25,23 +25,12 @@ from baseline.humanoid21.v1.step_scheduler import (
 )
 
 # ---------------------------------------------------------------------------
-# 场地：24 边形墙（内切半径 3.4106 取自 XML wall_00 中点）
+# 场地：arena_geom 共享 24 边形（battle_circular_v2）
 # ---------------------------------------------------------------------------
-N_SEG = 24
-APOTHEM = float(np.hypot(3.3814, 0.4452))            # 内切圆半径
-CIRC = APOTHEM / math.cos(math.pi / N_SEG)           # 外接半径 ≈3.44
-_VERT_ANGLES = np.linspace(0, 2 * math.pi, N_SEG, endpoint=False)
-WALL_VERTS = CIRC * np.stack([np.cos(_VERT_ANGLES),
-                              np.sin(_VERT_ANGLES)], axis=1)
-# 边中点外法线方向（顶点角 + π/24）
-_EDGE = _VERT_ANGLES + math.pi / N_SEG
-WALL_N = np.stack([np.cos(_EDGE), np.sin(_EDGE)], axis=1)
-MARGIN = 0.30            # 脚点距墙安全边距 m
-
-
-def inside_arena(p: np.ndarray, margin: float = MARGIN) -> bool:
-    """24 边形凸域判定：p·n_i ≤ apothem−margin ∀i。"""
-    return bool(np.all(WALL_N @ p <= APOTHEM - margin))
+from baseline.humanoid21.v1.arena_geom import (
+    APOTHEM, CIRC, NORMALS as WALL_N, VERTS as WALL_VERTS,
+    WALL_MARGIN as MARGIN, inside_arena,
+)
 
 
 # ---------------------------------------------------------------------------
