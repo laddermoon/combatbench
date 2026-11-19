@@ -202,9 +202,12 @@
 - **改法**：令=(目标构型, 时限 H)，H=0.15~0.50s 按动脚行程线性
   插值（s_max=0.53m），到期帧测 d_mv/d_st/d_yaw；foot_ok=
   d_mv<0.10m。step_boundary.py 删除，age→age/H 归一化。
-- **重启**（旧相位机 run 作废）：
-  - `v2_s4_step_d16_r1` GPU0 PID 710969，warm u2315
-  - `v2_s4_step_noarm_d16_r1` GPU1 PID 722185，warm S2 u1680
+- **重启**（旧相位机 run 作废；obs dim5 后改为"剩余预算"
+  故二次重启）：
+  - `v2_s4_step_d16b_r1` GPU0 PID 773255，warm u2315
+  - `v2_s4_step_noarm_d16b_r2` GPU1 PID 809292，warm S2 u1680
+  - 注：`v2_s4_step_d16_r1`/`_noarm_d16_r1`/`noarm_d16b_r1`
+    为废弃目录（旧 obs 语义/yaml 漏改崩溃），已删
 - **smoke 验证**：到期结算/轮转/归一化 age/通道装配全通；
   u3 实测 step 通道 adv_std 健康（mv 0.28/foot 0.17）。
 - **观察点**：foot_rate(到位率) 爬坡、d_mv 破 0.4、budget 均值
