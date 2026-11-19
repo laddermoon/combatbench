@@ -1,9 +1,11 @@
 """V2 臂令跟随仿真器（D17）：臂目标只进观测+奖励，不覆写动作。
 
-继承 V2StepSimulator（79 维 obs + 步令时限预算）。与 S3 臂接管的
+继承 V2StepSimulator（79 维 obs），但 `step_enabled` 默认 False——
+本实验是 S3 血统（平衡+臂令+推力），不背 S4 步令任务；需臂令+步令
+联合实验时 yaml 显式 `step_enabled: true` 即可打开。与 S3 臂接管的
 唯一差别：`arm_override=False`——arm_tgt 指令流照常生成/写入
 seg[1:7]，但 act[15:21] 完全归策略；跟随压力改由奖励通道表达
-（与步令同构的"可忽略指令"：站稳时跟随划算，失衡时策略自己压掉）。
+（"可忽略指令"：站稳时跟随划算，失衡时策略自己压掉）。
 
 跟随误差（每 action step 结算一次，obs 承诺目标即当期脚本目标）：
     err_r = ‖act[15:18] − tgt[0:3]‖   （右臂 3 关节，norm 空间）
@@ -29,6 +31,7 @@ class V2ArmCmdSimulator(V2StepSimulator):
 
     def __init__(self, *args: Any, **kw: Any) -> None:
         kw.setdefault("arm_override", False)
+        kw.setdefault("step_enabled", False)
         super().__init__(*args, **kw)
 
     # -------------------------------------------------------- action 结算 --

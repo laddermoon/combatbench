@@ -772,10 +772,10 @@ POSTURE_ORDERS 生成表、step_cost、order_name。
 - `../hierarchy/SKILL_TRAINING_PLAN.md` — 前代 11 技能训练方案与步界结算
 - `../hierarchy/STRIKE_LAUNCH_GATE.md` — 技能入口门控先例（与问题五相关）
 
-## D17 — 臂令改"跟随奖励"制（取代接管覆写，S4 实验分支）
+## D17 — 臂令改"跟随奖励"制（取代接管覆写，S3 实验分支）
 
 **日期**：2026-11-19 ｜ **状态**：已定稿（实现于
-`v2_armcmd_simulator.py`，实验 `v2_s4_armcmd`）
+`v2_armcmd_simulator.py`，实验 `v2_s3_armcmd`）
 
 **动因**：S3 臂接管（flag=1 时覆写 act[15:21]=arm_tgt）造成
 off-policy 污染——策略臂维优化从未执行的动作或 logprob
@@ -793,18 +793,30 @@ off-policy 污染——策略臂维优化从未执行的动作或 logprob
   即当期脚本目标），经 `get_derived_state(["arm_follow"])`
   上报
 - 奖励：新通道 `r_arm_r`/`r_arm_l` = −w·err 逐帧稠密，
-  w=1.0、aw=0.5（次要任务，不盖步令 aw1.5~2）
+  w=1.0、aw=0.5（次要任务，不盖 fall/potential）
 - "何时忽略"完全留给策略学——失衡期 arm 惩罚是噪声，
   aw 比重让 fall/potential 主导
 - warm-start：S2 u1680（无臂接管史的干净底座）
 
-**扰动（追加）**：躯干推力固定 **40N 档最高级**——每推
-40N × 持续 31-40 帧（1.55-2.0s），不接受 100N。原 12 级
-课程被覆盖为单级（`LEVEL_FORCES=(40.0,)`、
-`LEVEL_DURATION_RANGES=((31,40),)`；S4 on_eval 无晋级逻辑，
-_level 恒 0 → 全程同强度）。训练与 eval 同走 build_jobs →
-eval 的 arm_err/foot_rate/falls 即"推力下兼顾度"的直接读数。
-目的：检验策略能否在中等扰动下兼顾平衡与臂令。
+**范围修正（实现后次日）**：初版误建于 V2S4Step 之上
+（`v2_s4_armcmd`），步令任务全程开启、8 通道——偏离
+"S3 复制+两臂通道"的本意。已改为 **S3 血统**：
+`V2S3ArmCmd(V2S3BalanceArm)` + `r_arm_r/l`（5 通道：
+r_potential/r_fall/r_std_clip/r_arm_r/r_arm_l），
+env 改用 `v2_balance_armcmd_env.yaml`（= S3 env 全套 +
+V2ArmCmdSimulator，`step_enabled` 类内默认 False）。
+本分支不含步令任务——它是"接管 vs 奖励"的臂令载体对照，
+不是 S4 变体。
 
-**对照**：armcmd(GPU2) vs noarm(GPU1) vs 已废接管组——隔离
-"臂令载体形式"变量。
+**扰动**：躯干推力固定 **40N 档最高级**——每推 40N ×
+持续 31-40 帧（1.55-2.0s），不接受 100N。原 12 级课程
+被覆盖为单级（`LEVEL_FORCES=(40.0,)`、
+`LEVEL_DURATION_RANGES=((31,40),)`；继承链晋级判断
+`_level < len-1` 恒假 → 全程同强度）。训练与 eval 同走
+build_jobs → eval 的 arm_err/recovery/falls 即"推力下
+兼顾度"的直接读数。目的：检验策略能否在中等扰动下
+兼顾平衡与臂令。
+
+**对照**：armcmd(GPU2) vs S3 接管史（v2_s3_balance_arm
+既往 run）——隔离"臂令载体形式"单一变量：同 S2 u1680
+底座、同推力插件，唯一差别是臂令进奖励还是进覆写。

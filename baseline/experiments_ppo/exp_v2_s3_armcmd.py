@@ -1,28 +1,27 @@
-"""V2 线 S4 分支 — 臂令跟随 + 步令跟随（79 维，D16/D17）。
+"""V2 线臂令跟随分支 — 平衡 + 臂令（79 维，D17，S3 血统）。
 
 任务核心：V2ArmCmdSimulator——臂目标指令流照常进 obs（seg[1:7]），
 但 act[15:21] 不覆写、归策略全权；跟随压力由两个新稠密通道表达。
-步令部分与 v2_s4_step 完全一致（时限预算到期结算）。
+本分支是 **S3 的奖励制对照**：任务=推力平衡 + 臂令跟随，
+不含 S4 步令任务（step_enabled=False）。
 
-通道（8，全 gamma 0.99）：
+通道（5，全 gamma 0.99）：
     r_potential = 0.01·φ(t)                          aw=3.0
-    r_fall      = 摔倒onset罚 + 持续靠墙罚            aw=2.0
-    r_step_foot = 到期帧: d_mv<0.10 → +1              aw=1.5
-    r_step_mv   = 到期帧: −w_mv·‖指令脚位−目标‖        aw=2.0
-    r_step_st   = 到期帧: −w_st·‖stance脚−发令位‖      aw=2.0
-    r_step_yaw  = 到期帧: −w_yaw·|yaw−目标yaw|         aw=2.0
+    r_fall      = 摔倒onset罚 + 靠墙罚 + 受推clean赏   aw=2.0
+    r_cross     = 支撑轮换计时引导                     aw=2φ²
     r_arm_r     = −w·‖act[15:18]−tgt[0:3]‖  逐帧      aw=0.5
     r_arm_l     = −w·‖act[18:21]−tgt[3:6]‖  逐帧      aw=0.5
 
-臂通道是"可忽略指令"：站稳跟随划算、失衡时策略自行压权重
-（与步令同构）。arm_override=False 消除了接管方案的
-off-policy 污染——执行动作=策略输出，臂学习信用分配干净。
+臂通道是"可忽略指令"：站稳跟随划算、失衡时策略自行压权重。
+arm_override=False 消除了接管方案的 off-policy 污染——执行
+动作=策略输出，臂学习信用分配干净（S3 接管是 arm 组步令
+学习卡死的首要嫌疑，本实验即其替代验证）。
 
-扰动（D17 追加）：躯干推力固定 40N 档最高级——每推 40N ×
-持续 31-40 帧（1.55-2.0s）。不接受 100N；目的=检验策略能否
-在中等扰动下兼顾平衡与臂令（训练与 eval 同走 build_jobs，
-eval 指标即推力条件下的兼顾度）。S4 on_eval 不跑晋级，
-_level 恒 0 → 全程同一扰动强度。
+扰动：躯干推力固定 40N 档最高级——每推 40N × 持续 31-40 帧
+（1.55-2.0s）。不接受 100N；目的=检验策略能否在中等扰动下
+兼顾平衡与臂令（训练与 eval 同走 build_jobs，eval 指标即
+推力条件下的兼顾度）。继承链 BalancePure 的晋级逻辑对单级
+表天然失效（_level 恒 0 → 全程同一扰动强度）。
 
 warm-start: --resume-from v2_s2_balance/checkpoints/
 checkpoint_u01680.pt --reset-update（S2 best，无臂接管史）
@@ -40,20 +39,20 @@ from envs.framework.parameterized_blueprint import (
     ParameterizedEnvBlueprint,
 )
 
-from .exp_v2_s4_step import V2S4Step
+from .exp_v2_s3_balance_arm import V2S3BalanceArm
 
 _V1 = Path(__file__).resolve().parent.parent / "humanoid21" / "v1"
 
 
-class V2S4ArmCmd(V2S4Step):
-    name = "v2_s4_armcmd"
+class V2S3ArmCmd(V2S3BalanceArm):
+    name = "v2_s3_armcmd"
 
     # 扰动封顶：40N 档最高级（原 12 级课程取第 3 级强度固定）。
     LEVEL_FORCES = (40.0,)
     LEVEL_DURATION_RANGES = ((31, 40),)
 
-    _channel_names = V2S4Step._channel_names + ("r_arm_r", "r_arm_l")
-    _channel_gammas = dict(V2S4Step._channel_gammas,
+    _channel_names = V2S3BalanceArm._channel_names + ("r_arm_r", "r_arm_l")
+    _channel_gammas = dict(V2S3BalanceArm._channel_gammas,
                            r_arm_r=0.99, r_arm_l=0.99)
     _ARM_OBS = {"robot_a": "arm_follow_a", "robot_b": "arm_follow_b"}
 
@@ -62,7 +61,7 @@ class V2S4ArmCmd(V2S4Step):
 
     def _env_pb(self):
         return ParameterizedEnvBlueprint.load(
-            _V1 / "v2_step_armcmd_env.yaml")
+            _V1 / "v2_balance_armcmd_env.yaml")
 
     # ---------------- 轨迹 ----------------
     def _build_agent_trajectory(
@@ -121,4 +120,4 @@ class V2S4ArmCmd(V2S4Step):
         return res
 
 
-EXPERIMENT_CLASS = V2S4ArmCmd
+EXPERIMENT_CLASS = V2S3ArmCmd
