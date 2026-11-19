@@ -8,7 +8,7 @@
         └─ age_f ≥ budget → 到期结算：量测(脚位+yaw) vs 发令锚的
            apply_order 目标 → step_report 落袋（observer 取）
            → cur←next, next=sched.sample(墙 collision_fn)
-    get_observation: seg[10:16]=step_cur(5+age/budget), seg[16:22]=step_next
+    get_observation: seg[10:16]=step_cur(5+剩余预算), seg[16:22]=step_next
 
 时限预算（D16）：令到点必须处于目标状态，中间过程不测量。
 发令时刻按动脚行程线性插值：H = h_min + (h_max-h_min)·s/s_max，
@@ -115,8 +115,10 @@ class V2StepSimulator(V2Simulator):
                 st = self._sst.get(rid)
                 if st is not None:
                     cur_v = st["cur"].to_vec()
+                    # dim5 = 剩余预算(0.1/帧)：发令=H×0.1，逐帧−0.1
+                    # 归零即到期——策略据此调节奏/预估终点（D16）
                     cur_v[5] = np.float32(
-                        min(st["age_f"] / max(st["budget"], 1e-9), 1.0))
+                        max(st["budget"] - st["age_f"], 0.0) * 0.1)
                     arr[BODY_DIM + _CUR.start:BODY_DIM + _CUR.stop] = cur_v
                     arr[BODY_DIM + _NXT.start:BODY_DIM + _NXT.stop] = \
                         st["nxt"].to_vec()
