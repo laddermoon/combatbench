@@ -1,18 +1,18 @@
-"""V2 线 Stage 4 — 步令跟随（79 维，S4_PLAN.md）。
+"""V2 线 Stage 4 — 步令跟随（79 维，S4_PLAN.md / D16）。
 
-任务核心：V2StepSimulator 双机步令流（相位机边界结算），指令段
-obs[67:78] = step_cur(5+age)/step_next。姿态约束 r_std_clip 与推力
-课程移除；臂脚本接管沿用 S3。
+任务核心：V2StepSimulator 双机步令流（时限预算到期结算），指令段
+obs[67:78] = step_cur(5+age/budget)/step_next。姿态约束 r_std_clip 与
+推力课程移除；臂脚本接管沿用 S3。
 
 通道（6，全 gamma 0.99）：
     r_potential = 0.01·φ(t)                    aw=3.0
     r_fall      = 摔倒onset罚 + 持续靠墙罚      aw=2.0
-    r_step_foot = 边界帧: executed==cmd → +1    aw=1.5
-    r_step_mv   = 边界帧: −w_mv·‖执行脚位−目标‖  aw=2.0
-    r_step_st   = 边界帧: −w_st·‖另一脚−发令位‖  aw=2.0
-    r_step_yaw  = 边界帧: −w_yaw·|yaw−目标yaw|   aw=2.0
+    r_step_foot = 到期帧: d_mv<0.10 → +1        aw=1.5
+    r_step_mv   = 到期帧: −w_mv·‖指令脚位−目标‖  aw=2.0
+    r_step_st   = 到期帧: −w_st·‖stance脚−发令位‖ aw=2.0
+    r_step_yaw  = 到期帧: −w_yaw·|yaw−目标yaw|   aw=2.0
 
-步令通道稀疏（边界帧才非零），摔倒期照发——靠 aw 比
+步令通道稀疏（到期帧才非零），摔倒期照发——靠 aw 比
 （步态 vs fall/potential）让策略学会"先保命再跟令"。
 
 warm-start: --resume-from v2_s3_balance_arm_r3/checkpoints/
@@ -170,8 +170,8 @@ class V2S4Step(V2S3BalanceArm):
     # ---------------- eval ----------------
     def on_eval(self, episodes, update) -> Dict[str, Any]:
         max_pots, all_falls = [], []
-        n_ev = n_foot_ok = n_timeout = 0
-        sum_mv = sum_st = sum_yaw = 0.0
+        n_ev = n_foot_ok = 0
+        sum_mv = sum_st = sum_yaw = sum_budget = 0.0
 
         for ep in episodes:
             T = ep.num_frames
@@ -198,10 +198,9 @@ class V2S4Step(V2S3BalanceArm):
                     np.asarray(extract_per_step_field(
                         ep.observer_outputs, sr_key, "foot_ok",
                         T))[m] > 0.5))
-                n_timeout += int(np.sum(
-                    np.asarray(extract_per_step_field(
-                        ep.observer_outputs, sr_key, "timed_out",
-                        T))[m] > 0.5))
+                sum_budget += float(np.sum(np.asarray(
+                    extract_per_step_field(
+                        ep.observer_outputs, sr_key, "budget", T))[m]))
                 sum_mv += float(np.sum(np.asarray(
                     extract_per_step_field(
                         ep.observer_outputs, sr_key, "d_mv", T))[m]))
@@ -216,7 +215,7 @@ class V2S4Step(V2S3BalanceArm):
         success_rate = sum(m >= 0.9 for m in max_pots) / n
         falls_mean = sum(all_falls) / max(len(all_falls), 1)
         foot_rate = n_foot_ok / max(n_ev, 1)
-        timeout_rate = n_timeout / max(n_ev, 1)
+        budget_mean = sum_budget / max(n_ev, 1)
         d_mv = sum_mv / max(n_ev, 1)
         d_st = sum_st / max(n_ev, 1)
         d_yaw = sum_yaw / max(n_ev, 1)
@@ -261,7 +260,7 @@ class V2S4Step(V2S3BalanceArm):
                 "falls": round(falls_mean, 2),
                 "step_ev": n_ev,
                 "foot_rate": round(foot_rate, 3),
-                "timeout": round(timeout_rate, 3),
+                "budget": round(budget_mean, 1),
                 "d_mv": round(d_mv, 3),
                 "d_st": round(d_st, 3),
                 "d_yaw": round(d_yaw, 3),

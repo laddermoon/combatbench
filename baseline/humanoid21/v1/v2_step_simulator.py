@@ -1,21 +1,25 @@
-"""V2 步令跟随仿真器（S4）：指令流状态机 + 步边界结算（S4_PLAN §2）。
+"""V2 步令跟随仿真器（S4）：指令流状态机 + 时限预算结算（D16）。
 
 继承 V2Simulator（79 维 obs + 臂脚本接管）。新增每机独立指令流：
 
-    reset:  随机姿态起链 → cur / next 两条采样令（age=0）
-    每 action step（set_action 推进点，D6 同点位）:
-        bd.update(feet_forces)  —— obs 同源力信号驱相位机
-        ├─ 边界/超时 → 量测(脚位+yaw) vs 发令锚的 apply_order 目标
-        │            → step_report 落袋（observer 取）
-        │            → cur←next, next=sched.sample(墙 collision_fn)
-        └─ 否则 age += 0.1 继续
-    get_observation: seg[10:16]=step_cur(5+age), seg[16:22]=step_next
+    reset:  随机姿态起链 → cur / next 两条采样令
+    每 action step（physical_step 末子步，obs 帧对齐点）:
+        age_f += 1
+        └─ age_f ≥ budget → 到期结算：量测(脚位+yaw) vs 发令锚的
+           apply_order 目标 → step_report 落袋（observer 取）
+           → cur←next, next=sched.sample(墙 collision_fn)
+    get_observation: seg[10:16]=step_cur(5+age/budget), seg[16:22]=step_next
 
-step_report 字段（边界帧一次性产出，observer 每步读取）：
-    event/foot_ok/timed_out/executed/cmd_foot/d_mv/d_st/d_yaw/order
+时限预算（D16）：令到点必须处于目标状态，中间过程不测量。
+发令时刻按动脚行程线性插值：H = h_min + (h_max-h_min)·s/s_max，
+h_min=0.15s, h_max=0.50s（20Hz → 3~10 帧），s_max≈0.53m。
 
-部署 parity：step_boundary.StepBoundary 与 feet_forces 皆是 obs
-流纯函数——指令源在部署侧拿同一 obs 驱动同码，轮转时机一致。
+step_report 字段（到期帧一次性产出，observer 每步读取）：
+    event/foot_ok(d_mv<tol)/executed/cmd_foot/d_mv/d_st/d_yaw/
+    age/budget/order
+
+部署 parity：指令源在部署侧只需按同样公式数帧——发令时拿
+动脚位+目标位算同一 budget，轮转时机天然一致（无观测侧检测）。
 """
 from __future__ import annotations
 
@@ -26,7 +30,6 @@ import numpy as np
 
 from .v2_simulator import BODY_DIM, CMD_DIM, OBS_DIM, V2Simulator
 from .arena_geom import inside_arena
-from .step_boundary import StepBoundary
 from .step_gait import (
     POSTURES, StepOrder, apply_order,
 )
@@ -36,6 +39,7 @@ _ROBOTS = ("robot_a", "robot_b")
 _CUR = slice(10, 16)     # seg 内偏移：step_cur
 _NXT = slice(16, 22)     # seg 内偏移：step_next
 _FOOT_BODY = {-1: "foot_left", +1: "foot_right"}
+_EXEC_EPS = 0.01         # 判定"哪只脚动了"的最小位移 m
 
 
 def _quat_yaw(q_wxyz: np.ndarray) -> float:
@@ -53,26 +57,27 @@ class V2StepSimulator(V2Simulator):
 
     def __init__(self, *args: Any,
                  step_enabled: bool = True,
-                 lift_thr: float = 0.1,
-                 land_thr: float = 0.4,
-                 lift_deb: int = 2,
-                 timeout_age: float = 6.0,
-                 age_inc: float = 0.1,
+                 budget_min_s: float = 0.15,
+                 budget_max_s: float = 0.50,
+                 budget_travel_m: float = 0.53,
+                 foot_tol: float = 0.10,
                  wall_margin: float = 0.30,
                  steps_per_action: int = 25,
                  **kw: Any) -> None:
         super().__init__(*args, **kw)
         self._step_on = bool(step_enabled)
-        self._bd_args = dict(lift_thr=lift_thr, land_thr=land_thr,
-                             lift_deb=lift_deb, timeout_age=timeout_age,
-                             age_inc=age_inc)
+        self._travel_max = float(budget_travel_m)
+        self._foot_tol = float(foot_tol)
         self._wall_margin = float(wall_margin)
-        # 必须与 yaml runtime.phy_steps_per_action 一致——检测挂在
-        # 每 action step 最后一个物理子步，使该帧 obs 力=检测输入
-        # （部署侧指令源见到这帧 obs 即轮转 ⇒ 训/部时序严格对齐）。
+        # 必须与 yaml runtime.phy_steps_per_action 一致——结算挂在
+        # 每 action step 最后一个物理子步，使到期帧 obs=结算量测点
+        # （部署侧指令源数同一帧计数 ⇒ 训/部时序严格对齐）。
         self._spa = int(steps_per_action)
+        dt_action = float(self.model.opt.timestep) * self._spa
+        self._h_min = max(1.0, budget_min_s / dt_action)
+        self._h_max = max(self._h_min, budget_max_s / dt_action)
         self._phys_sub = 0
-        # 每机 {st, cur, nxt, bd, anchor, tgt, report, sched}
+        # 每机 {st, cur, nxt, anchor, tgt, budget, age_f, report, sched}
         self._sst: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------- reset --
@@ -89,7 +94,6 @@ class V2StepSimulator(V2Simulator):
             init_p = POSTURES[int(rng.integers(len(POSTURES)))]
             st = {"sched": sched,
                   "st": SchedState.initial(init_p),
-                  "bd": StepBoundary(**self._bd_args),
                   "report": None}
             self._sst[rid] = st
             st["cur"] = sched.sample(st["st"])
@@ -111,7 +115,8 @@ class V2StepSimulator(V2Simulator):
                 st = self._sst.get(rid)
                 if st is not None:
                     cur_v = st["cur"].to_vec()
-                    cur_v[5] = np.float32(st["bd"].age)
+                    cur_v[5] = np.float32(
+                        min(st["age_f"] / max(st["budget"], 1e-9), 1.0))
                     arr[BODY_DIM + _CUR.start:BODY_DIM + _CUR.stop] = cur_v
                     arr[BODY_DIM + _NXT.start:BODY_DIM + _NXT.stop] = \
                         st["nxt"].to_vec()
@@ -139,9 +144,9 @@ class V2StepSimulator(V2Simulator):
             if st is None:
                 continue
             st["report"] = None
-            ev = st["bd"].update(self._get_feet_forces(rid))
-            if ev is not None:
-                self._settle(rid, ev)
+            st["age_f"] += 1
+            if st["age_f"] >= st["budget"]:
+                self._settle(rid)
                 self._rotate(rid)
 
     # ----------------------------------------------------------- 内部 ----
@@ -155,13 +160,19 @@ class V2StepSimulator(V2Simulator):
         return fl, fr, yaw
 
     def _issue(self, rid: str) -> None:
-        """cur 令生效：存发令锚 + 预算目标 + 相位机开新周期。"""
+        """cur 令生效：存发令锚 + 目标位 + 按行程算时限预算。"""
         st = self._sst[rid]
         fl, fr, yaw = self._feet_yaw(rid)
         tfl, tfr, tyaw = apply_order(fl, fr, yaw, st["cur"])
         st["anchor"] = (fl, fr, yaw)
         st["tgt"] = (tfl, tfr, tyaw)
-        st["bd"].begin_order(st["cur"].foot)
+        # 时限预算：动脚行程 s 线性插值 [h_min, h_max]（D16）
+        mv_pos = fl if st["cur"].foot < 0 else fr
+        mv_tgt = tfl if st["cur"].foot < 0 else tfr
+        s = float(np.linalg.norm(mv_pos - mv_tgt))
+        st["budget"] = (self._h_min + (self._h_max - self._h_min)
+                        * min(s / self._travel_max, 1.0))
+        st["age_f"] = 0
 
     def _sample_next(self, rid: str):
         st = self._sst[rid]
@@ -180,38 +191,36 @@ class V2StepSimulator(V2Simulator):
         st["nxt"] = self._sample_next(rid)
         self._issue(rid)
 
-    def _settle(self, rid: str, ev) -> None:
-        """边界帧量测结算：executed/超时 → 报告。"""
+    def _settle(self, rid: str) -> None:
+        """到期帧量测结算：到位判定 → 报告。"""
         st = self._sst[rid]
         fl, fr, yaw = self._feet_yaw(rid)
         tfl, tfr, tyaw = st["tgt"]
         afl, afr, _ = st["anchor"]
         o = st["cur"]
 
-        if ev.timed_out:
-            executed = None
-            meas_foot = o.foot                     # 该动的脚没动成
-            ex_pos = fl if o.foot < 0 else fr      # 按当前位量测
-        else:
-            executed = int(ev.executed)
-            ex_pos = fl if executed < 0 else fr
-
+        mv_pos = fl if o.foot < 0 else fr
         tgt_mv = tfl if o.foot < 0 else tfr        # 目标动脚落点
-        # 另一脚（stance）：超时=非指令脚；落地=非执行脚
-        other_side = -o.foot if executed is None else -executed
-        other_pos = fl if other_side < 0 else fr
-        other_anchor = afl if other_side < 0 else afr
+        other_pos = fr if o.foot < 0 else fl       # stance 脚=非指令脚
+        other_anchor = afr if o.foot < 0 else afl
+        d_mv = float(np.linalg.norm(mv_pos - tgt_mv))
+
+        # 诊断：哪只脚实际动了（净位移大者；都≈0 → 0 未动）
+        dl = float(np.linalg.norm(fl - afl))
+        dr = float(np.linalg.norm(fr - afr))
+        executed = (0.0 if max(dl, dr) < _EXEC_EPS
+                    else (-1.0 if dl > dr else 1.0))
 
         st["report"] = {
             "event": 1.0,
-            "foot_ok": float(executed == o.foot) if executed is not None else 0.0,
-            "timed_out": float(ev.timed_out),
-            "executed": float(executed) if executed is not None else 0.0,
+            "foot_ok": float(d_mv < self._foot_tol),
+            "executed": executed,
             "cmd_foot": float(o.foot),
-            "d_mv": float(np.linalg.norm(ex_pos - tgt_mv)),
+            "d_mv": d_mv,
             "d_st": float(np.linalg.norm(other_pos - other_anchor)),
             "d_yaw": float(abs(_wrap_pi(yaw - tyaw))),
-            "age": float(ev.age),
+            "age": float(st["age_f"]),
+            "budget": float(st["budget"]),
             "order": o.to_vec(),
         }
 

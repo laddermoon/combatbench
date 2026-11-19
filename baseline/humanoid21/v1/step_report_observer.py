@@ -1,14 +1,15 @@
 """步令结算 observer：把 V2StepSimulator 的 step_report 透传成 per-step 字段。
 
-非边界帧全零；边界帧字段：
+非到期帧全零；到期帧字段（D16 时限预算语义）：
     event      = 1
-    foot_ok    = 迈对脚 (executed==cmd_foot)
-    timed_out  = 超时判负
-    executed   = 实际落地脚 (-1/0/+1；0=无落地)
+    foot_ok    = 到位判定 (d_mv < foot_tol)
+    executed   = 实际净位移大的脚 (-1/0/+1；0=双脚未动, 诊断用)
     cmd_foot   = 指令脚
-    d_mv       = 执行脚位↔目标脚位 距离 m
-    d_st       = 另一脚↔发令原位 距离 m
+    d_mv       = 指令脚位↔目标脚位 距离 m
+    d_st       = stance脚↔发令原位 距离 m
     d_yaw      = yaw↔目标yaw 差 rad
+    age        = 实际耗时(帧, 恒=budget)
+    budget     = 本令时限预算(帧)
 
 实验侧把这些字段直接装配成 r_step_foot / r_step_mv / r_step_st /
 r_step_yaw 四个稀疏通道。报告经 get_derived_state(["step_reports"])
@@ -21,9 +22,10 @@ from typing import Any, Dict
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
 _ZERO: Dict[str, Any] = {
-    "event": 0.0, "foot_ok": 0.0, "timed_out": 0.0,
+    "event": 0.0, "foot_ok": 0.0,
     "executed": 0.0, "cmd_foot": 0.0,
-    "d_mv": 0.0, "d_st": 0.0, "d_yaw": 0.0, "age": 0.0,
+    "d_mv": 0.0, "d_st": 0.0, "d_yaw": 0.0,
+    "age": 0.0, "budget": 0.0,
 }
 
 
