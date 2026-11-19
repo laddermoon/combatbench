@@ -212,8 +212,9 @@ class V2S4Step(V2S3BalanceArm):
                     extract_per_step_field(
                         ep.observer_outputs, sr_key, "d_yaw", T))[m]))
 
-        success = (float(np.mean([m >= 0.9 for m in max_pots]))
-                   if max_pots else 0.0)
+        n = max(len(max_pots), 1)
+        success_rate = sum(m >= 0.9 for m in max_pots) / n
+        falls_mean = sum(all_falls) / max(len(all_falls), 1)
         foot_rate = n_foot_ok / max(n_ev, 1)
         timeout_rate = n_timeout / max(n_ev, 1)
         d_mv = sum_mv / max(n_ev, 1)
@@ -223,20 +224,49 @@ class V2S4Step(V2S3BalanceArm):
                    - 0.5 * min(d_mv / 0.5, 1.0)
                    - 0.5 * min(d_st / 0.3, 1.0)
                    - 0.3 * min(d_yaw / 1.0, 1.0))
+
+        # best 追踪（BalancePure 同构：quality+EMA+潜在 best）
+        if self._b_quality_ema is None:
+            self._b_quality_ema = quality
+        else:
+            self._b_quality_ema = (0.85 * self._b_quality_ema
+                                   + 0.15 * quality)
+        improved = (success_rate >= 0.9
+                    and quality > self._b_best_quality)
+        if improved:
+            self._b_best_quality = quality
+        trend_improved = (success_rate >= 0.9
+                          and self._b_quality_ema > self._b_best_quality)
+        if trend_improved:
+            self._b_best_quality = self._b_quality_ema
+        if improved or trend_improved:
+            self._b_last_best_update = update
+        if self._b_last_best_update < 0:
+            self._b_last_best_update = update
+        pot_mean = sum(max_pots) / n
+        improved_pot = pot_mean > self._best_potential
+        if improved_pot:
+            self._best_potential = pot_mean
+
+        no_improvement = update - self._b_last_best_update
+        stop_training = (no_improvement >= self._no_improvement_limit
+                         and update >= self._min_updates)
+
         return {
-            "eval.level": 0.0,
-            "eval.success": success,
-            "eval.potential": float(np.mean(max_pots))
-            if max_pots else 0.0,
-            "eval.falls": float(np.mean(all_falls))
-            if all_falls else 0.0,
-            "eval.step_events": float(n_ev),
-            "eval.step_foot_rate": foot_rate,
-            "eval.step_timeout_rate": timeout_rate,
-            "eval.step_d_mv": d_mv,
-            "eval.step_d_st": d_st,
-            "eval.step_d_yaw": d_yaw,
-            "eval.quality": quality,
+            "is_new_best": improved or improved_pot or trend_improved,
+            "stop_training": stop_training,
+            "info": {
+                "max_pot": round(pot_mean, 3),
+                "success": round(success_rate, 3),
+                "falls": round(falls_mean, 2),
+                "step_ev": n_ev,
+                "foot_rate": round(foot_rate, 3),
+                "timeout": round(timeout_rate, 3),
+                "d_mv": round(d_mv, 3),
+                "d_st": round(d_st, 3),
+                "d_yaw": round(d_yaw, 3),
+                "quality": round(quality, 3),
+            },
         }
 
 

@@ -163,3 +163,17 @@
   step_d_mv/step_d_st/step_d_yaw + quality
   （= foot_rate − 0.5·d_mv/0.5 − 0.5·d_st/0.3 − 0.3·d_yaw/1.0，
   各项 clip[0,1]）。
+
+### r1→r2 插曲：on_eval 契约修复
+
+- r1（u1-u88）`on_eval` 误把指标平铺返回——框架契约是
+  `{is_new_best, stop_training, info}`，eval_info 全程为空、
+  best 追踪不工作（训练本身无影响，u85 ckpt 完整）。
+- 修复后 r2 续跑：`--resume-from r1/checkpoints/checkpoint_u00085.pt`
+  （不 reset-update，u86 续编）。PID 3390678。
+- **u90 首个有效 eval**：step_ev=7064（边界事件密集）、
+  foot_rate=0.521（≈随机——策略还没理会指令脚）、
+  timeout=0.002（脚频抬落，相位机几乎不走超时路径）、
+  d_mv=0.596m、d_yaw=0.347rad、d_st≈0、quality=-0.083。
+  结论：机制端到端正常，订单在真实落地中结算；策略当前
+  把指令当噪声，待观察 foot_rate 爬升。
