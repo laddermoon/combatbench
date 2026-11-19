@@ -72,7 +72,7 @@
 
 ---
 
-## 2026-11-18 `v2_s3_balance_arm` — 随机臂脚本接管推力平衡（S3）🔄 续训中
+## 2026-11-18 `v2_s3_balance_arm` — 随机臂脚本接管推力平衡（S3）✅ 已收
 
 - **实验名**：`v2_s3_balance_arm`（`experiments_ppo/exp_v2_s3_balance_arm.py`，
   继承 V2S2Balance）
@@ -118,6 +118,22 @@
   ```
   u2291 续编恢复。注意：level 卡在 7.0 已达 ~800 update，
   r2 全程 eval success=1.0/recovery≈0.64 平台——待观察。
+- **r3 结局**（11-19 ~10:00 手动收）：跑到 u4234 停。
+  **level 7 卡死全程 ~2770 updates**（晋级阈值
+  `PROMOTE_RECOVERY_RATE=0.8` 不可及——臂被脚本接管后
+  100N×16-20 帧推的 recovery 峰值只有 0.673）。平台期非但不涨
+  还在退化：recovery 0.67→0.52、push_falls 290→380、
+  mixture_weight_entropy≈0.03 单模态塌缩。判定边际收益为零，
+  停训保留算力进 S4。
+- **★ S4 warm-start 用最优 ckpt**：
+  `baseline/runs/v2_s3_balance_arm_r3/checkpoints/checkpoint_u02315.pt`
+  ——best-of-run（quality=70+0.673，全训练史最后一次
+  [new_best]，`policy/model.pt` 即该 update 导出）。
+  备选同档：`checkpoint_u02300.pt`（rec 0.642）。
+  避用 u4000+ 尾部 ckpt（退化段）。
+- **S3 最终能力画像**（u2315 best）：100N×16-20 帧推力课程
+  level 7，eval success=1.0（撑满回合）、recovery=0.673、
+  push_falls=283/866、臂接管下自主站立+碎步平衡。
 - **备注**：重启时发现全部 8 卡被外来 `wildrig-multi` 矿工
   （pearlhash → 155.133.196.229，cwd `/var/lib/prl/gpu-*`，
   ~974MiB/卡）占用——自 11-18 17:34 起在跑，待排查处置。
