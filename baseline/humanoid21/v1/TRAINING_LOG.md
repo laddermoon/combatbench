@@ -137,3 +137,29 @@
 - **备注**：重启时发现全部 8 卡被外来 `wildrig-multi` 矿工
   （pearlhash → 155.133.196.229，cwd `/var/lib/prl/gpu-*`，
   ~974MiB/卡）占用——自 11-18 17:34 起在跑，待排查处置。
+
+## S4 r1 — v2_s4_step_r1（步令跟随首训）
+
+- **启动**（11-19 ~11:1x，GPU0 独占）：
+  ```bash
+  PYTHONPATH=/data1/mono/things/combatbench CUDA_VISIBLE_DEVICES=0 \
+    python3 -B baseline/framework/train.py \
+    --experiment v2_s4_step --algo ppo --background \
+    --resume-from baseline/runs/v2_s3_balance_arm_r3/checkpoints/checkpoint_u02315.pt \
+    --reset-update --run-name v2_s4_step_r1
+  ```
+  PID 3060348；~19s/update；512 eps/1024 trajs/update。
+- **任务**：S4_PLAN.md —— V2StepSimulator 双机步令流
+  （相位机边界 WAIT_LIFT→IN_SWING、超时 age 6.0、墙 collision_fn），
+  指令段 obs[67:78]=step_cur(5+age)/step_next。
+- **通道**：r_potential·3 + r_fall·2 + r_step_foot·1.5
+  + r_step_mv/st/yaw·2（边界帧稀疏；去 r_std_clip、无推力）。
+- **warm-start**：S3 r3 best u2315（actor 续 + 4 新 critic 冷启）。
+- **u1-u2 初值**：r_step_foot mean 0.078（有迈对落地）、
+  r_step_mv mean -0.089、r_step_yaw mean -0.017、r_step_st≈0
+  （钉脚站姿 stance 无滑移——符合预期）；r_fall -0.0004
+  （平衡未劣化）；ep_len 全部 400 timeout 存活。
+- **eval 指标**：step_events/step_foot_rate/step_timeout_rate/
+  step_d_mv/step_d_st/step_d_yaw + quality
+  （= foot_rate − 0.5·d_mv/0.5 − 0.5·d_st/0.3 − 0.3·d_yaw/1.0，
+  各项 clip[0,1]）。
