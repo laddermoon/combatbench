@@ -1,0 +1,82 @@
+# V2 线 Stage 4 ablation — 步令跟随 · 无臂脚本接管（79 维）。
+#
+# 与 v2_step_env.yaml 的唯一差异: arm_script: false。
+# flag/arm_tgt 段恒 0 —— 与 S2 训练期观测语义一致
+# （S2 ckpt 全程见零）。用于"臂接管是否是步令学习的干扰项"
+# 对照实验；warm-start 用 S2 best u1680（未经臂扰动）。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25          # 与 simulator.steps_per_action 一致
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_step_simulator:V2StepSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    arm_script: false               # ← 唯一改动: 双臂归策略全权
+    flag_height: 1.10
+    flag_grace: 5
+    flag_settle: 20
+    # —— 步令系统 ——
+    step_enabled: true
+    steps_per_action: 25            # 必须与上面 runtime 一致
+    lift_thr: 0.1                   # 摆动脚选举: force<0.1×BW
+    land_thr: 0.4                   # 落地判定: force>0.4×BW
+    lift_deb: 2                     # 连续卸力帧数
+    timeout_age: 6.0                # 指令超时 (age)
+    age_inc: 0.1                    # 步龄/帧
+    wall_margin: 0.30
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  step_report_a:
+    cls: "baseline.humanoid21.v1.step_report_observer:StepReportObserver"
+    config:
+      agent_id: "robot_a"
+  step_report_b:
+    cls: "baseline.humanoid21.v1.step_report_observer:StepReportObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"

@@ -177,3 +177,18 @@
   d_mv=0.596m、d_yaw=0.347rad、d_st≈0、quality=-0.083。
   结论：机制端到端正常，订单在真实落地中结算；策略当前
   把指令当噪声，待观察 foot_rate 爬升。
+
+## S4 noarm r1 — v2_s4_step_noarm_r1（消融：无臂接管 + S2 底座）
+
+- **目的**：对照 v2_s4_step_r2，隔离两个变量——① 臂脚本接管
+  是否干扰步令学习；② S2（无臂扰动史）vs S3（臂接管史）底座差异。
+- **差异**：env=v2_step_env_noarm.yaml（仅 `arm_script: false`，
+  flag/arm_tgt 恒 0 与 S2 观测语义一致）；其余全继承。
+- **启动**（GPU1）：`--resume-from v2_s2_balance/checkpoints/
+  checkpoint_u01680.pt --reset-update`（S2 best：level11+
+  recovery0.901，r_std_clip critic 不在通道集自动丢弃）。
+  PID 3554454；~34s/update。
+- **u1 初值**：r_step_foot 0.075（≈arm 组 0.078，同随机水位）、
+  r_fall≈0（S2 站姿完好）。
+- **对比看板**：foot_rate / d_mv / d_yaw 爬坡速度两组对比；
+  若 noarm 显著快 → 臂接管是干扰项，后续阶段再叠加。
