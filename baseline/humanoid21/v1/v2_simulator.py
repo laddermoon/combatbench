@@ -44,6 +44,7 @@ class V2Simulator(Humanoid21Simulator):
 
     def __init__(self, *args: Any,
                  arm_script: bool = False,
+                 arm_override: bool = True,
                  arm_hold_range: Tuple[int, int] = (2, 20),
                  arm_tgt_range: Tuple[float, float] = (-1.0, 1.0),
                  flag_height: float = 1.10,
@@ -52,6 +53,9 @@ class V2Simulator(Humanoid21Simulator):
                  **kw: Any) -> None:
         super().__init__(*args, **kw)
         self._arm_on = bool(arm_script)
+        # arm_override=False → arm_tgt 仅作指令观测+跟随奖励输入，
+        # 不覆写 act[15:21]（D17 臂令跟随；默认 True 保持 S3 行为）
+        self._arm_override = bool(arm_override)
         self._hold_range = tuple(arm_hold_range)
         self._tgt_range = tuple(arm_tgt_range)
         self._flag_h = float(flag_height)
@@ -94,7 +98,7 @@ class V2Simulator(Humanoid21Simulator):
     # -------------------------------------------------------- action 覆写 --
     def set_action(self, action: Dict[str, Optional[Any]]) -> None:
         """兑现 obs 承诺（flag=1 → act[15:21]=arm_tgt），再推进状态。"""
-        if self._arm_on:
+        if self._arm_on and self._arm_override:
             patched: Dict[str, Optional[Any]] = dict(action)
             for rid in _ROBOTS:
                 st = self._st.get(rid)

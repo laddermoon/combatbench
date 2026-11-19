@@ -771,3 +771,32 @@ POSTURE_ORDERS 生成表、step_cost、order_name。
 - `../hierarchy/COMMAND_DESIGN.md` — 旧 9 维指令空间契约（本方案不沿用其语义）
 - `../hierarchy/SKILL_TRAINING_PLAN.md` — 前代 11 技能训练方案与步界结算
 - `../hierarchy/STRIKE_LAUNCH_GATE.md` — 技能入口门控先例（与问题五相关）
+
+## D17 — 臂令改"跟随奖励"制（取代接管覆写，S4 实验分支）
+
+**日期**：2026-11-19 ｜ **状态**：已定稿（实现于
+`v2_armcmd_simulator.py`，实验 `v2_s4_armcmd`）
+
+**动因**：S3 臂接管（flag=1 时覆写 act[15:21]=arm_tgt）造成
+off-policy 污染——策略臂维优化从未执行的动作或 logprob
+与执行不符；且脚本臂摆动在失衡期是纯扰动。D16 双轨对照
+（u150 水位）显示接管组 foot_rate 贴死基线而 noarm 组正常
+爬坡——接管是首要嫌疑。
+
+**决策**：臂令与步令同构——"输入是目标，奖励是接近度，可忽略"。
+
+- `V2ArmCmdSimulator`：`arm_override=False`，act[15:21] 归
+  策略全权；ArmScript 目标流照常进 seg[1:7]、flag 语义保留
+  （近期站稳信息位，不再门控任何事）
+- 逐帧误差 `err_r=‖act[15:18]−tgt[0:3]‖`、
+  `err_l=‖act[18:21]−tgt[3:6]‖`（norm 空间，obs 承诺目标
+  即当期脚本目标），经 `get_derived_state(["arm_follow"])`
+  上报
+- 奖励：新通道 `r_arm_r`/`r_arm_l` = −w·err 逐帧稠密，
+  w=1.0、aw=0.5（次要任务，不盖步令 aw1.5~2）
+- "何时忽略"完全留给策略学——失衡期 arm 惩罚是噪声，
+  aw 比重让 fall/potential 主导
+- warm-start：S2 u1680（无臂接管史的干净底座）
+
+**对照**：armcmd(GPU2) vs noarm(GPU1) vs 已废接管组——隔离
+"臂令载体形式"变量。
