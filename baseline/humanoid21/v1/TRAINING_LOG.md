@@ -251,3 +251,19 @@
   TypeError）——教训：运行中的 env yaml 不能改，改配置=
   必须重启。`v2_s3_armcmd_r3` GPU2 resume u2425，携带
   release_prob=0.25 上线；eval 新增 arm_rel 释放率诊断。
+
+## V1 步令实验（D20 残差编码）— v2_stepcmd_r1（GPU0）
+
+- **任务**：0.5s/10f 固定周期连续指令流，obs[67:79] 逐帧
+  残差（动脚踝→世界锚目标，本体系）；无站立门控帧0施令；
+  无推力、无臂脚本、r_std_clip 移除。5 通道：r_potential
+  (h_cap=1.10→φ≤0.889) + r_fall + r_step_mv/st/yaw 逐帧积分
+  （积分=ASAP 语义）。
+- **启动**（GPU0）：PID 3124988，warm S2 u1680 + reset-update，
+  3 步令 critic 冷启。
+- **u5 基线**：success=1.000（thresh 0.85 适配封顶 φ）、
+  falls=0.04、hold=0.097、arr_rate=0.002、d_mv=0.453、
+  d_yaw=0.283、skate=0.649（未迈步时读数虚高为基线）。
+- **看板**：arr_rate/d_mv 应 ~0→升/降；falls 应保持 <0.1
+  （失衡忽略令学会）；skate 在迈步出现后需看是否回落
+  （真滑行 vs 未起步）。
