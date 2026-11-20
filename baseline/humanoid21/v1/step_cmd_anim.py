@@ -36,6 +36,7 @@ class CmdWalker:
     def __init__(self, pos: np.ndarray, yaw: float):
         self.yaw = float(yaw)
         self.last_foot = 0
+        self.last_dyaw = 0.0
         R = _rot(yaw)
         self.foot_l = pos + R @ foot_slot(FLAT, -1)
         self.foot_r = pos + R @ foot_slot(FLAT, +1)
@@ -69,7 +70,8 @@ def main() -> None:
     mid_hist = [w.mid.copy()]
 
     for i in range(args.steps):
-        cmd = sample_cmd(rng, w.last_foot, collide_fn=collides)
+        cmd = sample_cmd(rng, w.last_foot, w.last_dyaw,
+                         collide_fn=collides)
         tgt, yaw_t = cmd_target(w.foot_l, w.foot_r, w.yaw, cmd)
         fl0, fr0, yaw0 = w.foot_l.copy(), w.foot_r.copy(), w.yaw
 
@@ -106,6 +108,7 @@ def main() -> None:
         w.yaw = yaw_t
         if cmd.foot != 0:
             w.last_foot = cmd.foot
+            w.last_dyaw = cmd.dyaw
         mid_hist.append(w.mid.copy())
 
     _render(frames, np.vstack(mid_hist), args.out, args.fps)

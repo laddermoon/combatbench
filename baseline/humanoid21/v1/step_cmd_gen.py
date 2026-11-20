@@ -8,9 +8,10 @@
     ① 动脚   P(交替)=0.8 / P(同脚)=0.1 / P(保持)=0.1
              保持 = 全零指令（"原地不动"合法指令）
     ② 方向   P(前)=0.8 / P(后)=0.2 —— 终态交错偏移符号
-    ③ 纵向   前 U(0.15,0.53) / 后 U(0.10,0.40) m（相对 stance 脚）
-    ④ 横向   脚距 U(0.35,0.55) m（常距 0.475 附近）
-    ⑤ 转向   P=0.25，Δyaw ~ ±U(5°,30°)
+    ③ 纵向   前 U(0,0.53) / 后 U(0,0.40) m（0=并脚；相对 stance 脚）
+    ④ 横向   脚距 U(0.42,0.63) m（覆盖旧常距 0.475~宽距 0.625）
+    ⑤ 转向   上令无转 → P(新转)=0.15；上令有转 → 续0.55/反0.05/
+             停0.40；Δyaw ~ ±U(5°,30°)，双脚距 ≤0.62m
     ⑥ 撞墙   collide_fn(cmd) 拒绝重采 ≤8 次，兜底=保持
 
 与旧 StepScheduler 的区别：指令空间连续化——不再从 10 姿态
@@ -33,12 +34,14 @@ P_SAME = 0.1            # 同脚再动（调整步）
 P_ALT = 0.8             # 交替脚
 P_HOLD = 0.1            # 不动 = 保持指令（全零）
 P_FWD = 0.8             # 向前迈步
-SAG_FWD = (0.15, 0.53)  # 前迈终态交错偏移范围 m（≈旧 0.5–2 档）
-SAG_BWD = (0.10, 0.40)  # 后撤步幅范围 m
-LAT_RANGE = (0.35, 0.55)  # 终态横向脚距 m（常距 0.475 附近）
+SAG_FWD = (0.0, 0.53)   # 前迈终态交错偏移 m（0=并脚，上限=旧 2 档）
+SAG_BWD = (0.0, 0.40)   # 后撤步幅范围 m
+LAT_RANGE = (0.42, 0.63)  # 终态横向脚距 m（覆盖旧常距 0.475~宽距 0.625）
 FOOT_DIST_MAX = 0.62    # 终态双脚欧氏距离上限 m（腿长 ~0.66，
                         # 超出即深弓步，拒绝重采）
-P_TURN = 0.25           # 该令附带转向的概率
+P_TURN_NEW = 0.15       # 上令无转向时，本令转向概率
+P_TURN_CONT = 0.55      # 上令有转向时，同向续转概率（走弧线）
+P_TURN_REV = 0.05       # 上令有转向时，反向概率
 DYAW_RANGE = (math.radians(5), math.radians(30))
 MAX_RESAMPLE = 8
 
@@ -70,17 +73,19 @@ def _rot(yaw: float) -> np.ndarray:
 def sample_cmd(
     rng: np.random.Generator,
     last_foot: int,
+    last_dyaw: float = 0.0,
     collide_fn: Optional[Callable[[StepCmd], bool]] = None,
 ) -> StepCmd:
     """采一条令；collide_fn(cmd) 返回 True 表示落点出界，重采后兜底保持。"""
     for _ in range(MAX_RESAMPLE):
-        cmd = _draw(rng, last_foot)
+        cmd = _draw(rng, last_foot, last_dyaw)
         if cmd.foot == 0 or collide_fn is None or not collide_fn(cmd):
             return cmd
     return HOLD_CMD
 
 
-def _draw(rng: np.random.Generator, last_foot: int) -> StepCmd:
+def _draw(rng: np.random.Generator, last_foot: int,
+          last_dyaw: float) -> StepCmd:
     u = rng.uniform()
     if u < P_HOLD:
         return HOLD_CMD
@@ -101,8 +106,18 @@ def _draw(rng: np.random.Generator, last_foot: int) -> StepCmd:
         sag = math.copysign(
             math.sqrt(max(FOOT_DIST_MAX ** 2 - lat ** 2, 0.0)),
             1.0 if fwd else -1.0)
+
+    # 转向：上令有转向 → 续0.55/反0.05/停0.40；无转向 → 新转0.15
     dyaw = 0.0
-    if rng.uniform() < P_TURN:
+    v = rng.uniform()
+    if last_dyaw != 0.0:
+        if v < P_TURN_CONT:
+            dyaw = float(rng.uniform(*DYAW_RANGE)
+                         * math.copysign(1.0, last_dyaw))
+        elif v < P_TURN_CONT + P_TURN_REV:
+            dyaw = float(rng.uniform(*DYAW_RANGE)
+                         * -math.copysign(1.0, last_dyaw))
+    elif v < P_TURN_NEW:
         dyaw = float(rng.uniform(*DYAW_RANGE) * rng.choice([-1, +1]))
     return StepCmd(foot=foot, sag=sag, lat=lat, dyaw=dyaw)
 
