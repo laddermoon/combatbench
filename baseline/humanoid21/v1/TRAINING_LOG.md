@@ -267,3 +267,6 @@
 - **看板**：arr_rate/d_mv 应 ~0→升/降；falls 应保持 <0.1
   （失衡忽略令学会）；skate 在迈步出现后需看是否回落
   （真滑行 vs 未起步）。
+- **r3 终止**（u1770，人工停）：foot_rate 0.408、d_mv 0.185、
+  d_yaw 0.090、quality 0.197、falls 0.01——D16b 类别编码线
+  收敛至此前后 plateau，让位 D20 残差编码（v2_stepcmd_r1）。
