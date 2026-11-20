@@ -235,3 +235,14 @@
   初步成立且曲线未收敛。
 - **重启**：`v2_s3_armcmd_r2` GPU2 PID 360882，
   resume r1 ckpt_u02230，计数续 u2231（无 reset-update）。
+
+## 恢复 — v2_s4_step_noarm_d16b_r3（GPU1）
+
+- r2 死于宿主机重启（u813，同批事故）。死前 810u 单调爬坡
+  未收敛：foot_rate 0.027→0.333、d_mv 0.52→0.23、d_yaw
+  →0.12、quality 刚转正（+0.071）、falls ~0.02。
+- **重启**：`v2_s4_step_noarm_d16b_r3` GPU1 PID 518815，
+  resume r2 ckpt_u00810，计数续 u811（无 reset-update）。
+- S4 硬劫持组（v2_s4_step_d16b_r1 @u921）暂未恢复——同期
+  foot_rate 钉死基线，对照结论已出（接管干扰学习），
+  恢复与否待定。
