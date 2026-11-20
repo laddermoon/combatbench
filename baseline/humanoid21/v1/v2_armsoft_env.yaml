@@ -1,0 +1,83 @@
+# 手臂软劫持验证实验（ARMSOFT_V1_PLAN.md）— 最小化臂令跟随：79 维。
+#
+# = v2_balance_armcmd_env.yaml 的最小化变体：
+#   − StandingTriggeredForcePlugin（无扰动）
+#   − push_state_a/b、standard_clip_a/b（r_std_clip 通道已删，
+#     省每帧 53 维 clip 距离计算）
+#   + flag_settle: 0 —— obs[57] flag 恒 1（"令恒激活"，
+#     消除最后一处门控暗示；err 本就每帧无条件计分）
+#   V2ArmCmdSimulator：arm_override=False（软劫持=只进观测+奖励），
+#   step_enabled=False（不背步令任务），arm_release_prob=0.25。
+# 奖励通道见 experiments_ppo/exp_v2_armsoft.py：
+#   r_potential·3 + r_fall·2 + r_arm_r/l（逐帧 -w·err，aw 0.5）。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_armcmd_simulator:V2ArmCmdSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    arm_script: true
+    arm_hold_range: [2, 20]
+    arm_tgt_range: [-1.0, 1.0]
+    arm_release_prob: 0.25         # 每臂切换时 25% 概率本周期无令
+    flag_height: 1.10
+    flag_grace: 5
+    flag_settle: 0               # flag 恒 1：令恒激活，无门控暗示
+    step_enabled: false
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  arm_follow_a:
+    cls: "baseline.humanoid21.v1.arm_follow_observer:ArmFollowObserver"
+    config:
+      agent_id: "robot_a"
+  arm_follow_b:
+    cls: "baseline.humanoid21.v1.arm_follow_observer:ArmFollowObserver"
+    config:
+      agent_id: "robot_b"

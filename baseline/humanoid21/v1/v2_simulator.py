@@ -75,7 +75,9 @@ class V2Simulator(Humanoid21Simulator):
         base = 0 if seed is None else int(seed) & 0xFFFFFFFF
         for i, rid in enumerate(_ROBOTS):
             rng = np.random.default_rng([base, 0xA8 + i])
-            st = {"timer": 0, "below": 0, "flag": 0.0,
+            st = {"timer": 0, "below": 0,
+                  # flag_settle<=0 → 恒 1（令恒激活语义，armsoft V1）
+                  "flag": 1.0 if self._flag_settle <= 0 else 0.0,
                   "script": ArmScript(rng, self._hold_range,
                                       self._tgt_range,
                                       self._release_prob)}
