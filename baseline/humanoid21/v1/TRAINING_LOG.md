@@ -275,3 +275,16 @@
   （40N×772 推仅倒 6）、falls 0.02。D17 奖励制臂令跟随
   "40N 下兼顾"结论已出；右臂残差未收敛但速率平缓，
   让位 D20 步令线。
+
+## 手臂软劫持验证（ARMSOFT V1）— v2_armsoft_r1（GPU1）
+
+- **任务**：r3 最小化变体——无推力、flag 恒 1（令恒激活）、
+  r_std_clip 移除（std_pose 含臂关节与令冲突）。4 通道：
+  r_potential(无cap)·3 + r_fall·2 + r_arm_r/l·0.5。
+- **启动**（GPU1）：PID 3537440，warm S2 u1680 + reset-update，
+  r_arm_r/l 两 critic 冷启。
+- **u5 基线**：arm_err_r/l 0.979/0.926 ≈ 零输出水位；rel 0.248；
+  err_stand 0.941 < err_down 1.170（失衡帧 err 高=合理漂移）。
+- **看板**：err_stand 应 ~0.9→降（站稳跟随学会）；err_down 降
+  幅应显著小于 err_stand（失衡忽略=语义成立）；falls 持低。
+  err_stand vs err_down 裂口是本实验的核心证据。
