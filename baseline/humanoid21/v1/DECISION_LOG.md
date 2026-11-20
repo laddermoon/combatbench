@@ -765,7 +765,7 @@ POSTURE_ORDERS 生成表、step_cost、order_name。
 ## 关联文档
 
 - [`STEP_GAIT.md`](STEP_GAIT.md) — D12 姿态集全表（命名+转移图+评分语义+待定参数）
-- [`ARM_HIJACK.md`](ARM_HIJACK.md) — 手臂劫持机制说明（硬/软劫持的训练与部署方案）
+- [`ARM_TAKEOVER.md`](ARM_TAKEOVER.md) — 手臂劫持机制说明（硬/软劫持的训练与部署方案）
 - [`arm_takeover.py`](arm_takeover.py) — D5 实现（IK 姿态设计 + 接管策略 + 三场景 runner）
 - [`README.md`](README.md) — V1 总体方案（步内技能 + 自扩展起点池）
 - [`bootstrip.md`](bootstrip.md) — 实现思路手稿（七个问题）
