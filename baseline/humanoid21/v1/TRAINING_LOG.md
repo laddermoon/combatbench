@@ -281,6 +281,21 @@
   幅应显著小于 err_stand（失衡忽略=语义成立）；falls 持低。
   err_stand vs err_down 裂口是本实验的核心证据。
 
+## 双臂独立软劫持（ARMDUAL V1）— v2_armdual_r1（GPU2）
+
+- **任务**：逐臂独立指令——obs[57:65]=[flag_r,tgt_r,flag_l,tgt_l]
+  （flag=0 臂 tgt 全零=无目标），腰段剩 2 维。同步周期调度：
+  P(0.1) 双臂 / P(0.9) 单臂(50/50)，dur U(2,20)，恒 ≥1 臂在令。
+  动机：自由臂可作"平衡器"（旧方案两臂捆绑劫持失去此角色）。
+- **配置**：armsoft 同款外壳（无推、4 通道 r_potential·3+r_fall·2
+  +r_arm_r/l·0.5，err 仅计被劫臂）；warm S2 u1680 + reset-update。
+- **启动**（GPU2）：PID 2012515。
+- **u5 基线**：occ 0.101/0.452/0.447 ≈ 名义 0.1/0.45/0.45 ✓；
+  arm_err_r/l 1.317/1.113 ≈ 随机水位；err_stand 1.317 <
+  err_down 1.726；falls=0.05。
+- **看板**：err_stand/down 裂口（学会忽略）同 armsoft；关注
+  自由臂是否充当平衡器（定性视频）；falls 是否因单臂跟令升高。
+
 ## 已终止实验收尾
 
 ### v2_s4_step_noarm_d16b 线（D13/D16b 类别编码）— 终于 u1770
