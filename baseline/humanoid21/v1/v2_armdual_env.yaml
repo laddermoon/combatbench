@@ -1,0 +1,77 @@
+# 双臂独立软劫持实验（ARMDUAL_V1_PLAN.md）— 逐臂独立令：79 维。
+#
+# = v2_armsoft_env.yaml 同壳（无推力、无 push/clip 观测、倒地起点
+#   保留），唯一换核：V2ArmDualSimulator——
+#   每机双臂共享同步周期时钟：P(0.1) 双臂同劫 / P(0.9) 单臂
+#   （左右 50/50），被劫臂 tgt~U(-1,1)³，自由臂 flag=0、tgt=0。
+# obs[57:65] = [flag_r,tgt_r(3),flag_l,tgt_l(3)]（腰让 1 位）。
+# 软语义：act 不覆写，被劫臂 err 计分（hij 快照上报）。
+# 奖励通道见 experiments_ppo/exp_v2_armdual.py：
+#   r_potential·3 + r_fall·2 + r_arm_r/l（被劫帧 −err，aw 0.5）。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_armdual_simulator:V2ArmDualSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    # —— 双臂独立劫持指令流 ——
+    arm_hold_range: [2, 20]
+    arm_tgt_range: [-1.0, 1.0]
+    dual_prob: 0.1                  # 双臂同劫概率；其余=单臂 50/50
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
+  arm_dual_a:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_a"
+  arm_dual_b:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_b"
