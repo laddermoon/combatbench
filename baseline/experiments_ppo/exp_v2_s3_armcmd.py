@@ -117,6 +117,21 @@ class V2S3ArmCmd(V2S3BalanceArm):
                 n_fr += T
         res["info"]["arm_err_r"] = round(sum_r / max(n_fr, 1), 3)
         res["info"]["arm_err_l"] = round(sum_l / max(n_fr, 1), 3)
+        # 释放率诊断：rel_r/l 均值应 ≈ arm_release_prob
+        rel_sum = rel_n = 0.0
+        for ep in episodes:
+            T = ep.num_frames
+            if T == 0:
+                continue
+            for af_key in self._ARM_OBS.values():
+                for fld in ("rel_r", "rel_l"):
+                    a = extract_per_step_field(
+                        ep.observer_outputs, af_key, fld, T)
+                    if a is None:
+                        continue
+                    rel_sum += float(np.sum(np.asarray(a)))
+                rel_n += T
+        res["info"]["arm_rel"] = round(rel_sum / max(rel_n * 2, 1), 3)
         return res
 
 

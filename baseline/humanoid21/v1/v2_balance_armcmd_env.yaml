@@ -36,6 +36,7 @@ simulator:
     arm_script: true
     arm_hold_range: [2, 20]
     arm_tgt_range: [-1.0, 1.0]
+    arm_release_prob: 0.25         # 每臂切换时 25% 概率本周期不劫持（tgt=0 标记，err 不计分）
     flag_height: 1.10
     flag_grace: 5
     flag_settle: 20

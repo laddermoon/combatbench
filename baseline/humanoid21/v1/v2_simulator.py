@@ -47,6 +47,7 @@ class V2Simulator(Humanoid21Simulator):
                  arm_override: bool = True,
                  arm_hold_range: Tuple[int, int] = (2, 20),
                  arm_tgt_range: Tuple[float, float] = (-1.0, 1.0),
+                 arm_release_prob: float = 0.0,
                  flag_height: float = 1.10,
                  flag_grace: int = 5,
                  flag_settle: int = 20,
@@ -58,6 +59,7 @@ class V2Simulator(Humanoid21Simulator):
         self._arm_override = bool(arm_override)
         self._hold_range = tuple(arm_hold_range)
         self._tgt_range = tuple(arm_tgt_range)
+        self._release_prob = float(arm_release_prob)
         self._flag_h = float(flag_height)
         self._flag_grace = int(flag_grace)
         self._flag_settle = int(flag_settle)
@@ -75,7 +77,8 @@ class V2Simulator(Humanoid21Simulator):
             rng = np.random.default_rng([base, 0xA8 + i])
             st = {"timer": 0, "below": 0, "flag": 0.0,
                   "script": ArmScript(rng, self._hold_range,
-                                      self._tgt_range)}
+                                      self._tgt_range,
+                                      self._release_prob)}
             st["script"].step()          # obs[0] 即显示真实脚本目标
             self._st[rid] = st
 
@@ -110,7 +113,12 @@ class V2Simulator(Humanoid21Simulator):
                 if hasattr(raw, "detach"):
                     raw = raw.detach().cpu().numpy()
                 act = np.asarray(raw, np.float32).copy()
-                act[_ARM_ACT] = st["script"].current
+                cur = st["script"].current
+                rel = st["script"].released
+                if not rel[0]:
+                    act[15:18] = cur[0:3]
+                if not rel[1]:
+                    act[18:21] = cur[3:6]
                 patched[rid] = act
             action = patched
         super().set_action(action)

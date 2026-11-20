@@ -50,9 +50,15 @@ class V2ArmCmdSimulator(V2StepSimulator):
                     raw = raw.detach().cpu().numpy()
                 act = np.asarray(raw, np.float32)
                 tgt = st["script"].current
+                rel = st["script"].released
+                # 与 err 同帧快照：script 将在 super().set_action 尾部
+                # 推进到下一周期，live 读 released 会错一位
+                st["arm_rel"] = (bool(rel[0]), bool(rel[1]))
                 st["arm_err"] = (
-                    float(np.linalg.norm(act[15:18] - tgt[0:3])),
-                    float(np.linalg.norm(act[18:21] - tgt[3:6])),
+                    0.0 if rel[0] else float(
+                        np.linalg.norm(act[15:18] - tgt[0:3])),
+                    0.0 if rel[1] else float(
+                        np.linalg.norm(act[18:21] - tgt[3:6])),
                 )
         super().set_action(action)
 
@@ -65,7 +71,9 @@ class V2ArmCmdSimulator(V2StepSimulator):
         err = st.get("arm_err")
         if err is None:
             return None
+        rel = st.get("arm_rel") or (False, False)
         return {"err_r": float(err[0]), "err_l": float(err[1]),
+                "rel_r": float(rel[0]), "rel_l": float(rel[1]),
                 "flag": float(st["flag"])}
 
     def get_derived_state(self, fields=None) -> Dict[str, Any]:

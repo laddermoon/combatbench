@@ -246,3 +246,8 @@
 - S4 硬劫持组（v2_s4_step_d16b_r1 @u921）暂未恢复——同期
   foot_rate 钉死基线，对照结论已出（接管干扰学习），
   恢复与否待定。
+- **D19 释放机制**：r2 死于 yaml 热改冲突（运行中
+  build_jobs 重读新 yaml 带 arm_release_prob，旧代码工人
+  TypeError）——教训：运行中的 env yaml 不能改，改配置=
+  必须重启。`v2_s3_armcmd_r3` GPU2 resume u2425，携带
+  release_prob=0.25 上线；eval 新增 arm_rel 释放率诊断。

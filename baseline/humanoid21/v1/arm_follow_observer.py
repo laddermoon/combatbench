@@ -4,6 +4,7 @@
 字段：
     err_r = ‖右臂 3 关节输出 − tgt[0:3]‖  (norm 空间 L2)
     err_l = ‖左臂 3 关节输出 − tgt[3:6]‖
+    rel_r/l = 各臂当前是否处于释放（不劫持）周期
     flag  = 近期站稳标记（信息位，门控已废）
 
 实验侧装配成 r_arm_r / r_arm_l 两个稠密通道（-w·err 逐帧）。
@@ -16,7 +17,8 @@ from typing import Any, Dict
 
 from envs.framework import BaseObserverPlugin, ReadOnlySimContext
 
-_ZERO: Dict[str, Any] = {"err_r": 0.0, "err_l": 0.0, "flag": 0.0}
+_ZERO: Dict[str, Any] = {"err_r": 0.0, "err_l": 0.0,
+                         "rel_r": 0.0, "rel_l": 0.0, "flag": 0.0}
 
 
 class ArmFollowObserver(BaseObserverPlugin):
