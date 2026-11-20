@@ -36,6 +36,8 @@ P_FWD = 0.8             # 向前迈步
 SAG_FWD = (0.15, 0.53)  # 前迈终态交错偏移范围 m（≈旧 0.5–2 档）
 SAG_BWD = (0.10, 0.40)  # 后撤步幅范围 m
 LAT_RANGE = (0.35, 0.55)  # 终态横向脚距 m（常距 0.475 附近）
+FOOT_DIST_MAX = 0.62    # 终态双脚欧氏距离上限 m（腿长 ~0.66，
+                        # 超出即深弓步，拒绝重采）
 P_TURN = 0.25           # 该令附带转向的概率
 DYAW_RANGE = (math.radians(5), math.radians(30))
 MAX_RESAMPLE = 8
@@ -86,10 +88,19 @@ def _draw(rng: np.random.Generator, last_foot: int) -> StepCmd:
     foot = base if u < P_HOLD + P_SAME else -base
 
     fwd = rng.uniform() < P_FWD
-    mag = rng.uniform(*(SAG_FWD if fwd else SAG_BWD))
-    sag = mag if fwd else -mag
-
-    lat = float(rng.uniform(*LAT_RANGE))
+    lat = sag = 0.0
+    for _ in range(MAX_RESAMPLE):
+        mag = rng.uniform(*(SAG_FWD if fwd else SAG_BWD))
+        s = mag if fwd else -mag
+        l = float(rng.uniform(*LAT_RANGE))
+        if math.hypot(s, l) <= FOOT_DIST_MAX:
+            sag, lat = s, l
+            break
+    else:                                # 兜底：留 lat、纵向收到上限
+        lat = l
+        sag = math.copysign(
+            math.sqrt(max(FOOT_DIST_MAX ** 2 - lat ** 2, 0.0)),
+            1.0 if fwd else -1.0)
     dyaw = 0.0
     if rng.uniform() < P_TURN:
         dyaw = float(rng.uniform(*DYAW_RANGE) * rng.choice([-1, +1]))
