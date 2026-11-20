@@ -87,7 +87,7 @@ Known Risk Points (待观察):
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -117,10 +117,18 @@ F_LOAD_MIN = 10.0  # minimum total contact force (N) to avoid w_foot division by
 
 
 class StandingBalance4StageRewarder(BaseObserverPlugin):
-    """Dead-zone-free 4-stage standing-balance potential function."""
+    """Dead-zone-free 4-stage standing-balance potential function.
 
-    def __init__(self, agent_id: str = "robot_a"):
+    h_cap（可选，m）：h_score 的高度输入上限——h_torso 超过
+    h_cap 后高度梯度归零（饱和，非置零），w_foot 梯度保留。
+    用于"不追求站得更高"的阶段（如步令实验 V1 = 1.10m，
+    对应 h_score≈0.841、φ≈0.889）。
+    """
+
+    def __init__(self, agent_id: str = "robot_a",
+                 h_cap: Optional[float] = None):
         self.agent_id = agent_id
+        self._h_cap = h_cap
         self._stage: int = 1
         self._potential: float = 0.0
         self._f_score: float = 0.0
@@ -206,7 +214,8 @@ class StandingBalance4StageRewarder(BaseObserverPlugin):
 
         # Torso height (validated: 1.28 m when standing)
         h_torso = float(body_xpos.get(torso_body_name, np.zeros(3, dtype=np.float32))[2])
-        h_score = float(np.clip((h_torso - H_CROUCH) / (H_STAND - H_CROUCH), 0.0, 1.0))
+        h_eff = h_torso if self._h_cap is None else min(h_torso, self._h_cap)
+        h_score = float(np.clip((h_eff - H_CROUCH) / (H_STAND - H_CROUCH), 0.0, 1.0))
 
         # Stage 4 target: pure product, no additive constant.
         # First transfer weight to feet (w_foot), then rise (h_score).
@@ -354,7 +363,10 @@ class StandingBalance4StageRewarder(BaseObserverPlugin):
         }
 
     def to_blueprint(self) -> Dict[str, Any]:
-        return {"agent_id": self.agent_id}
+        bp = {"agent_id": self.agent_id}
+        if self._h_cap is not None:
+            bp["h_cap"] = self._h_cap
+        return bp
 
     @classmethod
     def from_blueprint(cls, config: Dict[str, Any]) -> "StandingBalance4StageRewarder":
