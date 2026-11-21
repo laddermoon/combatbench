@@ -271,6 +271,31 @@
   d_yaw→0.211、quality −0.58→+0.36（持续 new_best）、falls≤0.04、
   hold 0.097→0.15 缓升。健康爬坡，无实现级异常。
 
+## STEPARM V1 联合实验（步令×双臂独立软劫持）— v2_steparm_r1（GPU1）
+
+- **任务**（STEPARM_V1_PLAN.md）：stepcmd 任务 ∪ ARMDUAL 逐臂
+  劫持——obs[57:65]=[flag_r,tgt_r,flag_l,tgt_l]（flag=0 臂全零）
+  与 obs[67:79] 步令残差共存，两套指令流独立计时。7 通道：
+  r_potential(h_cap)·3 + r_fall·2 + r_step_mv/st/yaw(1/0.5/0.5)
+  + r_arm_r/l·0.7（臂总 1.4 = 步总 2.0 的 70%）。
+- **启动**（GPU1）：PID 2913997，warm `v2_stepcmd_r1` ckpt
+  u03020 + reset-update，r_arm_r/l 两 critic 冷启（臂令段
+  死维→活跃 = 观测分布迁移，步令指标预期瞬态回落）。
+- **实现级验证**（先 smoke 再起，防"白训"）：双指令流共存
+  ✓、自由臂 tgt 全零+err 0 ✓、occ 贴名义 ✓、aw 3/2/1/0.5/0.5/
+  0.7/0.7 ✓。smoke 暴露两处 eval 设计缺陷已修：站稳门
+  φ≥0.9 被 h_cap 封顶锁死 → 降 0.85；arm-free 桶恒空（恒≥1臂
+  被劫）→ 交叉指标改 arr_1arm/arr_2arm（被劫臂数分桶）。
+- **u5 基线**：arr 0.664（热启动步令跟随即存活）、
+  arm_err_r/l 1.232/1.125（≈随机水位，待降）、
+  err_stand 1.277 < err_down 1.760（结构在）、
+  occ 0.101/0.452/0.447 ≈ 名义、falls 0.01、quality 0.380
+  （vs stepcmd 成熟值 0.585——迁移瞬态进行中）。
+- **看板**：arm_err 应向 armdual 水位（~0.13-0.19）收敛；
+  arr 瞬态回落后应回升至 ≥0.6；arr_1arm vs arr_2arm 裂口
+  >0.15 → 双臂同劫拖累迈步（调权重/降 dual_prob 决策点）；
+  falls 应 ≤0.05。
+
 ## 已终止实验收尾
 
 ### v2_armsoft_r1（ARMSOFT V1，臂软劫持捆绑版）— ✅ 成功，终于 u3025
