@@ -1,0 +1,95 @@
+# STEPARM V1 联合实验 — 步令 × 双臂独立软劫持（STEPARM_V1_PLAN）：79 维。
+#
+# = v2_stepcmd_env 同款外壳（无推力、倒地起点插件、无站立门控、
+#   h_cap 1.10），sim 换 V2StepArmSimulator：
+#   步令 0.5s 固定周期（D20 残差，obs[67:79]）+
+#   ArmDualScript 逐臂独立令（obs[57:65]，同步周期边界，
+#   P0.1 双臂 / P0.9 单臂 50/50，dur U(2,20)f，恒 ≥1 臂在令）。
+# 奖励通道见 experiments_ppo/exp_v2_steparm.py：
+#   r_potential(h_cap)·3 + r_fall·2 + r_step_mv/st/yaw +
+#   r_arm_r/l·0.7（被劫帧 −err）。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25          # 与 simulator.steps_per_action 一致
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_steparm_simulator:V2StepArmSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    arm_script: false
+    # —— 步令系统（D20 残差编码，固定周期） ——
+    step_enabled: true
+    steps_per_action: 25            # 必须与上面 runtime 一致
+    order_period_s: 0.5             # 0.5s/令 = 10 帧
+    arrive_tol_m: 0.10
+    arrive_tol_rad: 0.10
+    wall_margin: 0.30
+    # —— 双臂独立软劫持（ARMDUAL 参数原样） ——
+    arm_hold_range: [2, 20]         # 周期时长 U(2,20) 帧
+    arm_tgt_range: [-1.0, 1.0]      # 关节目标 U(-1,1)
+    dual_prob: 0.1                  # 双臂同劫概率（否则单臂 50/50）
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+      h_cap: 1.10                    # 高度饱和：≥1.1m 不再奖励站高
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+      h_cap: 1.10
+  stepcmd_report_a:
+    cls: "baseline.humanoid21.v1.stepcmd_report_observer:StepCmdReportObserver"
+    config:
+      agent_id: "robot_a"
+  stepcmd_report_b:
+    cls: "baseline.humanoid21.v1.stepcmd_report_observer:StepCmdReportObserver"
+    config:
+      agent_id: "robot_b"
+  arm_dual_a:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_a"
+  arm_dual_b:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
