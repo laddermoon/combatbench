@@ -1,0 +1,83 @@
+# STEPTVAR V1 — 随机时长步令（STEPTVAR_V1_PLAN.md）：79 维。
+#
+# = stepcmd env 同款外壳，sim 换 V2StepTvarSimulator：
+#   指令周期逐令随机 U(1,20) 帧（0.05s~1.0s），时长不写 obs
+#   ——唯一鲁棒策略=ASAP；短令→半空换令常态化，长令→需驻留。
+# 指令段 obs[57:79] = flag(0)|arm_tgt(0)|waist(0)|step_cur|step_next，
+#   step_* = [foot, Δx, Δy, Δψ, 0, 0]（残差=动脚踝→世界锚目标，
+#   本体系；保持令 foot=0、Δψ=对发令朝向漂移）。
+# 奖励通道见 experiments_ppo/exp_v2_stepcmd.py：
+#   r_potential(h_cap)·3 + r_fall·2 + r_step_mv/st/yaw（逐帧积分）。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25          # 与 simulator.steps_per_action 一致
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_steptvar_simulator:V2StepTvarSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    arm_script: false
+    # —— V1 步令系统（D20 残差编码，固定周期） ——
+    step_enabled: true
+    steps_per_action: 25            # 必须与上面 runtime 一致
+    period_range: [1, 20]           # 令时长 U(1,20) 帧，obs 不可见
+    arrive_tol_m: 0.10              # t_arrive 位置阈值
+    arrive_tol_rad: 0.10            # t_arrive 朝向阈值
+    wall_margin: 0.30
+
+plugins:
+  - cls: "envs.humanoid21.disturbance_plugins:RandomFallenStatePlugin"
+    config:
+      target_robots: ["robot_a", "robot_b"]
+      max_phy_steps: 1000
+      height_threshold: 0.3
+      reset_interval: 5
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+      h_cap: 1.10                    # 高度饱和：≥1.1m 不再奖励站高
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+      h_cap: 1.10
+  stepcmd_report_a:
+    cls: "baseline.humanoid21.v1.steptvar_report_observer:StepTvarReportObserver"
+    config:
+      agent_id: "robot_a"
+  stepcmd_report_b:
+    cls: "baseline.humanoid21.v1.steptvar_report_observer:StepTvarReportObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
