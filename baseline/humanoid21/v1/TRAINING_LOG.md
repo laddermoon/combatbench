@@ -296,6 +296,24 @@
   >0.15 → 双臂同劫拖累迈步（调权重/降 dual_prob 决策点）；
   falls 应 ≤0.05。
 
+## STEPTVAR V1 随机时长步令 — v2_steptvar_r1（GPU2）
+
+- **任务**（STEPTVAR_V1_PLAN.md）：stepcmd 指令周期改逐令随机
+  U(1,20) 帧（0.05s–1.0s），**时长不写 obs**——唯一鲁棒策略=
+  ASAP；短令制造半空换令、长令检验驻留。5 通道原样。
+- **启动**（GPU2）：PID 3526737，warm `v2_stepcmd_r1` ckpt
+  u05000 + reset-update。
+- **实现级验证**（先 smoke）：dur 1-20 全范围轮转 ✓、1 帧令
+  存在 ✓、诊断字段 dur/res0/st_z 上报 ✓、分桶 eval 工作 ✓。
+- **u5 基线**：arr 0.692（vs 固定期 0.90——短令结构性下移，
+  预期）、分桶 arr_s/m/l=0.580/0.721/0.750、
+  hold_err 0.063（长令驻留已可用）、air_frac 0.008（成熟策略
+  下换令时脚多已落地）、res0 0.162、falls 0.01。
+- **看板**：res0 应降（preview 预摆位学习中）；air_frac 若升
+  =策略不再能准时落地（正常代价）若降=学会踩点落地（更强
+  结论）；arr_s 是 ASAP 压力测试主指标；hold_err 应 →~0.05；
+  falls ≤0.05。
+
 ## 已终止实验收尾
 
 ### v2_armsoft_r1（ARMSOFT V1，臂软劫持捆绑版）— ✅ 成功，终于 u3025
