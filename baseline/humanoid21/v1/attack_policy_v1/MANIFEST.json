@@ -1,0 +1,16 @@
+{
+ "format_version": 1,
+ "policy_class": "ExportedAttackPolicy",
+ "kind": "scripted_planner_over_trained_base",
+ "base_export": "/data1/mono/things/combatbench/baseline/runs/v2_steparm_r1/policy_exports/u04735",
+ "obs_in": 96,
+ "obs_to_base": 79,
+ "cmd_dim": 22,
+ "action_dim": 21,
+ "built_at": "2026-11-23 16:27:46",
+ "files": [
+  "model.pt",
+  "policy.py",
+  "MANIFEST.json"
+ ]
+}

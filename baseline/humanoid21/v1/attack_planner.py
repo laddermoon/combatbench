@@ -47,11 +47,27 @@ except Exception:                      # pragma: no cover
 
 _DEFAULT_PARAMS: Dict[str, Any] = {
     "strike_range": 0.62,    # 根间距 ≤ 此值且对准 → 出拳
-    "approach_range": 0.20,  # 逼近目标深度（拳程~0.5，根距需
+    "approach_range": 0.05,  # 逼近目标深度（拳程~0.5，根距需
                            #   ≤~0.4 拳才能压进躯干半径~0.2）
                            #   必须 < strike_range，否则出现
                            #   (strike_range, strike_range+standoff_step)
                            #   既不迈步也不出拳的死锁区）
+    "flank_off": 0.55,       # 侧翼航点偏置 m——实测冻结/站立对手
+                           #   双臂前置护胸，正面拳 100% 落在前臂
+                           #   上不记分；躯干侧面无臂遮挡。
+                           #   逼近目标 = 对手位 + perp(其朝向)·off
+    "flank_commit": 0.90,    # 根距 > 此值时走侧翼航点；
+                           #   ≤ 后转为直接对准躯干（终段 homing）
+    "front_thresh": 0.4,     # frontness=-cos(face,opp_rel) < 此值
+                           #   才算在正面锥外（侧/背）允许出拳；
+                           #   正面被顶住太久则由 flank_patience 放行
+    "flank_patience": 60,    # 帧：近身仍正面 → 原地等后骨盆拳放行
+    "avoid_ang": 0.7,        # rad：直线穿身时航向外旋量（绕弧切向）
+    "flank_enable": False,   # 绕行总开关——实测基座步令做不到
+                           #   连续弧线走位（悬停/漂移/摔），v1 关：
+                           #   正面逼近 + 骨盆拳；绕行留作 v2
+    "strike_yaw_close": 0.30,# 近身放行 yaw 容差（骨盆目标~0.25m 半径，
+                           #   0.3rad@0.55m 偏差 ~0.17m 可容）
     "strike_yaw": 0.15,      # rad，|bearing|≤此值才算对准——实测
                              #   θ~0.3 出拳从体侧擦过（躯干半径~0.15）
     "abort_yaw": 0.40,       # STRIKE 中偏航超此 → 中止重对准
@@ -59,17 +75,18 @@ _DEFAULT_PARAMS: Dict[str, Any] = {
     "dyaw_cap": 0.45,        # 单步转角残差上限 rad
     "standoff_step": 0.12,   # 残余步距 < 此值不迈步（防原地碎步）
     "max_age": 15,           # 步令重规划间隔兜底帧
-    "punch_ext": (0.5, 0.5, -1.0),    # 低位体干拳（z-.21 钻护臂下方
-                                    #   打腹，reach .55）——冻结假人
-                                    #   前臂护胸，正面拳全打在臂上
-    "punch_high": (-1.0, 1.0, -1.0),  # 高位拳 tgt（reach .51 z+.14）
-    "punch_k": 8,            # 伸展段帧数
+    "punch_ext": (0.5, 0.5, -1.0),    # 骨盆拳（z-.21 fwd .55）——计分件
+                                    #   含 pelvis/waist（全归 torso），
+                                    #   护臂 X 交叉只封胸口以上，
+                                    #   下腹 z~0.9m 是空门
+    "punch_high": (-0.5, 1.0, -1.0),  # 高位拳（z+.29 fwd .56）只对
+                                    #   蹲姿/弯腰对手（头低到拳程内）
+    "punch_k": 14,           # 伸展段帧数——sweep 显示 8-12f 才到
+                           #   最大伸展，8 会切短有效拳程
     "recover_k": 8,          # 收回段帧数（之后回 APPROACH）
-    "high_z": 0.20,          # 对手头 ego-z > 此值 → 选高位拳
-                             #   （冻结假人前臂护胸，体干拳打在
-                             #   臂上不记分——先压高位拳试越顶）
-                             #   （站立对手头 ego-z~0.3，默认打躯干
-                             #   ——目标大、reach 更长的体干拳优先）
+    "high_z": 0.05,          # 对手头 ego-z < 此值（蹲/弯腰）才选
+                             #   高位拳——站立对手头在 1.6m 拳程外，
+                             #   且 X 护臂封胸口；骨盆拳走空门
     "guard_z": 0.45,         # upright < 此 → GUARD
     "guard_recover": 0.60,   # upright > 此持续 guard_frames → 解除
     "guard_frames": 10,
@@ -78,7 +95,8 @@ _DEFAULT_PARAMS: Dict[str, Any] = {
     "contact_m1_idx": 52,    # 实测 foot<0 ↔ obs[52]
     "contact_p1_idx": 53,    # 实测 foot>0 ↔ obs[53]
     "decay_k": 12.0,         # 残差线性衰减常数（帧）——扫出最优
-    "lunge_step": 0.25,      # STRIKE 期突进步幅 m
+    "lunge_step": 0.12,      # STRIKE 期突进——0.25 实测弯腰缩拳程；
+                           #   0.12 站直小步压最后 0.15m
 }
 
 
@@ -101,6 +119,7 @@ class AttackPlanner:
         self._armed = False          # 落地门控武装（离地→落地语义）
         self._strike_t = 0
         self._guard_ok = 0
+        self._flank_wait = 0
         self._punch = np.asarray(self.p["punch_ext"], float)
 
     # ------------------------------------------------------------ 主入口 --
@@ -146,14 +165,54 @@ class AttackPlanner:
                              arm=(tgt, None))
 
         # APPROACH
-        if d <= p["strike_range"] and abs(th) <= p["strike_yaw"]:
-            self.state = "STRIKE"
-            self._strike_t = 0
-            self._punch = (np.asarray(p["punch_high"], float)
-                           if head_z > p["high_z"]
-                           else np.asarray(p["punch_ext"], float))
-            return self._cmd(step=None,
-                             arm=(self._punch, None))
+        # frontness：我在对手正面锥内的程度（+1=正对其面朝方向）。
+        # 实测：冻结/站立对手双臂前置护胸，正面拳 100% 落在
+        # 前臂上不记分 → 须绕到正面锥外打躯干侧面。
+        face = obs[63:65]
+        fn = float(np.hypot(face[0], face[1]))
+        frontness = (-float(face[0] * opp[0] + face[1] * opp[1])
+                     / (fn * d + 1e-9)) if fn > 1e-6 and d > 1e-6 else 1.0
+        in_front = frontness >= p["front_thresh"]
+
+        aligned = abs(th) <= p["strike_yaw"]
+        aligned_close = abs(th) <= p["strike_yaw_close"]
+        if d <= p["strike_range"]:
+            if aligned or (aligned_close
+                           and self._flank_wait >= p["flank_patience"]):
+                self.state = "STRIKE"          # 对准即打（骨盆拳钻臂下）
+                self._strike_t = 0
+                self._punch = (np.asarray(p["punch_high"], float)
+                               if head_z < p["high_z"]
+                               else np.asarray(p["punch_ext"], float))
+                return self._cmd(step=None,
+                                 arm=(self._punch, None))
+            if aligned_close:
+                self._flank_wait += 1          # 贴近但未完全对准：等
+                return self._cmd(step=None, arm=None)
+            self._flank_wait = 0
+
+        # 航点：正面锥内且绕行开 → 绕后点（experimental，v1 默认关）；
+        # 否则 → 躯干中心。Δψ 恒朝中心。
+        if p["flank_enable"] and in_front and fn > 1e-6:
+            th_f = math.atan2(face[1], face[0])
+            r_orb = p["approach_range"] + 0.15
+            wp_l = opp[:2] + r_orb * np.array(
+                [math.cos(th_f + 2.1), math.sin(th_f + 2.1)])
+            wp_r = opp[:2] + r_orb * np.array(
+                [math.cos(th_f - 2.1), math.sin(th_f - 2.1)])
+            wp = (wp_l if abs(math.atan2(wp_l[1], wp_l[0]))
+                  <= abs(math.atan2(wp_r[1], wp_r[0])) else wp_r)
+            aim_d = float(np.hypot(wp[0], wp[1]))
+            aim_th = float(math.atan2(wp[1], wp[0]))
+            # 切向避障：直线到航点会穿过对手（|侧向距|<r_clear 且
+            # 在前方）→ 把航向旋到障碍圆切线，形成自然绕弧
+            un = wp / (aim_d + 1e-9)
+            cross = float(un[0] * opp[1] - un[1] * opp[0])
+            if un[0] * opp[0] + un[1] * opp[1] > 0 \
+                    and abs(cross) < 0.45:
+                aim_th += -math.copysign(p["avoid_ang"], cross)
+        else:
+            aim_d, aim_th = d, th
 
         # 重规划门控：首令 / 动脚"离地→落地" / 超时
         c_mv = c_m1 if self._foot < 0 else c_p1
@@ -165,28 +224,28 @@ class AttackPlanner:
             self._age = 0
             self._armed = c_mv < p["contact_lo"]
 
-        step = self._step_res(d, th, self._foot, self._age)
-        nxt = self._step_res(d, th, -self._foot, 0)
+        step = self._step_res(aim_d, aim_th, th, self._foot, self._age)
+        nxt = self._step_res(aim_d, aim_th, th, -self._foot, 0)
         return self._cmd(step=(step, nxt), arm=None)
 
     # ------------------------------------------------------------ 构造 ----
-    def _step_res(self, d: float, th: float, foot: int,
-                  age: int) -> np.ndarray:
-        """逼近步残差：min(d−range,cap)·decay(age) 沿 bearing 方向。
+    def _step_res(self, d: float, th_move: float, th_face: float,
+                  foot: int, age: int) -> np.ndarray:
+        """逼近步残差：min(d−range,cap)·decay(age) 沿 th_move 方向。
 
-        幅度对对手距离锚定（身体推进→d收缩→幅度缩），
-        剖面按令龄线性衰减（模拟"残差随脚踝接近目标"），
-        方向对实时 bearing 跟踪——三者缺一实测就废（见模块doc）。
+        幅度对目标距离锚定，剖面按令龄线性衰减，位移方向对
+        航点 bearing 跟踪；Δψ 对 th_face（躯干中心）——绕侧翼时
+        位移朝航点、身体转向对手，形成 circle-strafe。
         """
         p = self.p
         k = max(0.0, 1.0 - age / p["decay_k"])
         L = max(0.0, min(d - p["approach_range"],
                          p["step_cap"])) * k
-        dyaw = float(np.clip(th, -p["dyaw_cap"], p["dyaw_cap"])) * k
+        dyaw = float(np.clip(th_face, -p["dyaw_cap"], p["dyaw_cap"])) * k
         if L < p["standoff_step"] * k:
             return np.array([foot, 0.0, 0.0, dyaw, 0, 0])
         return np.array([foot,
-                         L * math.cos(th), L * math.sin(th),
+                         L * math.cos(th_move), L * math.sin(th_move),
                          dyaw, 0, 0])
 
     def _cmd(self, step: Optional[Tuple[np.ndarray, np.ndarray]],
