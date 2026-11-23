@@ -94,15 +94,19 @@ class TaskScript:
         return self._i >= self.N_CMD
 
     def should_issue(self, ctx: Dict[str, Any]) -> bool:
-        if self.gate == "fixed" or ctx["age"] < self.MIN_AGE:
+        if self.gate == "fixed":
             return False
         c = ctx["cur"]
+        if self.gate == "age":
+            return ctx["age"] >= self.MIN_AGE   # 固定令龄切换
         if self.gate == "arrive":
             return ctx["t_arrive"] >= 0
-        # land 门控：动脚离地→再触地
-        if c is None or c.foot == 0:
+        if c is None or c.foot == 0 or ctx["age"] < self.MIN_AGE:
             return False
         c_mv = ctx["c_l"] if c.foot < 0 else ctx["c_r"]
+        if self.gate == "air":
+            return not c_mv                  # 腾空瞬间切换
+        # land 门控：动脚离地→再触地
         if not c_mv:
             self._seen_air = True
         elif self._seen_air:
@@ -320,8 +324,37 @@ class TorsoTwist(TaskScript):
         return cmd
 
 
+class Sprint(_WalkBase):
+    """最快前进：固定步幅交替步 + 可扫切换门控。
+
+    变量（构造 kw）：
+        sag      固定步幅 m（默认 0.40）
+        min_age  门控武装令龄：gate=age 时为切换帧
+        gate     air=腾空即换 / age=令龄到即换 / land=落地换
+    半空换令时新令锚在悬空轴心脚的当前位置（D20 语义）。
+    """
+    name = "sprint"
+    N_CMD = 16
+    GATE = "air"
+    MIN_AGE = 2
+    DUR_CAP = 14
+
+    def _init_params(self, kw: Dict[str, Any]) -> None:
+        super()._init_params(kw)
+        self._sag = float(kw.get("sag", 0.40))
+        self.MIN_AGE = int(kw.get("min_age", self.MIN_AGE))
+
+    def _nominal(self, ctx: Dict[str, Any],
+                 preview: bool = False) -> Tuple[StepCmd, int]:
+        i = self._i + (1 if preview else 0)
+        foot = -1 if i % 2 == 0 else +1
+        return StepCmd(foot=foot, sag=self._sag, lat=self.LAT,
+                       dyaw=0.0), self.DUR_CAP
+
+
 _REGISTRY = {c.name: c for c in
-             (WalkFwd, WalkBwd, TurnInPlace, TurnArc, TorsoTwist)}
+             (WalkFwd, WalkBwd, TurnInPlace, TurnArc, TorsoTwist,
+              Sprint)}
 
 
 def make_script(name: str, rng: np.random.Generator,

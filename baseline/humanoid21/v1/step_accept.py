@@ -18,7 +18,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -80,11 +80,15 @@ def _yaw_of(q) -> float:
 
 # --------------------------------------------------------------- rollout --
 def _rollout(env, pol, task: str, mode: str, seed: int,
-             max_frames: int) -> Dict[str, Any]:
+             max_frames: int,
+             video_path: Optional[str] = None,
+             **script_kw: Any) -> Dict[str, Any]:
     sim = env.simulator
-    sim.configure_script(task, gate=None,
-                         replan=(mode == "replan"))
-    env.reset(seed=seed)
+    sim.configure_script(task, replan=(mode == "replan"),
+                         **script_kw)
+    env.reset(seed=seed,
+              options=({"video_output_path": video_path}
+                       if video_path else {}))
     pol.reset(seed + 11)
     track: Dict[str, List[Dict[str, Any]]] = {r: [] for r in _ROBOTS}
     events: Dict[str, List[Dict[str, float]]] = {r: [] for r in _ROBOTS}
@@ -102,11 +106,12 @@ def _rollout(env, pol, task: str, mode: str, seed: int,
                 f"standing_balance_{sfx}")["potential"]
             rep = env.get_observer_output(f"stepace_report_{sfx}")
             track[rid].append({
-                "x": float(mid[0]), "y": float(mid[1]),
+                "t": t, "x": float(mid[0]), "y": float(mid[1]),
                 "yaw": yaw, "phi": float(phi)})
             if rep.get("event", 0.0) > 0.5:
-                events[rid].append(
-                    {k: float(v) for k, v in rep.items()})
+                ev = {k: float(v) for k, v in rep.items()}
+                ev["t"] = float(t)
+                events[rid].append(ev)
     out = {"track": track, "events": events,
            "frames": t}
     for rid in _ROBOTS:
@@ -180,10 +185,14 @@ def _task_metrics(task: str, tr: List[Dict[str, Any]],
 
 
 def _run_one(env, pol, task: str, mode: str,
-             episodes: int, seed0: int) -> Dict[str, Any]:
+             episodes: int, seed0: int,
+             video_dir: Optional[Path] = None) -> Dict[str, Any]:
     rows = []
     for ep in range(episodes):
-        d = _rollout(env, pol, task, mode, seed0 + ep, _MAX_FRAMES)
+        vp = (str(video_dir / f"{task}_{mode}.mp4")
+              if video_dir is not None and ep == 0 else None)
+        d = _rollout(env, pol, task, mode, seed0 + ep, _MAX_FRAMES,
+                     video_path=vp)
         for rid in _ROBOTS:
             ev = d["events"][rid]
             tr = d["track"][rid]
@@ -199,6 +208,8 @@ def _run_one(env, pol, task: str, mode: str,
     agg = {k: round(float(np.mean([r[k] for r in rows
                                    if k in r])), 3)
            for k in keys}
+    if video_dir is not None:
+        env.reset()     # 冲刷未自然终止 episode 的视频缓冲
     return {"agg": agg, "rows": rows}
 
 
@@ -211,6 +222,8 @@ def main() -> None:
     ap.add_argument("--gate", default=None)
     ap.add_argument("--seed", type=int, default=1000)
     ap.add_argument("--out", default=str(_OUT_DIR))
+    ap.add_argument("--video", action="store_true",
+                    help="每 (task,mode) 录第 1 个 episode → videos/")
     args = ap.parse_args()
 
     pdir = _resolve_policy(args.policy)
@@ -220,14 +233,22 @@ def main() -> None:
     modes = args.modes.split(",")
     env = ParameterizedEnvBlueprint.load(
         _V1 / "v2_stepace_env.yaml").materialize().build()
+    if args.video:
+        from envs.framework.common_plugins import (
+            VideoRecorderPlugin,
+        )
+        env.attach_plugin(VideoRecorderPlugin(fps=30))
 
     outdir = Path(args.out) / pdir.parent.parent.name
+    vdir = outdir / "videos" if args.video else None
+    if vdir is not None:
+        vdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     summary: Dict[str, Dict[str, Any]] = {}
     for task in tasks:
         for mode in modes:
             res = _run_one(env, pol, task, mode,
-                           args.episodes, args.seed)
+                           args.episodes, args.seed, vdir)
             summary[f"{task}/{mode}"] = res["agg"]
             (outdir / f"{task}_{mode}.json").write_text(
                 json.dumps(res, indent=1, ensure_ascii=False))
