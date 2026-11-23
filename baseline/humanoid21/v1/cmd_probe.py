@@ -35,6 +35,8 @@ _V1 = Path(__file__).resolve().parent
 if str(_V1) not in sys.path:
     sys.path.insert(0, str(_V1))
 
+from scipy.spatial.transform import Rotation as Rot
+
 from envs.framework.parameterized_blueprint import (
     ParameterizedEnvBlueprint,
 )
@@ -82,11 +84,15 @@ class CmdProbe:
                  dur: int = 20, nxt_dur: int = 15,
                  horizon: Optional[int] = None,
                  tail_f: int = 10,
+                 arm_seq: Optional[list] = None,
                  seed: int = 0) -> Dict[str, Any]:
         """obs96 + cmd22 → rollout → 完成度指标。
 
         dur    注入当前令的时长（到期→晋升 nxt→hold）
         horizon  rollout 帧数；None = dur + tail_f
+        arm_seq 可选臂令分段 [(flags(2), tgt(6), dur_f), ...]——
+                覆盖 cmd22 的臂段；首段立即生效、逐段轮转。
+                建议调用方把 cmd22 臂段写成首段值以保持一致。
         """
         obs = np.asarray(obs, np.float64)
         if obs.shape != (96,):
@@ -107,6 +113,7 @@ class CmdProbe:
             "step_nxt_vec": spec["step_nxt_vec"],
             "nxt_dur": nxt_dur,
             "arm": arm,
+            "arm_seq": arm_seq,
         })
         # 对侧机器人：自由臂 + 保持令（站着别动）
         other = "robot_b" if robot == "robot_a" else "robot_a"
@@ -116,8 +123,14 @@ class CmdProbe:
         })
         self.pol.reset(seed + 1)
 
+        c = sim._robot(robot)
+        torso_id = int(c["root_body_id"])
+        kp = c["keypoint_body_ids"]
+        hid = {"r": int(kp["hand_right"]), "l": int(kp["hand_left"])}
+
         tr = {"res": [], "arm_r": [], "arm_l": [], "phi": [],
-              "mid": [], "armq_r": [], "armq_l": []}
+              "mid": [], "armq_r": [], "armq_l": [],
+              "hpos_r": [], "hpos_l": [], "hspd_r": [], "hspd_l": []}
         evs = []
         oa, ob = self.env.get_observation()
         for t in range(h):
@@ -143,6 +156,17 @@ class CmdProbe:
             fl, fr, _ = sim._feet_yaw(robot)
             tr["mid"].append([float(0.5 * (fl[0] + fr[0])),
                               float(0.5 * (fl[1] + fr[1]))])
+            # 手部关键点：ego 系位置（躯干原点+朝向）+ 世界系速度
+            tp = sim.data.xpos[torso_id]
+            tq = sim.data.xquat[torso_id]            # wxyz
+            rinv = Rot.from_quat(
+                [tq[1], tq[2], tq[3], tq[0]]).inv()
+            for sd in ("r", "l"):
+                h = int(hid[sd])
+                tr[f"hpos_{sd}"].append(
+                    rinv.apply(sim.data.xpos[h] - tp).tolist())
+                tr[f"hspd_{sd}"].append(
+                    float(np.linalg.norm(sim.data.cvel[h, 3:6])))
             if rep.get("event", 0.0) > 0.5:
                 evs.append({k: float(v) for k, v in rep.items()})
             if self.env.is_episode_over():
@@ -154,8 +178,37 @@ class CmdProbe:
             "frames": len(tr["phi"]),
             "step": self._step_metrics(tr, evs, dur),
             "arm": self._arm_metrics(spec, tr),
+            "hands": self._hand_metrics(tr),
             "balance": self._balance_metrics(tr),
         }
+
+    def _hand_metrics(self, tr):
+        """手部关键点指标：挥击通道完成度（ego 系位置/世界速度）。"""
+        out = {}
+        for sd in ("r", "l"):
+            pos = np.asarray(tr[f"hpos_{sd}"], float)   # (T,3) ego
+            spd = np.asarray(tr[f"hspd_{sd}"], float)
+            if pos.size == 0:
+                continue
+            i_vp = int(np.argmax(spd))
+            i_rx = int(np.argmax(pos[:, 0]))            # 最大前伸
+            out[sd] = {
+                "v_peak": float(spd[i_vp]),
+                "t_vpeak": i_vp,
+                "reach_at_vpeak": float(pos[i_vp, 0]),
+                "v_at_reach": float(spd[i_rx]),
+                "t_reach": i_rx,
+                "reach_fwd": float(pos[i_rx, 0]),
+                "reach_pos": [round(float(v), 3)
+                              for v in pos[i_rx]],
+                "reach_h": float(
+                    np.linalg.norm(pos[:, :2], axis=1).max()),
+                "pos_end": [round(float(v), 3) for v in pos[-1]],
+                "v_end": float(spd[-1]),
+                "pos_traj": [[round(float(v), 3) for v in p]
+                             for p in pos],
+            }
+        return out
 
     # ------------------------------------------------------------ 指标 ----
     def _arm_qerr(self, rid: str, tgt_nrm, side: str) -> float:

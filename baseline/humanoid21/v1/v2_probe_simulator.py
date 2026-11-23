@@ -12,6 +12,10 @@ probe_apply(rid, spec)（env.reset 后调用）：
         "nxt_dur":   int           # 预览令时长
         "arm":       (flags(2,), tgt(6,)) | None
                      # None→双臂自由（flag=0,tgt=0）
+        "arm_seq":   [(flags(2,), tgt(6,), dur_f), ...] | None
+                     # 分段序列：首段立即生效，到期 step() 自动
+                     # 换下一段；dur_f≤0 的末段=无限期驻留。
+                     # 与 "arm" 互斥（arm_seq 优先）。
     }
 注入态语义：RobotState 是 P5 系（踝中点原点/躯干+x）——指令
 均相对量，世界系位置平移不影响完成度度量；robot_b 停置
@@ -31,11 +35,19 @@ from .step_cmd_gen import StepCmd, _rot
 
 
 class _FrozenArmScript:
-    """冻结臂令：接口同 ArmDualScript（flags/current/step）。"""
+    """冻结臂令（可带分段队列）：接口同 ArmDualScript。
 
-    def __init__(self, flags: np.ndarray, tgt: np.ndarray) -> None:
+    step() 每控制帧由 V2StepArmSimulator.set_action 调一次——
+    分段序列在此推进：当前段剩余帧数耗尽且有下一段则切换。
+    """
+
+    def __init__(self, flags: np.ndarray, tgt: np.ndarray,
+                 dur: int = -1,
+                 seq: Optional[list] = None) -> None:
         self._f = np.asarray(flags, bool).copy()
         self._t = np.asarray(tgt, np.float32).copy()
+        self._left = int(dur)            # ≤0 = 无限期
+        self._seq = list(seq) if seq else []
 
     @property
     def flags(self) -> np.ndarray:
@@ -46,7 +58,13 @@ class _FrozenArmScript:
         return self._t
 
     def step(self) -> None:
-        pass
+        if self._left > 0:
+            self._left -= 1
+        if self._left == 0 and self._seq:
+            fl, tg, dur = self._seq.pop(0)
+            self._f = np.asarray(fl, bool).copy()
+            self._t = np.asarray(tg, np.float32).copy()
+            self._left = int(dur)
 
 
 def res_to_stepcmd(fl: np.ndarray, fr: np.ndarray, yaw: float,
@@ -107,12 +125,18 @@ class V2CmdProbeSimulator(V2StepArmSimulator):
     def probe_apply(self, rid: str, spec: Dict[str, Any]) -> None:
         """注入 22 维指令（env.reset + inject_state 之后）。"""
         st, dst = self._sst[rid], self._dst[rid]
-        arm = spec.get("arm")
-        if arm is None:
+        arm_seq = spec.get("arm_seq")
+        if arm_seq:
+            fl, tg, dur = arm_seq[0]
             dst["script"] = _FrozenArmScript(
-                np.zeros(2, bool), np.zeros(6))
+                fl, tg, dur=dur, seq=arm_seq[1:])
         else:
-            dst["script"] = _FrozenArmScript(*arm)
+            arm = spec.get("arm")
+            if arm is None:
+                dst["script"] = _FrozenArmScript(
+                    np.zeros(2, bool), np.zeros(6))
+            else:
+                dst["script"] = _FrozenArmScript(*arm)
 
         fl, fr, yaw = self._feet_yaw(rid)
         sv = spec.get("step_vec")
