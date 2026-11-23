@@ -1,0 +1,48 @@
+# ATTACK 验收环境：真·战斗 env（96 维原始 obs，对手在场）。
+# 攻击方 robot_a 由 AttackPolicy 驱动；robot_b 依模式：
+# frozen（harness 运行时 attach FrozenRobotPlugin）/
+# stand（CmdPolicy+hold）/ walk（CmdPolicy+交替小步）。
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+  pose_b:
+    default: "standing"
+    description: "robot_b 初始姿态（standing/squat/...）。"
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+simulator:
+  cls: "envs.humanoid21.simulator:Humanoid21Simulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "${pose_b}"
+plugins:
+  - cls: "baseline.humanoid21.plugins.imbalance_termination:ImbalanceTerminationPlugin"
+    config:
+      agent_id: "both"
+  - cls: "envs.humanoid21.plugins:CombatScoringPlugin"
+    config:
+      initial_health: 100.0
+      initial_health_a: 100.0
+      initial_health_b: 100.0
+      force_scale: 100.0
+      request_termination_on_ko: False
+observer_plugins:
+  combat:
+    cls: "envs.humanoid21.observer_plugins:CombatScoringObserver"
+    config: {}
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
