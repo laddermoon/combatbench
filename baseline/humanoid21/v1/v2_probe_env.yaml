@@ -1,0 +1,85 @@
+# CMD_PROBE — 指令完成度探针（cmd_probe lib 配套）：79 维。
+#
+# = steparm env 外壳，sim 换 V2CmdProbeSimulator：
+#   96维 obs 状态注入 + 22维指令注入（残差→锚定目标闭式逆），
+#   臂令冻结、步令序列到期轮转→保持；robot_b 停置 (10,10)。
+#   无随机令源、无倒地插件——一切由 probe_apply 注入。
+
+parameters:
+  initial_distance:
+    default: 2.0
+    description: "Spawn distance between robots (m)."
+  max_steps:
+    default: 400
+    description: "Max action steps."
+
+runtime:
+  phy_steps_per_action: 25          # 与 simulator.steps_per_action 一致
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.humanoid21.v1.v2_probe_simulator:V2CmdProbeSimulator"
+  config:
+    initial_distance: ${initial_distance}
+    debug_torque: false
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+    arm_script: false
+    # —— 步令系统（D20 残差编码，固定周期） ——
+    step_enabled: true
+    steps_per_action: 25            # 必须与上面 runtime 一致
+    order_period_s: 0.5             # 0.5s/令 = 10 帧
+    arrive_tol_m: 0.10
+    arrive_tol_rad: 0.10
+    wall_margin: 0.30
+    # —— 双臂独立软劫持（ARMDUAL 参数原样） ——
+    arm_hold_range: [2, 20]         # 周期时长 U(2,20) 帧
+    arm_tgt_range: [-1.0, 1.0]      # 关节目标 U(-1,1)
+    dual_prob: 0.1                  # 双臂同劫概率（否则单臂 50/50）
+
+plugins: []
+
+observer_plugins:
+  standing_balance_a:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_a"
+      h_cap: 1.10                    # 高度饱和：≥1.1m 不再奖励站高
+  standing_balance_b:
+    cls: "baseline.humanoid21.rewards.standing_balance_4stage:StandingBalance4StageRewarder"
+    config:
+      agent_id: "robot_b"
+      h_cap: 1.10
+  stepace_report_a:
+    cls: "baseline.humanoid21.v1.stepace_report_observer:StepAceReportObserver"
+    config:
+      agent_id: "robot_a"
+  stepace_report_b:
+    cls: "baseline.humanoid21.v1.stepace_report_observer:StepAceReportObserver"
+    config:
+      agent_id: "robot_b"
+  arm_dual_a:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_a"
+  arm_dual_b:
+    cls: "baseline.humanoid21.v1.arm_dual_observer:ArmDualObserver"
+    config:
+      agent_id: "robot_b"
+  foot_state_a:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_a"
+  foot_state_b:
+    cls: "baseline.humanoid21.end2end.foot_state_observer:FootStateObserver"
+    config:
+      agent_id: "robot_b"
+  wall_contact_a:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_a"
+  wall_contact_b:
+    cls: "baseline.humanoid21.end2end.wall_contact_observer:WallContactObserver"
+    config:
+      agent_id: "robot_b"
