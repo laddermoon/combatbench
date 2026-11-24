@@ -116,11 +116,12 @@ def extract_trajs(episode, agent_ids, aux_keys_fn) -> List[AgentTraj]:
 # World-model fit (k-step autoregressive windows)
 # ---------------------------------------------------------------------------
 def fit_wm(wm, opt, buf, batches, batch_size, k, device, aux_names, weights,
-           recent_frac=0.0, recent_pool=0.25):
+           recent_frac=0.0, recent_pool=0.25, teacher_share=0.0):
     stats = {"s": 0.0, "obs": 0.0, "aux": 0.0, "done": 0.0, "total": 0.0}
     for _ in range(batches):
         w = buf.sample_windows(batch_size, k, recent_frac=recent_frac,
-                               recent_pool=recent_pool)
+                               recent_pool=recent_pool,
+                               teacher_share=teacher_share)
         s = torch.as_tensor(w["s0"], device=device)
         acts = torch.as_tensor(w["act"], device=device)
         cs_t = torch.as_tensor(w["cs"], device=device)
@@ -166,7 +167,9 @@ def _set_requires_grad(module, flag: bool) -> None:
 def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             entropy_coef=0.0, use_done=True, seed_start_frac=0.0,
             recent_frac=0.0, recent_pool=0.25,
-            seed_tail_frac=0.0, seed_tail_span=16):
+            seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
+            ref_actor=None, kl_coef=0.0, no_bootstrap=False,
+            signal_floor=0.0):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     _set_requires_grad(wm, False)
@@ -179,7 +182,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
                                   recent_frac=recent_frac,
                                   recent_pool=recent_pool,
                                   tail_frac=seed_tail_frac,
-                                  tail_span=seed_tail_span)
+                                  tail_span=seed_tail_span,
+                                  teacher_share=teacher_share)
     s = torch.as_tensor(s_np, device=device)
     o = torch.as_tensor(o_np, device=device)
     alive = torch.ones(s.shape[0], device=device)
@@ -189,6 +193,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     s_hist, c_hist, r_hist = [], [], {ch["name"]: [] for ch in channels}
     ent = 0.0
 
+    phi0 = None
     for t in range(H):
         if entropy_coef != 0.0:
             ent = ent + actor.forward(o)[1].log().mean()
@@ -211,6 +216,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         for name in aux_names:
             lo_hi = getattr(exp, "aux_clamps", {}).get(name)
             aux[name] = h[name].clamp(lo_hi[0], lo_hi[1]) if lo_hi else h[name]
+        if t == 0 and "phi" in aux:
+            phi0 = aux["phi"].detach()
         if use_done:
             alive = alive * (1.0 - torch.sigmoid(h["done_logit"]))
         for ch in channels:
@@ -238,35 +245,70 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         vH = _boot_v(name, s)
         vH_stats[f"vH_{name}"] = float(vH.mean().detach())
         R[name] = R[name] + g_H * alive * vH
-        J = J + g_H * alive * exp.channel_weight(name, last_aux) * vH
+        if not no_bootstrap:
+            J = J + g_H * alive * exp.channel_weight(name, last_aux) * vH
 
-    actor_loss = -J.mean()
+    # Per-seed informativeness weighting. On a buffer dominated by standing
+    # data the model predicts "everything stands" — phi~1, alive~1 — so the
+    # imagined objective is *flat* on most seeds and their gradients are pure
+    # model/Adam noise. The real signal lives on seeds whose imagination
+    # actually reaches the termination boundary (alive drops) or changes phi
+    # materially. Weight each seed's J by that signal so the batch gradient
+    # is dominated by boundary-adjacent data instead of flat noise.
+    if signal_floor > 0.0:
+        sig = (1.0 - alive.detach())
+        if phi0 is not None:
+            sig = sig + (last_aux["phi"].detach() - phi0).abs()
+        w_seed = sig.clamp(signal_floor, 1.0)
+        actor_loss = -(w_seed * J).sum() / w_seed.sum()
+    else:
+        actor_loss = -J.mean()
     if entropy_coef != 0.0:
         actor_loss = actor_loss - entropy_coef * ent / H
 
+    # Trust region on real seed states: the imagined objective rewards
+    # whatever the *model* prefers — including its errors. Without an
+    # anchor, 40 minibatch steps per update let the actor race off the
+    # data manifold faster than the model/critic can track (a
+    # teacher-initialized standing policy was destroyed within ~9
+    # updates). Penalize the mean-action drift from the frozen policy
+    # that generated this batch's data, at the real seed observations
+    # where the anchor is actually grounded.
+    kl_pen = None
+    if ref_actor is not None and kl_coef > 0.0:
+        with torch.no_grad():
+            a_ref = ref_actor.deterministic_action(
+                torch.as_tensor(o_np, device=device))
+        a_now = actor.deterministic_action(torch.as_tensor(
+            o_np, device=device))
+        kl_pen = F.mse_loss(a_now, a_ref)
+        actor_loss = actor_loss + kl_coef * kl_pen
+
     # --- Critic targets: backwards gamma-return on the imagined trajectory ---
-    with torch.no_grad():
-        targets = {}
+    # Under --no-bootstrap this self-referential regression is skipped: its
+    # targets bottom out at V(ŝ_H) on off-manifold states, which is exactly
+    # the corruption channel this flag exists to remove.
+    critic_loss = 0.0
+    if not no_bootstrap:
+        with torch.no_grad():
+            targets = {}
+            for ch in channels:
+                name = ch["name"]
+                g = ch["gamma"]
+                G = _boot_v(name, s).detach()
+                tgt = [None] * H
+                for t in range(H - 1, -1, -1):
+                    G = r_hist[name][t] + g * c_hist[t] * G
+                    tgt[t] = G
+                targets[name] = tgt
+
         for ch in channels:
             name = ch["name"]
-            g = ch["gamma"]
-            G = _boot_v(name, s).detach()
-            tgt = [None] * H
-            for t in range(H - 1, -1, -1):
-                G = r_hist[name][t] + g * c_hist[t] * G
-                tgt[t] = G
-            targets[name] = tgt
-
-    for _c in critics.values():
-        _set_requires_grad(_c, True)
-    critic_loss = 0.0
-    for ch in channels:
-        name = ch["name"]
-        for t in range(H):
-            critic_loss = critic_loss + F.mse_loss(
-                critics[name](s_hist[t]), targets[name][t]
-            )
-    critic_loss = critic_loss / (H * len(channels))
+            for t in range(H):
+                critic_loss = critic_loss + F.mse_loss(
+                    critics[name](s_hist[t]), targets[name][t]
+                )
+        critic_loss = critic_loss / (H * len(channels))
 
     # --- Critic anchoring on REAL trajectories ---
     # The imagined loss alone is terminal-blind under --no-done: V would
@@ -274,8 +316,11 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     # earning reward. Regress V on real buffer windows with true reward and
     # true termination masking so the bootstrap V(s_H) in J carries the
     # "about to fall -> truncated return" information into imagination.
+    for _c in critics.values():
+        _set_requires_grad(_c, True)
     w = buf.sample_windows(batch, 8, recent_frac=recent_frac,
-                           recent_pool=recent_pool)
+                           recent_pool=recent_pool,
+                           teacher_share=teacher_share)
     cs_w = torch.as_tensor(np.concatenate(
         [w["s0"][:, None, :], w["cs"][:, :-1, :]], axis=1), device=device)
     # states trained: s_{j0}..s_{j0+k-1} = cs[j0-1] then cs[j0..j0+k-2]
@@ -309,6 +354,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         "J": float(J.mean()),
         **vH_stats,
         "alive_end": float(alive.mean()),
+        "kl_pen": float(kl_pen) if kl_pen is not None else 0.0,
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
@@ -342,6 +388,26 @@ def build_jobs(env_bp, policy_bp, base_seed, n_episodes, exp, stochastic,
     return jobs
 
 
+def eval_stats(episodes, exp):
+    """Deterministic-eval metrics: per-agent survival rate and mean episode
+    length (frames). ep_len is the fine-grained signal — a policy drifting
+    toward the fall boundary loses length long before it loses survival."""
+    lens = []
+    survived = total = 0
+    for ep in episodes:
+        for aid in exp.agent_ids:
+            total += 1
+            if not ep.agent_termination_reason.get(
+                    aid, "").startswith("imbalance"):
+                survived += 1
+        for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
+            lens.append(tr.n_frames)
+    return {
+        "survival": survived / max(total, 1),
+        "len": float(np.mean(lens)) if lens else 0.0,
+    }
+
+
 def eval_survival(episodes, agent_ids) -> float:
     survived = total = 0
     for ep in episodes:
@@ -360,6 +426,23 @@ def run(exp, args) -> None:
     print(f"[dynabptt] experiment={exp.name} device={device}", flush=True)
 
     actor = exp.build_actor(device)
+    if args.actor_init:
+        # Warm-start the actor's mean net from an exported policy
+        # checkpoint (e.g. the PPO basic_balance teacher). The exported
+        # net is the same Linear-Tanh stack; its pre-tanh mean maps
+        # directly onto actor.net. Answers the machinery check: if a
+        # standing-init policy still collapses under DynaBPTT updates,
+        # the training loop itself is broken — not the cold start.
+        _p = torch.load(args.actor_init, map_location=device)
+        _sd = _p.get("state_dict", _p)
+        _missing, _unexpected = actor.net.load_state_dict(
+            {k[4:]: v for k, v in _sd.items() if k.startswith("net.")},
+            strict=False)
+        if _missing or _unexpected:
+            raise RuntimeError(
+                f"--actor-init state mismatch missing={_missing} "
+                f"unexpected={_unexpected}")
+        print(f"[init] actor mean-net <- {args.actor_init}", flush=True)
     critics = {ch["name"]: CriticMLP(exp.state_dim, exp.critic_hidden_dim).to(device)
                for ch in exp.channels}
     # Slow-moving critic copies provide every bootstrap/target value. Without
@@ -376,10 +459,33 @@ def run(exp, args) -> None:
         hidden=exp.wm_hidden,
     ).to(device)
 
+    # Frozen reference actor for the per-update trust region — synced to
+    # the live actor at the start of each improve phase so the KL anchor
+    # always points at the policy that generated the current buffer data.
+    # With --anchor-mode init the reference is instead frozen forever at
+    # the initialized policy (e.g. a BC/teacher warm start), making the
+    # penalty an absolute rather than drifting anchor.
+    ref_actor = copy.deepcopy(actor)
+    _set_requires_grad(ref_actor, False)
+    ref_actor.eval()
+    if args.sigma0 is not None:
+        # Collection noise must be low enough that a good mean policy
+        # actually survives — sigma=0.37 torque noise kills even a
+        # standing teacher within ~20 frames, so the learner's own data
+        # never reflects its true (deterministic) capability.
+        with torch.no_grad():
+            actor.log_std.fill_(float(np.log(args.sigma0)))
+
     opt_wm = torch.optim.Adam(wm.parameters(), lr=args.wm_lr)
     opt_actor = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
     critic_params = [p for c in critics.values() for p in c.parameters()]
     opt_critic = torch.optim.Adam(critic_params, lr=args.critic_lr)
+
+    # Ratchet state (see --ratchet): the best deterministic-eval actor seen
+    # so far plus its score. The loop may propose whatever the model
+    # rewards; only updates that do not regress REAL performance are kept.
+    best_len = None
+    best_actor = None
 
     env_bp = inject_corestate(exp.env_bp())
     buf = TransitionBuffer(max_transitions=args.buffer_size, seed=args.seed)
@@ -401,6 +507,8 @@ def run(exp, args) -> None:
     export_root.mkdir(parents=True, exist_ok=True)
 
     try:
+        seed_bp = (PolicyBlueprint.load(args.seed_policy)
+                   if args.seed_policy else None)
         for u in range(start_update, args.updates):
             t0 = time.perf_counter()
             if u == start_update and args.seed_episodes > 0:
@@ -409,25 +517,42 @@ def run(exp, args) -> None:
                 # recovery. Seeding the buffer with a standing-capable
                 # policy's transitions gives imagination surviving futures
                 # and gives the critic non-trivial values to anchor to.
-                seed_bp = PolicyBlueprint.load(args.seed_policy)
                 sjobs = build_jobs(env_bp, seed_bp, args.seed + 55555,
                                    args.seed_episodes, exp, False, 0.0)
                 n_seed = 0
                 for ep in rollouter.collect(sjobs):
                     for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
+                        tr.source = "teacher"
                         buf.add(tr)
                         n_seed += tr.n_trans
                 print(f"[seed] {args.seed_episodes} eps {args.seed_policy} "
                       f"-> +{n_seed} trans (buf={len(buf)})", flush=True)
             policy_bp = actor.to_blueprint(str(export_root / f"u{u:05d}"))
+            # Keep a constant trickle of teacher data: a one-shot seed
+            # decays to ~2% of the buffer within ~20 updates, after which
+            # seeds/critic lose the healthy-standing anchor again.
+            # --seed-frac of every collection batch is the teacher policy.
+            n_teacher = (int(args.episodes * args.seed_frac)
+                         if seed_bp is not None else 0)
+            n_learner = args.episodes - n_teacher
             jobs = build_jobs(env_bp, policy_bp, args.seed + u * 100003,
-                              args.episodes, exp, True, args.ef)
+                              n_learner, exp, True, args.ef)
             episodes = rollouter.collect(jobs)
             tr_added = 0
             for ep in episodes:
                 for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
                     buf.add(tr)
                     tr_added += tr.n_trans
+            if n_teacher > 0:
+                tjobs = build_jobs(env_bp, seed_bp,
+                                   args.seed + 77777 + u * 100003,
+                                   n_teacher, exp, False, 0.0)
+                for ep in rollouter.collect(tjobs):
+                    for tr in extract_trajs(
+                            ep, exp.agent_ids, exp.aux_keys):
+                        tr.source = "teacher"
+                        buf.add(tr)
+                        tr_added += tr.n_trans
             t_coll = time.perf_counter() - t0
 
             t0 = time.perf_counter()
@@ -435,11 +560,15 @@ def run(exp, args) -> None:
             wm_stats = fit_wm(
                 wm, opt_wm, buf, fit_batches, args.fit_batch_size,
                 args.k, device, exp.aux_names, exp.wm_loss_weights,
-                recent_frac=args.recent_frac, recent_pool=args.recent_pool)
+                recent_frac=args.recent_frac, recent_pool=args.recent_pool,
+                teacher_share=args.teacher_share)
             t_fit = time.perf_counter() - t0
 
             t0 = time.perf_counter()
+            if args.anchor_mode == "last" and not args.ratchet:
+                ref_actor.load_state_dict(actor.state_dict())
             imp_stats_acc: Dict[str, float] = {}
+            train_actor = u >= args.actor_warmup
             for _ in range(args.improve_batches):
                 a_loss, c_loss, imp_stats = improve(
                     actor, critics, tgt_critics, wm, buf, exp,
@@ -450,11 +579,16 @@ def run(exp, args) -> None:
                     recent_pool=args.recent_pool,
                     seed_tail_frac=args.seed_tail_frac,
                     seed_tail_span=args.seed_tail_span,
+                    teacher_share=args.teacher_share,
+                    ref_actor=ref_actor, kl_coef=args.actor_kl,
+                    no_bootstrap=args.no_bootstrap,
+                    signal_floor=args.signal_floor,
                 )
-                opt_actor.zero_grad(set_to_none=True)
-                a_loss.backward()
-                torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
-                opt_actor.step()
+                if train_actor:
+                    opt_actor.zero_grad(set_to_none=True)
+                    a_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(actor.parameters(), 10.0)
+                    opt_actor.step()
                 opt_critic.zero_grad(set_to_none=True)
                 c_loss.backward()
                 torch.nn.utils.clip_grad_norm_(critic_params, 10.0)
@@ -473,6 +607,36 @@ def run(exp, args) -> None:
                         _pt.lerp_(_ps, args.target_ema)
             sigma_mean = float(actor.policy_sigma().mean().detach().cpu())
             t_imp = time.perf_counter() - t0
+
+            ratchet_str = ""
+            if args.ratchet:
+                # Per-update acceptance gate on REAL deterministic rollouts
+                # (fixed seeds -> paired comparison). When the imagined
+                # objective is flat or corrupt, actor updates are a
+                # KL-bounded random walk that still breaks knife-edge
+                # balance controllers — measured: teacher-init policy
+                # destroyed within ~5 active updates while model J claimed
+                # parity. Revert on regression; accept and re-anchor the
+                # trust region otherwise.
+                policy_bp = actor.to_blueprint(
+                    str(export_root / f"u{u:05d}_ratchet"))
+                rjobs = build_jobs(env_bp, policy_bp, args.seed + 31337,
+                                   args.ratchet_episodes, exp, False, 0.0)
+                m = eval_stats(rollouter.collect(rjobs), exp)
+                if best_len is None or m["len"] >= best_len - args.ratchet_tol:
+                    best_len = m["len"] if best_len is None else max(
+                        best_len, m["len"])
+                    best_actor = {k: v.detach().clone()
+                                  for k, v in actor.state_dict().items()}
+                    ref_actor.load_state_dict(actor.state_dict())
+                    ratchet_str = (f" | ratchet len={m['len']:.0f} "
+                                   f"best={best_len:.0f} acc")
+                else:
+                    actor.load_state_dict(best_actor)
+                    opt_actor = torch.optim.Adam(actor.parameters(),
+                                                 lr=args.actor_lr)
+                    ratchet_str = (f" | ratchet len={m['len']:.0f} "
+                                   f"best={best_len:.0f} REJ")
 
             eval_str = ""
             if (u + 1) % args.eval_interval == 0 or u == start_update:
@@ -505,8 +669,9 @@ def run(exp, args) -> None:
                 + " "
                 f"alive={imp_stats.get('alive_end', 0):.2f} "
                 f"closs={imp_stats.get('critic_loss', 0):.4f} "
-                f"rcloss={imp_stats.get('real_closs', 0):.4f} {r_str} "
-                f"| sigma={sigma_mean:.3f}{eval_str}",
+                f"rcloss={imp_stats.get('real_closs', 0):.4f} "
+                f"kl={imp_stats.get('kl_pen', 0):.4f} {r_str} "
+                f"| sigma={sigma_mean:.3f}{eval_str}{ratchet_str}",
                 flush=True,
             )
     finally:
@@ -571,6 +736,53 @@ def main() -> None:
     p.add_argument("--ckpt-interval", type=int, default=10)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--no-bootstrap", action="store_true",
+                   help="Drop the V(s_H) bootstrap term from J. Imagined "
+                        "states drift off the real-data manifold, so OOD "
+                        "critic values are arbitrary — and the actor climbs "
+                        "them (measured: J ranked a destroyed policy 2.7x "
+                        "above the standing teacher purely via V(s_H)).")
+    p.add_argument("--ratchet", action="store_true",
+                   help="Gate every update on a fixed-seed deterministic eval "
+                        "of mean episode length; revert the actor to the "
+                        "best-scoring snapshot on regression and reset its "
+                        "optimizer. Makes model-gradient corruption safe by "
+                        "construction.")
+    p.add_argument("--ratchet-tol", type=float, default=30.0,
+                   help="ep_len regression tolerance before reverting")
+    p.add_argument("--ratchet-episodes", type=int, default=32,
+                   help="episodes per ratchet eval (fixed seeds)")
+    p.add_argument("--signal-floor", type=float, default=0.0,
+                   help="If >0, weight each imagined seed's J by its "
+                        "boundary signal (1-alive_end + |phi drift|), with "
+                        "this value as the floor for flat/saturated seeds")
+    p.add_argument("--actor-kl", type=float, default=3.0,
+                   help="Trust-region coefficient: penalizes mean-action "
+                        "drift from the policy that generated the current "
+                        "buffer, at real seed observations.")
+    p.add_argument("--anchor-mode", choices=["last", "init"],
+                   default="last",
+                   help="'last': KL anchor re-syncs to the actor each "
+                        "update (drifting trust region). 'init': anchor "
+                        "stays at the --actor-init policy permanently.")
+    p.add_argument("--sigma0", type=float, default=None,
+                   help="Override actor log_std init -> collection sigma. "
+                        "Default keeps the policy's own init (~0.37).")
+    p.add_argument("--actor-warmup", type=int, default=0,
+                   help="Updates to skip actor training (model+critic "
+                        "calibrate first so bootstrap values are sane).")
+    p.add_argument("--actor-init", type=str, default=None,
+                   help="Optional model.pt checkpoint to initialize the "
+                        "actor's mean net (behavior-cloning warm start).")
+    p.add_argument("--seed-frac", type=float, default=0.0,
+                   help="Fraction of each update's collection episodes run "
+                        "with --seed-policy (persistent teacher trickle).")
+    p.add_argument("--teacher-share", type=float, default=0.0,
+                   help="Share of each model-fit window batch and "
+                        "imagination seed batch drawn from the teacher "
+                        "trajectory pool (kept small: teacher trajectories "
+                        "are ~10x longer and would otherwise dominate the "
+                        "fit, letting the actor exploit model optimism).")
     p.add_argument("--seed-policy", type=str, default=None,
                    help="Optional policy blueprint path: collect "
                         "--seed-episodes with it at update 0 to warm-start "
