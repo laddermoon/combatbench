@@ -198,10 +198,11 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             recent_frac=0.0, recent_pool=0.25,
             seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
-            signal_floor=0.0):
+            signal_floor=0.0, pess_lambda=0.0):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
-    _set_requires_grad(wm, False)
+    for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
+        _set_requires_grad(_m, False)
     for _c in critics.values():
         _set_requires_grad(_c, False)
     channels = exp.channels  # [{"name","gamma"}]
@@ -213,51 +214,80 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
                                   tail_frac=seed_tail_frac,
                                   tail_span=seed_tail_span,
                                   teacher_share=teacher_share)
-    s = torch.as_tensor(s_np, device=device)
-    o = torch.as_tensor(o_np, device=device)
-    alive = torch.ones(s.shape[0], device=device)
+    o_np_t = torch.as_tensor(o_np, device=device)
+    wms = wm if isinstance(wm, (list, tuple)) else [wm]
 
-    J = torch.zeros(s.shape[0], device=device)
-    R = {ch["name"]: torch.zeros(s.shape[0], device=device) for ch in channels}
+    # Imagined rollout under EACH ensemble member on the same seeds. A
+    # phantom gradient direction has to fool every member to survive the
+    # pessimistic combination — measured: single-model BPTT proposals at
+    # ~0.01 action-RMS score ep_len ~350 vs ~560 for same-magnitude random
+    # noise, i.e. the ascent direction is systematically worse than random
+    # (it chases per-model Jacobian errors).
+    J_members = []
+    R_members = []
     s_hist, c_hist, r_hist = [], [], {ch["name"]: [] for ch in channels}
     ent = 0.0
+    alive_last = phi0 = last_aux = None
+    for m_i, wm_i in enumerate(wms):
+        s = torch.as_tensor(s_np, device=device)
+        o = o_np_t
+        alive = torch.ones(s.shape[0], device=device)
+        J_m = torch.zeros(s.shape[0], device=device)
+        R_m = {ch["name"]: torch.zeros(s.shape[0], device=device)
+               for ch in channels}
+        for t in range(H):
+            if entropy_coef != 0.0:
+                ent = ent + actor.forward(o)[1].log().mean() / len(wms)
+            # Deterministic actions inside imagination (SuperMimic recipe):
+            # action noise lives in data collection only — it widens the
+            # model's action coverage but must not perturb the rollout.
+            a = actor.deterministic_action(o)
+            if m_i == 0:
+                s_hist.append(s.detach())  # s_t — pairs with targets[t]
+            s, h = wm_i.step(s, a)
+            o = h["obs"]
+            # Aux heads are unbounded MLP outputs; imagined states drift
+            # off-manifold and the heads extrapolate reward features to
+            # absurd values (observed phi_hat ~30 -> phantom reward basin
+            # the actor learns to chase while the real policy keeps
+            # falling). Clamp predicted aux to each channel's plausible
+            # range before any reward/weight computation — the model
+            # itself stays unclamped (fit targets are real data; the clamp
+            # only removes the actor's ability to arbitrage head
+            # extrapolation).
+            aux = {}
+            for name in aux_names:
+                lo_hi = getattr(exp, "aux_clamps", {}).get(name)
+                aux[name] = (h[name].clamp(lo_hi[0], lo_hi[1])
+                             if lo_hi else h[name])
+            if m_i == 0:
+                if t == 0 and "phi" in aux:
+                    phi0 = aux["phi"].detach()
+                last_aux = aux
+            if use_done:
+                alive = alive * (1.0 - torch.sigmoid(h["done_logit"]))
+            for ch in channels:
+                name = ch["name"]
+                r_c = exp.channel_reward(name, aux)
+                w_c = exp.channel_weight(name, aux)
+                g_t = ch["gamma"] ** t
+                R_m[name] = R_m[name] + g_t * alive * r_c
+                J_m = J_m + g_t * alive * w_c * r_c
+                if m_i == 0:
+                    r_hist[name].append(r_c.detach())
+            if m_i == 0:
+                c_hist.append(alive.detach())
+        J_members.append(J_m)
+        R_members.append(R_m)
+        if m_i == 0:
+            alive_last = alive
 
-    phi0 = None
-    for t in range(H):
-        if entropy_coef != 0.0:
-            ent = ent + actor.forward(o)[1].log().mean()
-        # Deterministic actions inside imagination (SuperMimic recipe):
-        # action noise lives in data collection only — it widens the model's
-        # action coverage but must not perturb the imagined rollout.
-        a = actor.deterministic_action(o)
-        s_hist.append(s.detach())  # s_t — pairs with targets[t] below
-        s, h = wm.step(s, a)
-        o = h["obs"]
-        # Aux heads are unbounded MLP outputs; imagined states drift
-        # off-manifold and the heads extrapolate reward features to
-        # absurd values (observed phi_hat ~30 -> phantom reward basin the
-        # actor learns to chase while the real policy keeps falling).
-        # Clamp predicted aux to each channel's plausible range before any
-        # reward/weight computation — the model itself stays unclamped
-        # (fit targets are real data; the clamp only removes the actor's
-        # ability to arbitrage head extrapolation).
-        aux = {}
-        for name in aux_names:
-            lo_hi = getattr(exp, "aux_clamps", {}).get(name)
-            aux[name] = h[name].clamp(lo_hi[0], lo_hi[1]) if lo_hi else h[name]
-        if t == 0 and "phi" in aux:
-            phi0 = aux["phi"].detach()
-        if use_done:
-            alive = alive * (1.0 - torch.sigmoid(h["done_logit"]))
-        for ch in channels:
-            name = ch["name"]
-            r_c = exp.channel_reward(name, aux)
-            w_c = exp.channel_weight(name, aux)
-            g_t = ch["gamma"] ** t
-            R[name] = R[name] + g_t * alive * r_c
-            J = J + g_t * alive * w_c * r_c
-            r_hist[name].append(r_c.detach())
-        c_hist.append(alive.detach())
+    J_stack = torch.stack(J_members)  # (K, b)
+    J = J_stack.mean(0) - pess_lambda * (
+        J_stack.std(0) if len(wms) > 1 else 0.0)
+    R = {n: torch.stack([rm[n] for rm in R_members]).mean(0)
+         for n in R_members[0]}
+    alive = alive_last
 
     vrange = getattr(exp, "channel_vrange", {})
 
@@ -388,7 +418,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
     }
-    _set_requires_grad(wm, True)
+    for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
+        _set_requires_grad(_m, True)
     return actor_loss, critic_loss, stats
 
 
@@ -482,11 +513,16 @@ def run(exp, args) -> None:
     for _c in tgt_critics.values():
         _set_requires_grad(_c, False)
         _c.eval()
-    wm = WorldModel(
+    # Ensemble of independently-initialized dynamics models. Imagination
+    # runs under every member on shared seeds and the actor maximizes a
+    # pessimistic combination (mean - lambda*std) of per-member J — a
+    # phantom gradient direction must fool all members to survive.
+    wms = [WorldModel(
         state_dim=exp.state_dim, action_dim=exp.action_dim,
         obs_dim=exp.obs_dim, aux_names=exp.aux_names,
         hidden=exp.wm_hidden,
-    ).to(device)
+    ).to(device) for _ in range(max(1, args.wm_ensemble))]
+    wm = wms[0] if len(wms) == 1 else wms
 
     # Frozen reference actor for the per-update trust region — synced to
     # the live actor at the start of each improve phase so the KL anchor
@@ -505,7 +541,8 @@ def run(exp, args) -> None:
         with torch.no_grad():
             actor.log_std.fill_(float(np.log(args.sigma0)))
 
-    opt_wm = torch.optim.Adam(wm.parameters(), lr=args.wm_lr)
+    opt_wms = [torch.optim.Adam(_m.parameters(), lr=args.wm_lr)
+               for _m in wms]
     opt_actor = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
     critic_params = [p for c in critics.values() for p in c.parameters()]
     opt_critic = torch.optim.Adam(critic_params, lr=args.critic_lr)
@@ -528,7 +565,11 @@ def run(exp, args) -> None:
     if args.resume:
         ck = torch.load(args.resume, map_location=device)
         actor.load_state_dict(ck["actor"])
-        wm.load_state_dict(ck["wm"])
+        if "wms" in ck:
+            for _m, _sd in zip(wms, ck["wms"]):
+                _m.load_state_dict(_sd)
+        else:
+            wms[0].load_state_dict(ck["wm"])
         for n, sd in ck["critics"].items():
             critics[n].load_state_dict(sd)
         start_update = int(ck["update"]) + 1
@@ -611,11 +652,17 @@ def run(exp, args) -> None:
 
             t0 = time.perf_counter()
             fit_batches = args.warmup_fit if u == start_update else args.fit_batches
-            wm_stats = fit_wm(
-                wm, opt_wm, buf, fit_batches, args.fit_batch_size,
-                args.k, device, exp.aux_names, exp.wm_loss_weights,
-                recent_frac=args.recent_frac, recent_pool=args.recent_pool,
-                teacher_share=args.teacher_share)
+            wm_stats_acc: Dict[str, float] = {}
+            for _m, _o in zip(wms, opt_wms):
+                _st = fit_wm(
+                    _m, _o, buf, fit_batches, args.fit_batch_size,
+                    args.k, device, exp.aux_names, exp.wm_loss_weights,
+                    recent_frac=args.recent_frac,
+                    recent_pool=args.recent_pool,
+                    teacher_share=args.teacher_share)
+                for _kk, _vv in _st.items():
+                    wm_stats_acc[_kk] = wm_stats_acc.get(_kk, 0.0) + _vv
+            wm_stats = {k: v / len(wms) for k, v in wm_stats_acc.items()}
             t_fit = time.perf_counter() - t0
 
             t0 = time.perf_counter()
@@ -637,6 +684,7 @@ def run(exp, args) -> None:
                     ref_actor=ref_actor, kl_coef=args.actor_kl,
                     no_bootstrap=args.no_bootstrap,
                     signal_floor=args.signal_floor,
+                    pess_lambda=args.pess_lambda,
                 )
                 if train_actor:
                     opt_actor.zero_grad(set_to_none=True)
@@ -715,7 +763,8 @@ def run(exp, args) -> None:
                 torch.save({
                     "update": u,
                     "actor": actor.state_dict(),
-                    "wm": wm.state_dict(),
+                    "wm": wms[0].state_dict(),
+                    "wms": [_m.state_dict() for _m in wms],
                     "critics": {n: c.state_dict() for n, c in critics.items()},
                 }, ckpt_dir / f"ckpt_u{u:05d}.pt")
 
@@ -833,6 +882,13 @@ def main() -> None:
                    help="If >0, weight each imagined seed's J by its "
                         "boundary signal (1-alive_end + |phi drift|), with "
                         "this value as the floor for flat/saturated seeds")
+    p.add_argument("--wm-ensemble", type=int, default=1,
+                   help="Number of independently-trained dynamics models; "
+                        "imagination runs under every member and the actor "
+                        "maximizes a pessimistic J combination")
+    p.add_argument("--pess-lambda", type=float, default=0.0,
+                   help="Pessimism coefficient: J = mean_k(J) - "
+                        "lambda*std_k(J) across the ensemble")
     p.add_argument("--target-kl", type=float, default=0.0,
                    help="If >0, stop the improve loop once the mean-action "
                         "MSE vs the reference actor exceeds this bound "
