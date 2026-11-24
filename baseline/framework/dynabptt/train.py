@@ -201,13 +201,17 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
             signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0,
             dagger_net=None, dagger_coef=0.0, dagger_phi_min=0.0,
-            si_coef=0.0, si_top_frac=0.1):
+            si_coef=0.0, si_top_frac=0.1,
+            actor_mode="bptt", qcritics=None, tgt_qcritics=None):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
         _set_requires_grad(_m, False)
     for _c in critics.values():
         _set_requires_grad(_c, False)
+    if qcritics:
+        for _c in qcritics.values():
+            _set_requires_grad(_c, False)
     channels = exp.channels  # [{"name","gamma"}]
     aux_names = exp.aux_names
 
@@ -229,6 +233,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     J_members = []
     R_members = []
     s_hist, c_hist, r_hist = [], [], {ch["name"]: [] for ch in channels}
+    a_hist, o_hist = [], []
     ent = 0.0
     alive_last = phi0 = last_aux = None
     for m_i, wm_i in enumerate(wms):
@@ -247,8 +252,11 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             a = actor.deterministic_action(o)
             if m_i == 0:
                 s_hist.append(s.detach())  # s_t — pairs with targets[t]
+                a_hist.append(a.detach())
             s, h = wm_i.step(s, a)
             o = h["obs"]
+            if m_i == 0:
+                o_hist.append(o.detach())  # ô_{t+1}
             # Aux heads are unbounded MLP outputs; imagined states drift
             # off-manifold and the heads extrapolate reward features to
             # absurd values (observed phi_hat ~30 -> phantom reward basin
@@ -284,6 +292,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         R_members.append(R_m)
         if m_i == 0:
             alive_last = alive
+            s_fin = s
 
     J_stack = torch.stack(J_members)  # (K, b)
     J = J_stack.mean(0) - pess_lambda * (
@@ -317,7 +326,17 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     # actually reaches the termination boundary (alive drops) or changes phi
     # materially. Weight each seed's J by that signal so the batch gradient
     # is dominated by boundary-adjacent data instead of flat noise.
-    if signal_floor > 0.0:
+    if actor_mode == "mbpo":
+        # MBPO-style actor: ascend Q(s, pi(s)) on REAL seed states only.
+        # The dynamics model is not in the actor's gradient path at all —
+        # it only fabricates critic training data. J's honest flatness at
+        # the frontier (the BPTT failure mode) cannot hurt a Q-ascent.
+        s_seed = s_hist[0]
+        a_pi = actor.deterministic_action(o_np_t)
+        actor_loss = -sum(
+            qcritics[n](torch.cat([s_seed, a_pi], dim=-1)).mean()
+            for n in R)
+    elif signal_floor > 0.0:
         sig = (1.0 - alive.detach())
         if phi0 is not None:
             sig = sig + (last_aux["phi"].detach() - phi0).abs()
@@ -477,6 +496,67 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     real_loss = real_loss / len(channels)
     critic_loss = critic_loss + real_loss
 
+    # --- MBPO Q-critic training ---
+    # Q(s,a) fitted on BOTH real transitions and imagined rollout
+    # transitions (the model's data-augmentation job); actor ascends it.
+    q_loss = 0.0
+    if actor_mode == "mbpo" and qcritics:
+        for _c in qcritics.values():
+            _set_requires_grad(_c, True)
+        act_w = torch.as_tensor(w["act"], device=device)  # (b,k,act)
+        s0_w = torch.as_tensor(w["s0"], device=device)
+        obs_w = torch.as_tensor(w["obs"], device=device)
+        cs_full = torch.as_tensor(w["cs"], device=device)
+        ref = ref_actor if ref_actor is not None else actor
+        for ch in channels:
+            name = ch["name"]
+            g = ch["gamma"]
+            # Real transitions: (cs_{j-1}, a_j) -> cs_j, r_j from real aux.
+            with torch.no_grad():
+                r_steps_q = torch.stack([
+                    exp.channel_reward(name, {
+                        n: torch.as_tensor(v[:, m], device=device)
+                        for n, v in w["aux"].items()
+                    })
+                    for m in range(w["done"].shape[1])
+                ], dim=1)
+                a_next = ref.deterministic_action(
+                    obs_w.reshape(-1, obs_w.shape[-1]))
+                q_next = tgt_qcritics[name](torch.cat(
+                    [cs_full.reshape(-1, cs_full.shape[-1]), a_next], -1)
+                    ).reshape(done_w.shape)
+                q_tgt_r = r_steps_q + g * (1.0 - done_w) * q_next
+            s_prev = torch.cat(
+                [s0_w[:, None, :], cs_full[:, :-1, :]], dim=1)
+            q_in = torch.cat(
+                [s_prev.reshape(-1, s_prev.shape[-1]),
+                 act_w.reshape(-1, act_w.shape[-1])], -1)
+            q_loss = q_loss + F.mse_loss(
+                qcritics[name](q_in), q_tgt_r.reshape(-1))
+            # Imagined transitions (member-0 rollout): (ŝ_t, â_t) -> ŝ_{t+1},
+            # r̂_t from model aux, bootstrap on imagined next state.
+            s_im = torch.stack([s_hist[t] for t in range(H)], dim=1)
+            a_im = torch.stack([a_hist[t] for t in range(H)], dim=1)
+            s_nxt = torch.stack(
+                [s_hist[t + 1] if t + 1 < H else s_fin for t in range(H)],
+                dim=1)
+            o_nxt = torch.stack([o_hist[t] for t in range(H)], dim=1)
+            al_nxt = torch.stack([c_hist[t] for t in range(H)], dim=1)
+            r_im = torch.stack([r_hist[name][t] for t in range(H)], dim=1)
+            with torch.no_grad():
+                a_ni = ref.deterministic_action(
+                    o_nxt.reshape(-1, o_nxt.shape[-1]))
+                q_ni = tgt_qcritics[name](torch.cat(
+                    [s_nxt.reshape(-1, s_nxt.shape[-1]), a_ni], -1)
+                    ).reshape(r_im.shape)
+                q_tgt_i = r_im + g * al_nxt * q_ni
+            q_in_i = torch.cat(
+                [s_im.reshape(-1, s_im.shape[-1]),
+                 a_im.reshape(-1, a_im.shape[-1])], -1)
+            q_loss = q_loss + F.mse_loss(
+                qcritics[name](q_in_i), q_tgt_i.reshape(-1))
+        critic_loss = critic_loss + q_loss / len(channels)
+
     stats = {
         "J": float(J.mean()),
         **vH_stats,
@@ -488,6 +568,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
+        "q_loss": float(q_loss) if qcritics else 0.0,
     }
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
         _set_requires_grad(_m, True)
@@ -593,6 +674,19 @@ def run(exp, args) -> None:
     for _c in tgt_critics.values():
         _set_requires_grad(_c, False)
         _c.eval()
+    # MBPO mode: action-conditioned Q(s,a) critics — the actor's ascent
+    # surface. Same MLP body, input cat(s,a).
+    qcritics = tgt_qcritics = None
+    if args.actor_mode == "mbpo":
+        qcritics = {ch["name"]: CriticMLP(
+            exp.state_dim + exp.action_dim,
+            exp.critic_hidden_dim).to(device)
+            for ch in exp.channels}
+        tgt_qcritics = {n: copy.deepcopy(c)
+                        for n, c in qcritics.items()}
+        for _c in tgt_qcritics.values():
+            _set_requires_grad(_c, False)
+            _c.eval()
     # Ensemble of independently-initialized dynamics models. Imagination
     # runs under every member on shared seeds and the actor maximizes a
     # pessimistic combination (mean - lambda*std) of per-member J — a
@@ -642,6 +736,9 @@ def run(exp, args) -> None:
                for _m in wms]
     opt_actor = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
     critic_params = [p for c in critics.values() for p in c.parameters()]
+    if qcritics:
+        critic_params += [p for c in qcritics.values()
+                          for p in c.parameters()]
     opt_critic = torch.optim.Adam(critic_params, lr=args.critic_lr)
 
     # Ratchet state (see --ratchet): the best deterministic-eval actor seen
@@ -784,6 +881,8 @@ def run(exp, args) -> None:
                     pess_lambda=args.pess_lambda,
                     bc_coef=args.bc_coef,
                     si_coef=args.si_coef, si_top_frac=args.si_top_frac,
+                    actor_mode=args.actor_mode,
+                    qcritics=qcritics, tgt_qcritics=tgt_qcritics,
                     dagger_net=dagger_net, dagger_coef=args.dagger_coef,
                     dagger_phi_min=args.dagger_phi_min,
                 )
@@ -819,6 +918,12 @@ def run(exp, args) -> None:
                     for _pt, _ps in zip(tgt_critics[_n].parameters(),
                                         _c.parameters()):
                         _pt.lerp_(_ps, args.target_ema)
+                if qcritics:
+                    for _n, _c in qcritics.items():
+                        for _pt, _ps in zip(
+                                tgt_qcritics[_n].parameters(),
+                                _c.parameters()):
+                            _pt.lerp_(_ps, args.target_ema)
             sigma_mean = float(actor.policy_sigma().mean().detach().cpu())
             t_imp = time.perf_counter() - t0
 
@@ -896,6 +1001,8 @@ def run(exp, args) -> None:
                    if args.dagger_coef > 0.0 else "")
                 + (f" si={imp_stats.get('si_pen', 0):.4f}"
                    if args.si_coef > 0.0 else "")
+                + (f" q={imp_stats.get('q_loss', 0):.4f}"
+                   if args.actor_mode == "mbpo" else "")
                 + (f" klstop={imp_stats['kl_stop']:.0f}"
                    if "kl_stop" in imp_stats else "")
                 + f" {r_str} "
@@ -1003,6 +1110,12 @@ def main() -> None:
     p.add_argument("--pess-lambda", type=float, default=0.0,
                    help="Pessimism coefficient: J = mean_k(J) - "
                         "lambda*std_k(J) across the ensemble")
+    p.add_argument("--actor-mode", type=str, default="bptt",
+                   choices=["bptt", "mbpo"],
+                   help="bptt: actor ascends imagined return through "
+                        "dynamics. mbpo: model only augments critic data; "
+                        "actor ascends Q(s,pi(s)) — no dynamics in the "
+                        "actor gradient path")
     p.add_argument("--si-coef", type=float, default=0.0,
                    help="weight of self-imitation on top-quantile "
                         "learner trajectories (0=off)")
