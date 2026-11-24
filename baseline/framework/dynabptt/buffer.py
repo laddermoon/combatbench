@@ -164,6 +164,54 @@ class TransitionBuffer:
         }
         return out
 
+    def sample_top_windows(
+        self, batch: int, k: int,
+        top_frac: float = 0.1, aux_name: str = "phi",
+    ) -> Dict[str, np.ndarray]:
+        """Windows drawn ONLY from the learner trajectories whose own
+        max(aux_name) is in the top ``top_frac`` quantile — the
+        self-generated breakthrough data. Lucky high-potential runs are a
+        small mass of the buffer (model-fit windows weight them by length
+        the same as failures); this sampler concentrates them so an
+        imitation loss can amplify what demonstrably worked, with no
+        external teacher involved.
+        """
+        pool = [t for t in self._trajs if t.n_frames > k]
+        if not pool:
+            return self.sample_windows(batch, k)
+        scores = np.asarray(
+            [float(np.max(t.aux[aux_name][: t.n_frames]))
+             if aux_name in t.aux else 0.0
+             for t in pool])
+        kth = max(1, int(len(scores) * top_frac))
+        cutoff = np.sort(scores)[-kth]
+        top = [t for t, s in zip(pool, scores) if s >= cutoff]
+        s0_l, act_l, cs_l, obs_l, done_l = [], [], [], [], []
+        aux_l: Dict[str, List[np.ndarray]] = {}
+        for _ in range(batch):
+            traj = top[int(self._rng.integers(len(top)))]
+            B = traj.n_frames
+            j0 = int(self._rng.integers(1, B - k + 1))
+            s0_l.append(traj.cs[j0 - 1])
+            act_l.append(traj.act[j0:j0 + k])
+            cs_l.append(traj.cs[j0:j0 + k])
+            obs_l.append(traj.obs[j0:j0 + k])
+            done = np.zeros(k, dtype=np.float32)
+            if traj.terminal:
+                done[-1] = float(j0 + k - 1 == B - 1)
+            done_l.append(done)
+            for name, arr in traj.aux.items():
+                aux_l.setdefault(name, []).append(arr[j0:j0 + k])
+        return {
+            "s0": np.stack(s0_l).astype(np.float32),
+            "act": np.stack(act_l).astype(np.float32),
+            "cs": np.stack(cs_l).astype(np.float32),
+            "obs": np.stack(obs_l).astype(np.float32),
+            "done": np.stack(done_l).astype(np.float32),
+            "aux": {n: np.stack(v).astype(np.float32)
+                    for n, v in aux_l.items()},
+        }
+
     def sample_seeds(
         self, batch: int, start_frac: float = 0.0, start_frames: int = 4,
         recent_frac: float = 0.0, recent_pool: float = 0.25,

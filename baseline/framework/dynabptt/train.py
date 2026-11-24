@@ -200,7 +200,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
             signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0,
-            dagger_net=None, dagger_coef=0.0, dagger_phi_min=0.0):
+            dagger_net=None, dagger_coef=0.0, dagger_phi_min=0.0,
+            si_coef=0.0, si_top_frac=0.1):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
@@ -394,6 +395,22 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             dagger_pen = err.mean()
         actor_loss = actor_loss + dagger_coef * dagger_pen
 
+    # Self-imitation on OWN-best trajectories (no external teacher): the
+    # top-quantile learner runs are the only recorded demonstrations of the
+    # full task being solved — they are lucky (pose+noise) but real. Cloning
+    # their actions widens the set of recoverable poses; BPTT alone cannot
+    # cross the flat J region to reach them.
+    si_pen = None
+    if si_coef > 0.0:
+        w_si = buf.sample_top_windows(max(batch // 4, 8), 4,
+                                      top_frac=si_top_frac)
+        obs_si = torch.as_tensor(w_si["obs"], device=device)
+        act_si = torch.as_tensor(w_si["act"], device=device)
+        a_si = actor.deterministic_action(
+            obs_si.reshape(-1, obs_si.shape[-1]))
+        si_pen = F.mse_loss(a_si, act_si.reshape(-1, act_si.shape[-1]))
+        actor_loss = actor_loss + si_coef * si_pen
+
     # --- Critic targets: backwards gamma-return on the imagined trajectory ---
     # Under --no-bootstrap this self-referential regression is skipped: its
     # targets bottom out at V(ŝ_H) on off-manifold states, which is exactly
@@ -467,6 +484,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         "kl_pen": float(kl_pen) if kl_pen is not None else 0.0,
         "bc_pen": float(bc_pen) if bc_pen is not None else 0.0,
         "dagger_pen": float(dagger_pen) if dagger_pen is not None else 0.0,
+        "si_pen": float(si_pen) if si_pen is not None else 0.0,
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
@@ -765,6 +783,7 @@ def run(exp, args) -> None:
                     signal_floor=args.signal_floor,
                     pess_lambda=args.pess_lambda,
                     bc_coef=args.bc_coef,
+                    si_coef=args.si_coef, si_top_frac=args.si_top_frac,
                     dagger_net=dagger_net, dagger_coef=args.dagger_coef,
                     dagger_phi_min=args.dagger_phi_min,
                 )
@@ -875,6 +894,8 @@ def run(exp, args) -> None:
                    if args.bc_coef > 0.0 else "")
                 + (f" dg={imp_stats.get('dagger_pen', 0):.4f}"
                    if args.dagger_coef > 0.0 else "")
+                + (f" si={imp_stats.get('si_pen', 0):.4f}"
+                   if args.si_coef > 0.0 else "")
                 + (f" klstop={imp_stats['kl_stop']:.0f}"
                    if "kl_stop" in imp_stats else "")
                 + f" {r_str} "
@@ -982,6 +1003,12 @@ def main() -> None:
     p.add_argument("--pess-lambda", type=float, default=0.0,
                    help="Pessimism coefficient: J = mean_k(J) - "
                         "lambda*std_k(J) across the ensemble")
+    p.add_argument("--si-coef", type=float, default=0.0,
+                   help="weight of self-imitation on top-quantile "
+                        "learner trajectories (0=off)")
+    p.add_argument("--si-top-frac", type=float, default=0.1,
+                   help="quantile of learner trajs ranked by max potential "
+                        "that count as imitation demonstrations")
     p.add_argument("--dagger-coef", type=float, default=0.0,
                    help="If >0, DAgger term: teacher labels learner-visited "
                         "buffer states in-process; anchors the actor on its "
