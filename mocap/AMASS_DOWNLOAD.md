@@ -40,8 +40,8 @@ AMASS_USER=... AMASS_PASS=... ./download_amass.sh CMU KIT WEIZMANN
 ./download_amass.sh --list
 ```
 
-凭据只从环境变量读取（不落盘、不进命令行参数）。脚本先用最小的 SSM 包
-预检凭据：网关返回 HTML 错误页而非 bz2 时立即退出，避免白下几十 GB。
+凭据只从环境变量读取（不落盘、不进命令行参数）。脚本先用小文件预检
+凭据：网关返回 HTML/403 而非 bz2 时退出，避免白下几十 GB。
 
 ## 4. 可选环境变量
 
@@ -55,6 +55,16 @@ AMASS_USER=... AMASS_PASS=... ./download_amass.sh CMU KIT WEIZMANN
 | `http_proxy`/`https_proxy` | 不挂 | MPI 德国服务器一般直连可达；慢时再挂 |
 
 下载支持断点续传（`wget --continue`），中断后重跑同一命令即可续。
+
+**网关行为（2026-11 实测）：**
+
+- 凭据 POST 后网关返回 302 → `download2.php`，认证随 `PHPSESSID` cookie
+  走；wget 自动处理，无需手工 cookie。
+- **单文件高频请求会被临时 403**（实测 ~10 次/15min 即触发），只影响该
+  文件、不影响其它子集，一段时间后自动恢复。脚本预检因此会连试两个
+  文件，单文件下载失败也跳过续跑而不是终止整批。
+- 直连速度约 **100–150 KB/s** 且按 IP 限速（并发无效）；全量 SMPL+H
+  （~25–30 GB）需数天，建议按需选子集。代理线路会被网关 403 拒绝。
 
 ## 5. 产物
 

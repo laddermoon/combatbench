@@ -66,28 +66,41 @@ MANIFEST="$AMASS_OUT/download_manifest.tsv"
 mkdir -p "$DL_DIR" "$TAR_DIR"
 [ -f "$MANIFEST" ] || printf 'dataset\tsfile\ttar_bytes\tsha256\tnpz_count\tdate\n' > "$MANIFEST"
 
-# 预检：取最小的 SSM 包前 1KB 验证凭据（凭据错误时网关返回 HTML 而非 BZh2 流）
-probe="$(mktemp)"
-curl -sf -r 0-1023 --data-urlencode "username=$AMASS_USER" \
-     --data-urlencode "password=$AMASS_PASS" "$BASE&sfile=$(SF SSM)" -o "$probe" || true
-if [ "$(head -c 3 "$probe" 2>/dev/null)" != "BZh" ]; then
-  echo "凭据校验失败：网关未返回 bz2 数据（可能是账号/密码错误或站点变更）。返回内容：" >&2
-  head -c 500 "$probe" >&2; rm -f "$probe"; exit 1
+# 预检：取小文件前 1KB 验证凭据（凭据错误时网关返回 HTML/403 而非 BZh2 流）。
+# 网关对凭据 POST 返回 302 → download2.php，会话认证走 PHPSESSID cookie，
+# 因此 curl 必须 -L 跟跳转并带 cookie jar（wget 默认即如此，主循环无需特殊处理）。
+# 注意：网关会对单文件的高频请求临时 403——预检依次试两个文件，
+# 第一个被限流时换第二个，避免把"单文件限流"误判成"凭据错误"。
+preflight() {
+  local D="$1" probe jar code
+  probe="$(mktemp)"; jar="$(mktemp)"
+  code=$(curl -sSL -r 0-1023 -c "$jar" -b "$jar" \
+       --data-urlencode "username=$AMASS_USER" \
+       --data-urlencode "password=$AMASS_PASS" \
+       "$BASE&sfile=$(SF "$D")" -o "$probe" -w '%{http_code}') || code="curl_error"
+  if [ "$(head -c 3 "$probe" 2>/dev/null)" = "BZh" ]; then
+    rm -f "$probe" "$jar"; return 0
+  fi
+  echo "  预检 $D → HTTP $code（非 bz2）" >&2
+  rm -f "$probe" "$jar"; return 1
+}
+if ! preflight SSM && ! preflight DFaust; then
+  echo "凭据校验失败：两次探测均未返回 bz2（账号/密码错误或站点变更）。" >&2
+  exit 1
 fi
-rm -f "$probe"
 echo "凭据校验通过。输出目录: $DL_DIR"
 
+FAILED=()
 for D in "${WANTED[@]}"; do
   sfile="$(SF "$D")"; tar_path="$TAR_DIR/$D.tar.bz2"
   echo "=== [$D] $sfile"
 
-  wget --continue --tries=5 --waitretry=10 --progress=dot:mega \
-    --post-data "username=$U&password=$P" \
-    "$BASE&sfile=$sfile" -O "$tar_path"
-
-  if [ "$(head -c 3 "$tar_path")" != "BZh" ]; then
-    echo "!! $D 下载内容不是 bz2（疑似网关错误页），已删除，停止。" >&2
-    head -c 300 "$tar_path" >&2; rm -f "$tar_path"; exit 1
+  if ! wget --continue --tries=5 --waitretry=10 --progress=dot:mega \
+      --post-data "username=$U&password=$P" \
+      "$BASE&sfile=$sfile" -O "$tar_path" \
+     || [ "$(head -c 3 "$tar_path" 2>/dev/null)" != "BZh" ]; then
+    echo "!! $D 下载失败或非 bz2（可能该文件被临时限流），跳过，稍后重跑即可续传。" >&2
+    FAILED+=("$D"); sleep 5; continue
   fi
 
   bytes=$(stat -c %s "$tar_path"); sha=$(sha256sum "$tar_path" | cut -d' ' -f1)
@@ -99,6 +112,11 @@ for D in "${WANTED[@]}"; do
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$D" "$sfile" "$bytes" "$sha" "$npz_count" "$(date -Iseconds)" >> "$MANIFEST"
+  sleep 2   # 网关有频率限制，降低请求间隔触发限流的概率
 done
 
 echo "完成。manifest: $MANIFEST"
+if [ ${#FAILED[@]} -gt 0 ]; then
+  echo "以下子集本次失败，重跑同一命令可续传: ${FAILED[*]}" >&2
+  exit 1
+fi
