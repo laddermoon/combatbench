@@ -200,7 +200,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
             signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0,
-            dagger_net=None, dagger_coef=0.0):
+            dagger_net=None, dagger_coef=0.0, dagger_phi_min=0.0):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
@@ -380,7 +380,18 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         with torch.no_grad():
             a_t = torch.tanh(dagger_net(flat_obs))
         a_l = actor.deterministic_action(flat_obs)
-        dagger_pen = F.mse_loss(a_l, a_t)
+        err = (a_l - a_t).pow(2).mean(-1)  # (b*k,)
+        if dagger_phi_min > 0.0 and "phi" in w_dg["aux"]:
+            # The teacher's "label" on a deep-fall state is meaningless —
+            # it never survives there, so its reflexes aren't valid
+            # demonstrations. Restrict imitation to near-standing /
+            # recoverable states where matching the teacher matters.
+            phi_dg = torch.as_tensor(
+                w_dg["aux"]["phi"], device=device).reshape(-1)
+            mask = (phi_dg >= dagger_phi_min).float()
+            dagger_pen = (err * mask).sum() / mask.sum().clamp(min=1.0)
+        else:
+            dagger_pen = err.mean()
         actor_loss = actor_loss + dagger_coef * dagger_pen
 
     # --- Critic targets: backwards gamma-return on the imagined trajectory ---
@@ -746,6 +757,7 @@ def run(exp, args) -> None:
                     pess_lambda=args.pess_lambda,
                     bc_coef=args.bc_coef,
                     dagger_net=dagger_net, dagger_coef=args.dagger_coef,
+                    dagger_phi_min=args.dagger_phi_min,
                 )
                 if train_actor:
                     opt_actor.zero_grad(set_to_none=True)
@@ -960,6 +972,10 @@ def main() -> None:
                         "own deviation distribution, not just teacher's")
     p.add_argument("--dagger-teacher", type=str, default=None,
                    help="model.pt of the labeling teacher (exported MLP)")
+    p.add_argument("--dagger-phi-min", type=float, default=0.0,
+                   help="If >0, only imitate states whose real phi exceeds "
+                        "this — teacher labels on doomed deep-fall states "
+                        "are meaningless")
     p.add_argument("--bc-coef", type=float, default=0.0,
                    help="If >0, add an MSE behavior-cloning term toward "
                         "teacher-tagged buffer windows — real-data anchor "
