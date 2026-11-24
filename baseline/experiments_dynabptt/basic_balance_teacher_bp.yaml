@@ -1,0 +1,5 @@
+version: 1
+cls: file:/data1/mono/things/combatbench/baseline/experiments_dynabptt/teacher_policy.py:TeacherMLPPolicy
+config:
+  model_path: /data1/mono/things/combatbench/baseline/runs/basic_balance_new_api/policy/model.pt
+  stochastic: false

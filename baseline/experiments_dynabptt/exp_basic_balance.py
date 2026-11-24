@@ -68,6 +68,14 @@ class BasicBalanceDynaBPTT:
     # extrapolation on off-manifold imagined states.
     aux_clamps = {"phi": (0.0, 1.0)}
 
+    # Plausible ranges for critic *values* at bootstrap consumption points
+    # (J bootstrap + both TD targets). r_fall returns are bounded:
+    # per-step r = 0.01*phi in [0, 0.01] with gamma 0.99 -> return in
+    # [0, 1.0]. Without the clamp, self-referential TD inflation pushed
+    # V_fall to ~2.7 and the actor learned to chase inflated bootstrap
+    # states instead of balancing (observed ep_len regression u19->u29).
+    channel_vrange = {"r_fall": (0.0, 1.0)}
+
     def env_bp(self):
         pb = ParameterizedEnvBlueprint.load(
             _BLUEPRINT_DIR / self.env_blueprint_name

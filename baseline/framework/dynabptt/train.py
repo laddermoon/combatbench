@@ -223,11 +223,20 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             r_hist[name].append(r_c.detach())
         c_hist.append(alive.detach())
 
+    vrange = getattr(exp, "channel_vrange", {})
+
+    def _boot_v(name, states):
+        v = tgt_critics[name](states)
+        lo_hi = vrange.get(name)
+        return v.clamp(lo_hi[0], lo_hi[1]) if lo_hi else v
+
     last_aux = aux
+    vH_stats = {}
     for ch in channels:
         name = ch["name"]
         g_H = ch["gamma"] ** H
-        vH = tgt_critics[name](s)
+        vH = _boot_v(name, s)
+        vH_stats[f"vH_{name}"] = float(vH.mean().detach())
         R[name] = R[name] + g_H * alive * vH
         J = J + g_H * alive * exp.channel_weight(name, last_aux) * vH
 
@@ -241,7 +250,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         for ch in channels:
             name = ch["name"]
             g = ch["gamma"]
-            G = tgt_critics[name](s).detach()
+            G = _boot_v(name, s).detach()
             tgt = [None] * H
             for t in range(H - 1, -1, -1):
                 G = r_hist[name][t] + g * c_hist[t] * G
@@ -284,7 +293,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
                 })
                 for m in range(w["done"].shape[1])
             ], dim=1)  # (b, k) real per-channel rewards
-            boot = (1.0 - done_w[:, -1]) * tgt_critics[name](s_last).detach()
+            boot = (1.0 - done_w[:, -1]) * _boot_v(name, s_last).detach()
             Gt = r_steps[:, -1] + g * boot
             gt = [None] * r_steps.shape[1]
             gt[-1] = Gt
@@ -298,7 +307,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
 
     stats = {
         "J": float(J.mean()),
-        "vH": float(vH.mean()),
+        **vH_stats,
         "alive_end": float(alive.mean()),
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
@@ -454,8 +463,14 @@ def run(exp, args) -> None:
                     imp_stats_acc[kk] = imp_stats_acc.get(kk, 0.0) + vv
             imp_stats = {kk: vv / args.improve_batches
                          for kk, vv in imp_stats_acc.items()}
-            for _n, _c in critics.items():
-                tgt_critics[_n].load_state_dict(_c.state_dict())
+            # EMA target update — a hard sync every update lets TD errors
+            # ratchet instantly into bootstrap targets (self-referential
+            # value inflation); a slow target damps the feedback loop.
+            with torch.no_grad():
+                for _n, _c in critics.items():
+                    for _pt, _ps in zip(tgt_critics[_n].parameters(),
+                                        _c.parameters()):
+                        _pt.lerp_(_ps, args.target_ema)
             sigma_mean = float(actor.policy_sigma().mean().detach().cpu())
             t_imp = time.perf_counter() - t0
 
@@ -484,7 +499,10 @@ def run(exp, args) -> None:
                 f"| wm_s={wm_stats['s']:.4f} wm_obs={wm_stats['obs']:.4f} "
                 f"wm_aux={wm_stats['aux']:.4f} wm_done={wm_stats['done']:.4f} "
                 f"| J={imp_stats.get('J', 0):.3f} "
-                f"vH={imp_stats.get('vH', 0):.2f} "
+                + " ".join(
+                    f"vH_{n}={imp_stats.get(f'vH_{n}', 0):.2f}"
+                    for n in (ch["name"] for ch in exp.channels))
+                + " "
                 f"alive={imp_stats.get('alive_end', 0):.2f} "
                 f"closs={imp_stats.get('critic_loss', 0):.4f} "
                 f"rcloss={imp_stats.get('real_closs', 0):.4f} {r_str} "
@@ -545,6 +563,9 @@ def main() -> None:
     p.add_argument("--wm-lr", type=float, default=1e-3)
     p.add_argument("--actor-lr", type=float, default=1e-4)
     p.add_argument("--critic-lr", type=float, default=3e-4)
+    p.add_argument("--target-ema", type=float, default=0.05,
+                   help="Polyak coefficient for target critic update each "
+                        "update (1.0 = hard sync every update).")
     p.add_argument("--eval-interval", type=int, default=5)
     p.add_argument("--eval-episodes", type=int, default=16)
     p.add_argument("--ckpt-interval", type=int, default=10)
