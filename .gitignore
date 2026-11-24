@@ -71,4 +71,5 @@ baseline/humanoid21/hierarchy/assets/STAND_PUNCH.md
 
 # AMASS downloaded data (large, machine-local)
 mocap/amass/
+mocap/smpl_models/
 amass_download.log

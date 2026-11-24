@@ -56,3 +56,22 @@ DFaust 213M + SSM 36M 顺利拿到。
 | 包名≠解压目录名 | 用 `tar -tjf | head -1` 实测，别猜 |
 | *_poses.npz 计数为 0 | 部分子集只有 *_stageii.npz，按 *.npz 统计 |
 | CNRS/WEIZMANN 404 HTML | 只有 smplx 版本 |
+
+## 补记：SMPL-X body model 下载（2026-11-25 01:05）
+
+**Why:** AMASS npz 只存 SMPL 参数，FK 出关节位置需要对应 body model。
+smpl-x.is.tue.mpg.de 注册后，`domain=smplx&sfile=models_smplx_v1_1.zip`
+（870M）经同一凭据网关下载，代理线路 ~4MB/s。
+
+**Result:** `mocap/smpl_models/smplx/SMPLX_{F,M,NEUTRAL}.{pkl,npz}` 就位，
+`unzip -t` 无损，`smplx.create(model_type='smplx')` 对 DFaust 真实 npz
+FK 成功（127 joints）。注意 **v1_1 包只含 smplx 模型**——smplh 数据仍需
+mano.is.tue.mpg.de 的 SMPL+H（`domain=mano&sfile=smplh.tar.xz` +
+`mano_v1_2.zip`，merge_smplh_mano.py 合成 pkl）。
+
+**坑:** wget --post-data 首次拿到登录页 HTML（网关抽风/状态问题），
+curl -L + cookie jar 正常；百度 pypi 镜像无 smplx 包，须 `-i
+https://pypi.org/simple` + 代理；pip 顺带把 cudnn 降到 torch pin
+的 9.5.1.17（已验证 torch cuda 正常）。
+
+**Also:** `mocap/smpl_models/` 已加入 .gitignore（licensed 资产不入 git）。
