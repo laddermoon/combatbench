@@ -198,7 +198,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             recent_frac=0.0, recent_pool=0.25,
             seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
-            signal_floor=0.0, pess_lambda=0.0):
+            signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
@@ -343,6 +343,25 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         kl_pen = F.mse_loss(a_now, a_ref)
         actor_loss = actor_loss + kl_coef * kl_pen
 
+    # Behavior anchor toward real high-return data: the learned model's
+    # dJ/da carries no usable improvement signal near the boundary (measured:
+    # proposals at ~0.01 action-RMS are worse than same-magnitude random
+    # noise). Teacher-tagged windows are the one place where "which action
+    # survives" is actually recorded — a light BC term pulls the actor back
+    # onto the manifold where model gradients mean anything.
+    bc_pen = None
+    if bc_coef > 0.0:
+        w_bc = buf.sample_windows(max(batch // 4, 8), 4,
+                                  recent_frac=recent_frac,
+                                  recent_pool=recent_pool,
+                                  teacher_share=1.0)
+        obs_bc = torch.as_tensor(w_bc["obs"], device=device)  # (b,4,obs)
+        act_bc = torch.as_tensor(w_bc["act"], device=device)  # (b,4,act)
+        a_bc = actor.deterministic_action(
+            obs_bc.reshape(-1, obs_bc.shape[-1]))
+        bc_pen = F.mse_loss(a_bc, act_bc.reshape(-1, act_bc.shape[-1]))
+        actor_loss = actor_loss + bc_coef * bc_pen
+
     # --- Critic targets: backwards gamma-return on the imagined trajectory ---
     # Under --no-bootstrap this self-referential regression is skipped: its
     # targets bottom out at V(ŝ_H) on off-manifold states, which is exactly
@@ -414,6 +433,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         **vH_stats,
         "alive_end": float(alive.mean()),
         "kl_pen": float(kl_pen) if kl_pen is not None else 0.0,
+        "bc_pen": float(bc_pen) if bc_pen is not None else 0.0,
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
@@ -685,6 +705,7 @@ def run(exp, args) -> None:
                     no_bootstrap=args.no_bootstrap,
                     signal_floor=args.signal_floor,
                     pess_lambda=args.pess_lambda,
+                    bc_coef=args.bc_coef,
                 )
                 if train_actor:
                     opt_actor.zero_grad(set_to_none=True)
@@ -785,6 +806,8 @@ def run(exp, args) -> None:
                 f"closs={imp_stats.get('critic_loss', 0):.4f} "
                 f"rcloss={imp_stats.get('real_closs', 0):.4f} "
                 f"kl={imp_stats.get('kl_pen', 0):.4f}"
+                + (f" bc={imp_stats.get('bc_pen', 0):.4f}"
+                   if args.bc_coef > 0.0 else "")
                 + (f" klstop={imp_stats['kl_stop']:.0f}"
                    if "kl_stop" in imp_stats else "")
                 + f" {r_str} "
@@ -889,6 +912,10 @@ def main() -> None:
     p.add_argument("--pess-lambda", type=float, default=0.0,
                    help="Pessimism coefficient: J = mean_k(J) - "
                         "lambda*std_k(J) across the ensemble")
+    p.add_argument("--bc-coef", type=float, default=0.0,
+                   help="If >0, add an MSE behavior-cloning term toward "
+                        "teacher-tagged buffer windows — real-data anchor "
+                        "for states where model gradients carry no signal")
     p.add_argument("--target-kl", type=float, default=0.0,
                    help="If >0, stop the improve loop once the mean-action "
                         "MSE vs the reference actor exceeds this bound "
