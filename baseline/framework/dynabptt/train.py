@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from envs.framework.blueprint import EnvBlueprint
@@ -198,7 +199,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             recent_frac=0.0, recent_pool=0.25,
             seed_tail_frac=0.0, seed_tail_span=16, teacher_share=0.0,
             ref_actor=None, kl_coef=0.0, no_bootstrap=False,
-            signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0):
+            signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0,
+            dagger_net=None, dagger_coef=0.0):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
@@ -362,6 +364,25 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         bc_pen = F.mse_loss(a_bc, act_bc.reshape(-1, act_bc.shape[-1]))
         actor_loss = actor_loss + bc_coef * bc_pen
 
+    # DAgger-style anchor: label the states the LEARNER actually visits with
+    # the teacher's actions. Plain BC only anchors the teacher's own state
+    # distribution; the learner dies on its own deviation states where its
+    # action is unanchored (compounding error). The labeler runs in-process
+    # so any real buffer state can be tagged.
+    dagger_pen = None
+    if dagger_coef > 0.0 and dagger_net is not None:
+        w_dg = buf.sample_windows(max(batch // 4, 8), 4,
+                                  recent_frac=recent_frac,
+                                  recent_pool=recent_pool,
+                                  teacher_share=teacher_share)
+        obs_dg = torch.as_tensor(w_dg["obs"], device=device)
+        flat_obs = obs_dg.reshape(-1, obs_dg.shape[-1])
+        with torch.no_grad():
+            a_t = torch.tanh(dagger_net(flat_obs))
+        a_l = actor.deterministic_action(flat_obs)
+        dagger_pen = F.mse_loss(a_l, a_t)
+        actor_loss = actor_loss + dagger_coef * dagger_pen
+
     # --- Critic targets: backwards gamma-return on the imagined trajectory ---
     # Under --no-bootstrap this self-referential regression is skipped: its
     # targets bottom out at V(ŝ_H) on off-manifold states, which is exactly
@@ -434,6 +455,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         "alive_end": float(alive.mean()),
         "kl_pen": float(kl_pen) if kl_pen is not None else 0.0,
         "bc_pen": float(bc_pen) if bc_pen is not None else 0.0,
+        "dagger_pen": float(dagger_pen) if dagger_pen is not None else 0.0,
         **{f"R_{n}": float(R[n].mean()) for n in R},
         "critic_loss": float(critic_loss),
         "real_closs": float(real_loss),
@@ -553,6 +575,23 @@ def run(exp, args) -> None:
     ref_actor = copy.deepcopy(actor)
     _set_requires_grad(ref_actor, False)
     ref_actor.eval()
+
+    dagger_net = None
+    if args.dagger_coef > 0.0:
+        if not args.dagger_teacher:
+            raise SystemExit("--dagger-coef requires --dagger-teacher")
+        _p = torch.load(args.dagger_teacher, map_location=device)
+        _h = int(_p.get("hidden_dim", 256))
+        dagger_net = nn.Sequential(
+            nn.Linear(int(_p["obs_dim"]), _h), nn.Tanh(),
+            nn.Linear(_h, _h), nn.Tanh(),
+            nn.Linear(_h, int(_p["action_dim"]))).to(device)
+        dagger_net.load_state_dict(
+            {k[4:]: v for k, v in _p["state_dict"].items()
+             if k.startswith("net.")})
+        dagger_net.eval()
+        _set_requires_grad(dagger_net, False)
+        print(f"[init] dagger labeler <- {args.dagger_teacher}", flush=True)
     if args.sigma0 is not None:
         # Collection noise must be low enough that a good mean policy
         # actually survives — sigma=0.37 torque noise kills even a
@@ -706,6 +745,7 @@ def run(exp, args) -> None:
                     signal_floor=args.signal_floor,
                     pess_lambda=args.pess_lambda,
                     bc_coef=args.bc_coef,
+                    dagger_net=dagger_net, dagger_coef=args.dagger_coef,
                 )
                 if train_actor:
                     opt_actor.zero_grad(set_to_none=True)
@@ -808,6 +848,8 @@ def run(exp, args) -> None:
                 f"kl={imp_stats.get('kl_pen', 0):.4f}"
                 + (f" bc={imp_stats.get('bc_pen', 0):.4f}"
                    if args.bc_coef > 0.0 else "")
+                + (f" dg={imp_stats.get('dagger_pen', 0):.4f}"
+                   if args.dagger_coef > 0.0 else "")
                 + (f" klstop={imp_stats['kl_stop']:.0f}"
                    if "kl_stop" in imp_stats else "")
                 + f" {r_str} "
@@ -912,6 +954,12 @@ def main() -> None:
     p.add_argument("--pess-lambda", type=float, default=0.0,
                    help="Pessimism coefficient: J = mean_k(J) - "
                         "lambda*std_k(J) across the ensemble")
+    p.add_argument("--dagger-coef", type=float, default=0.0,
+                   help="If >0, DAgger term: teacher labels learner-visited "
+                        "buffer states in-process; anchors the actor on its "
+                        "own deviation distribution, not just teacher's")
+    p.add_argument("--dagger-teacher", type=str, default=None,
+                   help="model.pt of the labeling teacher (exported MLP)")
     p.add_argument("--bc-coef", type=float, default=0.0,
                    help="If >0, add an MSE behavior-cloning term toward "
                         "teacher-tagged buffer windows — real-data anchor "
