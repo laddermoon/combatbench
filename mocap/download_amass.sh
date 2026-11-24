@@ -15,7 +15,12 @@
 #   AMASS_BETA     gender_specific | neutral      （默认 gender_specific）
 #   AMASS_EXTRACT  1=下载后解压（默认）；0=只保留 tar.bz2
 #   AMASS_KEEP_TAR 1=解压成功后仍保留压缩包（默认 0 删除）
-#   http_proxy/https_proxy  MPI 德国服务器一般直连可达，慢时再挂代理
+#   AMASS_FORCE    1=忽略完成记录强制重下（默认 0，已完成的子集自动跳过）
+#   AMASS_PROXY    显式代理，如 http://192.168.16.76:18000；设置后覆盖
+#                  http_proxy/https_proxy（注意：本网关曾对代理 IP 直接 403）
+#
+# 已完成判定：manifest 中存在该 (dataset, sfile) 记录。tar 仍在但尚未解压的
+# 子集重跑时只补解压、不重新下载。
 #
 # 产物布局：
 #   $AMASS_OUT/<format>_<beta>/<DATASET>/<subject>/<motion>_poses.npz
@@ -28,6 +33,11 @@ AMASS_FORMAT="${AMASS_FORMAT:-smplh}"
 AMASS_BETA="${AMASS_BETA:-gender_specific}"
 AMASS_EXTRACT="${AMASS_EXTRACT:-1}"
 AMASS_KEEP_TAR="${AMASS_KEEP_TAR:-0}"
+AMASS_FORCE="${AMASS_FORCE:-0}"
+
+if [ -n "${AMASS_PROXY:-}" ]; then
+  export http_proxy="$AMASS_PROXY" https_proxy="$AMASS_PROXY"
+fi
 
 BASE='https://download.is.tue.mpg.de/download.php?domain=amass&resume=1'
 
@@ -90,10 +100,33 @@ if ! preflight SSM && ! preflight DFaust; then
 fi
 echo "凭据校验通过。输出目录: $DL_DIR"
 
+# manifest 中是否已有该 (dataset, sfile) 完成记录
+have_row() { awk -F'\t' -v d="$1" -v s="$2" '$1==d && $2==s{f=1} END{exit !f}' "$MANIFEST"; }
+# 解压目录中是否已有 npz
+has_npz() { find "$DL_DIR/$1" -name '*_poses.npz' -print -quit 2>/dev/null | grep -q .; }
+
 FAILED=()
 for D in "${WANTED[@]}"; do
   sfile="$(SF "$D")"; tar_path="$TAR_DIR/$D.tar.bz2"
   echo "=== [$D] $sfile"
+
+  # 已完成的子集直接跳过（AMASS_FORCE=1 可强制重下）
+  if [ "$AMASS_FORCE" != "1" ] && have_row "$D" "$sfile"; then
+    if [ "$AMASS_EXTRACT" = "0" ] || has_npz "$D"; then
+      echo "    已完成，跳过（AMASS_FORCE=1 强制重下）"
+      continue
+    fi
+    # 有记录但 npz 缺失：tar 还在本地就只补解压，tar 也不在则重新下载
+    if [ "$(head -c 3 "$tar_path" 2>/dev/null)" = "BZh" ]; then
+      echo "    tar 已在本地，只补解压"
+      tar -xjf "$tar_path" -C "$DL_DIR"
+      npz_count=$(find "$DL_DIR/$D" -name '*_poses.npz' 2>/dev/null | wc -l)
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$D" "$sfile" "$(stat -c %s "$tar_path")" \
+        "$(sha256sum "$tar_path" | cut -d' ' -f1)" "$npz_count" "$(date -Iseconds)" >> "$MANIFEST"
+      continue
+    fi
+    echo "    记录存在但产物缺失，重新下载"
+  fi
 
   if ! wget --continue --tries=5 --waitretry=10 --progress=dot:mega \
       --post-data "username=$U&password=$P" \

@@ -52,9 +52,12 @@ AMASS_USER=... AMASS_PASS=... ./download_amass.sh CMU KIT WEIZMANN
 | `AMASS_BETA` | `gender_specific` | 或 `neutral` |
 | `AMASS_EXTRACT` | `1` | `0` = 只下载 tar.bz2 不解压 |
 | `AMASS_KEEP_TAR` | `0` | `1` = 解压成功后仍保留压缩包 |
-| `http_proxy`/`https_proxy` | 不挂 | MPI 德国服务器一般直连可达；慢时再挂 |
+| `AMASS_FORCE` | `0` | `1` = 忽略完成记录强制重下 |
+| `AMASS_PROXY` | 不挂 | 显式代理（覆盖 `http_proxy`/`https_proxy`）；本网关曾对代理 IP 直接 403 |
 
-下载支持断点续传（`wget --continue`），中断后重跑同一命令即可续。
+**断点与跳过**：半拉的 tar 由 `wget --continue` 续传；manifest 中已有完成
+记录的子集自动跳过；有记录但解压产物缺失时，tar 还在就只补解压、不在则
+重下。可随时中断重跑同一命令。
 
 **网关行为（2026-11 实测）：**
 
