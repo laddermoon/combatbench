@@ -427,3 +427,15 @@
   - 代价项：land 0.94→0.87、pv_air 0.06→0.12（迈大步后半空发令
     增多）；c_fast 0.92→0.71、c_shuffle 0.87→0.78（短预算着地难）。
   - 决定：继续跑；若 stride 增速停滞再考虑提 w_prog。
+- **r1→r2 预算接力（u4785）**：r1 max_updates=5000 将耗尽，停机
+  resume 至 `v2_stepbudget_r2`（GPU0, pid 73930），
+  `--param max_updates=15000` 生效（框架 per-update 参数补丁，
+  `param_overrides` 是进程内代码不可热改——不停机加预算做不到）。
+  u4786 起连续计数，优化器/critic/rng 全量恢复。
+- **u4770 状态**：stride 0.228 / vf 0.66m/s@b3-6 / land 0.90 /
+  yaw_e 0.08 / dir_err 0.30 / viol 0.045 / quality 0.83——u2400
+  平台后持续爬升，Lf3 步幅 0.35m。
+- 攻击走位 Harness（u02617 基座）：frozen/stand/walk 三档
+  reach_rate 1.0、t_reach≈90f、band_frac 0.80、绕行 240–275°、
+  零摔倒——旧残差协议的三大短板（逼近慢/近身失稳/绕不了圈）
+  全部解决。
