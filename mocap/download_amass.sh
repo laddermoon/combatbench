@@ -74,7 +74,7 @@ DL_DIR="$AMASS_OUT/${AMASS_FORMAT}_${AMASS_BETA}"
 TAR_DIR="$DL_DIR/_tars"
 MANIFEST="$AMASS_OUT/download_manifest.tsv"
 mkdir -p "$DL_DIR" "$TAR_DIR"
-[ -f "$MANIFEST" ] || printf 'dataset\tsfile\ttar_bytes\tsha256\tnpz_count\tdate\n' > "$MANIFEST"
+[ -f "$MANIFEST" ] || printf 'dataset\tsfile\ttar_bytes\tsha256\tnpz_count\tdate\ttop_dir\n' > "$MANIFEST"
 
 # 预检：取小文件前 1KB 验证凭据（凭据错误时网关返回 HTML/403 而非 BZh2 流）。
 # 网关对凭据 POST 返回 302 → download2.php，会话认证走 PHPSESSID cookie，
@@ -100,10 +100,14 @@ if ! preflight SSM && ! preflight DFaust; then
 fi
 echo "凭据校验通过。输出目录: $DL_DIR"
 
-# manifest 中是否已有该 (dataset, sfile) 完成记录
-have_row() { awk -F'\t' -v d="$1" -v s="$2" '$1==d && $2==s{f=1} END{exit !f}' "$MANIFEST"; }
-# 解压目录中是否已有 npz
-has_npz() { find "$DL_DIR/$1" -name '*_poses.npz' -print -quit 2>/dev/null | grep -q .; }
+# manifest 中该 (dataset, sfile) 的完成记录 → 打印记录里的解压顶层目录并返回 0。
+# 注意：tar 内部顶层目录名不一定等于包名（BMLrub→BioMotionLab_NTroje、
+# MoSh→MPI_mosh 等），一律以记录/tar 内容为准。旧记录无第 7 列则回退包名。
+have_row() { awk -F'\t' -v d="$1" -v s="$2" '$1==d && $2==s{t=($7!=""?$7:d); f=1} END{if(f)print t; exit !f}' "$MANIFEST"; }
+# tar 包内容的真实顶层目录（head 提前关闭管道会让 tar 收 SIGPIPE，|| true 兜底）
+tar_top() { tar -tjf "$1" 2>/dev/null | head -1 | cut -d/ -f1 || true; }
+# 指定目录中是否已有 npz（参数为完整路径）
+has_npz() { find "$1" -name '*_poses.npz' -print -quit 2>/dev/null | grep -q .; }
 
 FAILED=()
 for D in "${WANTED[@]}"; do
@@ -111,18 +115,19 @@ for D in "${WANTED[@]}"; do
   echo "=== [$D] $sfile"
 
   # 已完成的子集直接跳过（AMASS_FORCE=1 可强制重下）
-  if [ "$AMASS_FORCE" != "1" ] && have_row "$D" "$sfile"; then
-    if [ "$AMASS_EXTRACT" = "0" ] || has_npz "$D"; then
+  if [ "$AMASS_FORCE" != "1" ] && topdir=$(have_row "$D" "$sfile"); then
+    if [ "$AMASS_EXTRACT" = "0" ] || has_npz "$DL_DIR/$topdir"; then
       echo "    已完成，跳过（AMASS_FORCE=1 强制重下）"
       continue
     fi
     # 有记录但 npz 缺失：tar 还在本地就只补解压，tar 也不在则重新下载
     if [ "$(head -c 3 "$tar_path" 2>/dev/null)" = "BZh" ]; then
       echo "    tar 已在本地，只补解压"
+      topdir="$(tar_top "$tar_path")"
       tar -xjf "$tar_path" -C "$DL_DIR"
-      npz_count=$(find "$DL_DIR/$D" -name '*_poses.npz' 2>/dev/null | wc -l)
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$D" "$sfile" "$(stat -c %s "$tar_path")" \
-        "$(sha256sum "$tar_path" | cut -d' ' -f1)" "$npz_count" "$(date -Iseconds)" >> "$MANIFEST"
+      npz_count=$(find "$DL_DIR/$topdir" -name '*_poses.npz' 2>/dev/null | wc -l || true)
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$D" "$sfile" "$(stat -c %s "$tar_path")" \
+        "$(sha256sum "$tar_path" | cut -d' ' -f1)" "$npz_count" "$(date -Iseconds)" "$topdir" >> "$MANIFEST"
       continue
     fi
     echo "    记录存在但产物缺失，重新下载"
@@ -137,14 +142,15 @@ for D in "${WANTED[@]}"; do
   fi
 
   bytes=$(stat -c %s "$tar_path"); sha=$(sha256sum "$tar_path" | cut -d' ' -f1)
-  npz_count=0
+  topdir=""; npz_count=0
   if [ "$AMASS_EXTRACT" = "1" ]; then
+    topdir="$(tar_top "$tar_path")"
     tar -xjf "$tar_path" -C "$DL_DIR"
-    npz_count=$(find "$DL_DIR/$D" -name '*_poses.npz' 2>/dev/null | wc -l)
+    npz_count=$(find "$DL_DIR/$topdir" -name '*_poses.npz' 2>/dev/null | wc -l || true)
     [ "$AMASS_KEEP_TAR" = "1" ] || rm -f "$tar_path"
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$D" "$sfile" "$bytes" "$sha" "$npz_count" "$(date -Iseconds)" >> "$MANIFEST"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$D" "$sfile" "$bytes" "$sha" "$npz_count" "$(date -Iseconds)" "$topdir" >> "$MANIFEST"
   sleep 2   # 网关有频率限制，降低请求间隔触发限流的概率
 done
 

@@ -68,3 +68,7 @@ obsolete/
 baseline/humanoid21/hierarchy/videos/
 !mocap/point5/humanoid21/joints/*.png
 baseline/humanoid21/hierarchy/assets/STAND_PUNCH.md
+
+# AMASS downloaded data (large, machine-local)
+mocap/amass/
+amass_download.log
