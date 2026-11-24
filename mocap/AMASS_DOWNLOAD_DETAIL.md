@@ -75,3 +75,26 @@ https://pypi.org/simple` + 代理；pip 顺带把 cudnn 降到 torch pin
 的 9.5.1.17（已验证 torch cuda 正常）。
 
 **Also:** `mocap/smpl_models/` 已加入 .gitignore（licensed 资产不入 git）。
+
+## 补记2：SMPL+H / MANO body model（2026-11-25 01:25）
+
+**Why:** 20 个 smplh 子集需要 SMPL+H 模型。mano.is.tue.mpg.de
+账号（独立于 amass/smpl-x）下 `domain=mano&sfile=smplh.tar.xz`
+（113M）+ `mano_v1_2.zip`（175M）。
+
+**Result:** `smpl_models/smplh/SMPLH_{FEMALE,MALE,NEUTRAL}.pkl` 就位；
+`smplx.create('smplh')` 三性别加载 OK，ACCAD 真实帧 FK 出 73 joints
+（Z-up 米制：pelvis 0.96 / head 1.54 / foot 0.07）。
+
+**关键做法：** 不用 mano 包里"现成"的 SMPLH_*.pkl——它不含 hands_*
+PCA 键且 shapedirs 是 chumpy 懒求值 Select（数据藏在 `.a.x`）。正确路径：
+`smplh_src/<g>/model.npz`（纯 numpy）+ MANO_L/R.pkl 的手部键，经
+`tools/merge_smplh_mano.py` 合成完整 pkl。
+
+**坑:**
+- chumpy 已从 PyPI 死绝（build 失败）；装了手写 stub 到
+  site-packages/chumpy/（Ch/Select = 容错 ndarray，dict-state 兼容），
+  仅用于 unpickle MANO pkl 的手部键，不跑 chumpy 计算图
+- mano_v1_2 的"现成"SMPLH pkl 缺 hands_* 键，直接用 smplx 库会挂
+- AMASS smplh: betas=(16,) poses=(N,156) fps=120；smplx 版字段名不同
+  （mocap_frame_rate 无 i、分立的 root_orient/pose_body/pose_hand）
