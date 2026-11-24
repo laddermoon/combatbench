@@ -94,8 +94,13 @@ preflight() {
   echo "  预检 $D → HTTP $code（非 bz2）" >&2
   rm -f "$probe" "$jar"; return 1
 }
-if ! preflight SSM && ! preflight DFaust; then
-  echo "凭据校验失败：两次探测均未返回 bz2（账号/密码错误或站点变更）。" >&2
+# 网关按单文件限流，轮询多个小文件，全灭才判定凭据/站点问题
+_ok=0
+for _cand in SSM DFaust HumanEva SFU; do
+  preflight "$_cand" && { _ok=1; break; }
+done
+if [ "$_ok" != "1" ]; then
+  echo "凭据校验失败：多次探测均未返回 bz2（账号/密码错误或站点变更）。" >&2
   exit 1
 fi
 echo "凭据校验通过。输出目录: $DL_DIR"
@@ -107,7 +112,7 @@ have_row() { awk -F'\t' -v d="$1" -v s="$2" '$1==d && $2==s{t=($7!=""?$7:d); f=1
 # tar 包内容的真实顶层目录（head 提前关闭管道会让 tar 收 SIGPIPE，|| true 兜底）
 tar_top() { tar -tjf "$1" 2>/dev/null | head -1 | cut -d/ -f1 || true; }
 # 指定目录中是否已有 npz（参数为完整路径）
-has_npz() { find "$1" -name '*_poses.npz' -print -quit 2>/dev/null | grep -q .; }
+has_npz() { find "$1" -name '*.npz' -print -quit 2>/dev/null | grep -q .; }
 
 FAILED=()
 for D in "${WANTED[@]}"; do
@@ -125,7 +130,7 @@ for D in "${WANTED[@]}"; do
       echo "    tar 已在本地，只补解压"
       topdir="$(tar_top "$tar_path")"
       tar -xjf "$tar_path" -C "$DL_DIR"
-      npz_count=$(find "$DL_DIR/$topdir" -name '*_poses.npz' 2>/dev/null | wc -l || true)
+      npz_count=$(find "$DL_DIR/$topdir" -name '*.npz' 2>/dev/null | wc -l || true)
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$D" "$sfile" "$(stat -c %s "$tar_path")" \
         "$(sha256sum "$tar_path" | cut -d' ' -f1)" "$npz_count" "$(date -Iseconds)" "$topdir" >> "$MANIFEST"
       continue
@@ -146,7 +151,7 @@ for D in "${WANTED[@]}"; do
   if [ "$AMASS_EXTRACT" = "1" ]; then
     topdir="$(tar_top "$tar_path")"
     tar -xjf "$tar_path" -C "$DL_DIR"
-    npz_count=$(find "$DL_DIR/$topdir" -name '*_poses.npz' 2>/dev/null | wc -l || true)
+    npz_count=$(find "$DL_DIR/$topdir" -name '*.npz' 2>/dev/null | wc -l || true)
     [ "$AMASS_KEEP_TAR" = "1" ] || rm -f "$tar_path"
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

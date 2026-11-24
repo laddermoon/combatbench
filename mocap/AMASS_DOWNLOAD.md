@@ -93,8 +93,9 @@ $AMASS_OUT/
     └── <DATASET>/<subject>/<motion>_poses.npz
 ```
 
-每个 `*_poses.npz` 字段：`poses`（156 维 SMPL+H pose）、`betas`、`trans`、
-`gender`、`mocap_framerate`、`dmpls`。`*_stageii.npz` 为中间产物，一般用前者。
+每个 npz 字段：`poses`（156 维 SMPL+H pose）、`betas`、`trans`、
+`gender`、`mocap_framerate`、`dmpls`。注意文件命名有两种：多数子集是
+`*_poses.npz`，**GRAB/SOMA 只给 `*_stageii.npz`**（脚本按 `*.npz` 统计）。
 
 ## 6. 使用数据还需要
 
@@ -129,3 +130,6 @@ TotalCapture 等其它来源的动作多样性。
 - **冗余可缓**：`CMU`（已有 ASF/AMC 原始版）、`HDM05`（已有 normPOS 版）
 - **对本项目价值低**：`GRAB`/`TCDHands`（手部抓取）、`DanceDB`（舞蹈）、
   `SSM`/`PosePrior`/`MoSh`/`DFaust`（极小或标定/极限姿势用）
+- **只提供 SMPL-X 无 SMPL+H**：`CNRS`、`WEIZMANN`（2024 新增子集）。
+  需要时用 `AMASS_FORMAT=smplx ./download_amass.sh CNRS WEIZMANN`，
+  产物落在 `amass/smplx_gender_specific/`，使用时要 SMPL-X 模型。
