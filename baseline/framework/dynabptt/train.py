@@ -202,7 +202,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             signal_floor=0.0, pess_lambda=0.0, bc_coef=0.0,
             dagger_net=None, dagger_coef=0.0, dagger_phi_min=0.0,
             si_coef=0.0, si_top_frac=0.1,
-            actor_mode="bptt", qcritics=None, tgt_qcritics=None):
+            actor_mode="bptt", qcritics=None, tgt_qcritics=None,
+            mbpo_imag_data=True):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     for _m in (wm if isinstance(wm, (list, tuple)) else [wm]):
@@ -535,6 +536,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
                 qcritics[name](q_in), q_tgt_r.reshape(-1))
             # Imagined transitions (member-0 rollout): (ŝ_t, â_t) -> ŝ_{t+1},
             # r̂_t from model aux, bootstrap on imagined next state.
+            if not mbpo_imag_data:
+                continue
             s_im = torch.stack([s_hist[t] for t in range(H)], dim=1)
             a_im = torch.stack([a_hist[t] for t in range(H)], dim=1)
             s_nxt = torch.stack(
@@ -883,6 +886,7 @@ def run(exp, args) -> None:
                     si_coef=args.si_coef, si_top_frac=args.si_top_frac,
                     actor_mode=args.actor_mode,
                     qcritics=qcritics, tgt_qcritics=tgt_qcritics,
+                    mbpo_imag_data=args.mbpo_imag_data,
                     dagger_net=dagger_net, dagger_coef=args.dagger_coef,
                     dagger_phi_min=args.dagger_phi_min,
                 )
@@ -1116,6 +1120,10 @@ def main() -> None:
                         "dynamics. mbpo: model only augments critic data; "
                         "actor ascends Q(s,pi(s)) — no dynamics in the "
                         "actor gradient path")
+    p.add_argument("--no-mbpo-imag-data", dest="mbpo_imag_data",
+                   action="store_false",
+                   help="mbpo: train Q on real transitions only (ablation "
+                        "isolating imagined-data contamination of Q)")
     p.add_argument("--si-coef", type=float, default=0.0,
                    help="weight of self-imitation on top-quantile "
                         "learner trajectories (0=off)")
