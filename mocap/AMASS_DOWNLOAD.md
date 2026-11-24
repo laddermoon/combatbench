@@ -43,6 +43,17 @@ AMASS_USER=... AMASS_PASS=... ./download_amass.sh CMU KIT WEIZMANN
 凭据只从环境变量读取（不落盘、不进命令行参数）。脚本先用小文件预检
 凭据：网关返回 HTML/403 而非 bz2 时退出，避免白下几十 GB。
 
+**后台长跑**（全量要下数小时~数天，SSH 断了不碍事）：
+
+```bash
+AMASS_USER='...' AMASS_PASS='...' \
+nohup ./download_amass.sh > amass_download.log 2>&1 &
+
+tail -f amass_download.log   # 看进度
+```
+
+Ctrl+C 中断是安全的：重跑同一命令，已完成的子集自动跳过、半拉的 tar 续传。
+
 ## 4. 可选环境变量
 
 | 变量 | 默认 | 说明 |
@@ -66,8 +77,12 @@ AMASS_USER=... AMASS_PASS=... ./download_amass.sh CMU KIT WEIZMANN
 - **单文件高频请求会被临时 403**（实测 ~10 次/15min 即触发），只影响该
   文件、不影响其它子集，一段时间后自动恢复。脚本预检因此会连试两个
   文件，单文件下载失败也跳过续跑而不是终止整批。
-- 直连速度约 **100–150 KB/s** 且按 IP 限速（并发无效）；全量 SMPL+H
-  （~25–30 GB）需数天，建议按需选子集。代理线路会被网关 403 拒绝。
+- 直连速度 **波动大且按 IP 限速**（并发无效）：实测 ACCAD 104MB 用时
+  8m41s（~205 KB/s），BMLhandball 398MB 却只有 ~25 KB/s（预估 4h）。
+  代理线路会被网关 403 拒绝。
+- **耗时预期**：smplh tar 约 4MB/分钟动作，全量 ~15–20 GB。大头是
+  KIT ~2.6G、CMU ~2.1G、BMLrub ~2.0G、WEIZMANN ~2.0G、EyesJapan ~1.5G，
+  其余均 <1G。按 25–200 KB/s 波动估计，全量要数天，**建议按需选子集**。
 
 ## 5. 产物
 
@@ -105,3 +120,12 @@ pip install smplx
 
 AMASS 对本项目的增量主要在 KIT、WEIZMANN、BMLmovi、BMLrub、EyesJapan、
 TotalCapture 等其它来源的动作多样性。
+
+**子集选择建议（面向 combatbench 动作多样性）：**
+
+- **优先**：`KIT`（动作种类最全）、`WEIZMANN`（2222 段，量大）、
+  `BMLmovi`/`BMLrub`（BioMotionLab，含体育类大幅度动作）、
+  `TotalCapture`（含 freestyle 动作）、`ACCAD`（体育动作，才 104MB）
+- **冗余可缓**：`CMU`（已有 ASF/AMC 原始版）、`HDM05`（已有 normPOS 版）
+- **对本项目价值低**：`GRAB`/`TCDHands`（手部抓取）、`DanceDB`（舞蹈）、
+  `SSM`/`PosePrior`/`MoSh`/`DFaust`（极小或标定/极限姿势用）
