@@ -72,13 +72,27 @@ class TransitionBuffer:
         while self._n_trans > self._max_trans and self._trajs:
             self._n_trans -= self._trajs.popleft().n_trans
 
-    def _sample_traj(self) -> AgentTraj:
-        weights = np.asarray([t.n_trans for t in self._trajs], dtype=np.float64)
+    def _sample_traj(self, recent_pool: float = 1.0) -> AgentTraj:
+        """Weighted-by-length traj draw. ``recent_pool``<1 restricts the
+        draw to the most recent ``recent_pool`` fraction of trajectories —
+        the FIFO keeps every early falling trajectory, so uniform sampling
+        over-trains the model on obsolete fall modes and biases imagined
+        rollouts toward falling (model pessimism)."""
+        n_total = len(self._trajs)
+        n = n_total if recent_pool >= 1.0 else max(
+            1, int(n_total * recent_pool))
+        lo = n_total - n
+        weights = np.asarray(
+            [self._trajs[i].n_trans for i in range(lo, n_total)],
+            dtype=np.float64)
         weights /= weights.sum()
-        idx = int(self._rng.choice(len(self._trajs), p=weights))
+        idx = lo + int(self._rng.choice(n, p=weights))
         return self._trajs[idx]
 
-    def sample_windows(self, batch: int, k: int) -> Dict[str, np.ndarray]:
+    def sample_windows(
+        self, batch: int, k: int,
+        recent_frac: float = 0.0, recent_pool: float = 0.25,
+    ) -> Dict[str, np.ndarray]:
         """Batch of k-step autoregressive windows.
 
         Returns:
@@ -92,10 +106,11 @@ class TransitionBuffer:
         s0_l, act_l, cs_l, obs_l, done_l = [], [], [], [], []
         aux_l: Dict[str, List[np.ndarray]] = {}
         for _ in range(batch):
-            traj = self._sample_traj()
+            pool = recent_pool if self._rng.random() < recent_frac else 1.0
+            traj = self._sample_traj(pool)
             tries = 0
             while traj.n_frames <= k:  # need at least k+1 frames for a k-window
-                traj = self._sample_traj()
+                traj = self._sample_traj(pool)
                 tries += 1
                 if tries > 500:
                     longest = max(t.n_frames for t in self._trajs)
@@ -128,7 +143,9 @@ class TransitionBuffer:
         return out
 
     def sample_seeds(
-        self, batch: int, start_frac: float = 0.0, start_frames: int = 4
+        self, batch: int, start_frac: float = 0.0, start_frames: int = 4,
+        recent_frac: float = 0.0, recent_pool: float = 0.25,
+        tail_frac: float = 0.0, tail_span: int = 16,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """(batch, state_dim) seed states + (batch, obs_dim) their observations.
 
@@ -136,13 +153,26 @@ class TransitionBuffer:
         a trajectory — guaranteed-healthy states (robot still upright) so a
         fraction of every imagination batch retains survival gradient even
         when the buffer is dominated by about-to-fall trajectories.
+
+        ``tail_frac`` of seeds are drawn from the last ``tail_span`` frames —
+        for terminal trajectories these are states from which the true done
+        boundary is reachable inside a ``tail_span``-step imagined horizon,
+        so the alive-product survival term receives a direct gradient
+        (uniform seeds on ~30-frame trajectories with H=8 almost never see
+        termination inside the window; survival then rides only on the
+        indirect critic bootstrap).
         """
         s_l, o_l = [], []
         for _ in range(batch):
-            traj = self._sample_traj()
+            pool = recent_pool if self._rng.random() < recent_frac else 1.0
+            traj = self._sample_traj(pool)
             hi = traj.n_frames - 1  # frame index range [0, B-2]
-            if self._rng.random() < start_frac:
+            u = self._rng.random()
+            if u < start_frac:
                 f = int(self._rng.integers(0, min(start_frames, hi)))
+            elif u < start_frac + tail_frac:
+                lo = max(0, hi - tail_span)
+                f = int(self._rng.integers(lo, hi)) if hi > lo else 0
             else:
                 f = int(self._rng.integers(0, hi))
             s_l.append(traj.cs[f])

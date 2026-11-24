@@ -115,10 +115,12 @@ def extract_trajs(episode, agent_ids, aux_keys_fn) -> List[AgentTraj]:
 # ---------------------------------------------------------------------------
 # World-model fit (k-step autoregressive windows)
 # ---------------------------------------------------------------------------
-def fit_wm(wm, opt, buf, batches, batch_size, k, device, aux_names, weights):
+def fit_wm(wm, opt, buf, batches, batch_size, k, device, aux_names, weights,
+           recent_frac=0.0, recent_pool=0.25):
     stats = {"s": 0.0, "obs": 0.0, "aux": 0.0, "done": 0.0, "total": 0.0}
     for _ in range(batches):
-        w = buf.sample_windows(batch_size, k)
+        w = buf.sample_windows(batch_size, k, recent_frac=recent_frac,
+                               recent_pool=recent_pool)
         s = torch.as_tensor(w["s0"], device=device)
         acts = torch.as_tensor(w["act"], device=device)
         cs_t = torch.as_tensor(w["cs"], device=device)
@@ -162,7 +164,9 @@ def _set_requires_grad(module, flag: bool) -> None:
 
 
 def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
-            entropy_coef=0.0, use_done=True, seed_start_frac=0.0):
+            entropy_coef=0.0, use_done=True, seed_start_frac=0.0,
+            recent_frac=0.0, recent_pool=0.25,
+            seed_tail_frac=0.0, seed_tail_span=16):
     """One imagination batch. Returns (stats dict, detached history) — the
     caller does opt steps so both actor and critic grads share the rollout."""
     _set_requires_grad(wm, False)
@@ -171,7 +175,11 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     channels = exp.channels  # [{"name","gamma"}]
     aux_names = exp.aux_names
 
-    s_np, o_np = buf.sample_seeds(batch, start_frac=seed_start_frac)
+    s_np, o_np = buf.sample_seeds(batch, start_frac=seed_start_frac,
+                                  recent_frac=recent_frac,
+                                  recent_pool=recent_pool,
+                                  tail_frac=seed_tail_frac,
+                                  tail_span=seed_tail_span)
     s = torch.as_tensor(s_np, device=device)
     o = torch.as_tensor(o_np, device=device)
     alive = torch.ones(s.shape[0], device=device)
@@ -191,7 +199,18 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
         s_hist.append(s.detach())  # s_t — pairs with targets[t] below
         s, h = wm.step(s, a)
         o = h["obs"]
-        aux = {name: h[name] for name in aux_names}
+        # Aux heads are unbounded MLP outputs; imagined states drift
+        # off-manifold and the heads extrapolate reward features to
+        # absurd values (observed phi_hat ~30 -> phantom reward basin the
+        # actor learns to chase while the real policy keeps falling).
+        # Clamp predicted aux to each channel's plausible range before any
+        # reward/weight computation — the model itself stays unclamped
+        # (fit targets are real data; the clamp only removes the actor's
+        # ability to arbitrage head extrapolation).
+        aux = {}
+        for name in aux_names:
+            lo_hi = getattr(exp, "aux_clamps", {}).get(name)
+            aux[name] = h[name].clamp(lo_hi[0], lo_hi[1]) if lo_hi else h[name]
         if use_done:
             alive = alive * (1.0 - torch.sigmoid(h["done_logit"]))
         for ch in channels:
@@ -204,7 +223,7 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
             r_hist[name].append(r_c.detach())
         c_hist.append(alive.detach())
 
-    last_aux = {name: h[name] for name in aux_names}
+    last_aux = aux
     for ch in channels:
         name = ch["name"]
         g_H = ch["gamma"] ** H
@@ -246,7 +265,8 @@ def improve(actor, critics, tgt_critics, wm, buf, exp, batch, H, device,
     # earning reward. Regress V on real buffer windows with true reward and
     # true termination masking so the bootstrap V(s_H) in J carries the
     # "about to fall -> truncated return" information into imagination.
-    w = buf.sample_windows(batch, 8)
+    w = buf.sample_windows(batch, 8, recent_frac=recent_frac,
+                           recent_pool=recent_pool)
     cs_w = torch.as_tensor(np.concatenate(
         [w["s0"][:, None, :], w["cs"][:, :-1, :]], axis=1), device=device)
     # states trained: s_{j0}..s_{j0+k-1} = cs[j0-1] then cs[j0..j0+k-2]
@@ -374,6 +394,22 @@ def run(exp, args) -> None:
     try:
         for u in range(start_update, args.updates):
             t0 = time.perf_counter()
+            if u == start_update and args.seed_episodes > 0:
+                # Cold-start coverage fix: pure exploration data is all
+                # monotone falls, so the model can never imagine (or value)
+                # recovery. Seeding the buffer with a standing-capable
+                # policy's transitions gives imagination surviving futures
+                # and gives the critic non-trivial values to anchor to.
+                seed_bp = PolicyBlueprint.load(args.seed_policy)
+                sjobs = build_jobs(env_bp, seed_bp, args.seed + 55555,
+                                   args.seed_episodes, exp, False, 0.0)
+                n_seed = 0
+                for ep in rollouter.collect(sjobs):
+                    for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
+                        buf.add(tr)
+                        n_seed += tr.n_trans
+                print(f"[seed] {args.seed_episodes} eps {args.seed_policy} "
+                      f"-> +{n_seed} trans (buf={len(buf)})", flush=True)
             policy_bp = actor.to_blueprint(str(export_root / f"u{u:05d}"))
             jobs = build_jobs(env_bp, policy_bp, args.seed + u * 100003,
                               args.episodes, exp, True, args.ef)
@@ -387,8 +423,10 @@ def run(exp, args) -> None:
 
             t0 = time.perf_counter()
             fit_batches = args.warmup_fit if u == start_update else args.fit_batches
-            wm_stats = fit_wm(wm, opt_wm, buf, fit_batches, args.fit_batch_size,
-                              args.k, device, exp.aux_names, exp.wm_loss_weights)
+            wm_stats = fit_wm(
+                wm, opt_wm, buf, fit_batches, args.fit_batch_size,
+                args.k, device, exp.aux_names, exp.wm_loss_weights,
+                recent_frac=args.recent_frac, recent_pool=args.recent_pool)
             t_fit = time.perf_counter() - t0
 
             t0 = time.perf_counter()
@@ -399,6 +437,10 @@ def run(exp, args) -> None:
                     args.improve_batch_size, args.horizon, device,
                     entropy_coef=args.entropy, use_done=not args.no_done,
                     seed_start_frac=args.seed_start_frac,
+                    recent_frac=args.recent_frac,
+                    recent_pool=args.recent_pool,
+                    seed_tail_frac=args.seed_tail_frac,
+                    seed_tail_span=args.seed_tail_span,
                 )
                 opt_actor.zero_grad(set_to_none=True)
                 a_loss.backward()
@@ -487,6 +529,15 @@ def main() -> None:
                         "for cold-start balance tasks where early data is "
                         "all falls and a correct done head would zero out "
                         "the learning signal.")
+    p.add_argument("--recent-frac", type=float, default=0.5,
+                   help="Fraction of window/seed draws taken from the most "
+                        "recent --recent-pool share of trajectories.")
+    p.add_argument("--recent-pool", type=float, default=0.25)
+    p.add_argument("--seed-tail-frac", type=float, default=0.0,
+                   help="Fraction of imagination seeds drawn from the last "
+                        "--seed-tail-span frames of a trajectory (puts the "
+                        "terminal boundary inside the imagined horizon).")
+    p.add_argument("--seed-tail-span", type=int, default=16)
     p.add_argument("--seed-start-frac", type=float, default=0.25,
                    help="Fraction of imagination seeds drawn from the first "
                         "frames of a trajectory (guaranteed-upright states) "
@@ -499,6 +550,16 @@ def main() -> None:
     p.add_argument("--ckpt-interval", type=int, default=10)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed-policy", type=str, default=None,
+                   help="Optional policy blueprint path: collect "
+                        "--seed-episodes with it at update 0 to warm-start "
+                        "the buffer (coverage fix for cold-start balance).")
+    p.add_argument("--seed-episodes", type=int, default=0)
+    p.add_argument("--w-cross", type=float, default=None,
+                   help="Override exp.w_cross (r_cross actor weight). Set 0 "
+                        "for a pure-survival cold start — the stateful "
+                        "cross-support reward's variance otherwise drowns "
+                        "the tiny per-step phi reward in J.")
     p.add_argument("--resume", type=str, default=None)
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--list-experiments", action="store_true")
@@ -521,6 +582,8 @@ def main() -> None:
         args.ckpt_interval = 3
 
     exp = _load_experiment(args.experiment)
+    if args.w_cross is not None:
+        exp.w_cross = float(args.w_cross)
 
     run_name = args.run_name or (
         f"train_{exp.name}_dynabptt_{time.strftime('%Y%m%d_%H%M%S')}")

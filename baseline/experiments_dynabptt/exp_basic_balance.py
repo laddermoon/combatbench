@@ -63,6 +63,11 @@ class BasicBalanceDynaBPTT:
     w_fall = 3.0
     w_cross = 1.0
 
+    # Plausible output ranges for aux heads inside imagination (see
+    # train.improve): prevents the actor from arbitraging unbounded head
+    # extrapolation on off-manifold imagined states.
+    aux_clamps = {"phi": (0.0, 1.0)}
+
     def env_bp(self):
         pb = ParameterizedEnvBlueprint.load(
             _BLUEPRINT_DIR / self.env_blueprint_name
