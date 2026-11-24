@@ -623,7 +623,7 @@ def run(exp, args) -> None:
                 ref_actor.load_state_dict(actor.state_dict())
             imp_stats_acc: Dict[str, float] = {}
             train_actor = u >= args.actor_warmup
-            for _ in range(args.improve_batches):
+            for _bi in range(args.improve_batches):
                 a_loss, c_loss, imp_stats = improve(
                     actor, critics, tgt_critics, wm, buf, exp,
                     args.improve_batch_size, args.horizon, device,
@@ -649,7 +649,18 @@ def run(exp, args) -> None:
                 opt_critic.step()
                 for kk, vv in imp_stats.items():
                     imp_stats_acc[kk] = imp_stats_acc.get(kk, 0.0) + vv
-            imp_stats = {kk: vv / args.improve_batches
+                # Per-update drift budget. The balance policy is a knife
+                # edge: *random* weight perturbations producing only ~0.1
+                # action-RMS collapse ep_len 544->~60, indistinguishable
+                # from BPTT proposals of the same magnitude. Survival
+                # therefore requires bounding the action-space drift per
+                # update to the ~0.03 RMS regime — PPO-style target-KL
+                # early stop does exactly that.
+                if (args.target_kl > 0.0
+                        and imp_stats.get("kl_pen", 0.0) > args.target_kl):
+                    imp_stats_acc["kl_stop"] = float(_bi + 1)
+                    break
+            imp_stats = {kk: vv / max(_bi + 1, 1)
                          for kk, vv in imp_stats_acc.items()}
             # EMA target update — a hard sync every update lets TD errors
             # ratchet instantly into bootstrap targets (self-referential
@@ -724,7 +735,10 @@ def run(exp, args) -> None:
                 f"alive={imp_stats.get('alive_end', 0):.2f} "
                 f"closs={imp_stats.get('critic_loss', 0):.4f} "
                 f"rcloss={imp_stats.get('real_closs', 0):.4f} "
-                f"kl={imp_stats.get('kl_pen', 0):.4f} {r_str} "
+                f"kl={imp_stats.get('kl_pen', 0):.4f}"
+                + (f" klstop={imp_stats['kl_stop']:.0f}"
+                   if "kl_stop" in imp_stats else "")
+                + f" {r_str} "
                 f"| sigma={sigma_mean:.3f}{eval_str}{ratchet_str}",
                 flush=True,
             )
@@ -819,6 +833,10 @@ def main() -> None:
                    help="If >0, weight each imagined seed's J by its "
                         "boundary signal (1-alive_end + |phi drift|), with "
                         "this value as the floor for flat/saturated seeds")
+    p.add_argument("--target-kl", type=float, default=0.0,
+                   help="If >0, stop the improve loop once the mean-action "
+                        "MSE vs the reference actor exceeds this bound "
+                        "(0.001 ~= 0.03 action RMS drift)")
     p.add_argument("--actor-kl", type=float, default=3.0,
                    help="Trust-region coefficient: penalizes mean-action "
                         "drift from the policy that generated the current "
