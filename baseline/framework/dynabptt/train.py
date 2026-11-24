@@ -61,6 +61,35 @@ def inject_corestate(env_bp: EnvBlueprint) -> EnvBlueprint:
     return EnvBlueprint.from_dict(d)
 
 
+def inject_push(env_bp: EnvBlueprint, force_min: float, force_max: float,
+                interval_min: int, interval_max: int) -> EnvBlueprint:
+    """Append RandomPushPlugin (one per robot) for data collection.
+
+    Why: a buffer with only "standing->stand" (teacher) and "tilt->die"
+    (learner) transitions contains no *counterfactual* coverage — states
+    where the ACTION decides survival. The model therefore predicts doom
+    from every tilted seed regardless of action and the boundary gradient
+    is noise. Random torso pushes force the anchored policy to produce
+    tilt->(recover|die) arcs, which is exactly the missing coverage.
+    Eval/ratchet must stay push-free: only collection uses this blueprint.
+    """
+    d = env_bp.to_dict()
+    plugins = d.setdefault("plugins", [])
+    for rid in ("robot_a", "robot_b"):
+        plugins.append({
+            "cls": "envs.humanoid21.disturbance_plugins:RandomPushPlugin",
+            "config": {
+                "target_robot": rid,
+                "force_magnitude_min": float(force_min),
+                "force_magnitude_max": float(force_max),
+                "min_interval": int(interval_min),
+                "max_interval": int(interval_max),
+                "push_duration_steps": 1,
+            },
+        })
+    return EnvBlueprint.from_dict(d)
+
+
 # ---------------------------------------------------------------------------
 # Episode -> AgentTraj extraction
 # ---------------------------------------------------------------------------
@@ -488,6 +517,10 @@ def run(exp, args) -> None:
     best_actor = None
 
     env_bp = inject_corestate(exp.env_bp())
+    env_bp_push = (inject_push(env_bp, args.push_force_min,
+                               args.push_force_max, args.push_interval_min,
+                               args.push_interval_max)
+                   if args.push_frac > 0.0 else None)
     buf = TransitionBuffer(max_transitions=args.buffer_size, seed=args.seed)
     rollouter = ParallelRollouter(num_workers=args.workers)
 
@@ -517,8 +550,17 @@ def run(exp, args) -> None:
                 # recovery. Seeding the buffer with a standing-capable
                 # policy's transitions gives imagination surviving futures
                 # and gives the critic non-trivial values to anchor to.
-                sjobs = build_jobs(env_bp, seed_bp, args.seed + 55555,
-                                   args.seed_episodes, exp, False, 0.0)
+                if env_bp_push is not None:
+                    n_push = args.seed_episodes // 2
+                    sjobs = (build_jobs(env_bp, seed_bp, args.seed + 55555,
+                                        args.seed_episodes - n_push, exp,
+                                        False, 0.0)
+                             + build_jobs(env_bp_push, seed_bp,
+                                          args.seed + 55556,
+                                          n_push, exp, False, 0.0))
+                else:
+                    sjobs = build_jobs(env_bp, seed_bp, args.seed + 55555,
+                                       args.seed_episodes, exp, False, 0.0)
                 n_seed = 0
                 for ep in rollouter.collect(sjobs):
                     for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
@@ -535,8 +577,14 @@ def run(exp, args) -> None:
             n_teacher = (int(args.episodes * args.seed_frac)
                          if seed_bp is not None else 0)
             n_learner = args.episodes - n_teacher
+            n_push_l = (int(n_learner * args.push_frac)
+                        if env_bp_push is not None else 0)
             jobs = build_jobs(env_bp, policy_bp, args.seed + u * 100003,
-                              n_learner, exp, True, args.ef)
+                              n_learner - n_push_l, exp, True, args.ef)
+            if n_push_l > 0:
+                jobs = jobs + build_jobs(
+                    env_bp_push, policy_bp, args.seed + u * 100003 + 7,
+                    n_push_l, exp, True, args.ef)
             episodes = rollouter.collect(jobs)
             tr_added = 0
             for ep in episodes:
@@ -544,9 +592,15 @@ def run(exp, args) -> None:
                     buf.add(tr)
                     tr_added += tr.n_trans
             if n_teacher > 0:
+                n_push_t = (n_teacher // 2 if env_bp_push is not None else 0)
                 tjobs = build_jobs(env_bp, seed_bp,
                                    args.seed + 77777 + u * 100003,
-                                   n_teacher, exp, False, 0.0)
+                                   n_teacher - n_push_t, exp, False, 0.0)
+                if n_push_t > 0:
+                    tjobs = tjobs + build_jobs(
+                        env_bp_push, seed_bp,
+                        args.seed + 77778 + u * 100003,
+                        n_push_t, exp, False, 0.0)
                 for ep in rollouter.collect(tjobs):
                     for tr in extract_trajs(
                             ep, exp.agent_ids, exp.aux_keys):
@@ -752,6 +806,15 @@ def main() -> None:
                    help="ep_len regression tolerance before reverting")
     p.add_argument("--ratchet-episodes", type=int, default=32,
                    help="episodes per ratchet eval (fixed seeds)")
+    p.add_argument("--push-frac", type=float, default=0.0,
+                   help="Fraction of learner episodes collected under random "
+                        "torso pushes; generates tilt->(recover|die) arcs, "
+                        "the counterfactual coverage the boundary gradient "
+                        "needs. Eval stays push-free.")
+    p.add_argument("--push-force-min", type=float, default=150.0)
+    p.add_argument("--push-force-max", type=float, default=350.0)
+    p.add_argument("--push-interval-min", type=int, default=40)
+    p.add_argument("--push-interval-max", type=int, default=100)
     p.add_argument("--signal-floor", type=float, default=0.0,
                    help="If >0, weight each imagined seed's J by its "
                         "boundary signal (1-alive_end + |phi drift|), with "
