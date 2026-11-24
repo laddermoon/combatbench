@@ -8,6 +8,7 @@ todo.md
 compareversion/
 runs/
 runs_sac/
+runs_dynabptt/
 
 # Large assets (kept on disk, not in git)
 1.1 T800 模型资源/
