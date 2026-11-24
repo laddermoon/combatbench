@@ -515,9 +515,18 @@ def eval_stats(episodes, exp):
                 survived += 1
         for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
             lens.append(tr.n_frames)
+    pots_max, pots_final = [], []
+    for ep in episodes:
+        for tr in extract_trajs(ep, exp.agent_ids, exp.aux_keys):
+            phi = tr.aux.get("phi")
+            if phi is not None and len(phi):
+                pots_max.append(float(np.max(phi)))
+                pots_final.append(float(phi[-1]))
     return {
         "survival": survived / max(total, 1),
         "len": float(np.mean(lens)) if lens else 0.0,
+        "max_pot": float(np.mean(pots_max)) if pots_max else 0.0,
+        "final_pot": float(np.mean(pots_final)) if pots_final else 0.0,
     }
 
 
@@ -809,28 +818,32 @@ def run(exp, args) -> None:
                 rjobs = build_jobs(env_bp, policy_bp, args.seed + 31337,
                                    args.ratchet_episodes, exp, False, 0.0)
                 m = eval_stats(rollouter.collect(rjobs), exp)
-                if best_len is None or m["len"] >= best_len - args.ratchet_tol:
-                    best_len = m["len"] if best_len is None else max(
-                        best_len, m["len"])
+                score = m[args.ratchet_metric]
+                if best_len is None or score >= best_len - args.ratchet_tol:
+                    best_len = score if best_len is None else max(
+                        best_len, score)
                     best_actor = {k: v.detach().clone()
                                   for k, v in actor.state_dict().items()}
                     ref_actor.load_state_dict(actor.state_dict())
-                    ratchet_str = (f" | ratchet len={m['len']:.0f} "
-                                   f"best={best_len:.0f} acc")
+                    ratchet_str = (
+                        f" | ratchet {args.ratchet_metric}={score:.3f} "
+                        f"best={best_len:.3f} acc")
                 else:
                     actor.load_state_dict(best_actor)
                     opt_actor = torch.optim.Adam(actor.parameters(),
                                                  lr=args.actor_lr)
-                    ratchet_str = (f" | ratchet len={m['len']:.0f} "
-                                   f"best={best_len:.0f} REJ")
+                    ratchet_str = (
+                        f" | ratchet {args.ratchet_metric}={score:.3f} "
+                        f"best={best_len:.3f} REJ")
 
             eval_str = ""
             if (u + 1) % args.eval_interval == 0 or u == start_update:
                 policy_bp = actor.to_blueprint(str(export_root / f"u{u:05d}_eval"))
                 ejobs = build_jobs(env_bp, policy_bp, args.seed + 999983 + u,
                                    args.eval_episodes, exp, False, 0.0)
-                surv = eval_survival(rollouter.collect(ejobs), exp.agent_ids)
-                eval_str = f" | eval_survival={surv:.3f}"
+                em = eval_stats(rollouter.collect(ejobs), exp)
+                eval_str = (f" | eval_survival={em['survival']:.3f}"
+                            f" eval_pot={em['max_pot']:.3f}")
 
             if (u + 1) % args.ckpt_interval == 0 or u + 1 == args.updates:
                 torch.save({
@@ -942,6 +955,9 @@ def main() -> None:
                         "best-scoring snapshot on regression and reset its "
                         "optimizer. Makes model-gradient corruption safe by "
                         "construction.")
+    p.add_argument("--ratchet-metric", type=str, default="len",
+                   choices=["len", "survival", "max_pot", "final_pot"],
+                   help="eval_stats field the ratchet maximizes")
     p.add_argument("--ratchet-tol", type=float, default=30.0,
                    help="ep_len regression tolerance before reverting")
     p.add_argument("--ratchet-episodes", type=int, default=32,
