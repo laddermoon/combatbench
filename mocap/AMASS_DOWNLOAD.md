@@ -88,9 +88,10 @@ Ctrl+C 中断是安全的：重跑同一命令，已完成的子集自动跳过�
 
 ```
 $AMASS_OUT/
-├── download_manifest.tsv          # dataset / sfile / bytes / sha256 / npz 段数 / 时间
+├── download_manifest.tsv                     # dataset / sfile / bytes / sha256 / npz 段数 / 时间 / 顶层目录
+├── amass_download_<format>_<beta>.log        # 每次运行自动 tee 的全程日志
 └── smplh_gender_specific/
-    └── <DATASET>/<subject>/<motion>_poses.npz
+    └── <DATASET>/<subject>/<motion>*.npz
 ```
 
 每个 npz 字段：`poses`（156 维 SMPL+H pose）、`betas`、`trans`、

@@ -74,6 +74,11 @@ DL_DIR="$AMASS_OUT/${AMASS_FORMAT}_${AMASS_BETA}"
 TAR_DIR="$DL_DIR/_tars"
 MANIFEST="$AMASS_OUT/download_manifest.tsv"
 mkdir -p "$DL_DIR" "$TAR_DIR"
+
+# 全程同时写日志文件（每个 format/beta 一份，跨批次追加）
+LOG="$AMASS_OUT/amass_download_${AMASS_FORMAT}_${AMASS_BETA}.log"
+exec > >(tee -a "$LOG") 2>&1
+echo "===== run started $(date -Iseconds) log=$LOG ====="
 [ -f "$MANIFEST" ] || printf 'dataset\tsfile\ttar_bytes\tsha256\tnpz_count\tdate\ttop_dir\n' > "$MANIFEST"
 
 # 预检：取小文件前 1KB 验证凭据（凭据错误时网关返回 HTML/403 而非 BZh2 流）。
