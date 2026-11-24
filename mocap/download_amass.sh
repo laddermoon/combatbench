@@ -10,7 +10,7 @@
 #   ./download_amass.sh --list                                                 # 列出全部子集名
 #
 # 可选环境变量：
-#   AMASS_OUT      输出根目录（默认 /data1/dev/combatbench_mocap/amass）
+#   AMASS_OUT      输出根目录（默认 ./amass，即当前运行目录下的 amass/）
 #   AMASS_FORMAT   smplh | smplx                  （默认 smplh，PHC/MaskedMimic 常用输入）
 #   AMASS_BETA     gender_specific | neutral      （默认 gender_specific）
 #   AMASS_EXTRACT  1=下载后解压（默认）；0=只保留 tar.bz2
@@ -23,7 +23,7 @@
 
 set -euo pipefail
 
-AMASS_OUT="${AMASS_OUT:-/data1/dev/combatbench_mocap/amass}"
+AMASS_OUT="${AMASS_OUT:-$PWD/amass}"
 AMASS_FORMAT="${AMASS_FORMAT:-smplh}"
 AMASS_BETA="${AMASS_BETA:-gender_specific}"
 AMASS_EXTRACT="${AMASS_EXTRACT:-1}"
