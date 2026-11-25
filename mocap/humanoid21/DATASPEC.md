@@ -3,6 +3,17 @@
 > 类型：契约 —— M0 交付物之一
 >
 > 范围：本模块产出的所有源运动片段与机器人参考运动片段。
+>
+> **spec_version: 2**（2026-11）。v2 相对 v1 的变化：
+> - 数据来源扩展：除 CMU ASF/AMC 手写管线外，新增 **AMASS→GMR** 管线
+>   （`gmr/` 目录下的 smplx npz → mink IK → humanoid21 qpos），
+>   `identity.source` 与 `adaptation.retarget_method` 增加对应取值；
+> - 共享基准数据集（DATASET.md）的 canonical 帧率定为 **30 fps**
+>   （PHC/AMP 生态标准；v1 的 120fps 库保持有效，`time.fps` 如实记录）；
+> - npz 新增可选字段 `src_keypoints`/`src_keypoint_names`（人侧 SMPL 关节
+>   位置，用于残差与人侧特征对照）与 `qpos`（原始 MuJoCo qpos 便捷视图）；
+> - keypoint 规范扩为**全部非根 body 原点**（16 个，旧库 15 个合法）；
+> - 新增 §8 PHC 互操作约定（四元数序坑）。
 
 ## 1. 存储布局
 
@@ -46,30 +57,44 @@ z 向上、米、弧度、四元数 wxyz——转换在导入时完成，不在�
 | `root_angvel` | (T,3) | 根部角速度（世界系，rad/s） |
 | `joint_angles` | (T,21) | 弧度，顺序 = `Humanoid21Meta.CONTROLLED_JOINTS`（源骨架片段此字段可为对应映射骨架 DOF，由 index `joint_space` 区分） |
 | `joint_velocities` | (T,21) | 弧度/秒；差分推导须注明方法 |
-| `keypoints` | (T,K,3) | 关键点世界坐标；K 与名称在 index `keypoint_names` |
+| `keypoints` | (T,K,3) | 关键点世界坐标；K 与名称在 npz `keypoint_names`。**canonical = 全部非根 body 原点**（16 个：torso/head/waist_lower/pelvis/四肢 12 link），masked-goal 类方法需要任意子集；v1 旧库 15 个（缺 waist_lower）合法 |
 | `foot_contacts` | (T,2) | [左,右] 0/1 或置信度；估计方法必须在 index `quality.contact_method` 记录 |
 | `valid_mask` | (T,) uint8 | 1=有效帧；缺失帧不得填零伪装 |
+| `src_keypoints` | (T,J,3) 可选 | 人侧关节世界坐标（SMPL-X FK 输出或源骨架），供残差/人侧特征对照 |
+| `src_keypoint_names` | (J,) 可选 | `src_keypoints` 的关节名 |
+| `qpos` | (T,28) 可选 | MuJoCo qpos 便捷视图 = [root_pos, root_quat, joint_angles] 拼接；存了就必须与前述字段逐元素一致 |
+| `retarget_residuals` | (T,R) 可选 | 每帧每目标链残差（米）；`residual_names` 给链名。GMR 管线按 IK task 链记录 |
+| `lead_stable_frame` | scalar 可选 | 该帧之前为引导区（IK 分支瞬态/源毛刺），RSI 采样应跳过 |
 
 ## 4. index.json 结构
 
 ```jsonc
 {
-  "spec_version": 1,
+  "spec_version": 2,
   "clips": {
     "cmu_13_17": {
       "identity": {
+        // source: "cmu"（ASF/AMC 手写管线）| "amass_<subset>"（GMR 管线，
+        //   如 "amass_accad"、"amass_cmu"、"amass_ssm"）
         "source": "cmu", "subject": "13", "trial": 17,
         "parent_clip": null,           // 派生片段填父 clip_id
         "source_file": "/data1/dev/combatbench_mocap/raw/13_17.amc",
+        // AMASS 片段填相对路径，如 "ACCAD/Male2MartialArtsPunches_c3d/G1 - jab cross_poses.npz"，
+        // 树由 identity.source_tree ∈ {"smplh_gender_specific","smplx_gender_specific","smplx_from_smplh"} 指出
         "source_sha256": "...",
         "npz_sha256": "...",
         "version": 1
       },
       "time": {
-        "src_fps": 120.0, "fps": 120.0,   // fps = 重采样后
+        "src_fps": 120.0, "fps": 120.0,   // fps = 重采样后；共享基准集 canonical=30
         "frames": 4840, "duration_s": 40.33
       },
       "frames_convention": "mujoco_world_z_up",
+      // dataset: 共享基准成员资格，见 DATASET.md
+      //   "core"      = 所有基线方法必须消费的可比集
+      //   "extended"  = 允许使用的扩展池（报告时与 core 分开）
+      //   null        = 不进共享集（试验产物、私有调试用）
+      "dataset": null,
       "joint_space": "humanoid21_v2",     // 或 "cmu_asf"（纯源数据）
       "classification": {
         "labels": ["boxing"],            // 多标签数组，非互斥
@@ -87,6 +112,9 @@ z 向上、米、弧度、四元数 wxyz——转换在导入时完成，不在�
       },
       "adaptation": {
         "model": "battle_circular_v2.xml", "model_sha256": "...",
+        // retarget_method: null | "world_frame_ik"（v1 手写） | "gmr_mink_ik"
+        // gmr_mink_ik 的 retarget_params: {ik_config, ik_config_sha256,
+        //   tgt_fps, burn_in, scale_table_flat, gmr_commit}
         "retarget_method": null, "retarget_params": null
       }
     }
@@ -119,6 +147,29 @@ z 向上、米、弧度、四元数 wxyz——转换在导入时完成，不在�
 - **CoreClip**（`clip/CORECLIP_SPEC.md`）：绑定 Humanoid21 仿真器的
   20Hz 动作记录格式，字段与 `get_core_state`/`set_core_state`
   一一对应（机体系速度、归一化关节、可选 `ref_action`）。
-  本文档的 retarget npz 是**重定向中间产物**（120Hz、世界系速度、
+  本文档的 retarget npz 是**重定向中间产物**（世界系速度、
   弧度关节），两者约定不同、不可混用；
   经 `clip/convert.refclip_to_coreclip` 单向转换。
+- **DATASET**（`DATASET.md`）：基于本契约之上的共享基准数据集
+  范围定义（哪些 clip 算 core/extended、标签体系、训练/验证划分）。
+
+## 8. PHC 互操作约定
+
+PHC 系生态（PHC/OmniH2O/MaskedMimic 衍生管线）的事实标准是一个 pkl
+字典 `{clip_name: {...}}`。对接外部实现时由导出工具按需生成，
+**canonical 源仍为本契约的 npz+index**（保留 provenance 与质量门）：
+
+```python
+{clip_id: {
+    "fps":      30,                    # int
+    "root_pos": (T,3),                 # = npz root_pos
+    "root_rot": (T,4),                 # xyzw！npz 存的是 wxyz，导出时 [:, [1,2,3,0]]
+    "dof_pos":  (T,21),                # = npz joint_angles，CONTROLLED_JOINTS 序
+    "dof_vel":  (T,21),                # 可选
+    "keypoint_pos": (T,K,3),           # 可选
+}}
+```
+
+**已知坑**：PHC/ProtoMotions 的四元数序是 **xyzw**，MuJoCo/本契约是
+**wxyz**——混用过一次就是全部姿态差一个基旋转，务必在导出层转换并
+在导出物里标注 `quat_order: "xyzw"`。
