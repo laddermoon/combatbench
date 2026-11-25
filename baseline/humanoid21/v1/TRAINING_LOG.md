@@ -461,3 +461,25 @@
 - max_updates=15000（启动即加，避免 r1 式预算耗尽接力）。
 - 交叉指标改造：land_1arm/land_2arm + stride_1arm/stride_2arm
   （按令实际生存窗分桶，替代 stepcmd 的 arr/dmv 桶）。
+
+### v2_stepbudhard_r1 线（步budget × 双臂硬劫持）— 启动
+
+- = stepbudget + 双臂独立**硬**劫持（ARM_TAKEOVER 执行层语义）：
+  ArmDualScript 同款调度（P0.1 双臂 / 单臂 50/50，dur U(2,20)f，
+  tgt U(-1,1)³），被劫臂 act[15:18]/[18:21] 物理下发前**覆写**
+  为 tgt——臂输出为死通道，策略学"见承诺→自由维补偿"。
+- **观测承诺契约**：eff_flag = script_flag AND standing_flag；
+  flag=0 → tgt 全零显示。单测（u6140 策略驱动 200f）：
+  157 次覆写、0 违例（flag=1 必覆写、flag=0 必 hij=0+tgt 零）。
+- **站立门控**（硬劫持无奖励仲裁，失衡强动臂有害）：S3 同款
+  去抖——h>1.10m 持续 20f→sflag=1，低于阈值宽限 5f→清。
+- 通道 7（同 stepbudget，无臂跟随奖励——执行有物理保证）。
+- eval 新增：intent_err_r/l（策略想输出的 vs 被执行的 tgt，
+  死维诊断）、occ_*、err_stand/down、land/stride_1arm/2arm。
+- 起训：stepbudget_r2 u6140 --reset-update（与软劫持
+  stepbudarm 同基座 → 软/硬干净对比），GPU1，pid 3931938，
+  max_updates=15000。
+- 监测点：①步指标域迁移回落幅度（臂段死维→活跃+覆写扰动）；
+  ②falls——硬劫持最大风险指标（tgt 阶跃=硬扰动，软版策略
+  可平滑逼近、硬版周期起点跳变）；③land_2arm/stride_2arm
+  是否显著劣于 1arm 桶；④部署契约：策略必须配覆写执行器。
