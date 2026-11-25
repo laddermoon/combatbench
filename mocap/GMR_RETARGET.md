@@ -42,6 +42,8 @@ GLFW viewer does not work on this box; use EGL + offline `mujoco.Renderer`.
 5. `mano_v1_2` ready-made SMPLH pkls are unusable (missing hands_* keys, chumpy lazy Select) — see AMASS_DOWNLOAD_DETAIL.md
 6. `smplx` pip pkg downgraded cudnn to torch-2.7.1 pin 9.5.1.17 — verified OK
 7. AMASS smplx npz fields: `pose_body/root_orient/trans`, `mocap_frame_rate` (no i), `num_betas`; SSM/DFaust/CNRS/WEIZMANN are smplx-only
+8. **Per-frame IK branch-snap at clip start**: first ~3 frames settle into a wrong IK branch then snap to another one mid-clip on a nearly-static target -> bogus hand jumps (0.44m, "26.8 m/s"). Fix: 10x burn-in `retarget(frame[0])` before recording (`retarget_smplx_batch.py`); afterwards peak hand speeds 1.9-11.5 m/s all mid-clip, matching human ~10.3 m/s
+9. Source fps: AMASS smplx = 120fps; `tgt_fps=30` keeps duration (~1% off via aligned_fps); fast clips lose transient peaks at 30fps (peak hand speed halved) — use `TGT_FPS=60` for review, keep 30 for the PHC pipeline
 
 ## Next
 
