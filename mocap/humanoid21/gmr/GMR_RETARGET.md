@@ -33,7 +33,9 @@ GLFW viewer does not work on this box; use EGL + offline `mujoco.Renderer`.
 - Reference-pose check (no IK): all link ang_err = 0.0°
 - SSM walking_01: natural upright gait, pelvis_z 0.84, arms swing at sides. `/tmp/h21_walk3.mp4`
 - SSM punch_kick: guard + leg kick + strikes visible. `/tmp/h21_pk.mp4`
-- Known residual: right foot_z dips to -0.025m (L1 threshold -0.005); fast strikes have arm residual — morphology gap, flag via `high_residual_*` per DATASPEC
+- ACCAD cross_left punch (PHC bundle): L1, only foot_penetration recorded
+- Known residual: right foot_z dips to -0.025..-0.036m (L1 threshold -0.005); fast strikes have arm residual — morphology gap, flag via `high_residual_*` per DATASPEC
+- NOTE: `retarget_out/*.mp4`/`*.pkl` predate the `use_ik_match_table2:false` fix — regenerate via `export_phc.py` before reuse
 
 ## Pitfalls hit (do not rediscover)
 
@@ -45,6 +47,7 @@ GLFW viewer does not work on this box; use EGL + offline `mujoco.Renderer`.
 6. `smplx` pip pkg downgraded cudnn to torch-2.7.1 pin 9.5.1.17 — verified OK
 7. AMASS smplx npz fields: `pose_body/root_orient/trans`, `mocap_frame_rate` (no i), `num_betas`; SSM/DFaust/CNRS/WEIZMANN are smplx-only
 8. **Per-frame IK branch-snap at clip start**: first ~3 frames settle into a wrong IK branch then snap to another one mid-clip on a nearly-static target -> bogus hand jumps (0.44m, "26.8 m/s"). Fix: 10x burn-in `retarget(frame[0])` before recording (`mocap/humanoid21/gmr/retarget_smplx_batch.py`); afterwards peak hand speeds 1.9-11.5 m/s all mid-clip, matching human ~10.3 m/s
+9. **`ik_match_table2` must be disjoint or disabled** — GMR solves table1 fully then table2 fully (sequential, warm-started). Our table2 duplicated the limb subset WITHOUT the pelvis/torso/head anchor tasks: the second pass was free to drag the freejoint root to please limb targets => mid-clip teleports (abdomen_y +43° sustained at f39->40, root +30°, on a punch clip where the human moved <5°). Damping sweep (0.5-5.0) does NOT fix it. Fix: `use_ik_match_table2: false` (offsets are only taken from table1 anyway — table2 offsets are dead data). Post-fix max jump 19.7° (real elbow punch motion), clip L1. Verified the jump existed only after tasks2, not tasks1 (6.7° vs 42.4°).
 9. Source fps: AMASS smplx = 120fps; `tgt_fps=30` keeps duration (~1% off via aligned_fps); fast clips lose transient peaks at 30fps (peak hand speed halved) — use `TGT_FPS=60` for review, keep 30 for the PHC pipeline
 
 ## Next
