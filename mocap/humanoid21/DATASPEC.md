@@ -46,7 +46,7 @@ qpos 的 wxyz 相反，导出层统一转换，下游不得再换序。
 | 字段 | 形状 | 说明 |
 |---|---|---|
 | `dof_names` | (21,) str | 冗余存一份使 clip 自解释 |
-| `keypoint_pos` | (T,16,3) | 全部非根 body 原点世界位置（导出时 FK，便利+一致性件）；名在 manifest `keypoint_names` |
+| `keypoint_pos` | (T,16,3) | 全部 body 原点世界位置（16 个，含根 body torso；导出时 FK，便利+一致性件）；名在 manifest `keypoint_names` |
 | `foot_contacts` | (T,2) 可选 | [左,右] 0/1；估计方法记 meta.contact_method |
 | `meta` | dict | 见下 |
 
