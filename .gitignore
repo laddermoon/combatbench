@@ -64,6 +64,8 @@ obsolete/
 !mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/target_clip.npz
 !mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/experiment_spec.json
 !mocap/humanoid21/clip/data/reclip_bc/cmu_strike_target/target_video.mp4
+# GMR ik 映射配置是核心交付物，需要入库
+!mocap/humanoid21/gmr/smplx_to_humanoid21.json
 # Skill-eval 视频产物（render_skill_videos.py 生成，勿入库）
 baseline/humanoid21/hierarchy/videos/
 !mocap/point5/humanoid21/joints/*.png

@@ -206,8 +206,10 @@ python3 mocap/convert_smplh_to_smplx.py [--dataset CMU KIT]
 
 本项目用 **GMR**（`mocap/gmr/`，独立 clone）做 SMPL-X→humanoid21 运动学
 重定向，已跑通走路/拳击/踢腿，配置方法、坐标约定、踩坑记录全在
-`mocap/GMR_RETARGET.md`。批量跑：`mocap/retarget_smplx_batch.py`，产物在
-`mocap/retarget_out/`（.pkl + .mp4）。
+`mocap/humanoid21/gmr/GMR_RETARGET.md`（humanoid21 专属文件都在该目录，
+gmr clone 内为同名 symlink）。批量跑：
+`mocap/humanoid21/gmr/retarget_smplx_batch.py`，产物在 `mocap/retarget_out/`
+（.pkl + .mp4）。
 
 ## 7. 许可与引用
 

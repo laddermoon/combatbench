@@ -1,13 +1,17 @@
 import sys, os, pathlib, subprocess
 os.environ.setdefault('MUJOCO_GL', 'egl')
-sys.path.insert(0, '/data1/mono/things/combatbench/mocap/gmr')
+HERE = pathlib.Path(__file__).resolve().parent
+MOCAP = HERE.parents[1]                      # mocap/
+GMR_ROOT = MOCAP / 'gmr'                     # mocap/gmr (upstream clone)
+sys.path.insert(0, str(GMR_ROOT))
 import numpy as np, mujoco, cv2, pickle
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
 from general_motion_retargeting.utils.smpl import get_smplx_data_offline_fast, load_smplx_file
 
-SMPLX_FOLDER = pathlib.Path('/data1/mono/things/combatbench/mocap/gmr/assets/body_models')
-AMASS = '/data1/mono/things/combatbench/mocap/amass/smplx_gender_specific'
-OUT = '/data1/mono/things/combatbench/mocap/retarget_out'
+SMPLX_FOLDER = GMR_ROOT / 'assets' / 'body_models'
+AMASS_ROOTS = [MOCAP / 'amass' / 'smplx_gender_specific',
+               MOCAP / 'amass' / 'smplx_from_smplh']
+OUT = str(MOCAP / 'retarget_out')
 
 TGT_FPS = int(os.environ.get('TGT_FPS', '30'))
 OUT_SUFFIX = os.environ.get('OUT_SUFFIX', '')
@@ -33,15 +37,21 @@ CLIPS = [
     ('SSM/20160930_50032/light_hopping_loose_sync_stageii.npz', 'ssm_light_hopping'),
 ]
 
-mm = mujoco.MjModel.from_xml_path(
-    '/data1/mono/things/combatbench/mocap/gmr/assets/humanoid21/humanoid21_mocap.xml')
+mm = mujoco.MjModel.from_xml_path(str(HERE / 'humanoid21_mocap.xml'))
 dd = mujoco.MjData(mm)
 r = mujoco.Renderer(mm, height=480, width=640)
 cam = mujoco.MjvCamera(); cam.distance = 2.8; cam.elevation = -12; cam.azimuth = 100
 bid = mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_BODY, 'torso_a')
 
+def find_clip(rel):
+    for root in AMASS_ROOTS:
+        p = root / rel
+        if p.exists():
+            return str(p)
+    return str(AMASS_ROOTS[0] / rel)
+
 for rel, tag in CLIPS:
-    path = os.path.join(AMASS, rel)
+    path = find_clip(rel)
     try:
         smplx_data, body_model, smplx_output, h = load_smplx_file(path, SMPLX_FOLDER)
         frames, fps = get_smplx_data_offline_fast(smplx_data, body_model, smplx_output, tgt_fps=TGT_FPS)

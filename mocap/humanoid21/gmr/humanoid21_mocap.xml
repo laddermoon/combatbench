@@ -1,0 +1,205 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="humanoid21_mocap">
+  <default>
+    <motor ctrlrange="-1 1" ctrllimited="true" />
+    <default class="body_a">
+      <geom type="capsule" condim="3" friction="0.7 0.005 0.0001" solimp="0.9 0.95 0.002" solref="0.015 1" priority="1" material="body_a" group="1" rgba="1 0.2 0.2 1" />
+      <default class="thigh_a">
+        <geom size=".06" rgba="1 0.2 0.2 1" />
+      </default>
+      <default class="shin_a">
+        <geom fromto="0 0 0 0 0 -.3" size=".049" rgba="1 0.2 0.2 1" />
+      </default>
+      <default class="foot_a">
+        <geom size=".027" condim="3" friction="1.0 0.02 0.001" solimp="0.9 0.95 0.001" solref="0.01 1" priority="2" rgba="1 0.2 0.2 1" />
+        <default class="foot1_a">
+          <geom fromto="-.07 -.01 0 .14 -.03 0" rgba="1 0.2 0.2 1" />
+        </default>
+        <default class="foot2_a">
+          <geom fromto="-.07 .01 0 .14  .03 0" rgba="1 0.2 0.2 1" />
+        </default>
+      </default>
+      <default class="arm_upper_a">
+        <geom size=".04" rgba="1 0.2 0.2 1" />
+      </default>
+      <default class="arm_lower_a">
+        <geom size=".031" condim="3" friction="0.7 0.005 0.0001" solimp="0.9 0.95 0.002" solref="0.015 1" priority="1" rgba="1 0.2 0.2 1" />
+      </default>
+      <default class="hand_a">
+        <geom type="sphere" size=".04" condim="3" friction="0.7 0.005 0.0001" solimp="0.9 0.95 0.002" solref="0.015 1" priority="1" rgba="1 0.2 0.2 1" />
+      </default>
+      <joint type="hinge" damping=".2" stiffness="1" armature=".01" limited="true" solimplimit="0 .99 .01" />
+      <default class="joint_big_a">
+        <joint damping="5" stiffness="10" />
+        <default class="hip_x_a">
+          <joint range="-30 10" />
+        </default>
+        <default class="hip_z_a">
+          <joint range="-60 35" />
+        </default>
+        <default class="hip_y_a">
+          <joint axis="0 1 0" range="-150 20" />
+        </default>
+        <default class="joint_big_stiff_a">
+          <joint stiffness="20" />
+        </default>
+      </default>
+      <default class="knee_a">
+        <joint pos="0 0 .02" axis="0 -1 0" range="-160 2" />
+      </default>
+      <default class="ankle_a">
+        <joint range="-50 50" />
+        <default class="ankle_y_a">
+          <joint pos="0 0 .08" axis="0 1 0" stiffness="6" />
+        </default>
+        <default class="ankle_x_a">
+          <joint pos="0 0 .04" stiffness="3" />
+        </default>
+      </default>
+      <default class="shoulder_a">
+        <joint range="-85 60" />
+      </default>
+      <default class="elbow_a">
+        <joint range="-100 50" stiffness="0" />
+      </default>
+    </default>
+  </default>
+  <contact>
+    <exclude body1="waist_lower_a" body2="thigh_right_a" />
+    <exclude body1="waist_lower_a" body2="thigh_left_a" />
+  </contact>
+  <tendon>
+    <fixed name="hamstring_right_a" limited="true" range="-0.3 2">
+      <joint joint="hip_y_right_a" coef=".5" />
+      <joint joint="knee_right_a" coef="-.5" />
+    </fixed>
+    <fixed name="hamstring_left_a" limited="true" range="-0.3 2">
+      <joint joint="hip_y_left_a" coef=".5" />
+      <joint joint="knee_left_a" coef="-.5" />
+    </fixed>
+  </tendon>
+  <actuator>
+    <motor name="abdomen_z_a" gear="40" joint="abdomen_z_a" />
+    <motor name="abdomen_y_a" gear="40" joint="abdomen_y_a" />
+    <motor name="abdomen_x_a" gear="40" joint="abdomen_x_a" />
+    <motor name="hip_x_right_a" gear="40" joint="hip_x_right_a" />
+    <motor name="hip_z_right_a" gear="40" joint="hip_z_right_a" />
+    <motor name="hip_y_right_a" gear="120" joint="hip_y_right_a" />
+    <motor name="knee_right_a" gear="80" joint="knee_right_a" />
+    <motor name="ankle_y_right_a" gear="20" joint="ankle_y_right_a" />
+    <motor name="ankle_x_right_a" gear="20" joint="ankle_x_right_a" />
+    <motor name="hip_x_left_a" gear="40" joint="hip_x_left_a" />
+    <motor name="hip_z_left_a" gear="40" joint="hip_z_left_a" />
+    <motor name="hip_y_left_a" gear="120" joint="hip_y_left_a" />
+    <motor name="knee_left_a" gear="80" joint="knee_left_a" />
+    <motor name="ankle_y_left_a" gear="20" joint="ankle_y_left_a" />
+    <motor name="ankle_x_left_a" gear="20" joint="ankle_x_left_a" />
+    <motor name="shoulder1_right_a" gear="20" joint="shoulder1_right_a" />
+    <motor name="shoulder2_right_a" gear="20" joint="shoulder2_right_a" />
+    <motor name="elbow_right_a" gear="40" joint="elbow_right_a" />
+    <motor name="shoulder1_left_a" gear="20" joint="shoulder1_left_a" />
+    <motor name="shoulder2_left_a" gear="20" joint="shoulder2_left_a" />
+    <motor name="elbow_left_a" gear="40" joint="elbow_left_a" />
+  </actuator>
+  <option timestep="0.002" impratio="10" />
+  <visual>
+    <global offwidth="1920" offheight="1080" />
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.4 0.4 0.4" />
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="32" height="512" />
+    <texture name="body_a" type="cube" builtin="flat" mark="cross" width="128" height="128" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" markrgb="1 1 1" />
+    <material name="body_a" texture="body_a" texuniform="true" rgba="1 0.2 0.2 1" />
+    <texture name="grid_a" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4" />
+    <material name="grid_a" texture="grid_a" texrepeat="1 1" texuniform="true" reflectance=".2" rgba="1 0.2 0.2 1" />
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="32" height="512" />
+  </asset>
+  <worldbody>
+    <camera name="cam_diag_0" pos="2.2203 2.2203 4.0000" xyaxes="-0.7071 0.7071 0.0000 -0.4404 -0.4404 0.7823" />
+    <camera name="cam_diag_1" pos="-2.2203 2.2203 4.0000" xyaxes="-0.7071 -0.7071 0.0000 0.4404 -0.4404 0.7823" />
+    <camera name="cam_diag_2" pos="-2.2203 -2.2203 4.0000" xyaxes="0.7071 -0.7071 0.0000 0.4404 0.4404 0.7823" />
+    <camera name="cam_diag_3" pos="2.2203 -2.2203 4.0000" xyaxes="0.7071 0.7071 -0.0000 -0.4404 0.4404 0.7823" />
+    <camera name="cam_east" pos="3.1400 0.0000 3.0000" xyaxes="0.0000 1.0000 -0.0000 -0.4310 0.0000 0.9023" />
+    <camera name="cam_south" pos="0.0000 3.1400 3.0000" xyaxes="-1.0000 0.0000 0.0000 -0.0000 -0.4310 0.9023" />
+    <camera name="cam_west" pos="-3.1400 0.0000 3.0000" xyaxes="-0.0000 -1.0000 0.0000 0.4310 -0.0000 0.9023" />
+    <camera name="cam_north" pos="-0.0000 -3.1400 3.0000" xyaxes="1.0000 -0.0000 0.0000 0.0000 0.4310 0.9023" />
+    <camera name="ceilingcamera" pos="0.0000 0.0000 6.0000" xyaxes="1.0000 0.0000 0.0000 -0.0000 1.0000 0.0000" />
+    <geom name="ground" type="plane" pos="0.0 0.0 0.0" size="20 20 0.1" xyaxes="1.0000 0.0000 0.0000 0.0000 1.0000 0.0000" condim="3" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001" />
+    <body name="torso_a" pos="0 0 1.282" childclass="body_a" euler="0 0 0.0">
+      <camera name="back_a" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom" />
+      <camera name="side_a" pos="0 -3 1" xyaxes="1 0 0 0 1 2" mode="trackcom" />
+      <freejoint name="root_a" />
+      <geom name="torso_a" fromto="0 -.07 0 0 .07 0" size=".07" rgba="1 0.2 0.2 1" />
+      <geom name="waist_upper_a" fromto="-.01 -.06 -.12 -.01 .06 -.12" size=".06" rgba="1 0.2 0.2 1" />
+      <body name="head_a" pos="0 0 .19">
+        <geom name="head_a" type="sphere" size=".09" rgba="1 0.2 0.2 1" />
+        <camera name="egocentric_a" pos=".09 0 0" xyaxes="0 -1 0 .1 0 1" fovy="80" />
+      </body>
+      <body name="waist_lower_a" pos="-.01 0 -.26">
+        <geom name="waist_lower_a" fromto="0 -.06 0 0 .06 0" size=".06" rgba="1 0.2 0.2 1" />
+        <joint name="abdomen_z_a" pos="0 0 .065" axis="0 0 1" range="-45 45" class="joint_big_stiff_a" />
+        <joint name="abdomen_y_a" pos="0 0 .065" axis="0 1 0" range="-75 30" class="joint_big_a" />
+        <body name="pelvis_a" pos="0 0 -.165">
+          <joint name="abdomen_x_a" pos="0 0 .1" axis="1 0 0" range="-35 35" class="joint_big_a" />
+          <geom name="butt_a" fromto="-.02 -.07 0 -.02 .07 0" size=".09" rgba="1 0.2 0.2 1" />
+          <body name="thigh_right_a" pos="0 -.1 -.04">
+            <joint name="hip_x_right_a" axis="1 0 0" class="hip_x_a" />
+            <joint name="hip_z_right_a" axis="0 0 1" class="hip_z_a" />
+            <joint name="hip_y_right_a" class="hip_y_a" />
+            <geom name="thigh_right_a" fromto="0 0 0 0 .01 -.34" class="thigh_a" rgba="1 0.2 0.2 1" />
+            <body name="shin_right_a" pos="0 .01 -.4">
+              <joint name="knee_right_a" class="knee_a" />
+              <geom name="shin_right_a" class="shin_a" rgba="1 0.2 0.2 1" />
+              <body name="foot_right_a" pos="0 0 -.39">
+                <joint name="ankle_y_right_a" class="ankle_y_a" />
+                <joint name="ankle_x_right_a" class="ankle_x_a" axis="1 0 .5" />
+                <geom name="foot1_right_a" class="foot1_a" rgba="1 0.2 0.2 1" />
+                <geom name="foot2_right_a" class="foot2_a" rgba="1 0.2 0.2 1" />
+              </body>
+            </body>
+          </body>
+          <body name="thigh_left_a" pos="0 .1 -.04">
+            <joint name="hip_x_left_a" axis="-1 0 0" class="hip_x_a" />
+            <joint name="hip_z_left_a" axis="0 0 -1" class="hip_z_a" />
+            <joint name="hip_y_left_a" class="hip_y_a" />
+            <geom name="thigh_left_a" fromto="0 0 0 0 -.01 -.34" class="thigh_a" rgba="1 0.2 0.2 1" />
+            <body name="shin_left_a" pos="0 -.01 -.4">
+              <joint name="knee_left_a" class="knee_a" />
+              <geom name="shin_left_a" fromto="0 0 0 0 0 -.3" class="shin_a" rgba="1 0.2 0.2 1" />
+              <body name="foot_left_a" pos="0 0 -.39">
+                <joint name="ankle_y_left_a" class="ankle_y_a" />
+                <joint name="ankle_x_left_a" class="ankle_x_a" axis="-1 0 -.5" />
+                <geom name="foot1_left_a" class="foot1_a" rgba="1 0.2 0.2 1" />
+                <geom name="foot2_left_a" class="foot2_a" rgba="1 0.2 0.2 1" />
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="upper_arm_right_a" pos="0 -.17 .06">
+        <joint name="shoulder1_right_a" axis="2 1 1" class="shoulder_a" />
+        <joint name="shoulder2_right_a" axis="0 -1 1" class="shoulder_a" />
+        <geom name="upper_arm_right_a" fromto="0 0 0 .16 -.16 -.16" class="arm_upper_a" rgba="1 0.2 0.2 1" />
+        <body name="lower_arm_right_a" pos=".18 -.18 -.18">
+          <joint name="elbow_right_a" axis="0 -1 1" class="elbow_a" />
+          <geom name="lower_arm_right_a" fromto=".01 .01 .01 .17 .17 .17" class="arm_lower_a" rgba="1 0.2 0.2 1" />
+          <body name="hand_right_a" pos=".18 .18 .18">
+            <geom name="hand_right_a" zaxis="1 1 1" class="hand_a" rgba="1 0.2 0.2 1" />
+          </body>
+        </body>
+      </body>
+      <body name="upper_arm_left_a" pos="0 .17 .06">
+        <joint name="shoulder1_left_a" axis="-2 1 -1" class="shoulder_a" />
+        <joint name="shoulder2_left_a" axis="0 -1 -1" class="shoulder_a" />
+        <geom name="upper_arm_left_a" fromto="0 0 0 .16 .16 -.16" class="arm_upper_a" rgba="1 0.2 0.2 1" />
+        <body name="lower_arm_left_a" pos=".18 .18 -.18">
+          <joint name="elbow_left_a" axis="0 -1 -1" class="elbow_a" />
+          <geom name="lower_arm_left_a" fromto=".01 -.01 .01 .17 -.17 .17" class="arm_lower_a" rgba="1 0.2 0.2 1" />
+          <body name="hand_left_a" pos=".18 -.18 .18">
+            <geom name="hand_left_a" zaxis="1 -1 1" class="hand_a" rgba="1 0.2 0.2 1" />
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
