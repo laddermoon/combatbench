@@ -63,6 +63,7 @@ class ModelConfig:
     model_k: int = 3
     model_recent_frac: float = 0.8
     model_recent_updates: int = 2
+    model_tail_frac: float = 0.0
     w_state: float = 1.0
     w_obs: float = 1.0
     w_phi: float = 1.0

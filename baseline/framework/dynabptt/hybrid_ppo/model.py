@@ -195,7 +195,8 @@ def fit_model(model: SelfWorldModel, opt: torch.optim.Optimizer,
             cfg.model_batch, cfg.model_k, rng,
             recent_frac=cfg.model_recent_frac,
             recent_updates=cfg.model_recent_updates,
-            cur_update=cur_update)
+            cur_update=cur_update,
+            tail_frac=getattr(cfg, "model_tail_frac", 0.0))
         cs0 = torch.as_tensor(w["s0"], device=device)
         acts = torch.as_tensor(w["act"], device=device)
         cs_t = torch.as_tensor(w["cs"], device=device)

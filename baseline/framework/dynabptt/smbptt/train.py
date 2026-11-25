@@ -141,7 +141,8 @@ def main() -> None:
 
     from ..hybrid_ppo.train import ModelConfig
     mcfg = ModelConfig(
-        model_fit_batches=args.model_batches, model_k=args.model_k)
+        model_fit_batches=args.model_batches, model_k=args.model_k,
+        model_tail_frac=0.35)
     replay = ModelReplay()
     rollouter = ParallelRollouter(num_workers=args.workers)
     import atexit, signal

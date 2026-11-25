@@ -172,12 +172,18 @@ class ModelReplay:
 
     def sample_windows(self, batch: int, k: int, rng: np.random.Generator,
                        recent_frac: float = 0.8, recent_updates: int = 2,
-                       cur_update: int = 0) -> Dict[str, np.ndarray]:
+                       cur_update: int = 0, tail_frac: float = 0.0,
+                       tail_jitter: int = 3) -> Dict[str, np.ndarray]:
         """Sample autoregressive windows of k steps.
 
         Window start t must satisfy 1 <= t <= T - k so that all k
         transitions (cs[t-1]+act[t..t+k-1] -> cs[t..t+k-1]) exist and the
         final obs target (t+k-1 -> obs[t+k] or final_obs) is defined.
+
+        ``tail_frac``: fraction of windows drawn from the terminal region
+        (last `tail_jitter`+1 valid starts) of trajectories that ended in
+        termination — oversamples the rare done=1 frames and the fall
+        dynamics that uniform sampling under-represents.
         """
         if not self.fit:
             raise RuntimeError("ModelReplay: no fit trajectories yet")
@@ -195,9 +201,16 @@ class ModelReplay:
                     recent_frac, recent_updates, cur_update, rng)
                 tr = pool[int(rng.integers(len(pool)))]
                 hi = tr.T - k
-                if hi >= 1:
+                if hi < 1:
+                    continue
+                if (tail_frac > 0.0 and tr.done is not None
+                        and bool(tr.done.any())
+                        and rng.random() < tail_frac):
+                    lo = max(1, hi - tail_jitter)
+                    t = int(rng.integers(lo, hi + 1))
+                else:
                     t = int(rng.integers(1, hi + 1))
-                    break
+                break
             else:
                 raise RuntimeError(
                     "ModelReplay: could not draw a window — no trajectory "
