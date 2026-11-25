@@ -20,7 +20,7 @@ from baseline.framework.ppo.policies.truncated_normal_mlp import (
     TruncatedNormalPolicy,
 )
 
-from .model import SelfWorldModel
+from .model import RepCritic, SelfWorldModel, fit_rep_critic
 from .standup import ACTION_DIM, SELF_OBS_DIM, STATE_DIM, make_standup_env_bp
 from .transitions import ModelReplay
 from .validation import validate_model
@@ -66,12 +66,26 @@ def main() -> None:
     model.load_state_dict(blob["model"])
     print(f"model loaded: hidden={hidden} dt={dt}", flush=True)
 
+    vrep = RepCritic().to(device)
+    opt_v = torch.optim.Adam(vrep.parameters(), lr=3e-4)
+    vl = fit_rep_critic(vrep, opt_v, replay, model, rng, device,
+                        batches=80)
+    print(f"vrep trained (loss {vl:.4f})", flush=True)
+
     env_bp = make_standup_env_bp(
         max_steps=500, phy_steps_per_action=args.phy_steps)
-    report = validate_model(
-        model, actor, critic, replay, rng, device,
-        n_windows=1024, env_bp=env_bp,
-        paired_seeds=args.paired_seeds, paired_h=args.paired_h)
+    for tag, v in (("obsC", None), ("repC", vrep)):
+        report = validate_model(
+            model, actor, critic, replay, rng, device,
+            n_windows=1024, env_bp=env_bp,
+            paired_seeds=args.paired_seeds, paired_h=args.paired_h,
+            vrep=v)
+        print(f"[{tag}] paired:",
+              {k: round(x, 4) for k, x in report.paired.items()},
+              flush=True)
+        print(f"[{tag}] gate: horizon={report.horizon} "
+              f"stages={report.admitted_stages} "
+              f"pass={report.all_passed}", flush=True)
     for stg, hm in report.metrics.items():
         for h in (1, 2, 3):
             m = hm[h]
@@ -81,10 +95,7 @@ def main() -> None:
                   f"adev={m.get('act_dev_rms', float('nan')):.3f} "
                   f"rotp95={m.get('rot_deg_p95', float('nan')):.1f}",
                   flush=True)
-    print("paired:", {k: round(v, 4) for k, v in report.paired.items()},
-          flush=True)
     print("gate notes:", report.notes, flush=True)
-    print("all_passed:", report.all_passed, flush=True)
 
 
 if __name__ == "__main__":

@@ -45,6 +45,9 @@ class AlignedTraj:
     ep_key: int             # episode identity for split hashing
     update: int             # training update index that produced it
     agent_id: str = "robot_a"
+    # Optional per-frame aux channels (task-specific).
+    done: Optional[np.ndarray] = None   # (T,) 1 at terminal frame
+    aux_rew: Optional[np.ndarray] = None  # (T,) second reward channel
 
     @property
     def T(self) -> int:
@@ -184,6 +187,8 @@ class ModelReplay:
         obs_t = np.empty((batch, k, 57), dtype=np.float32)
         phi_t = np.empty((batch, k), dtype=np.float32)
         stage_t = np.empty((batch, k), dtype=np.float32)
+        done_t = np.zeros((batch, k), dtype=np.float32)
+        auxr_t = np.zeros((batch, k), dtype=np.float32)
         for i in range(batch):
             for _ in range(500):
                 pool = self._pool_for(
@@ -205,8 +210,13 @@ class ModelReplay:
                 obs_t[i, m] = tr.next_obs(t + m)
             phi_t[i] = tr.phi[t:t + k]
             stage_t[i] = tr.stage[t:t + k]
+            if tr.done is not None:
+                done_t[i] = tr.done[t:t + k]
+            if tr.aux_rew is not None:
+                auxr_t[i] = tr.aux_rew[t:t + k]
         return {"s0": s0, "act": acts, "cs": cs_t, "obs": obs_t,
-                "phi": phi_t, "stage": stage_t}
+                "phi": phi_t, "stage": stage_t, "done": done_t,
+                "aux_rew": auxr_t}
 
     def sample_holdout_windows(self, n_windows: int, k: int,
                                rng: np.random.Generator,

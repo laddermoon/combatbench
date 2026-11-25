@@ -36,6 +36,7 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=400)
     ap.add_argument("--max-steps", type=int, default=500)
     ap.add_argument("--workers", type=int, default=120)
+    ap.add_argument("--max-trans", type=int, default=1_000_000)
     ap.add_argument("--seed", type=int, default=999)
     ap.add_argument("--export-dir", default="/tmp/hp_export")
     ap.add_argument("--out", required=True)
@@ -56,7 +57,7 @@ def main() -> None:
     rollouter = ParallelRollouter(num_workers=args.workers)
 
     t0 = time.time()
-    replay = ModelReplay()
+    replay = ModelReplay(max_transitions=args.max_trans)
     n_frames = 0
     for ep in rollouter.collect(
             _build_jobs(env_bp, policy_bp, args.seed,

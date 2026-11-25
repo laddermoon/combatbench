@@ -66,6 +66,8 @@ class SelfWorldModel(nn.Module):
         self.obs_head = _mlp(head_in, head_hidden, obs_dim)
         self.phi_head = _mlp(head_in, head_hidden, 1)
         self.stage_head = _mlp(head_in, head_hidden, N_STAGES)
+        self.done_head = _mlp(head_in, head_hidden, 1)
+        self.auxr_head = _mlp(head_in, head_hidden, 1)
 
         # Per-dim standardization, fit on the current train pool.
         # Buffers (not parameters): saved in checkpoints, no gradients.
@@ -118,6 +120,8 @@ class SelfWorldModel(nn.Module):
             "obs": on * self.o_std + self.o_mean,
             "phi": self.phi_head(h_in).squeeze(-1),
             "stage_logits": self.stage_head(h_in),
+            "done_logit": self.done_head(h_in).squeeze(-1),
+            "aux_rew": self.auxr_head(h_in).squeeze(-1),
         }
 
     def step(self, rep: torch.Tensor, aux: torch.Tensor, a: torch.Tensor):
@@ -184,7 +188,8 @@ def fit_model(model: SelfWorldModel, opt: torch.optim.Optimizer,
               replay, cfg, rng: np.random.Generator, cur_update: int,
               device: torch.device) -> Dict[str, float]:
     """Autoregressive fit over k-step windows from the fit pool."""
-    stats = {"s": 0.0, "obs": 0.0, "phi": 0.0, "stage": 0.0, "total": 0.0}
+    stats = {"s": 0.0, "obs": 0.0, "phi": 0.0, "stage": 0.0,
+             "done": 0.0, "auxr": 0.0, "total": 0.0}
     for _ in range(cfg.model_fit_batches):
         w = replay.sample_windows(
             cfg.model_batch, cfg.model_k, rng,
@@ -197,13 +202,19 @@ def fit_model(model: SelfWorldModel, opt: torch.optim.Optimizer,
         obs_t = torch.as_tensor(w["obs"], device=device)
         phi_t = torch.as_tensor(w["phi"], device=device)
         stage_t = torch.as_tensor(w["stage"], device=device).long() - 1
+        done_t = torch.as_tensor(
+            w.get("done"), device=device) if w.get("done") is not None \
+            else None
+        auxr_t = torch.as_tensor(
+            w.get("aux_rew"), device=device) if w.get("aux_rew") is not None \
+            else None
 
         rep_t_all = gc.represent(cs_t)
         aux_t_all = gc.extract_aux(cs_t)
         rep = gc.represent(cs0)
         aux = gc.extract_aux(cs0)
 
-        L_s = L_obs = L_phi = L_stage = 0.0
+        L_s = L_obs = L_phi = L_stage = L_done = L_auxr = 0.0
         for m in range(cfg.model_k):
             aux, rep = model.next_state(rep, aux, acts[:, m])
             h = model.heads(rep, aux)
@@ -214,8 +225,15 @@ def fit_model(model: SelfWorldModel, opt: torch.optim.Optimizer,
             L_phi = L_phi + F.mse_loss(h["phi"], phi_t[:, m])
             L_stage = L_stage + F.cross_entropy(
                 h["stage_logits"], stage_t[:, m])
+            if done_t is not None:
+                L_done = L_done + F.binary_cross_entropy_with_logits(
+                    h["done_logit"], done_t[:, m])
+            if auxr_t is not None:
+                L_auxr = L_auxr + F.mse_loss(h["aux_rew"], auxr_t[:, m])
         loss = (cfg.w_state * L_s + cfg.w_obs * L_obs
-                + cfg.w_phi * L_phi + cfg.w_stage * L_stage) / cfg.model_k
+                + cfg.w_phi * L_phi + cfg.w_stage * L_stage
+                + getattr(cfg, "w_done", 0.5) * L_done
+                + getattr(cfg, "w_auxr", 1.0) * L_auxr) / cfg.model_k
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
@@ -224,6 +242,75 @@ def fit_model(model: SelfWorldModel, opt: torch.optim.Optimizer,
         stats["obs"] += float(L_obs) / cfg.model_k
         stats["phi"] += float(L_phi) / cfg.model_k
         stats["stage"] += float(L_stage) / cfg.model_k
+        stats["done"] += float(L_done) / cfg.model_k
+        stats["auxr"] += float(L_auxr) / cfg.model_k
         stats["total"] += float(loss)
     n = max(cfg.model_fit_batches, 1)
     return {k: v / n for k, v in stats.items()}
+
+
+class RepCritic(nn.Module):
+    """Value function over the model's (rep, aux) state — SuperMimic-style
+    critic that reads the latent state instead of reconstructed obs.
+
+    Rationale (measured): predicted obs carry ~0.35-0.40 NRMSE, and the
+    obs-critic amplifies that to ~0.006 bootstrap noise vs a real
+    advantage std of ~0.005 — the dominant paired-adv error source.
+    rep/aux inputs keep positions analytically exact, so V sees far less
+    input noise."""
+
+    def __init__(self, in_dim: int = gc.REP_DIM + gc.AUX_DIM,
+                 hidden: int = 512):
+        super().__init__()
+        self.net = _mlp(in_dim, (hidden, hidden), 1)
+        self.register_buffer("x_mean", torch.zeros(in_dim))
+        self.register_buffer("x_std", torch.ones(in_dim))
+
+    def forward(self, rep: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([rep, aux], dim=-1)
+        return self.net((x - self.x_mean) / self.x_std).squeeze(-1)
+
+    def value_of_cs(self, cs: torch.Tensor) -> torch.Tensor:
+        rep, aux = SelfWorldModel.rep_aux_from_cs(cs)
+        return self.forward(rep, aux)
+
+
+def fit_rep_critic(vrep: RepCritic, opt: torch.optim.Optimizer, replay,
+                   model: SelfWorldModel, rng: np.random.Generator,
+                   device: torch.device, batches: int = 30,
+                   trajs_per_batch: int = 64, gamma: float = 0.99,
+                   reward_coef: float = 0.01,
+                   max_trajs: int = 1500) -> float:
+    """MC-return regression on fit trajectories: target G_t = Σ γ^k c·φ."""
+    idx = rng.choice(len(replay.fit),
+                     size=min(len(replay.fit), max_trajs), replace=False)
+    xs, ys = [], []
+    for i in idx:
+        tr = replay.fit[int(i)]
+        cs = torch.as_tensor(np.asarray(tr.cs[1:]), device=device)
+        rep, aux = SelfWorldModel.rep_aux_from_cs(cs)
+        xa = torch.cat([rep, aux], -1)
+        phi = np.asarray(tr.phi, dtype=np.float64)
+        ret = np.empty(len(phi))
+        run = 0.0
+        for t in reversed(range(len(phi))):
+            run = phi[t] + gamma * run
+            ret[t] = run
+        xs.append(xa)
+        ys.append(torch.as_tensor(
+            reward_coef * ret, dtype=torch.float32, device=device))
+    x_all = torch.cat(xs)
+    y_all = torch.cat(ys)
+    with torch.no_grad():
+        vrep.x_mean.copy_(x_all.mean(0))
+        vrep.x_std.copy_(x_all.std(0) + 1e-6)
+    loss = 0.0
+    for _ in range(batches):
+        sel = torch.randint(0, len(x_all), (8192,), device=device)
+        pred = vrep.net((x_all[sel] - vrep.x_mean) / vrep.x_std).squeeze(-1)
+        l = ((pred - y_all[sel]) ** 2).mean()
+        opt.zero_grad(set_to_none=True)
+        l.backward()
+        opt.step()
+        loss += float(l)
+    return loss / max(batches, 1)

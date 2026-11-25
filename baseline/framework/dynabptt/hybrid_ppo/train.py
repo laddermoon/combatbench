@@ -42,7 +42,8 @@ from baseline.framework.rollout.episode import blueprint_hash
 from baseline.framework.rollout.job import Job, SamplingSpec
 from baseline.framework.rollout.parallel_rollouter import ParallelRollouter
 
-from .model import SelfWorldModel, fit_model
+from .model import (RepCritic, SelfWorldModel, fit_model,
+                    fit_rep_critic)
 from .ppo import PPOConfig, build_ppo_batch, ppo_update
 from .rollout import gen_model_batch, normalize_model_adv
 from .standup import (ACTION_DIM, SELF_OBS_DIM, STATE_DIM,
@@ -97,8 +98,8 @@ def _build_jobs(env_bp, policy_bp, base_seed, n_episodes, rng,
     return jobs
 
 
-def save_checkpoint(path: Path, update: int, actor, critic, model,
-                    opt_a, opt_c, opt_m, gate: GateState, replay,
+def save_checkpoint(path: Path, update: int, actor, critic, model, vrep,
+                    opt_a, opt_c, opt_m, opt_v, gate: GateState, replay,
                     rng: np.random.Generator, torch_rng_state,
                     save_replay: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,9 +108,11 @@ def save_checkpoint(path: Path, update: int, actor, critic, model,
         "actor": actor.state_dict(),
         "critic": critic.state_dict(),
         "model": model.state_dict(),
+        "vrep": vrep.state_dict(),
         "opt_a": opt_a.state_dict(),
         "opt_c": opt_c.state_dict(),
         "opt_m": opt_m.state_dict(),
+        "opt_v": opt_v.state_dict(),
         "gate": gate.state_dict(),
         "np_rng": pickle.dumps(rng.bit_generator.state),
         "torch_rng": torch_rng_state,
@@ -135,19 +138,29 @@ def _replay_save_due(update: int, mode: str, gate: GateState) -> bool:
     resume-capable model runs, every 5 updates or once the gate opens."""
     if mode == "ppo":
         return False
-    return update % 5 == 0 or gate.admitted
+    return update % 5 == 0 or gate.admitted or gate.assist_admitted
 
 
-def load_checkpoint(path: Path, actor, critic, model, opt_a, opt_c,
-                    opt_m, gate: GateState, replay,
+def load_checkpoint(path: Path, actor, critic, model, vrep, opt_a, opt_c,
+                    opt_m, opt_v, gate: GateState, replay,
                     device: torch.device) -> int:
     ck = torch.load(path, map_location=device, weights_only=False)
     actor.load_state_dict(ck["actor"])
     critic.load_state_dict(ck["critic"])
-    model.load_state_dict(ck["model"])
-    opt_a.load_state_dict(ck["opt_a"])
-    opt_c.load_state_dict(ck["opt_c"])
-    opt_m.load_state_dict(ck["opt_m"])
+    if "model" in ck:
+        try:
+            model.load_state_dict(ck["model"])
+        except (RuntimeError, KeyError):
+            pass  # arch changed (GenCoord port) — refit from scratch
+    if "vrep" in ck:
+        vrep.load_state_dict(ck["vrep"])
+    for opt, key in ((opt_a, "opt_a"), (opt_c, "opt_c"),
+                     (opt_m, "opt_m"), (opt_v, "opt_v")):
+        if key in ck:
+            try:
+                opt.load_state_dict(ck[key])
+            except ValueError:
+                pass  # param groups changed — keep weights, reset Adam state
     gate.load_state_dict(ck["gate"])
     rp = path.with_suffix(".replay.pkl")
     if rp.exists():
@@ -159,9 +172,12 @@ def load_checkpoint(path: Path, actor, critic, model, opt_a, opt_c,
         replay._fit_trans = int(data["fit_trans"])
     rng = np.random.default_rng()
     rng.bit_generator.state = pickle.loads(ck["np_rng"])
-    torch.set_rng_state(ck["torch_rng"])
+    tr = ck["torch_rng"]
+    torch.set_rng_state(tr.cpu() if isinstance(tr, torch.Tensor) else tr)
     if ck.get("torch_cuda_rng") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state(ck["torch_cuda_rng"])
+        cr = ck["torch_cuda_rng"]
+        torch.cuda.set_rng_state(
+            cr.cpu() if isinstance(cr, torch.Tensor) else cr)
     return int(ck["update"]), rng
 
 
@@ -182,6 +198,10 @@ def main() -> None:
     p.add_argument("--eval-interval", type=int, default=5)
     p.add_argument("--eval-episodes", type=int, default=64)
     p.add_argument("--max-steps", type=int, default=200)
+    p.add_argument("--phy-steps", type=int, default=25,
+                   help="physics substeps per action (25=50ms, 10=20ms)")
+    p.add_argument("--model-hidden", type=int, nargs="+",
+                   default=[512, 512, 512])
     p.add_argument("--resume-from", type=str, default=None)
     p.add_argument("--fork-alpha", type=float, default=None,
                    help="override --alpha on resume (P2 fork)")
@@ -199,18 +219,25 @@ def main() -> None:
     rng_m = np.random.default_rng(args.seed + 1_000_003)
     torch.manual_seed(args.seed)
 
-    env_bp = make_standup_env_bp(max_steps=args.max_steps)
+    env_bp = make_standup_env_bp(
+        max_steps=args.max_steps, phy_steps_per_action=args.phy_steps)
     bp_hash = blueprint_hash(env_bp)
 
+    dt = args.phy_steps * 0.002
+    sub_coeff = (args.phy_steps + 1) / (2 * args.phy_steps)
     actor = TruncatedNormalPolicy(
         obs_dim=SELF_OBS_DIM, action_dim=ACTION_DIM,
         hidden_dim=256, device=str(device))
     critic = CriticMLP(obs_dim=SELF_OBS_DIM, hidden_dim=256).to(device)
-    model = SelfWorldModel(state_dim=STATE_DIM, action_dim=ACTION_DIM,
-                           obs_dim=SELF_OBS_DIM).to(device)
+    model = SelfWorldModel(
+        state_dim=STATE_DIM, action_dim=ACTION_DIM, obs_dim=SELF_OBS_DIM,
+        hidden=tuple(args.model_hidden), dt=dt,
+        substep_coeff=sub_coeff).to(device)
+    vrep = RepCritic().to(device)
     opt_a = torch.optim.Adam(actor.parameters(), lr=3e-4)
     opt_c = torch.optim.Adam(critic.parameters(), lr=3e-4)
     opt_m = torch.optim.Adam(model.parameters(), lr=3e-4)
+    opt_v = torch.optim.Adam(vrep.parameters(), lr=3e-4)
 
     ppo_cfg = PPOConfig(alpha=args.alpha, kl_window=args.kl_window)
     mcfg = ModelConfig()
@@ -221,8 +248,8 @@ def main() -> None:
     start_u = 0
     if args.resume_from:
         last_u, rng = load_checkpoint(
-            Path(args.resume_from), actor, critic, model,
-            opt_a, opt_c, opt_m, gate, replay, device)
+            Path(args.resume_from), actor, critic, model, vrep,
+            opt_a, opt_c, opt_m, opt_v, gate, replay, device)
         start_u = last_u + 1
     if args.fork_alpha is not None:
         ppo_cfg.alpha = args.fork_alpha
@@ -279,16 +306,19 @@ def main() -> None:
         t_model = time.time()
         if args.mode != "ppo":
             # refresh normalization from a fresh sample
-            nw = replay.sample_windows(1024, mcfg.model_k, rng,
+            nw = replay.sample_windows(1024, mcfg.model_k, rng_m,
                                        cur_update=u)
             model.fit_normalization(nw)
-            fit_stats = fit_model(model, opt_m, replay, mcfg, rng, u,
+            fit_stats = fit_model(model, opt_m, replay, mcfg, rng_m, u,
                                   device)
             rec.update({f"wm_{k}": v for k, v in fit_stats.items()})
+            rec["vrep_loss"] = fit_rep_critic(
+                vrep, opt_v, replay, model, rng_m, device)
             report = validate_model(
-                model, actor, critic, replay, rng, device,
+                model, actor, critic, replay, rng_m, device,
                 n_windows=mcfg.val_windows, env_bp=env_bp,
-                paired_seeds=mcfg.paired_seeds, paired_h=mcfg.paired_h)
+                paired_seeds=mcfg.paired_seeds, paired_h=mcfg.paired_h,
+                vrep=vrep)
             gate.update(report)
             rec.update(report.flat())
             if report.notes:
@@ -298,16 +328,17 @@ def main() -> None:
         # --- 4. model aux batch (gated only) ---
         model_batch = None
         t_branch = time.time()
-        if (args.mode == "gated" and gate.admitted
+        if (args.mode == "gated" and (gate.admitted or gate.assist_admitted)
                 and ppo_cfg.alpha > 0.0):
             n_seeds = min(int(mcfg.max_seeds_frac * rec["n_frames"]),
                           mcfg.max_seeds_abs)
+            seed_stages = set(gate.admitted_stages or gate.assist_stages)
+            horizon = gate.horizon or gate.assist_horizon
             seeds = replay.sample_seeds(
-                n_seeds, rng_m, stages=set(gate.admitted_stages),
-                pool="fit")
+                n_seeds, rng_m, stages=seed_stages, pool="fit")
             model_batch = gen_model_batch(
-                model, actor, critic, seeds, gate.horizon, device,
-                ppo_cfg.gamma, ppo_cfg.lam)
+                model, actor, critic, seeds, horizon, device,
+                ppo_cfg.gamma, ppo_cfg.lam, vrep=vrep)
             if model_batch is not None:
                 rec["model_adv_std_raw"] = float(
                     np.asarray(model_batch["adv"]).std())
@@ -351,11 +382,13 @@ def main() -> None:
               f"eval_max={rec.get('eval_a_max_pot', float('nan')):.3f}/"
               f"{rec.get('eval_b_max_pot', float('nan')):.3f} "
               f"gate={gate.horizon}/{gate.admitted_stages} "
+              f"assist={gate.assist_horizon}/{gate.assist_stages} "
               f"t={rec['t_total']:.1f}s", flush=True)
 
         # --- 7. checkpoint (every update; replay tail per _replay_save_due)
         save_checkpoint(run_dir / "checkpoints" / f"ckpt_u{u:05d}.pt",
-                        u, actor, critic, model, opt_a, opt_c, opt_m,
+                        u, actor, critic, model, vrep,
+                        opt_a, opt_c, opt_m, opt_v,
                         gate, replay, rng,
                         torch.get_rng_state(),
                         save_replay=_replay_save_due(u, args.mode, gate))
