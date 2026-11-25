@@ -227,7 +227,8 @@ def main() -> None:
         # --- 3. BPTT policy improvement ---------------------------------
         t_p = time.time()
         for _ in range(args.imag_per_update):
-            seeds = replay.sample_seeds(args.seeds, rng_m, pool="fit")
+            seeds = replay.sample_seeds(args.seeds, rng_m, pool="fit",
+                                        tail_frac=0.3, tail_region=40)
             if len(seeds) < 64:
                 rec["bptt"] = "skipped:few-seeds"
                 break

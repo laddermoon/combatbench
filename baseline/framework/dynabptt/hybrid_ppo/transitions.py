@@ -257,11 +257,16 @@ class ModelReplay:
 
     def sample_seeds(self, n: int, rng: np.random.Generator,
                      stages: Optional[set] = None,
-                     pool: str = "fit") -> List[Tuple[AlignedTraj, int]]:
+                     pool: str = "fit", tail_frac: float = 0.0,
+                     tail_region: int = 40
+                     ) -> List[Tuple[AlignedTraj, int]]:
         """Draw (traj, t) seed pairs, t in [1, T-1].
 
         ``stages``: restrict to seeds whose start-state stage
         (traj.stage[t-1]) is in the set (admission-gated subsets).
+        ``tail_frac``: share of seeds drawn from the last `tail_region`
+        steps of terminated trajectories — imagination starts where the
+        real failure develops, so the actor trains the brink region.
         """
         src = self.fit if pool == "fit" else self.hold
         out: List[Tuple[AlignedTraj, int]] = []
@@ -271,7 +276,12 @@ class ModelReplay:
         while len(out) < n and tries < n * 60:
             tries += 1
             tr = src[int(rng.integers(len(src)))]
-            t = int(rng.integers(1, tr.T))
+            if (tail_frac > 0.0 and tr.done is not None
+                    and bool(tr.done.any())
+                    and rng.random() < tail_frac):
+                t = int(rng.integers(max(1, tr.T - tail_region), tr.T))
+            else:
+                t = int(rng.integers(1, tr.T))
             if stages is not None and int(tr.stage[t - 1]) not in stages:
                 continue
             out.append((tr, t))
