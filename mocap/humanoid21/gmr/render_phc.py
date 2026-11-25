@@ -31,8 +31,9 @@ def render_clip(clip, out_path):
                            clip['root_rot'][:, [3, 0, 1, 2]],
                            clip['dof']], axis=1)
     # camera tracks root yaw -> always a front 3/4 view (robot faces +X at
-    # identity).  CAM_YAW<0 keeps the lead/orthodox shoulder visible.
-    CAM_YAW = -30.0
+    # identity).  GOTCHA: mujoco azimuth is the LOOK direction — the camera
+    # body sits at azimuth+180deg, so front view needs az=yaw+180ish.
+    CAM_YAW = 150.0
     fps = int(clip['fps'])
     raw = f'/tmp/_phc_render.mp4'
     w = cv2.VideoWriter(raw, cv2.VideoWriter_fourcc(*'mp4v'), fps, (640, 480))
