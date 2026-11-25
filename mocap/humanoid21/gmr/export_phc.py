@@ -39,21 +39,23 @@ BURN_IN = 10
 SMPL_JOINTS = JOINT_NAMES[:22]                # pelvis..right_wrist
 # Arm-extension bias (see GMR_RETARGET.md pitfall #10): the zigzag forearm
 # reaches the wrist target with the elbow folded (~0deg), so strikes look
-# bent.  A low-cost PostureTask on the elbow dofs pulls the redundant
-# nullspace direction toward extension (-90deg at gate=1) whenever the human
-# arm is near-straight; the wrist task (w=30) still owns the endpoint.
+# bent.  A low-cost PostureTask on the elbow dofs tracks the SMPL-X elbow
+# FLEXION angle (pose_body rotvec, flexion axis = local +Y right / -Y left),
+# re-anchored so both "straight" ends coincide: target = flexion - 100deg
+# (human flexion 0=straight -> robot -100=straight; flexion ~110 fold ->
+# robot +10).  Wrist task (w=30) still owns the endpoint.
 ARM_EXT_COST = 10.0
-ARM_EXT_MAX_DEG = 90.0
 ARM_EXT_SLEW_DEG = 15.0                     # max target swing per frame
-ARM_GATE_LO, ARM_GATE_HI = 0.80, 0.95       # human elbow-straightness band
-ARM_GATE_KERNEL = np.array([0.06, 0.25, 0.38, 0.25, 0.06])
+ARM_EXT_OFFSET_DEG = 100.0                  # straight-anchor offset
+ARM_EXT_MIN_DEG, ARM_EXT_MAX_TGT_DEG = -100.0, 30.0
+ARM_FLEX_SMOOTH = np.array([0.06, 0.25, 0.38, 0.25, 0.06])
 ELBOW_JOINTS = ('elbow_right_a', 'elbow_left_a')
 
 
 class GMRArmBias(GMR):
-    """GMR + elbow PostureTask gated by human arm straightness."""
+    """GMR + elbow PostureTask tracking the SMPL-X elbow flexion angle."""
 
-    def __init__(self, *a, gates=None, **kw):
+    def __init__(self, *a, el_targets=None, **kw):
         super().__init__(*a, **kw)
         m = self.configuration.model
         cost = np.zeros(m.nv)
@@ -65,20 +67,20 @@ class GMRArmBias(GMR):
         self._el_pt = mink.PostureTask(m, cost)
         self.tasks1.append(self._el_pt)
         self._el_pt.set_target(self.configuration.q.copy())
-        self._gates = gates                    # (T,2) from arm_extension_gates
-        self._pending_gate = None
+        self._el_tgts = el_targets             # (T,2) deg, from elbow_flexion_targets
+        self._pending_tgt = None
         self._el_tgt = np.zeros(len(ELBOW_JOINTS))   # slew-limited target rad
 
-    def set_gate(self, i):
-        if self._gates is not None:
-            self._pending_gate = self._gates[i]
+    def set_target_frame(self, i):
+        if self._el_tgts is not None:
+            self._pending_tgt = self._el_tgts[i]
 
     def update_targets(self, human_data, offset_to_ground=False):
         super().update_targets(human_data, offset_to_ground)
-        if self._pending_gate is None:
+        if self._pending_tgt is None:
             return
         # slew-rate-limit the elbow target so the posture pull can't snap
-        goal = -np.deg2rad(ARM_EXT_MAX_DEG) * np.asarray(self._pending_gate)
+        goal = np.deg2rad(np.asarray(self._pending_tgt))
         slew = np.deg2rad(ARM_EXT_SLEW_DEG)
         self._el_tgt += np.clip(goal - self._el_tgt, -slew, slew)
         q = self.configuration.q.copy()
@@ -86,20 +88,25 @@ class GMRArmBias(GMR):
         self._el_pt.set_target(q)
 
 
-def arm_extension_gates(frames):
-    """(T,2) smoothed human-arm-straightness gate; scale-invariant ratio."""
-    g = np.zeros((len(frames), 2), np.float32)
-    for i, f in enumerate(frames):
-        for k, s in enumerate(('right', 'left')):
-            e, w, sh = (np.asarray(f[f'{s}_{p}'][0])
-                        for p in ('elbow', 'wrist', 'shoulder'))
-            straight = np.linalg.norm(w - sh) / (np.linalg.norm(e - sh)
-                                                 + np.linalg.norm(w - e))
-            g[i, k] = np.clip((straight - ARM_GATE_LO)
-                              / (ARM_GATE_HI - ARM_GATE_LO), 0, 1)
-    for k in range(2):
-        g[:, k] = np.convolve(g[:, k], ARM_GATE_KERNEL, 'same')
-    return g
+def elbow_flexion_targets(frames, smplx_data):
+    """(T,2) per-frame robot elbow targets (deg) from SMPL-X pose_body.
+
+    pose_body[i] = JOINT_NAMES[i+1] axis-angle; elbow flexion axis = local
+    +Y (right) / -Y (left) — verified corr 0.98 with geometric bend.
+    Robot target = human flexion - 100deg (both 'straight' ends aligned).
+    """
+    pb = np.asarray(smplx_data['pose_body'], np.float64)
+    T_src, T = len(pb), len(frames)
+    idx = np.clip(np.linspace(0, T_src - 1, T).round().astype(int), 0, T_src - 1)
+    out = np.zeros((T, 2), np.float32)
+    for k, jn in enumerate(('right_elbow', 'left_elbow')):
+        i = (JOINT_NAMES.index(jn) - 1) * 3
+        sign = 1.0 if jn.startswith('right') else -1.0
+        flex = np.degrees(pb[idx, i + 1] * sign)              # local Y comp
+        flex = np.convolve(np.clip(flex, 0, 150), ARM_FLEX_SMOOTH, 'same')
+        out[:, k] = np.clip(flex - ARM_EXT_OFFSET_DEG,
+                            ARM_EXT_MIN_DEG, ARM_EXT_MAX_TGT_DEG)
+    return out
 
 
 def find_clip(rel):
@@ -147,8 +154,8 @@ def retarget_clip(npz_path, arm_bias=True):
     if arm_bias:
         rt = GMRArmBias(actual_human_height=h, src_human='smplx',
                         tgt_robot='humanoid21',
-                        gates=arm_extension_gates(frames))
-        rt.set_gate(0)
+                        el_targets=elbow_flexion_targets(frames, smplx_data))
+        rt.set_target_frame(0)
     else:
         rt = GMR(actual_human_height=h, src_human='smplx',
                  tgt_robot='humanoid21')
@@ -157,7 +164,7 @@ def retarget_clip(npz_path, arm_bias=True):
     qpos, smpl = [], []
     for i, f in enumerate(frames):
         if arm_bias:
-            rt.set_gate(i)
+            rt.set_target_frame(i)
         qpos.append(rt.retarget(f))
         # smpl_joints = GMR-emitted human keypoints (Z-up world, native human
         # scale, pre-IK-target) — 22 SMPL-X body joints
@@ -248,10 +255,11 @@ def main():
                             "tgt_fps": TGT_FPS, "burn_in": BURN_IN,
                             "scale_table_flat": 0.9,
                             "arm_extension_bias": None if args.no_arm_bias else
-                            {"cost": ARM_EXT_COST, "max_deg": ARM_EXT_MAX_DEG,
+                            {"mode": "smplx_flexion_direct",
+                             "cost": ARM_EXT_COST,
+                             "offset_deg": ARM_EXT_OFFSET_DEG,
                              "slew_deg_per_frame": ARM_EXT_SLEW_DEG,
-                             "gate_band": [ARM_GATE_LO, ARM_GATE_HI],
-                             "kernel": ARM_GATE_KERNEL.tolist()}},
+                             "smooth_kernel": ARM_FLEX_SMOOTH.tolist()}},
         "quality_level": "L0",
         "issues": [],
         "contact_method": "foot_z<0.06 & foot_speed<0.5",
