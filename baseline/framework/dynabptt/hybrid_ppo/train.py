@@ -99,7 +99,8 @@ def _build_jobs(env_bp, policy_bp, base_seed, n_episodes, rng,
 
 def save_checkpoint(path: Path, update: int, actor, critic, model,
                     opt_a, opt_c, opt_m, gate: GateState, replay,
-                    rng: np.random.Generator, torch_rng_state) -> None:
+                    rng: np.random.Generator, torch_rng_state,
+                    save_replay: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "update": update,
@@ -115,6 +116,8 @@ def save_checkpoint(path: Path, update: int, actor, critic, model,
         "torch_cuda_rng": (torch.cuda.get_rng_state()
                            if torch.cuda.is_available() else None),
     }, path)
+    if not save_replay:
+        return
     # model replay tail: only the most recent trajs (what recency-biased
     # fitting mostly consumes) — keeps resume files small.
     tail = [t for t in replay.fit if t.update >= update - 3]
@@ -125,6 +128,14 @@ def save_checkpoint(path: Path, update: int, actor, critic, model,
                      "hold_seen": list(replay._hold_seen),
                      "fit_trans": sum(t.T - 1 for t in tail)}, f)
     tmp.replace(path.with_suffix(".replay.pkl"))
+
+
+def _replay_save_due(update: int, mode: str, gate: GateState) -> bool:
+    """Replay tail is heavy (~300MB) — persist it only where it matters:
+    resume-capable model runs, every 5 updates or once the gate opens."""
+    if mode == "ppo":
+        return False
+    return update % 5 == 0 or gate.admitted
 
 
 def load_checkpoint(path: Path, actor, critic, model, opt_a, opt_c,
@@ -342,11 +353,12 @@ def main() -> None:
               f"gate={gate.horizon}/{gate.admitted_stages} "
               f"t={rec['t_total']:.1f}s", flush=True)
 
-        # --- 7. checkpoint (every update; cheap state only + replay tail)
+        # --- 7. checkpoint (every update; replay tail per _replay_save_due)
         save_checkpoint(run_dir / "checkpoints" / f"ckpt_u{u:05d}.pt",
                         u, actor, critic, model, opt_a, opt_c, opt_m,
                         gate, replay, rng,
-                        torch.get_rng_state())
+                        torch.get_rng_state(),
+                        save_replay=_replay_save_due(u, args.mode, gate))
 
         if (args.time_budget_min > 0
                 and (time.time() - t_start) / 60.0 > args.time_budget_min):
