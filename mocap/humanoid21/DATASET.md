@@ -1,8 +1,8 @@
 # humanoid21 共享运动数据集（DATASET）
 
 > 类型：契约 —— 定义"所有基线方法复现共同消费的数据集范围"。
-> 字段格式见 `DATASPEC.md`（spec_version 2）；本文只管**哪些 clip 进集、
-> 怎么命名、怎么打标签、怎么划分**。
+> 字段格式见 `DATASPEC.md`（spec_version 2，PHC 系 pkl）；本文只管
+> **哪些 clip 进集、怎么命名、怎么打标签、怎么划分**。
 
 ## 1. 设计目标
 
@@ -17,26 +17,27 @@ clip 集合 + 相同的字段契约 + 相同的质量标记。
 
 | 方法族 | 需要的字段 | 本契约覆盖 |
 |---|---|---|
-| DeepMimic/PHC/FAIR/NCP/GPC/BeyondMimic tracking | q/qvel、root pos/quat/vel、keypoints、相位 | ✓ 全部 |
-| AMP/ASE/CALM/SLMP 判别器 Φ(s,s′) | 根速度+关节速度+末端局部位置（`prior/features.py` 已实现 67 维） | ✓ 可导出 |
-| MaskedMimic/HOVER masked-goal | 任意子集的未来轨迹 → 需要全 body keypoints + 关节 | ✓ v2 keypoints=16 body |
-| RSI/GSI 初始化 | 任意有效帧状态 + `lead_stable_frame` | ✓ |
+| DeepMimic/PHC/FAIR/NCP/GPC/BeyondMimic tracking | q/root pos·quat、link 位姿、相位 | ✓ dof/root/pose_aa 全 FK 可解 |
+| AMP/ASE/CALM/SLMP 判别器 Φ(s,s′) | 根速度+关节速度（差分）+末端局部位置 | ✓ pose_aa FK + 差分约定 |
+| MaskedMimic/HOVER masked-goal | 任意子集的未来轨迹 → 全 body 位姿 + 关节 | ✓ pose_aa/keypoint_pos |
+| RSI/GSI 初始化 | 任意有效帧状态 | ✓ |
 | SMP 扩散 | H 帧连续片段 → 滑窗 | ✓ |
 | PFSP/自博弈 | 无新增数据需求（消费先验） | — |
-| **人侧对照**（残差评估、human-feature 基线） | `src_keypoints`（SMPL-X 关节位置） | ✓ v2 可选字段 |
+| **人侧对照**（残差评估、human-feature 基线） | SMPL-X 关节位置 | ✓ `smpl_joints` |
 
-结论：**canonical 表示 = npz（DATASPEC v2）**，不引入第二种真源；
-PHC pkl 等外部格式一律由导出工具生成（DATASPEC §8）。
+结论：**canonical 表示 = PHC 系 pkl dict（DATASPEC v2）**——
+PHC/PBHC/OmniH2O/ASAP 生态直接消费，不引入第二种真源；
+ProtoMotions MotionLib 等外部格式一律由转换工具按需生成。
 
 ## 3. 集合分层
 
-| tier | 含义 | 用途 |
-|---|---|---|
-| `core` | **必选集**，所有基线必须在其上训练/报告 | 方法间可比 |
-| `extended` | 可选池，方法可自由使用 | 扩展覆盖；报告须与 core 分开标注 |
-| （无标记） | 不入集 | 试验/调试用 |
+| tier | bundle 文件 | 含义 | 用途 |
+|---|---|---|---|
+| `core` | `combatbench_core_v1.pkl` | **必选集**，所有基线必须在其上训练/报告 | 方法间可比 |
+| `extended` | `combatbench_extended_v1.pkl` | 可选池，方法可自由使用 | 扩展覆盖；报告须与 core 分开标注 |
+| （不入 bundle） | — | 试验/调试用 | — |
 
-index.json 的 `dataset` 字段记录 tier（DATASPEC §4）。
+`meta.dataset` 与 manifest 同时登记 tier（DATASPEC §2/§5）。
 
 ## 4. core 集构成（v1）
 
@@ -117,18 +118,20 @@ index.json 的 `dataset` 字段记录 tier（DATASPEC §4）。
 ## 9. 建库流水线
 
 ```
-amass smplx npz ──GMR retarget──> qpos pkl ──export──> DATASPEC npz
-                                                     (split qpos /
-                                                      FK keypoints /
-                                                      np.gradient 速度 /
-                                                      接触启发式 /
-                                                      IK 残差)
+amass smplx npz ──GMR retarget──> qpos ──export──> PHC clip_dict
+                                                  (split root/dof /
+                                                   wxyz→xyzw /
+                                                   pose_aa = [root_aa | dof·axis] /
+                                                   FK keypoint_pos+smpl_joints /
+                                                   meta+issues)
                           │
-                          └──── kinematic_check.py ──> index.json (L1, issues)
+                          └──── kinematic check（pkl 版）──> L1 标记、
+                              写 manifest + meta.issues
+                                        │
+                          bundle 打包──> combatbench_{core,extended}_vN.pkl
 ```
 
-- 导出工具：`gmr/`（待写，把 `retarget_out/*.pkl` 转 DATASPEC npz）
-- 库根沿用 `/data1/dev/combatbench_mocap/`（`clips/*.npz` + `index.json`），
-  新旧 clip 同库同 index。
-- RSI 友好性：GMR burn-in 已消引导瞬态，`lead_stable_frame` 默认 0；
-  仍有问题的片段由导出工具标定。
+- 导出工具：`gmr/` 下待写（GMR qpos → PHC clip_dict → bundle+manifest）
+- 库根沿用 `/data1/dev/combatbench_mocap/`，v2 产物在 `phc/` 子目录
+- RSI 友好性：GMR burn-in 已消引导瞬态；仍有问题的片段在 meta 标注
+- 旧 `cmu_*` npz 库（v1 契约，wxyz/120Hz）只作回归参照，不进 v2 bundle
