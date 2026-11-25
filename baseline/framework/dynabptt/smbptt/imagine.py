@@ -1,10 +1,15 @@
 """Differentiable imagined rollout + BPTT policy improvement.
 
 Mirrors HybridRobotics/supermimic `learners/policy_learner.py`
-(ActorCriticPolicyLearner): imagine H steps from real seed states with
-deterministic actions, accumulate the survival-masked return plus a
-rep-critic bootstrap, take ONE actor step on -J, then fit the critic on
-the same imagined rollout via GAE returns.
+(ActorCriticPolicyLearner): imagine H steps from real seed states,
+accumulate the survival-masked return plus a rep-critic bootstrap,
+take ONE actor step on -J, then fit the critic on the same imagined
+rollout via GAE returns.
+
+Deviation from official: they use deterministic actions in imagination
+because their collection sigma is 0.1; ours is ~0.37, so we sample
+actions via the reparameterization trick — imagination must see the
+deployment-time action noise to stay honest.
 
 Model parameters are frozen (requires_grad False) but the computation
 graph stays live — gradients flow obs -> action -> dynamics -> next obs
@@ -71,7 +76,11 @@ class ImaginedRollout:
         survival = torch.ones(cs0.shape[0], device=cs0.device)
         reps_seq, auxs_seq, rews, terms, obs_seq = [], [], [], [], []
         for t in range(self.H):
-            a = actor.deterministic_action(o)
+            # Stochastic actions via reparam: real collection runs sigma~0.37,
+            # so imagination must see the same action noise to stay honest
+            # (deterministic imagination produced phi~1.0 while reality
+            # decayed to 0.76 — the trained policy never met its own noise).
+            a, _ = actor.sample_action(o)
             # critic input = PRE-step state s_t (official convention):
             # V(s_t) targets r_{t+1} + gamma * V(s_{t+1}), so the
             # bootstrap term gamma^H * V(s_H) cannot double-count r(s_H).
