@@ -191,9 +191,13 @@ Bryson 损失 + 帧不变 rep；T2 动作平滑未做——动作本身已是 PD
 这正是官方 critic 输入 [rep,goal,ctx] 的设计意图。
 
 **当前判定**：
-1. standup 的状态级精度（~0.35 NRMSE）够不着 strict 档，但 **assist
-   档**（按实际消费量判：paired adv trio + φ + act_dev）已准入，
-   P2 A/B 正在跑（hybrid_ppo 实验线收官）。
+1. **P2 A/B 收官（standup, dt20, 45 update, seed 42）**：assist 门控自
+   u1 即准入（paired adv_corr 0.94-0.98），但 eval max_pot 上 B 臂
+   中段持续落后 A 臂 ~0.03-0.05，终点持平（B u44: 0.346/0.363 vs
+   A u39: 0.343/0.356）——**模型辅助在 F2 区任务上为中性略负**：
+   advantage 估计本身准确，但 α=0.25 的辅助信号稀释了 PPO 自身梯度。
+   结论：不是机制错误，是**任务错配**——这正是"standup 属 F2 区"
+   的行为级证据，混合 PPO+WM 实验线到此为止。
 2. 主攻线 = **smbptt**（SuperMimic 原生 BPTT 复刻）在 balance 任务上：
    想象 J、alive、真实 episode len 同步爬升（u0→u50：len 55→~70），
    官方参数对齐（batch 4096、H=32、γ=0.99 λ=0.95、β2=0.95、clip
