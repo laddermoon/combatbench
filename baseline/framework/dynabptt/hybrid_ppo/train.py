@@ -244,6 +244,11 @@ def main() -> None:
     replay = ModelReplay()
     gate = GateState()
     rollouter = ParallelRollouter(num_workers=args.workers)
+    import atexit, signal
+    atexit.register(rollouter.close)
+    def _sigterm(*_):
+        raise SystemExit(143)
+    signal.signal(signal.SIGTERM, _sigterm)
 
     start_u = 0
     if args.resume_from:
