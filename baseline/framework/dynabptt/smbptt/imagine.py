@@ -72,6 +72,11 @@ class ImaginedRollout:
         reps_seq, auxs_seq, rews, terms, obs_seq = [], [], [], [], []
         for t in range(self.H):
             a = actor.deterministic_action(o)
+            # critic input = PRE-step state s_t (official convention):
+            # V(s_t) targets r_{t+1} + gamma * V(s_{t+1}), so the
+            # bootstrap term gamma^H * V(s_H) cannot double-count r(s_H).
+            reps_seq.append(rep.detach())
+            auxs_seq.append(aux.detach())
             aux, rep = model.next_state(rep, aux, a)
             hd = model.heads(rep, aux)
             p_term = torch.sigmoid(hd["done_logit"])
@@ -79,8 +84,6 @@ class ImaginedRollout:
             J = J + (self.gamma ** t) * survival * r
             survival = survival * (1.0 - p_term)
             o = self._obs(rep, aux, hd)
-            reps_seq.append(rep.detach())
-            auxs_seq.append(aux.detach())
             rews.append(r.detach())
             terms.append(p_term.detach())
             obs_seq.append(o.detach())
