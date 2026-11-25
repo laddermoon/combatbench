@@ -24,7 +24,7 @@ def render_clip(clip, out_path):
     mm = mujoco.MjModel.from_xml_path(str(HERE / 'humanoid21_mocap.xml'))
     dd = mujoco.MjData(mm)
     r = mujoco.Renderer(mm, height=480, width=640)
-    cam = mujoco.MjvCamera(); cam.distance = 2.8; cam.elevation = -12
+    cam = mujoco.MjvCamera(); cam.distance = 3.3; cam.elevation = -8
     bid = mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_BODY, 'torso_a')
     # PHC xyzw -> mujoco wxyz, reassemble qpos
     qpos = np.concatenate([clip['root_trans_offset'],
@@ -43,6 +43,7 @@ def render_clip(clip, out_path):
         fwd = R.from_quat(q[3:7], scalar_first=True).apply([1, 0, 0])
         cam.azimuth = np.degrees(np.arctan2(fwd[1], fwd[0])) + CAM_YAW
         cam.lookat[:] = dd.xpos[bid]
+        cam.lookat[2] = max(0.45, dd.xpos[bid][2] - 0.45)
         r.update_scene(dd, camera=cam)
         w.write(cv2.cvtColor(r.render(), cv2.COLOR_RGB2BGR))
     w.release()
