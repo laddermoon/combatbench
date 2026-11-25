@@ -216,10 +216,21 @@ def validate_model(model: SelfWorldModel, actor, critic, replay,
         true_obs = np.stack(
             [[tr.next_obs(t + m) for m in range(H_MAX)]
              for tr, t in items])
-        # real actions pi_old takes on the REAL obs sequence
-        real_pi_acts = np.stack(
-            [[tr.act[t + m] for m in range(H_MAX)]
-             for tr, t in items])
+        # reference actions: the DETERMINISTIC policy applied to the REAL
+        # obs sequence — comparing against recorded stochastic actions
+        # would floor this metric at the exploration sigma (~0.3) and
+        # make the act_dev gate unreachable by construction.
+        # cl_acts[:,i] = det(o_hat_{t+i}); the matching real reference is
+        # det(o_{t+i}): i=0 -> obs[t] (o0), i>=1 -> true_obs[:, i-1].
+        ref_obs = np.concatenate(
+            [o0.cpu().numpy()[:, None, :], true_obs[:, :H_MAX - 1]],
+            axis=1)
+        ref_obs_t = torch.as_tensor(
+            ref_obs.reshape(-1, ref_obs.shape[-1]), device=device)
+        with torch.no_grad():
+            real_pi_acts = actor.deterministic_action(
+                ref_obs_t).cpu().numpy().reshape(
+                    ref_obs.shape[:-1] + (acts_all.shape[-1],))
 
         s0_t = s0
         o0_t = o0
