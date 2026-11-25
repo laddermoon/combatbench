@@ -80,7 +80,11 @@ class ImaginedRollout:
             aux, rep = model.next_state(rep, aux, a)
             hd = model.heads(rep, aux)
             p_term = torch.sigmoid(hd["done_logit"])
-            r = STEP_PHI_COEF * W_FALL * analytic_phi(rep)
+            # scalar-equivalent of the real two-channel objective:
+            # r_fall*w_fall + r_cross*(w_cross*phi^2), phi clipped [0,1]
+            phi = analytic_phi(rep).clamp(0.0, 1.0)
+            r = (STEP_PHI_COEF * W_FALL * phi
+                 + phi * phi * hd["aux_rew"].clamp(-1.0, 1.0))
             J = J + (self.gamma ** t) * survival * r
             survival = survival * (1.0 - p_term)
             o = self._obs(rep, aux, hd)

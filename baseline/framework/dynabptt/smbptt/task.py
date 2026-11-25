@@ -24,7 +24,8 @@ import torch
 
 from envs.framework.blueprint import EnvBlueprint
 from envs.framework.parameterized_blueprint import ParameterizedEnvBlueprint
-from baseline.framework.rollout import extract_per_step_field
+from baseline.framework.rollout import (extract_per_step_field,
+                                        extract_per_step_scalar)
 
 from ..hybrid_ppo.gencoord import (R_GB, R_QJ, R_VB, R_VJ, R_WB, R_Z,
                                  quat_apply_inverse)
@@ -42,8 +43,9 @@ CROSS_OBSERVERS = {"robot_a": "cross_support_a", "robot_b": "cross_support_b"}
 STANDING_HEIGHT = 1.28
 
 W_FALL = 3.0          # r_fall actor weight (matches exp_basic_balance)
-STEP_PHI_COEF = 0.01  # r_t = W_FALL * STEP_PHI_COEF * phi
-MAX_STEP_REWARD = W_FALL * STEP_PHI_COEF * 1.0  # phi in [0,1]
+W_CROSS = 1.0         # r_cross base weight; per-step weight = W_CROSS * phi^2
+STEP_PHI_COEF = 0.01  # r_t = W_FALL * STEP_PHI_COEF * phi + phi^2 * r_cross
+MAX_STEP_REWARD = W_FALL * STEP_PHI_COEF * 1.0 + 1.0  # loose upper bound
 
 
 def make_balance_env_bp(max_steps: int = 1500,
@@ -117,12 +119,8 @@ def extract_balance(episode, update: int,
             episode.observer_outputs, PHI_OBSERVERS[aid], "phi", T)
         if phi is None:
             raise KeyError(f"height_phi observer missing for {aid}")
-        rc = episode.observer_outputs.get(CROSS_OBSERVERS[aid])
-        aux_rew = np.zeros(B, dtype=np.float32)
-        if rc is not None:
-            raw = rc.get("value") if isinstance(rc, dict) else None
-            if raw is not None:
-                aux_rew = np.asarray(raw[:B], dtype=np.float32)
+        aux_rew = extract_per_step_scalar(
+            episode.observer_outputs, CROSS_OBSERVERS[aid], T)[:B]
         terminated = bool(
             episode.agent_termination_proposal_records.get(aid, ())
         ) and episode.agent_termination_proposal_records[aid][0][0] != \
