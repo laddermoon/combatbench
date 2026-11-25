@@ -26,6 +26,7 @@ def gen_model_batch(model: SelfWorldModel, actor, critic,
                     seeds: List[Tuple], horizon: int,
                     device: torch.device,
                     gamma: float = 0.99, lam: float = 0.95,
+                    vrep=None,
                     ) -> Optional[Dict[str, np.ndarray]]:
     """Generate first-action advantages for a set of real seed states.
 
@@ -51,6 +52,7 @@ def gen_model_batch(model: SelfWorldModel, actor, critic,
     acts = [a0]
     phis: List[torch.Tensor] = []
     obs_seq: List[torch.Tensor] = []
+    rep_seq: List[Tuple[torch.Tensor, torch.Tensor]] = [(rep, aux)]
     for m in range(horizon):
         if m > 0:
             a, _ = actor.sample_action(o)
@@ -59,12 +61,16 @@ def gen_model_batch(model: SelfWorldModel, actor, critic,
         hd = model.heads(rep, aux)
         o = hd["obs"]
         obs_seq.append(o)
-        phis.append(hd["phi"])
+        rep_seq.append((rep, aux))
+        phis.append(hd["phi"].clamp(0.0, 1.0))
 
     phi_path = torch.stack(phis, 1)                        # (B,h)
-    obs_all = torch.cat([o0.unsqueeze(1),
-                         torch.stack(obs_seq, 1)], dim=1)  # (B,h+1,57)
-    v_all = critic(obs_all.reshape(-1, o0.shape[-1])).reshape(B, -1)
+    if vrep is not None:
+        v_all = torch.stack([vrep(r, x) for r, x in rep_seq], dim=1)
+    else:
+        obs_all = torch.cat([o0.unsqueeze(1),
+                             torch.stack(obs_seq, 1)], dim=1)
+        v_all = critic(obs_all.reshape(-1, o0.shape[-1])).reshape(B, -1)
     adv = _gae(REWARD_COEF * phi_path, v_all[:, :-1], v_all[:, -1],
                gamma, lam)
 

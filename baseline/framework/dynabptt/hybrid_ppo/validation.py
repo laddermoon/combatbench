@@ -46,6 +46,16 @@ GATE = {
     "adv_rel_rmse": 0.50,
     "adv_sign_frac": 0.75,
 }
+# Second-tier admission for the PPO-assist path (first-action advantage
+# from real seeds at h<=3).  The strict tier certifies state accuracy for
+# long/BPTT-style rollouts; the assist tier gates the quantity actually
+# consumed by the aux update — reward/stage heads, action fidelity, and
+# the paired advantage itself — at looser state-metric bounds.
+ASSIST_GATE = {
+    "root_z_mae": 0.04, "rot_deg_mean": 8.0,
+    "phi_mae": 0.05, "act_dev_rms": 0.15,
+    "adv_rel_rmse": 0.50, "adv_sign_frac": 0.75, "adv_corr": 0.60,
+}
 MIN_STAGE_WINDOWS = 256
 MIN_STAGE_TRANSITIONS = 32
 ADV_SIGNAL_FLOOR_FRAC = 0.25     # "significant" |A| > 0.25 * std_real
@@ -57,6 +67,9 @@ class GateReport:
     horizon: int = 0
     admitted_stages: Tuple[int, ...] = ()
     consecutive_pass: int = 0
+    assist_horizon: int = 0
+    assist_stages: Tuple[int, ...] = ()
+    assist_passed: bool = False
     # stage -> horizon -> metrics
     metrics: Dict[int, Dict[int, Dict[str, float]]] = field(
         default_factory=dict)
@@ -71,6 +84,9 @@ class GateReport:
             "gate_horizon": float(self.horizon),
             "gate_consec": float(self.consecutive_pass),
             "gate_n_stages": float(len(self.admitted_stages)),
+            "assist_passed": float(self.assist_passed),
+            "assist_horizon": float(self.assist_horizon),
+            "assist_n_stages": float(len(self.assist_stages)),
         }
         for stg, per_h in self.metrics.items():
             for h, m in per_h.items():
@@ -88,10 +104,17 @@ class GateState:
         self.consecutive_pass = 0
         self.horizon = 0
         self.admitted_stages: Tuple[int, ...] = ()
+        self.assist_consec = 0
+        self.assist_horizon = 0
+        self.assist_stages: Tuple[int, ...] = ()
 
     @property
     def admitted(self) -> bool:
         return self.horizon > 0 and bool(self.admitted_stages)
+
+    @property
+    def assist_admitted(self) -> bool:
+        return self.assist_horizon > 0 and bool(self.assist_stages)
 
     def update(self, report: "GateReport") -> None:
         if report.all_passed:
@@ -103,16 +126,31 @@ class GateState:
         if self.consecutive_pass >= 2:
             self.horizon = report.horizon
             self.admitted_stages = report.admitted_stages
+        if report.assist_passed:
+            self.assist_consec += 1
+        else:
+            self.assist_consec = 0
+            self.assist_horizon = 0
+            self.assist_stages = ()
+        if self.assist_consec >= 2:
+            self.assist_horizon = report.assist_horizon
+            self.assist_stages = report.assist_stages
 
     def state_dict(self) -> Dict:
         return {"consecutive_pass": self.consecutive_pass,
                 "horizon": self.horizon,
-                "admitted_stages": list(self.admitted_stages)}
+                "admitted_stages": list(self.admitted_stages),
+                "assist_consec": self.assist_consec,
+                "assist_horizon": self.assist_horizon,
+                "assist_stages": list(self.assist_stages)}
 
     def load_state_dict(self, d: Dict) -> None:
         self.consecutive_pass = int(d["consecutive_pass"])
         self.horizon = int(d["horizon"])
         self.admitted_stages = tuple(d["admitted_stages"])
+        self.assist_consec = int(d.get("assist_consec", 0))
+        self.assist_horizon = int(d.get("assist_horizon", 0))
+        self.assist_stages = tuple(d.get("assist_stages", ()))
 
 
 # --- internal helpers ----------------------------------------------------
@@ -148,7 +186,7 @@ def _model_rollout(model: SelfWorldModel, s0: torch.Tensor,
         h = model.heads(rep, aux)
         cs.append(model.cs_from_rep_aux(rep, aux))
         obs.append(h["obs"])
-        phis.append(h["phi"])
+        phis.append(h["phi"].clamp(0.0, 1.0))
         logits.append(h["stage_logits"])
     return (torch.stack(cs, 1), torch.stack(obs, 1),
             torch.stack(phis, 1), torch.stack(logits, 1))
@@ -181,7 +219,7 @@ def validate_model(model: SelfWorldModel, actor, critic, replay,
                    rng: np.random.Generator, device: torch.device,
                    n_windows: int = 4096,
                    env_bp=None, paired_seeds: int = 64,
-                   paired_h: int = 3) -> GateReport:
+                   paired_h: int = 3, vrep=None) -> GateReport:
     """Run all validation checks; returns a GateReport.
 
     ``env_bp``: blueprint used to build the branch-restoration env for
@@ -299,7 +337,7 @@ def validate_model(model: SelfWorldModel, actor, critic, replay,
     if env_bp is not None and paired_seeds > 0:
         report.paired = _paired_branch_adv(
             model, actor, critic, replay, env_bp, rng, device,
-            paired_seeds, paired_h, report)
+            paired_seeds, paired_h, report, vrep=vrep)
 
     # --- admission decision ---------------------------------------------
     horizon, stages, notes = _admission_decision(report)
@@ -307,6 +345,11 @@ def validate_model(model: SelfWorldModel, actor, critic, replay,
     report.admitted_stages = stages
     report.notes.extend(notes)
     report.all_passed = horizon > 0 and bool(stages)
+    ah, ast, anotes = _assist_decision(report)
+    report.assist_horizon = ah
+    report.assist_stages = ast
+    report.assist_passed = ah > 0 and bool(ast)
+    report.notes.extend(anotes)
     return report
 
 
@@ -372,10 +415,58 @@ def _admission_decision(report: GateReport):
     return horizon, stages, notes
 
 
+def _assist_decision(report: GateReport):
+    """Assist-tier admission: gate the quantities the aux PPO update
+    actually consumes (reward/stage heads, action fidelity, paired
+    advantage) rather than raw state NRMSE."""
+    notes: List[str] = []
+    stage_h: Dict[int, int] = {}
+    for stg, per_h in report.metrics.items():
+        best = 0
+        for h in range(1, H_MAX + 1):
+            m = per_h.get(h)
+            if m is None:
+                break
+            fails = []
+            if m["root_z_mae"] > ASSIST_GATE["root_z_mae"]:
+                fails.append("root_z")
+            if m["rot_deg_mean"] > ASSIST_GATE["rot_deg_mean"]:
+                fails.append("rot")
+            if m["phi_mae"] > ASSIST_GATE["phi_mae"]:
+                fails.append("phi")
+            if m["act_dev_rms"] > ASSIST_GATE["act_dev_rms"]:
+                fails.append("act_dev")
+            if fails:
+                notes.append(
+                    f"assist stage {stg} h={h} failed: {','.join(fails)}")
+                break
+            best = h
+        if best > 0:
+            stage_h[stg] = best
+    if not stage_h:
+        return 0, (), notes
+    horizon = min(stage_h.values())
+    stages = tuple(s for s, hh in stage_h.items() if hh >= horizon)
+    pr = report.paired
+    if not pr or np.isnan(pr.get("adv_rel_rmse", float("nan"))):
+        notes.append("assist: no paired evidence — closed")
+        return 0, (), notes
+    if pr["adv_rel_rmse"] > ASSIST_GATE["adv_rel_rmse"]:
+        notes.append(f"assist adv_rel_rmse {pr['adv_rel_rmse']:.3f} — closed")
+        return 0, (), notes
+    if pr["adv_sign_frac"] < ASSIST_GATE["adv_sign_frac"]:
+        notes.append(f"assist adv_sign_frac {pr['adv_sign_frac']:.3f} — closed")
+        return 0, (), notes
+    if pr.get("adv_corr", 0.0) < ASSIST_GATE["adv_corr"]:
+        notes.append(f"assist adv_corr {pr.get('adv_corr', 0.0):.3f} — closed")
+        return 0, (), notes
+    return horizon, stages, notes
+
+
 def _paired_branch_adv(model, actor, critic, replay, env_bp,
                        rng, device, n_seeds: int, h: int,
                        report: GateReport, gamma: float = 0.99,
-                       lam: float = 0.95) -> Dict[str, float]:
+                       lam: float = 0.95, vrep=None) -> Dict[str, float]:
     """Model-branch vs real-branch short-horizon advantage.
 
     For each held-out seed:
@@ -413,6 +504,7 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
         acts: List[torch.Tensor] = []
         phis: List[torch.Tensor] = []
         obs_seq: List[torch.Tensor] = []
+        rep_seq: List[Tuple[torch.Tensor, torch.Tensor]] = [(rep, aux)]
         for _ in range(h):
             a, _ = actor.sample_action(o)
             acts.append(a)
@@ -420,20 +512,28 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
             hd = model.heads(rep, aux)
             o = hd["obs"]
             obs_seq.append(o)
-            phis.append(hd["phi"])
+            rep_seq.append((rep, aux))
+            phis.append(hd["phi"].clamp(0.0, 1.0))
         act_seq = torch.stack(acts, 1).cpu().numpy()      # (B,h,21)
-        obs_seq_t = torch.stack(obs_seq, 1)               # (B,h,57)
         phi_model = torch.stack(phis, 1)                  # (B,h)
-        v_all = critic(torch.cat(
-            [o0.unsqueeze(1), obs_seq_t], dim=1
-        ).reshape(-1, o0.shape[-1])).reshape(B, h + 1)
+        if vrep is not None:
+            v_all = torch.stack(
+                [vrep(r, a) for r, a in rep_seq], dim=1)  # (B,h+1)
+        else:
+            obs_seq_t = torch.stack(obs_seq, 1)           # (B,h,57)
+            v_all = critic(torch.cat(
+                [o0.unsqueeze(1), obs_seq_t], dim=1
+            ).reshape(-1, o0.shape[-1])).reshape(B, h + 1)
         adv_model = _gae(REWARD_COEF * phi_model, v_all[:, :-1],
                          v_all[:, -1], gamma, lam).cpu().numpy()
 
     # --- real branches (in-process env restoration) ---
+    from baseline.framework.dynabptt.corestate import flatten_core_state
     runtime = env_bp.build()
     phi_real = np.zeros((B, h), dtype=np.float32)
     obs_real = np.zeros((B, h + 1, o0.shape[-1]), dtype=np.float32)
+    cs_real = (np.zeros((B, h + 1, s0.shape[-1]), dtype=np.float32)
+               if vrep is not None else None)
     for i, (tr, t) in enumerate(seeds):
         aid = tr.agent_id
         # plugin RNGs must be seeded explicitly — EpisodeRunner does this
@@ -447,6 +547,8 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
         o_restored = runtime.get_observation()
         obs_real[i, 0] = np.asarray(
             o_restored[0 if aid == "robot_a" else 1], dtype=np.float32)
+        if cs_real is not None:
+            cs_real[i, 0] = tr.cs[t - 1]
         for m in range(h):
             a_self = act_seq[i, m]
             zero = np.zeros(21, dtype=np.float32)
@@ -459,11 +561,20 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
                 obs_now[0 if aid == "robot_a" else 1], dtype=np.float32)
             phi_real[i, m] = float(runtime.get_observer_output(
                 REWARDER_NAMES[aid])["potential"])
+            if cs_real is not None:
+                cs_real[i, m + 1] = flatten_core_state(
+                    runtime.simulator.get_core_state(), aid)
 
     with torch.no_grad():
-        v_real = critic(torch.as_tensor(
-            obs_real, device=device).reshape(-1, obs_real.shape[-1])
-        ).reshape(B, h + 1)
+        if vrep is not None:
+            cs_t = torch.as_tensor(cs_real, device=device)
+            rep_r, aux_r = model.rep_aux_from_cs(
+                cs_t.reshape(-1, cs_t.shape[-1]))
+            v_real = vrep(rep_r, aux_r).reshape(B, h + 1)
+        else:
+            v_real = critic(torch.as_tensor(
+                obs_real, device=device).reshape(-1, obs_real.shape[-1])
+            ).reshape(B, h + 1)
         adv_real = _gae(REWARD_COEF * torch.as_tensor(
             phi_real, device=device), v_real[:, :-1],
             v_real[:, -1], gamma, lam).cpu().numpy()
