@@ -21,6 +21,7 @@ sys.path.insert(0, str(GMR_ROOT))
 import numpy as np
 import mujoco
 import mink
+from mink.limits.limit import Constraint, Limit
 from scipy.spatial.transform import Rotation as R
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
 from general_motion_retargeting.utils.smpl import (
@@ -50,6 +51,46 @@ ARM_EXT_OFFSET_DEG = 100.0                  # straight-anchor offset
 ARM_EXT_MIN_DEG, ARM_EXT_MAX_TGT_DEG = -100.0, 30.0
 ARM_FLEX_SMOOTH = np.array([0.06, 0.25, 0.38, 0.25, 0.06])
 ELBOW_JOINTS = ('elbow_right_a', 'elbow_left_a')
+# Hamstring fixed tendon (limited=true in the XML): the coupling
+# 0.5*hip_y - 0.5*knee is constrained to [-0.3, 2.0] at PHYSICS time, but
+# mink never sees it — kicks pushed it to -1.0 in 48/172 clips. Enforce it
+# inside the QP as a hard inequality so exported clips satisfy the limit
+# (kicks then bend the knee instead of over-flexing the hip).
+TENDON_PAIRS = ((('hip_y_right_a', 0.5), ('knee_right_a', -0.5)),
+                (('hip_y_left_a', 0.5), ('knee_left_a', -0.5)))
+TENDON_LO, TENDON_HI, TENDON_GAIN = -0.3, 2.0, 0.85
+
+
+class TendonLimit(Limit):
+    """QP inequality lo <= sum(coef_i * q_i) <= hi for XML fixed tendons.
+
+    Linear in q -> exact constraint, no linearization error. Mirrors how
+    MuJoCo's constraint solver enforces limited tendons at physics time.
+    """
+
+    def __init__(self, model, pairs, lo, hi, gain=0.85):
+        self.lo, self.hi, self.gain = lo, hi, gain
+        self.terms = []              # per tendon: [(qpos_adr, dofvel_adr, coef)]
+        for pair in pairs:
+            t = []
+            for jn, coef in pair:
+                j = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jn)
+                t.append((model.jnt_qposadr[j], model.jnt_dofadr[j], coef))
+            self.terms.append(t)
+
+    def compute_qp_inequalities(self, configuration, dt):
+        q = configuration.q
+        nv = configuration.model.nv
+        G = np.zeros((2 * len(self.terms), nv))
+        h = np.empty(2 * len(self.terms))
+        for i, t in enumerate(self.terms):
+            cur = sum(c * q[a] for a, _, c in t)
+            for a, v, c in t:
+                G[2 * i, v] += c
+                G[2 * i + 1, v] -= c
+            h[2 * i] = self.gain * (self.hi - cur)      # w.dq <= gain*(hi-t)
+            h[2 * i + 1] = self.gain * (cur - self.lo)  # -w.dq <= gain*(t-lo)
+        return Constraint(G=G, h=h)
 
 
 class GMRArmBias(GMR):
@@ -58,6 +99,8 @@ class GMRArmBias(GMR):
     def __init__(self, *a, el_targets=None, **kw):
         super().__init__(*a, **kw)
         m = self.configuration.model
+        self.ik_limits.append(TendonLimit(
+            m, TENDON_PAIRS, TENDON_LO, TENDON_HI, TENDON_GAIN))
         cost = np.zeros(m.nv)
         self._el_qadr = []
         for jn in ELBOW_JOINTS:
