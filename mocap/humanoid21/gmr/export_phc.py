@@ -197,6 +197,27 @@ def foot_contacts(kp, kp_names, fps):
     return ((z < 0.06) & (spd < 0.5)).astype(np.float32)
 
 
+def ground_calibrate(kp, kp_names, contacts):
+    """Root-z offset so the median STANCE foot sits at z=0.
+
+    The raw IK output carries a systematic few-cm sink (scale/morphology
+    gap): the planted foot rests below ground. Median stance-foot z is a
+    robust estimate of that offset; lifting the whole clip by it restores
+    the z=0-is-floor contract without touching dof/pose_aa. Dynamic dips
+    (swing foot, ankle-orientation gaps) are left as recorded issues.
+    Returns dz (m, +up) or 0 when no reliable stance frames exist.
+    """
+    fl = kp_names.index('foot_left'); fr = kp_names.index('foot_right')
+    zs = []
+    for foot, col in ((fl, 0), (fr, 1)):
+        m = contacts[:, col] > 0.5
+        if m.sum() > 5:
+            zs.append(kp[m, foot, 2])
+    if not zs:
+        return 0.0
+    return float(np.clip(-np.median(np.concatenate(zs)), -0.12, 0.12))
+
+
 def update_manifest(mm, dof_names, dof_axis, kp_names, bundle_name, bundle_sha,
                     n_clips, clip_id, clip_rec):
     if MANIFEST.exists():
@@ -256,6 +277,11 @@ def export_clip(npz_arg, clip_id, labels, split='train', dataset=None,
         "issues": [],
         "contact_method": "foot_z<0.06 & foot_speed<0.5",
     }
+    fc = foot_contacts(kp, kp_names, fps)
+    dz = ground_calibrate(kp, kp_names, fc)
+    root_pos[:, 2] += dz
+    kp[:, :, 2] += dz
+    meta["ground_calib_dz"] = round(dz, 4)
     clip = {
         "fps": TGT_FPS,
         "root_trans_offset": root_pos.astype(np.float32),
@@ -265,7 +291,7 @@ def export_clip(npz_arg, clip_id, labels, split='train', dataset=None,
         "smpl_joints": smpl.astype(np.float32),
         "dof_names": np.array(dof_names),
         "keypoint_pos": kp.astype(np.float32),
-        "foot_contacts": foot_contacts(kp, kp_names, fps),
+        "foot_contacts": fc,
         "meta": meta,
     }
 

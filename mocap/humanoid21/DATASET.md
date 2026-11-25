@@ -153,6 +153,10 @@ amass smplx npz ──GMR retarget──> qpos ──export──> PHC clip_dict
                                                    wxyz→xyzw /
                                                    pose_aa = [root_aa | dof·axis] /
                                                    FK keypoint_pos+smpl_joints /
+                                                   foot_contacts /
+                                                   ground-calib: 支撑脚z中位→
+                                                   root/keypoint z 同步抬升
+                                                   (meta.ground_calib_dz) /
                                                    meta+issues)
                           │
                           └──── kinematic check（pkl 版）──> L1 标记、

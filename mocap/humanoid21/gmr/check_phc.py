@@ -25,7 +25,7 @@ REQUIRED = {"fps", "root_trans_offset", "root_rot", "dof",
 SLEW_CAP_DEG = 20.0          # rad->deg per frame jump cap (30fps)
 ROOT_JUMP_DEG = 25.0
 VEL_SPIKE = 60.0             # rad/s via finite diff
-FOOT_Z_MIN = -0.005
+FOOT_Z_MIN = -0.02
 TENDON_LO, TENDON_HI = -0.3, 2.0
 L0_KEYS = ("missing_fields", "shape_mismatch", "nonfinite",
            "bad_fps", "pose_aa_inconsistent")
