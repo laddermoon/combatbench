@@ -77,8 +77,22 @@ c = substep_coeff = (decimation+1)/(2·decimation)  # 对齐仿真子步合成
 - critic 无 EMA target，GAE λ=0.95 只在想象轨迹内计算，5 epoch × 4 mb/update
 - 动作噪声 σ=0.1 **只为拓宽模型拟合的动作覆盖**，replay 存的是加噪后的
   执行动作（模型在真实执行分布上拟合）
-- reward 头**解析**（跟踪奖励从参考运动可算），termination 头学习；
-  obs 头学习无噪 obs
+- reward **解析**（`compute_wm_reward_from_reference`：预测状态 vs 参考
+  clip 逐帧算跟踪项），termination 也**解析**——`_compute_term_prob`
+  用任务自身阈值规则（anchor 高度差 / tilt 差）经温度 sigmoid 软化：
+  `σ((normalized_error - 1) / softness)`。官方**没有任何学习式
+  reward/done 头**——世界模型只学 35 维 Δv 动力学
+- obs 头学习无噪 obs（sensor 模式）；actor 也可用 rep_state 直读
+  （proprio 模式）
+- critic 输入 = [rep_state, wm_goal_obs, sim_ctx]，V 读**模型状态**
+  而非重建 obs——这是我们 RepCritic 的直接出处，实测把配对
+  advantage 相关性从 0.35（obs critic）提到 0.95
+- 策略超参（policy_learner.py 默认值）：lr 2e-4、Adam β2=0.95、
+  imag batch 4096、H=32、γ=0.99、λ=0.95、norm-clip 1.0 后
+  elem-clip 0.1、每 update 一个想象批一步 actor step
+- 训练节流（supermimic_runner）：`should_train = Ratio(num_envs /
+  (wm_batches×wm_batch×k) × replay_ratio=16)` → 每 env step 0.4 轮
+  "10×2048×k8 模型批 + 1×4096×H32 策略批"
 
 ### 1.4 消融里已有的对照（论文 Fig.5b）
 
@@ -159,11 +173,31 @@ PPO-WM（模型 rollout + PPO 式更新）**可以达到同样最好回报，但
 | mjlab 本体 | MuJoCo-Warp GPU 批量仿真的封装层，吞吐是关键差异源 | github.com/mujocolab/mjlab |
 | 改进方向 | ControlVAE（MaxCoord 表示来源）、SHAC（硬终止→ĉ 的出处）、PWM/MAAC（同族方法） | 见论文 related work |
 
-## 五、当前判定
+## 五、迁移实施结果（2026-11-26 更新）
 
-混合 PPO+WM 线在 standup 的失败**不再归因于"学习型世界模型不可行"**，
-而精确归因于：**我们的状态表示+预测目标设计把不可学的冲击误差扩散到了
-所有通道**。SuperMimic 的答案不是"模型更大"，而是**把可学与不可学的
-部分在表示层切开**。T1-T5 都是廉价实现，值得在 hybrid_ppo 框架上重做
-一版验证——若 Δv-only 表示后留出误差进入可用区，整条混合路线立刻复活；
-若仍不行，则为"standup 属 F2 区"的直接证据，按边界地图换任务或换方法。
+T1-T5 已全部在 hybrid_ppo 落地并实测（GenCoord port + dt=20ms +
+Bryson 损失 + 帧不变 rep；T2 动作平滑未做——动作本身已是 PD 目标）：
+
+| 杠杆 | 效果 |
+|---|---|
+| dt 50ms→20ms | 留出 s1_lv NRMSE 0.59→0.40（最大单一杠杆；冲击 \|Δv\| 中位数 0.37→0.27） |
+| Δv-only+解析积分 | 中性（本身不增益，但结构上必需） |
+| 数据量 320k→1M | 0.40→0.35 |
+| 容量 512³→1024³ | 0.40→0.35（2048³→0.31，递减） |
+| **rep-space critic** | **配对 adv_corr 0.35→0.95、sign 0.98、rel_rmse 0.32**——辅助路径直接判据达标 |
+
+**关键机理复核**：瓶颈不是状态精度而是 critic 读哪——V(ô) 在预测 obs
+上的 bootstrap 噪声 ≈ adv_std 本身；V(rep) 读模型隐状态直接绕过。
+这正是官方 critic 输入 [rep,goal,ctx] 的设计意图。
+
+**当前判定**：
+1. standup 的状态级精度（~0.35 NRMSE）够不着 strict 档，但 **assist
+   档**（按实际消费量判：paired adv trio + φ + act_dev）已准入，
+   P2 A/B 正在跑（hybrid_ppo 实验线收官）。
+2. 主攻线 = **smbptt**（SuperMimic 原生 BPTT 复刻）在 balance 任务上：
+   想象 J、alive、真实 episode len 同步爬升（u0→u50：len 55→~70），
+   官方参数对齐（batch 4096、H=32、γ=0.99 λ=0.95、β2=0.95、clip
+   1.0+0.1）。与官方的两个有意偏差：done 用**学习头**（官方为解析
+   阈值 sigmoid——balance 的"非足接触"无解析式，学习头已校准：
+   alive≈0.56 vs 数据隐含 1-32/70≈0.54）；obs 为 55 维解析重构 +
+   2 维学习足部力。
