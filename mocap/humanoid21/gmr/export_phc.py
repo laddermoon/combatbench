@@ -218,43 +218,35 @@ def update_manifest(mm, dof_names, dof_axis, kp_names, bundle_name, bundle_sha,
     MANIFEST.write_text(json.dumps(mf, indent=1, ensure_ascii=False))
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('npz', help='amass rel path (searched in both smplx trees) or abs')
-    p.add_argument('--clip_id', required=True)
-    p.add_argument('--labels', default='', help='comma list')
-    p.add_argument('--split', default='train', choices=['train', 'val'])
-    p.add_argument('--dataset', default='none', choices=['core', 'extended', 'none'])
-    p.add_argument('--bundle', default='dev', help='bundle tag -> combatbench_<tag>_v1.pkl')
-    p.add_argument('--no-arm-bias', action='store_true',
-                   help='disable elbow-extension PostureTask bias')
-    args = p.parse_args()
+def export_clip(npz_arg, clip_id, labels, split='train', dataset=None,
+                bundle='dev', arm_bias=True, model_cache=None):
+    """Retarget one npz and insert it into a bundle. Returns clip_id."""
+    npz_path, src_tree = find_clip(npz_arg)
+    if model_cache is None:
+        model_cache = load_model()
+    mm, dd, dof_names, dof_axis, bids, kp_names = model_cache
 
-    npz_path, src_tree = find_clip(args.npz)
-    mm, dd, dof_names, dof_axis, bids, kp_names = load_model()
-
-    qpos, smpl, fps, smplx_data = retarget_clip(
-        npz_path, arm_bias=not args.no_arm_bias)
+    qpos, smpl, fps, smplx_data = retarget_clip(npz_path, arm_bias=arm_bias)
     root_pos, root_rot, dof, pose_aa, kp = build_clip_dict(
         qpos, smpl, fps, mm, dd, dof_names, dof_axis, bids)
 
     src_fps = float(np.asarray(smplx_data.get(
         'mocap_frame_rate', smplx_data.get('mocap_framerate', 120.0))).flat[0])
-    rel_npz = args.npz if src_tree else str(npz_path)
+    labels = [labels] if isinstance(labels, str) else list(labels)
     meta = {
-        "src_npz": rel_npz,
+        "src_npz": npz_arg if src_tree else str(npz_path),
         "src_tree": src_tree or "absolute",
         "src_sha256": sha256(npz_path),
         "src_fps": src_fps,
-        "labels": [x for x in args.labels.split(',') if x],
-        "split": args.split,
-        "dataset": None if args.dataset == 'none' else args.dataset,
+        "labels": labels,
+        "split": split,
+        "dataset": dataset,
         "parent_clip": None,
         "retarget_method": "gmr_mink_ik",
         "retarget_params": {"ik_config": "smplx_to_humanoid21.json",
                             "tgt_fps": TGT_FPS, "burn_in": BURN_IN,
                             "scale_table_flat": 0.9,
-                            "arm_extension_bias": None if args.no_arm_bias else
+                            "arm_extension_bias": None if not arm_bias else
                             {"mode": "smplx_flexion_direct",
                              "cost": ARM_EXT_COST,
                              "offset_deg": ARM_EXT_OFFSET_DEG,
@@ -278,27 +270,48 @@ def main():
     }
 
     PHC_DIR.mkdir(parents=True, exist_ok=True)
-    bundle_name = f'combatbench_{args.bundle}_v1.pkl'
+    bundle_name = f'combatbench_{bundle}_v1.pkl'
     bundle_path = PHC_DIR / bundle_name
     bundle = pickle.load(open(bundle_path, 'rb')) if bundle_path.exists() else {}
-    bundle[args.clip_id] = clip
+    bundle[clip_id] = clip
     payload = pickle.dumps(bundle)
     bundle_path.write_bytes(payload)
     bsha = sha256(None, payload)
 
     clip_rec = {"frames": int(len(qpos)),
                 "duration_s": round(len(qpos) / fps, 2),
-                "split": args.split,
+                "split": split,
                 "labels": meta["labels"], "dataset": meta["dataset"],
                 "src_sha256": meta["src_sha256"],
                 "quality_level": "L0", "issues": []}
     update_manifest(mm, dof_names, dof_axis, kp_names,
-                    bundle_name, bsha, len(bundle), args.clip_id, clip_rec)
+                    bundle_name, bsha, len(bundle), clip_id, clip_rec)
 
-    print(f"[OK] {args.clip_id}: T={len(qpos)} @{fps:.0f}fps -> {bundle_name} "
-          f"({len(bundle)} clips, sha {bsha[:12]})")
+    print(f"[OK] {clip_id}: T={len(qpos)} @{fps:.0f}fps -> {bundle_name} "
+          f"({len(bundle)} clips, sha {bsha[:12]})", flush=True)
     print(f"     pelvis z range [{kp[:, 0, 2].min():.3f},{kp[:, 0, 2].max():.3f}] "
-          f"foot z min {min(kp[:, kp_names.index('foot_left'), 2].min(), kp[:, kp_names.index('foot_right'), 2].min()):.3f}")
+          f"foot z min {min(kp[:, kp_names.index('foot_left'), 2].min(), kp[:, kp_names.index('foot_right'), 2].min()):.3f}",
+          flush=True)
+    return clip_id
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('npz', help='amass rel path (searched in both smplx trees) or abs')
+    p.add_argument('--clip_id', required=True)
+    p.add_argument('--labels', default='', help='comma list')
+    p.add_argument('--split', default='train', choices=['train', 'val'])
+    p.add_argument('--dataset', default='none', choices=['core', 'extended', 'none'])
+    p.add_argument('--bundle', default='dev', help='bundle tag -> combatbench_<tag>_v1.pkl')
+    p.add_argument('--no-arm-bias', action='store_true',
+                   help='disable elbow-extension PostureTask bias')
+    args = p.parse_args()
+
+    export_clip(args.npz, args.clip_id,
+                [x for x in args.labels.split(',') if x],
+                split=args.split,
+                dataset=None if args.dataset == 'none' else args.dataset,
+                bundle=args.bundle, arm_bias=not args.no_arm_bias)
 
 
 if __name__ == '__main__':
