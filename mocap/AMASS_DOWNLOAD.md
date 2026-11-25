@@ -178,7 +178,31 @@ out = m(betas=torch.tensor(d['betas'][:10],dtype=torch.float32)[None],
 print(out.joints.shape)   # (1,127,3) → 关节位置
 ```
 
-### 6.4 接入 retarget
+### 6.4 smplh→smplx 批量转换（已全量执行）
+
+脚本：`mocap/convert_smplh_to_smplx.py`。字段级转换，运动内容无损：
+
+| smplh 源字段 | smplx 目标字段 | 处理 |
+|---|---|---|
+| `poses[:, 0:3]` | `root_orient` | 直取 |
+| `poses[:, 3:66]` | `pose_body` | 直取（前 22 关节语义两侧一致） |
+| `poses[:, 66:156]` | — | 手部 90 维丢弃（humanoid21 无手指） |
+| `mocap_framerate` | `mocap_frame_rate` | **改名** |
+| `betas` (16,) | `betas` + `num_betas` | 原样（loader 切 [:10]） |
+| `trans`/`gender` | 同名 | 原样 |
+| `dmpls` | — | 丢弃（SMPLH 特有动态形变） |
+| — | `surface_model_type`/`converted_from`/`mocap_time_length` | 合成，溯源标记 |
+
+```bash
+python3 mocap/convert_smplh_to_smplx.py [--dataset CMU KIT]
+# 输出: amass/smplx_from_smplh/<DS>/<subj>/<同名>.npz（与原生 smplx_gender_specific/ 区分）
+```
+
+**已执行结果（2026-11）**：15494 个运动 npz 全部转换、0 失败、~12GB、
+95 秒；142 个 `shape.npz`（体型记录无 poses）正确跳过。已用 CMU 13_17
+（拳击）端到端验证 retarget 正常。重跑可断点续（已存在的跳过）。
+
+### 6.5 接入 retarget
 
 本项目用 **GMR**（`mocap/gmr/`，独立 clone）做 SMPL-X→humanoid21 运动学
 重定向，已跑通走路/拳击/踢腿，配置方法、坐标约定、踩坑记录全在
