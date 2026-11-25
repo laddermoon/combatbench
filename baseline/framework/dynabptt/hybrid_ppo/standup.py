@@ -98,14 +98,18 @@ class SelfOnlyStandupSimulator(Humanoid21Simulator):
         return out
 
 
-def make_standup_env_bp(max_steps: int = 200) -> EnvBlueprint:
+def make_standup_env_bp(max_steps: int = 200,
+                        phy_steps_per_action: int = 25) -> EnvBlueprint:
     """Materialize the standup env blueprint patched for self-only training.
 
     In-memory derivation only — no YAML or shared file is modified.
+    ``phy_steps_per_action`` overrides the control decimation
+    (25 x 2ms = 50ms default); 10 gives a 20ms control step.
     """
     pb = ParameterizedEnvBlueprint.load(_BLUEPRINT_DIR / ENV_BLUEPRINT_NAME)
     env_bp = pb.materialize(max_steps=max_steps)
     d = env_bp.to_dict()
+    d["runtime"]["phy_steps_per_action"] = int(phy_steps_per_action)
     d["simulator"]["cls"] = (
         "baseline.framework.dynabptt.hybrid_ppo.standup:"
         "SelfOnlyStandupSimulator"

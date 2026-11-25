@@ -46,7 +46,7 @@ def gen_model_batch(model: SelfWorldModel, actor, critic,
     B = s0.shape[0]
 
     a0, lp0 = actor.sample_action(o0)
-    s = s0
+    rep, aux = model.rep_aux_from_cs(s0)
     o = o0
     acts = [a0]
     phis: List[torch.Tensor] = []
@@ -55,8 +55,8 @@ def gen_model_batch(model: SelfWorldModel, actor, critic,
         if m > 0:
             a, _ = actor.sample_action(o)
             acts.append(a)
-        s = model.next_state(s, acts[m])
-        hd = model.heads(s)
+        aux, rep = model.next_state(rep, aux, acts[m])
+        hd = model.heads(rep, aux)
         o = hd["obs"]
         obs_seq.append(o)
         phis.append(hd["phi"])

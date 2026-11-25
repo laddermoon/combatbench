@@ -135,15 +135,18 @@ def _model_rollout(model: SelfWorldModel, s0: torch.Tensor,
     """Open-loop rollout along recorded actions.
 
     acts: (B, H>=horizon, act_dim) — uses the FIRST `horizon` actions.
+    s0 is a 55-dim cs; the model rolls in (rep, aux) space and each
+    step's cs is reconstructed for metric compatibility.
     Returns stacked preds: cs (B,H,55), obs (B,H,57), phi (B,H),
     stage_logits (B,H,4).
     """
-    s = s0
+    rep = model.rep_aux_from_cs(s0)[0]
+    aux = model.rep_aux_from_cs(s0)[1]
     cs, obs, phis, logits = [], [], [], []
     for m in range(horizon):
-        s = model.next_state(s, acts[:, m])
-        h = model.heads(s)
-        cs.append(s)
+        aux, rep = model.next_state(rep, aux, acts[:, m])
+        h = model.heads(rep, aux)
+        cs.append(model.cs_from_rep_aux(rep, aux))
         obs.append(h["obs"])
         phis.append(h["phi"])
         logits.append(h["stage_logits"])
@@ -158,15 +161,15 @@ def _closed_loop_rollout(model: SelfWorldModel, actor,
     """Roll the model feeding predicted obs through pi_old
     (deterministic actions — measures the policy's sensitivity to
     model-obs error, not noise)."""
-    s = s0
+    rep, aux = model.rep_aux_from_cs(s0)
     o = o0
     acts, cs = [], []
     for _ in range(horizon):
         a = actor.deterministic_action(o)
         acts.append(a)
-        s = model.next_state(s, a)
-        cs.append(s)
-        o = model.heads(s)["obs"]
+        aux, rep = model.next_state(rep, aux, a)
+        cs.append(model.cs_from_rep_aux(rep, aux))
+        o = model.heads(rep, aux)["obs"]
     return torch.stack(acts, 1), torch.stack(cs, 1)
 
 
@@ -405,7 +408,7 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
         np.stack([tr.obs[t] for tr, t in seeds]), device=device)
     B = s0.shape[0]
     with torch.no_grad():
-        s = s0
+        rep, aux = model.rep_aux_from_cs(s0)
         o = o0
         acts: List[torch.Tensor] = []
         phis: List[torch.Tensor] = []
@@ -413,8 +416,8 @@ def _paired_branch_adv(model, actor, critic, replay, env_bp,
         for _ in range(h):
             a, _ = actor.sample_action(o)
             acts.append(a)
-            s = model.next_state(s, a)
-            hd = model.heads(s)
+            aux, rep = model.next_state(rep, aux, a)
+            hd = model.heads(rep, aux)
             o = hd["obs"]
             obs_seq.append(o)
             phis.append(hd["phi"])

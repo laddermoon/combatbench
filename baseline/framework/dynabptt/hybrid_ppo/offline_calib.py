@@ -34,6 +34,8 @@ from .validation import validate_model
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
+    ap.add_argument("--replay", default=None,
+                    help="override replay pkl (e.g. collected at another dt)")
     ap.add_argument("--batches", type=int, default=1200)
     ap.add_argument("--val-every", type=int, default=300)
     ap.add_argument("--val-windows", type=int, default=1024)
@@ -41,6 +43,10 @@ def main() -> None:
                     help="start model from scratch instead of ckpt weights")
     ap.add_argument("--hidden", type=int, nargs="+", default=None,
                     help="override dynamics hidden dims (e.g. 1024 1024 1024)")
+    ap.add_argument("--dt", type=float, default=0.05,
+                    help="control step seconds (0.05 = 25x2ms, 0.02 = 10x2ms)")
+    ap.add_argument("--save-out", default=None,
+                    help="save trained model state_dict to this path")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -48,7 +54,8 @@ def main() -> None:
     torch.manual_seed(777)
 
     ckpt = torch.load(args.ckpt, map_location=device)
-    rp = Path(str(args.ckpt).replace(".pt", ".replay.pkl"))
+    rp = Path(args.replay) if args.replay else Path(
+        str(args.ckpt).replace(".pt", ".replay.pkl"))
     data = pickle.load(open(rp, "rb"))
 
     replay = ModelReplay()
@@ -68,10 +75,18 @@ def main() -> None:
     critic = CriticMLP(obs_dim=SELF_OBS_DIM, hidden_dim=256).to(device)
     critic.load_state_dict(ckpt["critic"])
     hidden = tuple(args.hidden) if args.hidden else (512, 512, 512)
-    model = SelfWorldModel(state_dim=STATE_DIM, action_dim=ACTION_DIM,
-                           obs_dim=SELF_OBS_DIM, hidden=hidden).to(device)
+    dec = round(args.dt / 0.002)
+    model = SelfWorldModel(
+        state_dim=STATE_DIM, action_dim=ACTION_DIM, obs_dim=SELF_OBS_DIM,
+        hidden=hidden, dt=args.dt,
+        substep_coeff=(dec + 1) / (2 * dec)).to(device)
     if not args.fresh and args.hidden is None:
-        model.load_state_dict(ckpt["model"])
+        try:
+            model.load_state_dict(ckpt["model"])
+            print("loaded model weights from ckpt")
+        except (RuntimeError, KeyError) as e:
+            print(f"model weights incompatible with current arch "
+                  f"({e}) — starting fresh")
     opt_m = torch.optim.Adam(model.parameters(), lr=3e-4)
 
     mcfg = ModelConfig()
@@ -107,6 +122,12 @@ def main() -> None:
               f"wm_phi={stats['phi']:.4f} wm_stage={stats['stage']:.4f}",
               flush=True)
         val(f"b{done}")
+
+    if args.save_out:
+        torch.save({"model": model.state_dict(),
+                    "hidden": list(hidden), "dt": args.dt},
+                   args.save_out)
+        print(f"saved model -> {args.save_out}", flush=True)
 
 
 if __name__ == "__main__":
