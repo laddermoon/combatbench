@@ -439,3 +439,25 @@
   reach_rate 1.0、t_reach≈90f、band_frac 0.80、绕行 240–275°、
   零摔倒——旧残差协议的三大短板（逼近慢/近身失稳/绕不了圈）
   全部解决。
+
+### v2_stepbudget_r2 线（续训）— 终于 u6140，人工停（收敛）
+
+- 终态：stride 0.233 / cpl 0.556 / land 0.93 / dir_err 0.31 /
+  yaw_e 0.077 / viol 0.039 / vf 0.74m/s@b3-6 / quality 0.83。
+- 标定曲线（给规划层）：前向 b3-6/7-10/11-14/15-20 =
+  0.165/0.282/0.369/0.353m；最速 b3-6，最大步幅 b11-14。
+- **结论**：方向+预算协议验证成功——比 stepcmd 残差协议
+  最速 0.37→0.74 m/s（+100%）；Harness 走位三档满分。
+- stride 收敛于包络 ~70%（0.37/0.53m）：奖励均衡点，
+  再迈大需调权重（r2 的事）。
+
+### v2_stepbudarm_r1 线（步budget × ARMDUAL）— 启动
+
+- = stepbudget + 双臂独立软劫持（P0.1 双臂 / 单臂 50/50，
+  dur U(2,20)f，tgt U(-1,1)³——ARMDUAL 参数照抄）。
+- 通道 9：stepbudget 原 7 + r_arm_r/l·0.7（被劫帧 −err）。
+- 起训：stepbudget_r2 u6140 ckpt --reset-update（臂令段死维
+  →活跃，r_arm critic 冷启，步指标预期瞬态回落）。
+- max_updates=15000（启动即加，避免 r1 式预算耗尽接力）。
+- 交叉指标改造：land_1arm/land_2arm + stride_1arm/stride_2arm
+  （按令实际生存窗分桶，替代 stepcmd 的 arr/dmv 桶）。
