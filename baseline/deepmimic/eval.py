@@ -82,11 +82,13 @@ def eval_policy(policy_dir: str, clip_id: str,
     keys = ('reward', 'kp_err_m', 'kp_err_rel_m', 'root_dxy_m',
             'root_dyaw_deg', 'q_rmse_deg', 'phase')
     rec = {k: [] for k in keys}
+    acts = []
     obs_a, obs_b = rt.get_observation()
     while not rt.is_episode_over():
         aa, _ = pol.act(obs_a)
         ab, _ = standing.act(obs_b)
         rt.step(aa, ab)
+        acts.append(np.asarray(aa, dtype=np.float64).copy())
         out = rt.get_observer_output('track_a')
         for k in keys:
             rec[k].append(float(out[k]))
@@ -121,6 +123,16 @@ def eval_policy(policy_dir: str, clip_id: str,
         'q_rmse_deg_mean': _m('q_rmse_deg'),
         'q_rmse_deg_max': float(np.max(rec['q_rmse_deg'])) if n else 0.0,
     }
+    # 抖动量化：相邻控制步 action 变化率（|Δa| 均值/峰值）与
+    # 符号翻转率（每关节平均每步符号改变比例）。|Δa|~0=静止，
+    # ~0.1-0.3=正常跟踪，>0.5 或翻转率>30% 即高频抖动。
+    if len(acts) > 1:
+        A = np.asarray(acts)
+        da = np.abs(np.diff(A, axis=0))
+        flips = (np.diff(np.sign(A), axis=0) != 0).mean()
+        metrics['action_rate_mean'] = float(da.mean())
+        metrics['action_rate_max'] = float(da.max())
+        metrics['action_flip_rate'] = float(flips)
     rt.close()
 
     if json_path:

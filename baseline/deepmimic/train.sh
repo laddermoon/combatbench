@@ -18,12 +18,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # things/combatbenc
 CLIP="${1:?usage: train.sh <clip_id> [--smoke] [--fg] [extra args]}"
 shift
 
-FG=0; SMOKE=0; EXTRA=()
+FG=0; SMOKE=0; PROFILE="simchar"; EXTRA=()
 for a in "$@"; do
   case "$a" in
-    --fg)    FG=1 ;;
-    --smoke) SMOKE=1 ;;
-    *)       EXTRA+=("$a") ;;
+    --fg)     FG=1 ;;
+    --smoke)  SMOKE=1 ;;
+    --legacy) PROFILE="legacy" ;;
+    *)        EXTRA+=("$a") ;;
   esac
 done
 
@@ -38,15 +39,17 @@ PY
 )
 
 TS=$(date +%m%d_%H%M)
-RUN_NAME="dm_${CLIP}_${TS}"
+TAG=$([[ "$PROFILE" == "legacy" ]] && echo "_legacy" || echo "")
+RUN_NAME="dm_${CLIP}${TAG}_${TS}"
 
 ARGS=(--experiment deepmimic
       --set "clip_id=${CLIP}"
       --set "max_steps=${N_CTRL}"
+      --set "actuation_profile=${PROFILE}"
       --run-name "${RUN_NAME}")
 [[ $SMOKE == 1 ]] && ARGS+=(--smoke)
 [[ $FG == 0 ]] && ARGS+=(--background)
 
-echo "[train.sh] clip=${CLIP} n_ctrl=${N_CTRL} run=${RUN_NAME}"
+echo "[train.sh] clip=${CLIP} n_ctrl=${N_CTRL} profile=${PROFILE} run=${RUN_NAME}"
 exec env PYTHONPATH="$ROOT" python3 -B baseline/framework/train.py \
     "${ARGS[@]}" "${EXTRA[@]}"
