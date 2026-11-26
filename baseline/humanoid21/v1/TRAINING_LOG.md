@@ -483,3 +483,44 @@
   ②falls——硬劫持最大风险指标（tgt 阶跃=硬扰动，软版策略
   可平滑逼近、硬版周期起点跳变）；③land_2arm/stride_2arm
   是否显著劣于 1arm 桶；④部署契约：策略必须配覆写执行器。
+
+### v2_stepbudarm_r1 终态（软劫持）— 终于 u2840，人工停（未完全收敛）
+
+- 终态：stride 0.24（反超基座 0.233）/ cpl 0.565 / land 0.92 /
+  vf 0.78m/s / yaw_e 0.065 / dir_err 0.32 / viol 0.04 / falls 0.01 /
+  quality 0.83（峰值 0.87）。
+- 臂：arm_err_r/l 0.74/0.75（自 ~1.19 单调下降，未到 ~0.3 目标，
+  停时仍在爬坡）；occ_r/l 0.45/0.45、dual 0.10 符合调度分布。
+- err_stand 0.78 << err_down 1.71：失衡时主动放弃臂令保平衡
+  ——软仲裁的预期行为。
+- land_1arm 0.92 ≈ land_2arm 0.92、stride_1arm 0.22 ≈
+  stride_2arm 0.23：**双劫零劣势**——双臂同令干扰被步态消化。
+- 结论：软劫持 + 步令 = 步指标无损甚至微升；臂跟随可训但
+  收敛慢（2800u 到 0.75）。接续点：arm_err 到 ~0.3 前都可续训。
+
+### v2_stepbudhard_r1 终态（硬劫持）— 终于 u2845，人工停（降级均衡收敛）
+
+- 终态：stride 0.173（基座 −26%）/ cpl 0.449 / land 0.85 /
+  vf 0.56m/s / yaw_e 0.109 / dir_err 0.35 / falls 0.05（×4 基座）/
+  quality 0.63。
+- intent_err ~1.79：死臂维有界漂移，设计内（部署必配覆写
+  执行器）。occ_r/l 0.40/0.41、dual 0.09 符合调度×门控。
+- land_2arm 0.86 ≈ land_1arm 0.85、stride_2arm 0.18 ≈ 1arm
+  0.16：降级**均匀分布**，非双劫特例。
+- **关键形态**：u1255 起 flat ~1600 update、adv_std_prog 仍
+  1.5——真均衡非假平台（对比 stepbudget 假平台仅 ~300u）。
+- 结论：阶跃 tgt 硬劫持的物理均衡代价 = stride −26%、
+  land −8%、falls ×4、quality −0.2。补偿能力到顶。若需恢复
+  步指标：r2 候选干预 = tgt 周期起点 ramp（首选）/
+  dual_prob→0.05 / flag_height→1.15。
+- clip Harness（u02666）：前走 1.17m + 空击脚本站姿稳定——
+  当前均衡点已可支撑"走两步打一拳"部署场景。
+
+### punch_clip Harness（u2699 soft / u2666 hard）
+
+- `stepbudget_punch_accept.py`：前走 60f → 保持令 → R/L 交替
+  空击（punch_sweep 原语 [1,0,-1]，guard [0.17,0.17,0.33]）。
+- 软版臂令仅写 obs；硬版 obs 承诺+外置覆写执行器+站立门控
+  ——复刻部署三件套。两版视频零摔、出拳到位。
+- `v2_stepbudget_clip_env.yaml`：去 RandomFallenStatePlugin
+  （无概率开关、每局必倒地开局，clip 必须干净起点）。
