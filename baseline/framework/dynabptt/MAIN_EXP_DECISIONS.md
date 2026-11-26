@@ -12,8 +12,14 @@
 
 ### 2. WM 网络定义
 - `SelfWorldModel`（GenCoord Δv + 解析积分，dt=0.02，substep_coeff=11/20）
-- hidden 1024³；头：obs / aux / state 回归
-- φ 由 rep 解析计算（不学习、不 clamp）
+- hidden 1024³；职责只有**状态转移回归**：(rep, aux, a) → (rep', aux')
+- obs/aux 头仅用于在想象中渲染策略输入（obs 由 rep 组合 + feet 置零）
+
+**势函数 φ 与 WM 完全无关**：φ 是状态的解析函数
+（uprightness×z/standing_height），对 Env 产出的真实状态和 WM 产出
+的想象状态一视同仁地计算——不学习、不 clamp、不是 WM 的头。
+StartSet 中每个状态的 φ 权重、想象损失 J、诊断信号，用的都是这
+同一个解析 φ。
 
 ### 3. Init StartSet
 - `{standup}` 单状态，φ=1
