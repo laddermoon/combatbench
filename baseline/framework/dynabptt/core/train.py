@@ -99,6 +99,8 @@ def main() -> None:
     p.add_argument("--admit-intermediate", action="store_true")
     p.add_argument("--evict", choices=["phi", "random"], default="phi")
     p.add_argument("--cap", type=int, default=4096)
+    p.add_argument("--kappa", type=float, default=6.0)
+    p.add_argument("--weighted-frac", type=float, default=0.85)
     p.add_argument("--obs-noise-scale", type=float, default=1.0)
     p.add_argument("--model-hidden", type=int, default=1024)
     p.add_argument("--fit-phi-weight", type=float, default=0.0,
@@ -161,7 +163,8 @@ def main() -> None:
 
     # --- initial standup state: one in-process probe via the collector ---
     # bootstrap: use a fresh env state captured by a zero-action rollout
-    ss = StartSetManager(cap=args.cap, evict=args.evict, rng=rng)
+    ss = StartSetManager(cap=args.cap, evict=args.evict, rng=rng,
+                         kappa=args.kappa, weighted_frac=args.weighted_frac)
     replay: list[dict] = []       # branches as fit windows (len=nstep)
     hold: list[dict] = []         # small holdout for gate eval
     critic_pool: list[dict] = []  # ALL branches incl. terminated + eval

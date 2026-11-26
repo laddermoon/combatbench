@@ -20,7 +20,8 @@ CAP = 4096
 
 class StartSetManager:
     def __init__(self, cap: int = CAP, dedup_eps: float = DEDUP_EPS,
-                 evict: str = "phi", rng: np.random.Generator = None):
+                 evict: str = "phi", rng: np.random.Generator = None,
+                 kappa: float = KAPPA, weighted_frac: float = 0.85):
         self.cs = []          # list of (D,) float32 arrays — core states
         self.phi = []         # parallel list of float
         self.reps = None      # cached (N, R) float32 reps for dedup/dist
@@ -28,6 +29,8 @@ class StartSetManager:
         self.dedup_eps = float(dedup_eps)
         self.evict = str(evict)
         self._rng = rng if rng is not None else np.random.default_rng(0)
+        self.kappa = float(kappa)
+        self.weighted_frac = float(weighted_frac)
         self.n_admitted = 0
         self.n_dedup_skip = 0
         self.n_evicted = 0
@@ -80,11 +83,11 @@ class StartSetManager:
         if N == 0:
             raise RuntimeError("StartSet empty")
         n = min(int(n), N)
-        n_u = min(N, int(round(n * (1.0 - WEIGHTED_FRAC))))
+        n_u = min(N, int(round(n * (1.0 - self.weighted_frac))))
         n_w = n - n_u
         out = []
         if n_w > 0:
-            w = np.power(np.maximum(np.asarray(self.phi), 1e-3), KAPPA)
+            w = np.power(np.maximum(np.asarray(self.phi), 1e-3), self.kappa)
             w = w / w.sum()
             out.append(rng.choice(N, size=n_w, replace=N < n_w, p=w))
         if n_u > 0:
