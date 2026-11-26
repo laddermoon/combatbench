@@ -84,7 +84,6 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
         obs_seq, cs_seq, act_seq, det_seq, term_seq = [], [], [], [], []
         obs_now = _ENV.get_observation()
         o = np.asarray(obs_now[0], dtype=np.float32)
-        o[52:54] = 0.0  # feet_forces: policy never sees contact channels
         cs_seq.append(_flatten(_ENV.simulator.get_core_state(), AGENT))
         obs_seq.append(o.copy())
         terminated = False
@@ -97,7 +96,6 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
             a = np.clip(a, -1.0, 1.0).astype(np.float32)  # match env clamp
             _ENV.step(a, ZERO21)
             o = np.asarray(_ENV.get_observation()[0], dtype=np.float32)
-            o[52:54] = 0.0  # feet_forces masked everywhere
             cs_seq.append(_flatten(_ENV.simulator.get_core_state(), AGENT))
             obs_seq.append(o.copy())
             act_seq.append(a.astype(np.float32))
