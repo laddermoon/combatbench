@@ -377,6 +377,25 @@ def _cmd_phc2core(args) -> int:
     return 0
 
 
+def _cmd_playenv(args) -> int:
+    import os
+    os.environ['MUJOCO_GL'] = 'osmesa'     # set before mujoco/backend init;
+                                         # simulator.py defaults to egl (broken here)
+    from .replay_env import render_clip
+    if args.clip:
+        clips = [Path(args.clip)]
+    else:
+        clips = sorted(Path(args.dir).glob('*.npz'))
+        if args.only:
+            clips = [c for c in clips if args.only in c.stem]
+    for p in clips:
+        cc = CoreClip.load(p)
+        out = Path(args.out or (Path(args.outdir) / f'{p.stem}.mp4'))
+        render_clip(cc, out, robot=args.robot)
+        print(f'[OK] {p.stem}.mp4')
+    return 0
+
+
 def _cmd_info(args) -> int:
     clip = CoreClip.load(args.clip)
     print(f"{clip}")
@@ -522,6 +541,18 @@ def main(argv=None) -> int:
     p.add_argument("--end", type=int, default=None)
     p.add_argument("--no-ref-action", action="store_true")
     p.set_defaults(fn=_cmd_convert)
+
+    p = sub.add_parser("play-env",
+                       help="kinematic replay on battle XML -> mp4")
+    p.add_argument("--clip", default=None, help="single npz")
+    p.add_argument("--dir", default=None, help="dir of npz (batch)")
+    p.add_argument("--only", default=None)
+    p.add_argument("--out", default=None, help="mp4 path (single mode)")
+    p.add_argument("--outdir",
+                   default=str(Path(__file__).resolve().parents[1]
+                               / 'data' / 'core' / 'videos'))
+    p.add_argument("--robot", default="robot_a")
+    p.set_defaults(fn=_cmd_playenv)
 
     p = sub.add_parser("phc2core", help="PHC bundle pkl -> CoreClip npz dir")
     p.add_argument("--bundle", default="core")
