@@ -260,3 +260,53 @@ BPTT 即可经解析梯度教出恢复技能（actor 仍纯 BPTT 训练，teache
 注入 replay。判据：len 突破 ~90 即机理坐实；若仍卡 80，则说明
 off-manifold 问题比"数据覆盖"更深（可能是动作条件化错误——模型
 只在 teacher 动作分布下正确，对 learner 的动作插值失真）。
+
+## T9 判定性分解：开环完美 / 闭环经 obs 通道腐蚀（u300+ 结论）
+
+T8 teacher 注入 + BC 热启（PPO 蒸馏策略真实 len=1477）后，BPTT 在
+**3 个 update 内把胜任策略毁回 len~60**（v11/v13/v14 三连复现，
+含 analytic done + 真实数据接地 critic 的 v14 同样崩）——这排除了
+「终止头悲观」和「critic 被想象误差污染」两个假设。分解实验定位
+真病灶：
+
+| 环节 | 实测 |
+|---|---|
+| 模型开环跟踪（真实 teacher 动作序列，H=32） | φ MAE **0.003**，零 dive ——动力学本身近完美 |
+| obs 组合误差（feet 力头） | MAE 0.371（通道 std 0.57）≈无信息 |
+| obs 组合误差（其余 55 维） | MAE 0.083 |
+| obs 误差诱导的动作偏差 | 随想象步长增长至 ~0.10 ≈ actor σ(0.12) |
+| 闭环想象（actor 自己的动作） | **41% 轨迹 32 步内 φ<0.5**（真实≈0） |
+| feet 通道置零对照 | J 无变化——feet 不是主犯 |
+
+**机理终版**：误差不在动力学而在 **obs→action 反馈环**——想象每步
+喂给 actor 的组合 obs 带 ~0.08 系统性偏差，动作被逐步推离其训练
+分布，想象状态随即离流形。BPTT 的 ∂J/∂θ 穿过这个失真回路，把策略
+拽向"模型以为对的方向"=回归数据分布，与真实收益反相关。
+
+**官方早已内置对此的防御**（读源码发现）：`compute_actor_sensor(
+noisy=True)` 给想象每一步的 actor 输入加逐维均匀抖动
+（projected_gravity ±0.05、ang_vel ±0.2、joint_pos ±0.01、
+joint_vel ±0.5），历史窗 warmstart 同样加噪。策略永远学不到依赖
+精确 obs 值 → obs 组合误差无法腐蚀反馈环。我们此前所有 run 的
+想象 obs 都是确定性的——actor 可以过拟合模型的精确 obs。
+
+**当前验证**：v15（官方规格 + obs-noise=1.0）/ v16（再叠 analytic
+done）从零开跑，判据仍是 len 突破 ~90。
+
+## T10 社区复现横向对比（成立条件细化）
+
+| 实现 | 环境/物理 | 结果 | 关键设计 |
+|---|---|---|---|
+| 官方 supermimic | MuJoCo-Warp 4096 env | 成功（paper） | rep_state/proprio obs + 均匀抖动；解析 tracking 终止；ref-anchored 稠密奖励 |
+| CuboiLeo/SuperMimic-Reproduced | mjlab/MuJoCo-Warp | **0.904** @LAFAN1-40（anchor-relative obs）；paper-faithful obs 平台 0.56 | 全程训练日志+bug 清单；诊断出纯本体 obs 下 root 漂移 1.7°/s 是平台主因 |
+| zita-ch/supermimic_vibed | IsaacLab/MJWarp | eval 0.829 @it14000（1.5h） | v2 加速版（只预测加速度）0.842/0.95h |
+| Breezewrf/supermimic_mjlab | mjlab | 短跑不升（100 轮 imag-return 健康但 real-return 0.0017） | **明确警告：勿以想象回报判学习**——与我们 J 虚高现象互证 |
+
+**提炼的成立条件交集**（三家成功复现共有、我们缺的）：
+1. **参考系锚定**：跟踪任务中目标位姿每步确定性推进，actor 永远
+   知道"该在哪"——想象离流形时有显式信号拉回；我们的平衡任务无
+   参考，离流形只能靠自己爬回来
+2. **obs 抖动**：官方+成功复现都保留；我们直到 v15 才加上
+3. **终止解析化**：全部是 tracking-误差规则，无一用学习式终止
+4. **想象回报≠真实回报**：mjlab 复现的 100 轮教训与我们 J=1.2
+   虚高/真实 0.76 完全同构

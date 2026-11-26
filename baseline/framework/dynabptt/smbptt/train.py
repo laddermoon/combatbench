@@ -122,6 +122,24 @@ def main() -> None:
     p.add_argument("--teacher-every", type=int, default=0,
                    help="if >0, re-collect teacher episodes every N "
                         "updates (keeps teacher data fresh in replay)")
+    # imagination variants (grounded-critic experiment)
+    p.add_argument("--imag-stochastic", type=int, default=1,
+                   help="1=reparam stochastic actions in imagination "
+                        "(matches real sigma), 0=official deterministic")
+    p.add_argument("--imag-done", choices=["learned", "analytic"],
+                   default="learned",
+                   help="'analytic' replaces the pessimistic learned done "
+                        "head with sigmoid((phi_done-phi)/0.05)")
+    p.add_argument("--phi-done", type=float, default=0.45)
+    p.add_argument("--critic-real", type=int, default=0,
+                   help="1=fit rep-critic on REAL trajectories (GAE on "
+                        "real rewards/dones) instead of imagined rollouts "
+                        "— grounds the bootstrap against model error")
+    p.add_argument("--imag-obs-noise", type=float, default=0.0,
+                   help="scale of per-dim uniform jitter on imagined actor "
+                        "obs (official PROPRIO_NOISE_HALF_WIDTHS; 1.0 = "
+                        "official magnitude) — robustifies the policy "
+                        "against obs-composition error in imagination")
     p.add_argument("--resume-from", type=str, default=None)
     args = p.parse_args()
 
@@ -274,6 +292,13 @@ def main() -> None:
 
         # --- 3. BPTT policy improvement ---------------------------------
         t_p = time.time()
+        critic_trajs = None
+        if args.critic_real and len(replay.fit) >= 8:
+            # ground the bootstrap on real data: sample recent real trajs
+            # (teacher + self data both count — all are real transitions
+            # with real rewards/done labels)
+            cidx = rng_m.integers(len(replay.fit), size=64)
+            critic_trajs = [replay.fit[i] for i in cidx]
         for _ in range(args.imag_per_update):
             seeds = replay.sample_seeds(args.seeds, rng_m, pool="fit",
                                         tail_frac=0.3, tail_region=40)
@@ -288,7 +313,13 @@ def main() -> None:
                 device=device)
             bstats = bptt_update(
                 model, actor, vrep, opt_a, opt_v, cs0, o0,
-                horizon=args.horizon, gamma=args.gamma, lam=args.lam)
+                horizon=args.horizon, gamma=args.gamma, lam=args.lam,
+                stochastic=args.imag_stochastic,
+                done_mode=args.imag_done,
+                phi_done=args.phi_done,
+                critic_trajs=(
+                    critic_trajs if args.critic_real else None),
+                obs_noise=args.imag_obs_noise)
             rec.update({f"bptt_{k}": v for k, v in bstats.items()})
         rec["t_bptt"] = time.time() - t_p
 

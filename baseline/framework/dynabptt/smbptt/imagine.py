@@ -22,7 +22,8 @@ from typing import Dict, Optional, Tuple
 import torch
 
 from ..hybrid_ppo.model import RepCritic, SelfWorldModel
-from .task import (MAX_STEP_REWARD, STEP_PHI_COEF, W_FALL, analytic_phi,
+from .task import (MAX_STEP_REWARD, OBS_NOISE_HALF, STEP_PHI_COEF, W_FALL,
+                   analytic_phi,
                    compose_obs)
 
 
@@ -47,7 +48,9 @@ class ImaginedRollout:
     """Stateful differentiable env over the frozen world model."""
 
     def __init__(self, model: SelfWorldModel, actor, vrep: RepCritic,
-                 horizon: int = 16, gamma: float = 0.99, lam: float = 0.95):
+                 horizon: int = 16, gamma: float = 0.99, lam: float = 0.95,
+                 stochastic: bool = True, done_mode: str = "learned",
+                 phi_done: float = 0.45, obs_noise: float = 0.0):
         self.model = model
         self.actor = actor
         self.vrep = vrep
@@ -55,13 +58,30 @@ class ImaginedRollout:
         self.gamma = float(gamma)
         self.lam = float(lam)
         self.v_max = MAX_STEP_REWARD / (1.0 - gamma)
+        self.stochastic = bool(stochastic)
+        # done_mode 'learned': done head (inherits data-policy failure
+        # stats — pessimistic); 'analytic': sigmoid((phi_done-phi)/0.05),
+        # only deep falls terminate, moderate dips stay survivable.
+        self.done_mode = done_mode
+        self.phi_done = float(phi_done)
+        # official obs-jitter scale (0 = off); only the actor's imagined
+        # input is noised — critic/model see the clean rep.
+        self.obs_noise = float(obs_noise)
+        self._noise_half = None
 
     def _obs(self, rep: torch.Tensor, aux: torch.Tensor,
              heads: Optional[Dict[str, torch.Tensor]]) -> torch.Tensor:
         if heads is None:
             with torch.no_grad():
                 heads = self.model.heads(rep, aux)
-        return compose_obs(rep, aux, heads["obs"][..., 52:54])
+        o = compose_obs(rep, aux, heads["obs"][..., 52:54])
+        if self.obs_noise > 0.0:
+            if self._noise_half is None:
+                self._noise_half = torch.as_tensor(
+                    OBS_NOISE_HALF, dtype=o.dtype, device=o.device)
+            o = o + (torch.rand_like(o) * 2 - 1) * (
+                self._noise_half * self.obs_noise)
+        return o
 
     def rollout(self, cs0: torch.Tensor, o0: torch.Tensor):
         """Run H imagined steps; returns (loss, stats, critic data).
@@ -80,7 +100,10 @@ class ImaginedRollout:
             # so imagination must see the same action noise to stay honest
             # (deterministic imagination produced phi~1.0 while reality
             # decayed to 0.76 — the trained policy never met its own noise).
-            a, _ = actor.sample_action(o)
+            if self.stochastic:
+                a, _ = actor.sample_action(o)
+            else:
+                a = actor.deterministic_action(o)
             # critic input = PRE-step state s_t (official convention):
             # V(s_t) targets r_{t+1} + gamma * V(s_{t+1}), so the
             # bootstrap term gamma^H * V(s_H) cannot double-count r(s_H).
@@ -88,7 +111,12 @@ class ImaginedRollout:
             auxs_seq.append(aux.detach())
             aux, rep = model.next_state(rep, aux, a)
             hd = model.heads(rep, aux)
-            p_term = torch.sigmoid(hd["done_logit"])
+            if self.done_mode == "analytic":
+                p_term = torch.sigmoid(
+                    (self.phi_done - analytic_phi(rep).clamp(0.0, 1.0))
+                    / 0.05)
+            else:
+                p_term = torch.sigmoid(hd["done_logit"])
             # scalar-equivalent of the real two-channel objective:
             # r_fall*w_fall + r_cross*(w_cross*phi^2), phi clipped [0,1]
             phi = analytic_phi(rep).clamp(0.0, 1.0)
@@ -153,12 +181,64 @@ class ImaginedRollout:
         return loss / (epochs * minibatches)
 
 
+def fit_critic_real(model: SelfWorldModel, vrep: RepCritic,
+                    opt_c: torch.optim.Optimizer, trajs,
+                    gamma: float, lam: float, v_max: float,
+                    minibatches: int = 8) -> float:
+    """Fit rep-critic on REAL trajectories (GAE returns on real
+    rewards/dones) — grounds the bootstrap so model errors cannot
+    corrupt V. trajs: AlignedTraj list (cs/phi/aux_rew/done)."""
+    import numpy as np
+    xs, ys = [], []
+    for tr in trajs:
+        cs = torch.as_tensor(tr.cs, dtype=torch.float32,
+                             device=next(vrep.parameters()).device)
+        rep, aux = model.rep_aux_from_cs(cs)
+        with torch.no_grad():
+            phi = analytic_phi(rep).clamp(0.0, 1.0)
+            auxr = torch.as_tensor(tr.aux_rew, dtype=torch.float32,
+                                   device=cs.device).clamp(-1.0, 1.0)
+            rew = (STEP_PHI_COEF * W_FALL * phi
+                   + phi * phi * auxr)
+            done = torch.as_tensor(
+                tr.done if tr.done is not None else np.zeros(tr.T),
+                dtype=torch.float32, device=cs.device)
+            ret = torch.zeros(tr.T, device=cs.device)
+            g = torch.zeros((), device=cs.device)
+            for t in reversed(range(tr.T)):
+                nd = 1.0 - done[t]
+                g = rew[t] + gamma * g * nd
+                ret[t] = g
+            ret = ret.clamp(max=v_max)
+        xs.append(torch.cat([rep, aux], -1))
+        ys.append(ret)
+    if not xs:
+        return 0.0
+    X = torch.cat(xs); Y = torch.cat(ys)
+    vrep.requires_grad_(True)
+    loss = 0.0
+    n = 0
+    perm = torch.randperm(len(Y), device=Y.device)[:minibatches * 4096]
+    for i in range(0, len(perm), 4096):
+        idx = perm[i:i + 4096]
+        l = ((vrep(X[idx, :52], X[idx, 52:]) - Y[idx]) ** 2).mean()
+        opt_c.zero_grad(set_to_none=True)
+        l.backward()
+        torch.nn.utils.clip_grad_norm_(vrep.parameters(), 1.0)
+        opt_c.step()
+        loss += float(l); n += 1
+    return loss / max(n, 1)
+
+
 def bptt_update(model: SelfWorldModel, actor, vrep: RepCritic,
                 opt_a: torch.optim.Optimizer,
                 opt_c: torch.optim.Optimizer,
                 cs0: torch.Tensor, o0: torch.Tensor, horizon: int = 16,
                 gamma: float = 0.99, lam: float = 0.95,
                 grad_elem_clip: float = 0.1,
+                stochastic: bool = True, done_mode: str = "learned",
+                phi_done: float = 0.45,
+                critic_trajs=None, obs_noise: float = 0.0,
                 ) -> Dict[str, float]:
     """One imagined rollout + one actor step + critic fit (one batch)."""
     # Freeze weights, keep the graph live for the actor gradient.
@@ -166,7 +246,9 @@ def bptt_update(model: SelfWorldModel, actor, vrep: RepCritic,
         p.requires_grad_(False)
     actor.train()
 
-    env = ImaginedRollout(model, actor, vrep, horizon, gamma, lam)
+    env = ImaginedRollout(model, actor, vrep, horizon, gamma, lam,
+                          stochastic=stochastic, done_mode=done_mode,
+                          phi_done=phi_done, obs_noise=obs_noise)
     loss, stats, crit = env.rollout(cs0, o0)
     opt_a.zero_grad(set_to_none=True)
     loss.backward()
@@ -175,7 +257,11 @@ def bptt_update(model: SelfWorldModel, actor, vrep: RepCritic,
             p.grad.clamp_(-grad_elem_clip, grad_elem_clip)
     gnorm = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
     opt_a.step()
-    stats["vloss"] = env.fit_critic(crit, opt_c)
+    if critic_trajs is not None:
+        stats["vloss"] = fit_critic_real(
+            model, vrep, opt_c, critic_trajs, gamma, lam, env.v_max)
+    else:
+        stats["vloss"] = env.fit_critic(crit, opt_c)
     stats["actor_gnorm"] = float(gnorm)
     for p in list(model.parameters()) + list(vrep.parameters()):
         p.requires_grad_(True)

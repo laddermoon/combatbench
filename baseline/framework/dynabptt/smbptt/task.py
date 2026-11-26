@@ -115,6 +115,23 @@ def compose_obs(rep: torch.Tensor, aux: torch.Tensor,
     ], dim=-1)
 
 
+# Per-dim uniform-noise half-widths for imagined actor obs — mirrors official
+# PROPRIO_NOISE_HALF_WIDTHS (projected_gravity .05 / base_ang_vel .2 /
+# joint_pos .01 / joint_vel .5). Makes the trained policy unable to rely on
+# exact imagined obs, so obs-composition error cannot corrupt the
+# obs->action feedback loop inside imagination.
+OBS_NOISE_HALF = (
+    [0.01] * 21 +      # joint_pos_norm
+    [0.15] * 21 +      # jv sqrt-space
+    [0.05] * 3 +       # projected_gravity
+    [0.01] +           # height
+    [0.10] * 3 +       # lin_vel body
+    [0.10] * 3 +       # ang_vel sqrt-space
+    [0.30] * 2 +       # feet_forces (learned head — weakest channel)
+    [0.05] * 3         # arena_center_local
+)
+
+
 def extract_balance(episode, update: int,
                     agent_ids=AGENT_IDS,
                     obs_slice: int = 0) -> List[AlignedTraj]:
