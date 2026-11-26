@@ -74,7 +74,8 @@ def main() -> None:
     p.add_argument("--phy-steps", type=int, default=10)
     p.add_argument("--max-steps", type=int, default=1500)
     p.add_argument("--subset", type=int, default=1024)
-    p.add_argument("--nstep", type=int, default=8)
+    p.add_argument("--nstep", type=int, default=32)
+    p.add_argument("--fit-unroll", type=int, default=16)
     p.add_argument("--workers", type=int, default=24)
     p.add_argument("--sigma", type=float, default=0.15)
     p.add_argument("--no-critic", action="store_true")
@@ -216,7 +217,7 @@ def main() -> None:
         # critic pool keeps EVERYTHING — early-terminated branches carry
         # the only true terminal zeros that ground the value function.
         for b in branches:
-            if len(b["act"]) >= args.nstep:
+            if len(b["act"]) >= args.fit_unroll:
                 (hold if rng.random() < 0.05 else replay).append(b)
             critic_pool.append(b)
         if len(replay) > REPLAY_CAP:
@@ -242,24 +243,28 @@ def main() -> None:
         if len(replay) >= args.model_batch:
             for _ in range(args.model_batches):
                 bidx = rng.integers(0, len(replay), args.model_batch)
+                fu = args.fit_unroll
+                sel = [replay[i] for i in bidx]
+                ofs = [int(rng.integers(0, len(b["act"]) - fu + 1))
+                       for b in sel]
                 cs0 = torch.as_tensor(np.stack(
-                    [replay[i]["cs"][0] for i in bidx]),
+                    [b["cs"][o] for b, o in zip(sel, ofs)]),
                     dtype=torch.float32, device=device)
                 acts = torch.as_tensor(np.stack(
-                    [replay[i]["act"][:args.nstep] for i in bidx]),
+                    [b["act"][o:o + fu] for b, o in zip(sel, ofs)]),
                     dtype=torch.float32, device=device)
                 cs_t = torch.as_tensor(np.stack(
-                    [replay[i]["cs"][1:args.nstep + 1] for i in bidx]),
+                    [b["cs"][o + 1:o + fu + 1] for b, o in zip(sel, ofs)]),
                     dtype=torch.float32, device=device)
                 obs_t = torch.as_tensor(np.stack(
-                    [replay[i]["obs"][1:args.nstep + 1] for i in bidx]),
+                    [b["obs"][o + 1:o + fu + 1] for b, o in zip(sel, ofs)]),
                     dtype=torch.float32, device=device)
                 rep_t = gc.represent(cs_t)
                 aux_t = gc.extract_aux(cs_t)
                 rep = gc.represent(cs0)
                 aux = gc.extract_aux(cs0)
                 L_s = L_obs = L_phi = 0.0
-                for m in range(args.nstep):
+                for m in range(fu):
                     aux, rep = model.next_state(rep, aux, acts[:, m])
                     h = model.heads(rep, aux)
                     L_s = L_s + bryson_state_loss(
@@ -268,7 +273,7 @@ def main() -> None:
                         h["obs_norm"], model.norm_o(obs_t[:, m]))
                     L_phi = L_phi + F.mse_loss(
                         h["phi"], analytic_phi(rep).clamp(0.0, 1.0))
-                loss = (L_s + 1.0 * L_obs + 0.5 * L_phi) / args.nstep
+                loss = (L_s + 1.0 * L_obs + 0.5 * L_phi) / fu
                 opt_m.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
@@ -286,15 +291,16 @@ def main() -> None:
             cs0h = torch.as_tensor(np.stack(
                 [hold[i]["cs"][0] for i in hidx]),
                 dtype=torch.float32, device=device)
+            gh = min(args.nstep, min(len(hold[i]["act"]) for i in hidx))
             actsh = torch.as_tensor(np.stack(
-                [hold[i]["act"][:args.nstep] for i in hidx]),
+                [hold[i]["act"][:gh] for i in hidx]),
                 dtype=torch.float32, device=device)
             real_phi = np.stack([
-                phi_np(hold[i]["cs"][1:args.nstep + 1]) for i in hidx])
+                phi_np(hold[i]["cs"][1:gh + 1]) for i in hidx])
             with torch.no_grad():
                 rep, aux = model.rep_aux_from_cs(cs0h)
                 preds = []
-                for m in range(args.nstep):
+                for m in range(gh):
                     aux, rep = model.next_state(rep, aux, actsh[:, m])
                     preds.append(analytic_phi(rep).clamp(0.0, 1.0))
                 pred_phi = torch.stack(preds, 1).cpu().numpy()
