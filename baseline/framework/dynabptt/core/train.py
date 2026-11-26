@@ -36,8 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.dynabptt.core.collect import BranchCollector
 from baseline.framework.dynabptt.core.model import (
-    RepWorldModel, phi_of_rep, state_loss, wmstate_breakdown,
-    wmstate_nrmse)
+    RepWorldModel, bryson_error, phi_of_rep, state_loss,
+    wmstate_breakdown, wmstate_nrmse)
 from baseline.framework.dynabptt.core.startset import StartSetManager
 from baseline.framework.dynabptt.hybrid_ppo import gencoord as gc
 from baseline.framework.dynabptt.smbptt.task import (
@@ -128,8 +128,10 @@ def main() -> None:
     p.add_argument("--kappa", type=float, default=6.0)
     p.add_argument("--model-hidden", type=int, default=1024)
     p.add_argument("--model-batch", type=int, default=256)
-    p.add_argument("--fit-threshold", type=float, default=0.01,
-                   help="1-step normalized RMSE on new windows")
+    p.add_argument("--fit-threshold", type=float, default=1.0,
+                   help="1-step Bryson-normalized error on new windows; "
+                        "1.0 = prediction error at nominal physical "
+                        "tolerance")
     p.add_argument("--fit-max-batches", type=int, default=2000,
                    help="safety cap on WM fit batches per update")
     p.add_argument("--hist-tau", type=float, default=100.0,
@@ -270,6 +272,7 @@ def main() -> None:
         new_branches = [b for b in replay if b["update"] == u]
         hist_branches = [b for b in replay if b["update"] < u]
         fit_ok = False
+        fit_err = float("nan")
         nrmse = float("nan")
         n_batches = 0
         wm_loss = 0.0
@@ -286,8 +289,8 @@ def main() -> None:
         # feet std for the fit loss
         win0 = _state_windows(
             new_branches[:min(512, len(new_branches))], device)
-        feet_std = win0[6].std(0).clamp_min(1e-3) if win0[0] is not None \
-            else torch.ones(2, device=device)
+        feet_std = win0[6].reshape(-1, 2).std(0).clamp_min(1e-3) \
+            if win0[0] is not None else torch.ones(2, device=device)
 
         while not fit_ok:
             model.fit_normalization(_pool_states(
@@ -319,7 +322,8 @@ def main() -> None:
                         wm_loss = _fit_batch(model, opt_m, win, feet_std)
                         n_batches += 1
 
-            # criterion: teacher-forced 1-step WMState nRMSE on NEW windows
+            # criterion: teacher-forced 1-step Bryson-normalized error
+            # on THIS update's new windows (rep_pred vs rep_env).
             win = _state_windows(new_branches, device, k_max=1)
             if win[0] is None:
                 break
@@ -327,10 +331,12 @@ def main() -> None:
             with torch.no_grad():
                 aux_p, rep_p, feet_p = model.next_state(
                     rep0, aux0, feet0, acts[:, 0])
+            fit_err = bryson_error(
+                rep_p, aux_p, rep_t[:, 0], aux_t[:, 0])
             nrmse = wmstate_nrmse(
                 rep_p, aux_p, feet_p,
                 rep_t[:, 0], aux_t[:, 0], feet_t[:, 0])
-            fit_ok = nrmse < args.fit_threshold
+            fit_ok = fit_err < args.fit_threshold
             if n_batches >= args.fit_max_batches:
                 rec["fit_top_dims"] = [
                     {"dim": d, "share": round(s, 3),
@@ -340,7 +346,8 @@ def main() -> None:
                         rep_t[:, 0], aux_t[:, 0], feet_t[:, 0])[:5]]
                 break
 
-        rec.update({"wm_loss": wm_loss, "fit_nrmse": nrmse,
+        rec.update({"wm_loss": wm_loss, "fit_err": fit_err,
+                    "fit_nrmse": nrmse,
                     "fit_batches": n_batches, "fit_ok": bool(fit_ok)})
 
         # diagnostic: paired closed-loop phi-MAE on 64 of this update's
@@ -414,7 +421,8 @@ def main() -> None:
         jlog(rec)
         print(f"[u{u:04d}] ss={len(ss)} det={rec['n_det']} "
               f"surv={rec['branch_surv']:.2f} "
-              f"fit={'OK' if fit_ok else 'X'}({nrmse:.4f},{n_batches}b) "
+              f"fit={'OK' if fit_ok else 'X'}"
+              f"({fit_err:.3f}|nrmse{nrmse:.3f},{n_batches}b) "
               f"pair={paired_mae:.3f} "
               f"J={rec.get('J', float('nan')):.2f} "
               f"t={rec['t']:.1f}s", flush=True)

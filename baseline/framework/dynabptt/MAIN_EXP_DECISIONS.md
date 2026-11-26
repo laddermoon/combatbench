@@ -20,7 +20,13 @@
   EnvState→WMState = represent/extract_aux + obs[52:54] 切片
   WMState→Observation = compose_obs(rep, aux, feet) 解析
   WMState→Loss = analytic_phi(rep) 解析
-- 判据 = 全 WMState 向量的 1-step 全局 nRMSE < 0.01
+- **判据 = 1-step Bryson 归一化误差 < 1.0**：rep_pred vs rep_env
+  在 loss_blocks 的四个块（root_pos/root_ori/joint_pos/joint_vel）
+  上按 NOMINAL_ERRORS 归一的均方误差；1.0 = 误差在物理容忍度内。
+  feet 不进判据（物理上承认不可精确回归，仍进 loss）
+- 判据与 φ 完全无关——WM 只负责 rep 对 rep 的回归质量
+- 已证伪：全 WMState 全局 nRMSE<0.01 够不着——离线死训地板
+  ~0.9（接触混沌致 vj 不可约误差），若坚持会让策略永不更新
 
 **已证伪的路线（留档）**：WMState=obs(57) 的 obs→obs 回归存在
 不可约误差地板——feet_forces 由不可见接触状态决定（rmse≈std，

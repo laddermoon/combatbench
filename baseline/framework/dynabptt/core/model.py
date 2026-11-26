@@ -108,6 +108,22 @@ def state_loss(rep: torch.Tensor, aux: torch.Tensor,
     return L + 0.5 * feet_err.pow(2).mean()
 
 
+def bryson_error(rep_p, aux_p, rep_t, aux_t) -> float:
+    """1-step fit criterion: sqrt of the nominal-error-normalized
+    mean squared error over the integrated blocks (root pose, joint
+    pos/vel).  1.0 == prediction error at the physical nominal scale.
+    Pure rep-vs-env comparison; feet excluded (acknowledged
+    unpredictable), phi nowhere."""
+    pb = gc.loss_blocks(rep_p, aux_p)
+    tb = gc.loss_blocks(rep_t, aux_t)
+    num = den = 0.0
+    for name, blk in pb.items():
+        w = 1.0 / gc.NOMINAL_ERRORS[name] ** 2
+        num = num + w * blk.shape[-1] * F.mse_loss(blk, tb[name])
+        den = den + blk.shape[-1]
+    return float((num / den).sqrt())
+
+
 def wmstate_nrmse(rep_p, aux_p, feet_p, rep_t, aux_t, feet_t) -> float:
     """Global NRMSE over the whole WMState vector:
     sqrt( sum err^2 / sum centered-var )."""
