@@ -32,6 +32,7 @@ CoreClip 是**绑定 Humanoid21 仿真器**的动作记录格式：
 | `joint_pos_norm` | (T,21) f32 | `CONTROLLED_JOINTS` 顺序，norm=(q−mid)/half |
 | `joint_vel_norm` | (T,21) f32 | norm=qv/half（无量纲/s） |
 | `ref_action` | (T,21) f32，可选 | 归一化 PD 目标指令，∈[−1,1] |
+| `keypoint_pos` | (T,K,3) f32，可选 | 语义关键点世界系位置，K=`meta.keypoint_names`；由状态 FK 得到（mocap/battle 同一运动树），供 `r_kp`、摔倒判定等参考侧消费，不进 `set_core_state` |
 | `meta_json` | 标量 str | UTF-8 JSON，见 §3 |
 
 归一化基准（mid/half）= Humanoid21 关节限位
@@ -61,6 +62,9 @@ meta 中只记 `joint_space="humanoid21"` 标识。
     {"op": "rederive_vel", "parent": "jab_r_core", "params": {...}}
     // op: convert | slice | fix_ground | rederive_vel | record | edit | reclip
   ],
+  "keypoint_names": ["torso", "head", "pelvis",   // 有 keypoint_pos 时必填；
+                     "foot_right", "foot_left",    // KEYPOINT_BODIES 顺序
+                     "hand_right", "hand_left"],
   "ref_action_semantics": "pd_target_norm",  // 有 ref_action 时必填
                                              // 或 "best_effort_pd_target"
                                              // 或 "executed_pd_target"

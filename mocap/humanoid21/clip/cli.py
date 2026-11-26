@@ -357,9 +357,9 @@ def _cmd_convert(args) -> int:
 def _cmd_phc2core(args) -> int:
     import pickle
     from .convert import phc_to_coreclip
+    phc_dir = Path(__file__).resolve().parents[1] / 'phc'
     bundle = pickle.load(open(
-        f'/data1/dev/combatbench_mocap/phc/combatbench_{args.bundle}_v1.pkl',
-        'rb'))
+        phc_dir / f'combatbench_{args.bundle}_v1.pkl', 'rb'))
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
     n = 0
     for cid in sorted(bundle):

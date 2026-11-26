@@ -79,12 +79,16 @@ class CoreClip:
 
     def __init__(self, states: Dict[str, np.ndarray],
                  meta: Dict[str, Any],
-                 ref_action: Optional[np.ndarray] = None) -> None:
+                 ref_action: Optional[np.ndarray] = None,
+                 keypoint_pos: Optional[np.ndarray] = None) -> None:
         self.states = {k: np.asarray(v, dtype=np.float32)
                        for k, v in states.items()}
         self.meta = dict(meta)
         self.ref_action = (None if ref_action is None
                            else np.asarray(ref_action, dtype=np.float32))
+        self.keypoint_pos = (None if keypoint_pos is None
+                             else np.asarray(keypoint_pos,
+                                             dtype=np.float32))
         warnings = self.validate()
         if warnings:
             import warnings as _w
@@ -128,6 +132,18 @@ class CoreClip:
                                  self.states["root_rot"][k1], a)
         return out
 
+    def keypoint(self, k: int) -> Dict[str, np.ndarray]:
+        """Frame k keypoints as {name: pos} — needs keypoint_pos +
+        meta['keypoint_names']."""
+        if self.keypoint_pos is None:
+            raise KeyError(f"CoreClip[{self.clip_id}] has no keypoint_pos")
+        names = self.meta.get("keypoint_names")
+        if not names:
+            raise KeyError(f"CoreClip[{self.clip_id}] meta lacks "
+                           "'keypoint_names'")
+        return {n: self.keypoint_pos[int(k), i].copy()
+                for i, n in enumerate(names)}
+
     def slice(self, k0: int, k1: int, clip_id: Optional[str] = None
               ) -> "CoreClip":
         states = {f: self.states[f][k0:k1] for f in CORE_FIELDS}
@@ -139,13 +155,16 @@ class CoreClip:
                               frames=[k0, k1])
         ra = None if self.ref_action is None \
             else self.ref_action[k0:k1]
-        return CoreClip(states, meta, ra)
+        kp = None if self.keypoint_pos is None \
+            else self.keypoint_pos[k0:k1]
+        return CoreClip(states, meta, ra, kp)
 
     # --------------------------------------------------------------
     @classmethod
     def from_states(cls, states: Sequence[Dict[str, np.ndarray]],
                     meta: Dict[str, Any],
-                    ref_action: Optional[Sequence[np.ndarray]] = None
+                    ref_action: Optional[Sequence[np.ndarray]] = None,
+                    keypoint_pos: Optional[np.ndarray] = None
                     ) -> "CoreClip":
         """Build from a list of per-robot CoreState dicts."""
         if not states:
@@ -156,7 +175,7 @@ class CoreClip:
             [np.asarray(a) for a in ref_action])
         m = dict(meta)
         m.setdefault("spec_version", SPEC_VERSION)
-        return cls(stacked, m, ra)
+        return cls(stacked, m, ra, keypoint_pos)
 
     # --------------------------------------------------------------
     def validate(self) -> List[str]:
@@ -187,6 +206,20 @@ class CoreClip:
             if "ref_action_semantics" not in self.meta:
                 warnings.append("ref_action present but meta lacks "
                                 "'ref_action_semantics'")
+        if self.keypoint_pos is not None:
+            s = self.keypoint_pos.shape
+            names = self.meta.get("keypoint_names")
+            if len(s) != 3 or s[0] != T or s[2] != 3:
+                errors.append(f"keypoint_pos shape {s}, "
+                              f"expected ({T},K,3)")
+            elif names and s[1] != len(names):
+                errors.append(f"keypoint_pos K={s[1]} but "
+                              f"keypoint_names has {len(names)}")
+            elif not np.isfinite(self.keypoint_pos).all():
+                errors.append("keypoint_pos contains NaN/inf")
+            if not names:
+                warnings.append("keypoint_pos present but meta lacks "
+                                "'keypoint_names'")
         q = self.states["root_rot"]
         if not np.isfinite(q).all():
             errors.append("root_rot contains NaN/inf")
@@ -221,6 +254,8 @@ class CoreClip:
         arrays = dict(self.states)
         if self.ref_action is not None:
             arrays["ref_action"] = self.ref_action
+        if self.keypoint_pos is not None:
+            arrays["keypoint_pos"] = self.keypoint_pos
         arrays["meta_json"] = np.array(json.dumps(meta))
         np.savez(path, **arrays)
 
@@ -230,7 +265,8 @@ class CoreClip:
         meta = json.loads(str(z["meta_json"]))
         states = {f: z[f] for f in CORE_FIELDS}
         ra = z["ref_action"] if "ref_action" in z.files else None
-        return cls(states, meta, ra)
+        kp = z["keypoint_pos"] if "keypoint_pos" in z.files else None
+        return cls(states, meta, ra, kp)
 
     # --------------------------------------------------------------
     def __len__(self) -> int:

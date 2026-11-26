@@ -75,8 +75,13 @@ def fix_ground_penetration(clip: CoreClip, robot: str = "robot_a",
     meta = record_lineage(meta, "fix_ground", parent=clip.clip_id,
                           mode=mode, margin_m=margin,
                           max_offset_m=float(offsets.max()))
+    kp = None
+    if clip.keypoint_pos is not None:
+        kp = clip.keypoint_pos.copy()
+        kp[:, :, 2] += offsets[:, None]        # rigid root lift
     return CoreClip(states, meta,
                     None if clip.ref_action is None
-                    else clip.ref_action.copy())
+                    else clip.ref_action.copy(),
+                    kp)
 
 

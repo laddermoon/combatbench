@@ -30,6 +30,7 @@ data/core/
 | `joint_pos_norm` | (T,21) | `(q-mid)/half`，`CONTROLLED_JOINTS` 序 |
 | `joint_vel_norm` | (T,21) | `qd/half` |
 | `ref_action` | (T,21) | PD 目标，`meta.ref_action_semantics="pd_target_norm"` |
+| `keypoint_pos` | (T,7,3) | 7 个语义关键点的世界系位置，顺序 = `meta.keypoint_names`（torso/head/pelvis/foot_r/l/hand_r/l） |
 | `meta_json` | str | JSON：clip_id/labels/split/issues/质量/`rsi_bad_frames`/谱系 |
 
 帧率 20Hz（`control_dt=0.05`）。速度在重采样网格上由姿态推导，
@@ -73,7 +74,26 @@ sim.set_core_state({'robot_a': clip.state(k)})       # 完整状态（含速度�
 **一定要跳过 `rsi_bad_frames`**：那些帧的姿态来自单帧跳变，速度场被差分
 放大到非物理量级（峰值 ~16-20 rad/s），拿去做 seed 会产生假冲击。
 
-## 用法三：质量过滤与标签
+## 用法三：关键点（r_kp / 摔倒判定）
+
+`keypoint_pos` 是**参考侧**轨迹——世界系绝对位置，由状态 FK 生成，
+与 env 侧 `get_derived_state().body_xpos` 同模型同口径：
+
+```python
+clip = CoreClip.load(path)
+kp = clip.keypoint_pos[k]          # (7,3)，顺序见 meta['keypoint_names']
+ref_head = clip.keypoint(k)['head']  # 单帧 dict 访问
+
+# DeepMimic r_kp：参考关键点 vs 机器人实况关键点（root-relative 误差）
+obs = sim.get_derived_state()['robot_a']['body_xpos']
+live = obs[static['keypoint_body_names']['head']]
+# 奖励侧自取相对量（减根/转机体系），数据存绝对位置不预设用法
+```
+
+摔倒判定同理：参考侧 `keypoint_pos` 的 head/pelvis 高度关系 +
+实况 `body_xpos` 的 head_z < pelvis_z 判定。
+
+## 用法四：质量过滤与标签
 
 ```python
 m = clip.meta

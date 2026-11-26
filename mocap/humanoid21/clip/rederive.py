@@ -66,4 +66,6 @@ def rederive_velocities(clip: CoreClip,
                           zero_endpoints=zero_endpoints)
     return CoreClip(states, meta,
                     None if clip.ref_action is None
-                    else clip.ref_action.copy())
+                    else clip.ref_action.copy(),
+                    None if clip.keypoint_pos is None
+                    else clip.keypoint_pos.copy())

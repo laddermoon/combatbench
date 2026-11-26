@@ -59,6 +59,48 @@ def _phc_norm(dof_names):
     return _NORM_CACHE[key]
 
 
+_KP_CACHE: Dict[str, Any] = {}
+
+
+def _kp_model():
+    """Mocap-XML model + body ids for the env's semantic keypoint set
+    (KEYPOINT_BODIES, '_a'-suffixed bodies — same kinematic tree as the
+    battle model)."""
+    if 'm' not in _KP_CACHE:
+        import mujoco
+        from envs.humanoid21.meta import Humanoid21Meta
+        mm = mujoco.MjModel.from_xml_path(str(_MOCAP_XML))
+        names = list(Humanoid21Meta.KEYPOINT_BODIES)
+        bids = np.array([mujoco.mj_name2id(mm, mujoco.mjtObj.mjOBJ_BODY,
+                                         f'{n}_a') for n in names])
+        _KP_CACHE.update(m=mm, d=mujoco.MjData(mm), names=names, bids=bids)
+    return _KP_CACHE
+
+
+def fk_keypoints(states: Dict[str, np.ndarray], dof_names
+                 ) -> "tuple[list, np.ndarray]":
+    """World-frame keypoint positions FK'd from CoreClip states.
+
+    Writes qpos = [root_pos, root_rot(wxyz), jp_norm*half+mid] into the
+    mocap model and reads body xpos — identical tree to the battle
+    model, so positions match what sim.get_derived_state() reports.
+    Returns (keypoint_names, pos (T,K,3) float32)."""
+    import mujoco
+    c = _kp_model()
+    mid, half = _phc_norm(dof_names)
+    T = len(states['root_pos'])
+    out = np.empty((T, len(c['bids']), 3), np.float32)
+    qpos = np.zeros(c['m'].nq)
+    for t in range(T):
+        qpos[0:3] = states['root_pos'][t]
+        qpos[3:7] = states['root_rot'][t]
+        qpos[7:] = np.asarray(states['joint_pos_norm'][t]) * half + mid
+        c['d'].qpos[:] = qpos
+        mujoco.mj_forward(c['m'], c['d'])
+        out[t] = c['d'].xpos[c['bids']]
+    return c['names'], out
+
+
 def _slerp_wxyz(q0, q1, a):
     q0, q1 = np.asarray(q0, np.float64), np.asarray(q1, np.float64)
     d = float(q0 @ q1)
@@ -153,8 +195,10 @@ def phc_to_coreclip(clip: Dict[str, Any], clip_id: Optional[str] = None,
     ra = jpn.astype(np.float32) if with_ref_action else None
     if ra is not None:
         meta["ref_action_semantics"] = "pd_target_norm"
+    kp_names, kp = fk_keypoints(states, dof_names)
+    meta["keypoint_names"] = kp_names
 
-    cc = CoreClip(states, meta, ra)
+    cc = CoreClip(states, meta, ra, kp)
     cc = rederive_velocities(cc)          # fills the 3 velocity fields
     cc.meta["clip_id"] = cid              # rederive appends '_vel'
     cc.meta["source"] = meta["source"]

@@ -31,7 +31,7 @@ from smplx.joint_names import JOINT_NAMES
 SMPLX_FOLDER = GMR_ROOT / 'assets' / 'body_models'
 AMASS_ROOTS = [MOCAP / 'amass' / 'smplx_gender_specific',
                MOCAP / 'amass' / 'smplx_from_smplh']
-LIBRARY = pathlib.Path('/data1/dev/combatbench_mocap')
+LIBRARY = MOCAP / 'humanoid21'              # repo-local data root (gitignored)
 PHC_DIR = LIBRARY / 'phc'
 MANIFEST = PHC_DIR / 'manifest.json'
 MOCAP_XML = HERE / 'humanoid21_mocap.xml'
