@@ -43,6 +43,23 @@ from baseline.framework.ppo.policies.truncated_normal_mlp import (
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
 
+def band_frames(b, rng, max_take=1):
+    """Sparse mid-branch frames in the recoverable band (phi>=0.7) that the
+    branch survives >=4 further steps — proven-viable hard states, not dead
+    zones under the current policy."""
+    L = len(b["act"])
+    valid = []
+    for k in range(4, max(4, L - 4)):
+        ph = float(phi_np(b["cs"][k]))
+        if ph >= 0.7 and not b["term"][k:k + 4].any():
+            valid.append((k, ph))
+    if not valid:
+        return []
+    take = min(max_take, len(valid))
+    idx = rng.choice(len(valid), size=take, replace=False)
+    return [(b["cs"][valid[i][0]], valid[i][1]) for i in idx]
+
+
 def phi_np(cs: np.ndarray) -> np.ndarray:
     """phi from raw core state(s), numpy. cs (...,55) -> (...)"""
     q = cs[..., 3:7]
@@ -225,21 +242,9 @@ def main() -> None:
                     cs1[None], dtype=torch.float32))[0].numpy()
                 succ_rep.append(rep1)
             if args.admit_intermediate:
-                # sparse mid-branch frames: proven-viable hard states.
-                # a frame cs[k] qualifies when phi sits in the recoverable
-                # band AND the branch survives >=4 further steps — evidence
-                # it is not a dead zone under the current policy.
-                L = len(b["act"])
-                valid = []
-                for k in range(4, max(4, L - 4)):
-                    ph = float(phi_np(b["cs"][k]))
-                    if ph >= 0.7 and not b["term"][k:k + 4].any():
-                        valid.append((k, ph))
-                if valid:
-                    k, ph = valid[int(rng.integers(0, len(valid)))]
-                    csk = b["cs"][k]
-                    succ_cs.append(csk)
-                    succ_phi.append(ph)
+                f = band_frames(b, rng, max_take=1)
+                for csk, ph in f:
+                    succ_cs.append(csk); succ_phi.append(ph)
                     succ_rep.append(gc.represent(torch.as_tensor(
                         csk[None], dtype=torch.float32))[0].numpy())
         n_admit = ss.admit_successors(succ_cs, succ_phi, succ_rep) \
@@ -481,10 +486,21 @@ def main() -> None:
             rec["eval_full"] = float(np.mean([
                 not (b["term"][-1] if len(b["term"]) else False)
                 for b in ev]))
+            ev_cs, ev_phi = [], []
             for b in ev:
                 critic_pool.append(b)
                 if len(b["act"]) >= args.fit_unroll:
                     replay.append(b)
+                if args.admit_intermediate:
+                    # long deploy branches traverse the deep sink corridor
+                    # (t=40..90) that no 32-step seed branch ever reaches —
+                    # seeding it closes the last coverage gap
+                    for csk, ph in band_frames(b, rng, max_take=4):
+                        ev_cs.append(csk); ev_phi.append(ph)
+            if ev_cs:
+                ev_rep = gc.represent(torch.as_tensor(
+                    np.asarray(ev_cs), dtype=torch.float32)).numpy()
+                ss.admit_successors(ev_cs, ev_phi, list(ev_rep))
             if len(replay) > REPLAY_CAP:
                 del replay[:len(replay) - REPLAY_CAP]
             if len(critic_pool) > CRITIC_CAP:
