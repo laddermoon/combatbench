@@ -94,6 +94,7 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
                     torch.as_tensor(o[None], dtype=torch.float32)
                 )[0].cpu().numpy().astype(np.float32)
             a = det + rng.standard_normal(21).astype(np.float32) * sigma
+            a = np.clip(a, -1.0, 1.0).astype(np.float32)  # match env clamp
             _ENV.step(a, ZERO21)
             o = np.asarray(_ENV.get_observation()[0], dtype=np.float32)
             cs_seq.append(_flatten(_ENV.simulator.get_core_state(), AGENT))
