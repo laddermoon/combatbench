@@ -65,6 +65,23 @@ def make_balance_env_bp(max_steps: int = 1500,
     return EnvBlueprint.from_dict(d)
 
 
+def make_teacher_env_bp(max_steps: int = 1500,
+                        phy_steps_per_action: int = 10) -> EnvBlueprint:
+    """Standard dual-agent balance env (96-dim obs, normal simulator).
+
+    Used to collect transitions with a *teacher* policy trained on the
+    regular dual env: cs extraction is identical, and the self-observation
+    needed by our 57-dim pipeline is obs[..., :57]."""
+    pb = ParameterizedEnvBlueprint.load(_BLUEPRINT_DIR / ENV_BLUEPRINT_NAME)
+    env_bp = pb.materialize(max_steps=max_steps)
+    d = env_bp.to_dict()
+    d["runtime"]["phy_steps_per_action"] = int(phy_steps_per_action)
+    d.setdefault("observer_plugins", {})[CS_OBSERVER_NAME] = dict(
+        CS_OBSERVER_SPEC
+    )
+    return EnvBlueprint.from_dict(d)
+
+
 def analytic_phi(rep: torch.Tensor) -> torch.Tensor:
     """phi(s) = uprightness * z / standing_height, from rep channels."""
     uprightness = -rep[..., R_GB][..., 2]
@@ -99,8 +116,13 @@ def compose_obs(rep: torch.Tensor, aux: torch.Tensor,
 
 
 def extract_balance(episode, update: int,
-                    agent_ids=AGENT_IDS) -> List[AlignedTraj]:
-    """Balance episode -> per-agent AlignedTraj (stage const 1)."""
+                    agent_ids=AGENT_IDS,
+                    obs_slice: int = 0) -> List[AlignedTraj]:
+    """Balance episode -> per-agent AlignedTraj (stage const 1).
+
+    ``obs_slice`` > 0 truncates observations to that many leading dims —
+    needed when episodes come from the standard dual simulator (96-dim
+    obs) but downstream consumers expect the 57-dim self-observation."""
     cs_node = episode.observer_outputs.get(CS_OBSERVER_NAME)
     if cs_node is None:
         raise KeyError("dynabptt_cs observer missing")
@@ -128,14 +150,19 @@ def extract_balance(episode, update: int,
         done = np.zeros(B, dtype=np.float32)
         if terminated:
             done[B - 1] = 1.0
+        obs_arr = np.asarray(obs[:B], dtype=np.float32)
+        fin_obs = np.asarray(
+            episode.final_observation[aid], dtype=np.float32)
+        if obs_slice > 0:
+            obs_arr = obs_arr[..., :obs_slice]
+            fin_obs = fin_obs[..., :obs_slice]
         out.append(AlignedTraj(
             cs=np.asarray(cs[:B], dtype=np.float32),
-            obs=np.asarray(obs[:B], dtype=np.float32),
+            obs=obs_arr,
             act=np.asarray(act[:B], dtype=np.float32),
             phi=np.asarray(phi[:B], dtype=np.float32),
             stage=np.ones(B, dtype=np.float32),
-            final_obs=np.asarray(
-                episode.final_observation[aid], dtype=np.float32),
+            final_obs=fin_obs,
             terminated=terminated,
             ep_key=int(episode.base_seed),
             update=int(update),

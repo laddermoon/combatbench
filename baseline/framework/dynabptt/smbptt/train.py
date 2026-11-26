@@ -28,6 +28,8 @@ from baseline.framework.critic_mlp import CriticMLP  # noqa: F401 (unused)
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
     TruncatedNormalPolicy,
 )
+from envs.framework.policy import PolicyBlueprint
+
 from baseline.framework.rollout.episode import blueprint_hash
 from baseline.framework.rollout.job import Job, SamplingSpec
 from baseline.framework.rollout.parallel_rollouter import ParallelRollouter
@@ -36,7 +38,8 @@ from ..hybrid_ppo.model import (RepCritic, SelfWorldModel, fit_model)
 from ..hybrid_ppo.standup import ACTION_DIM, SELF_OBS_DIM, STATE_DIM
 from ..hybrid_ppo.transitions import ModelReplay
 from .imagine import bptt_update
-from .task import extract_balance, make_balance_env_bp
+from .task import (extract_balance, make_balance_env_bp,
+                   make_teacher_env_bp)
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
@@ -110,6 +113,15 @@ def main() -> None:
     # eval
     p.add_argument("--eval-interval", type=int, default=5)
     p.add_argument("--eval-episodes", type=int, default=32)
+    p.add_argument("--teacher-policy-dir", type=str, default=None,
+                   help="export dir of a 96-dim teacher policy "
+                        "(policy.py+model.pt); its episodes are collected "
+                        "on the standard dual env and added to replay — "
+                        "model coverage of competent-policy regions")
+    p.add_argument("--teacher-eps", type=int, default=256)
+    p.add_argument("--teacher-every", type=int, default=0,
+                   help="if >0, re-collect teacher episodes every N "
+                        "updates (keeps teacher data fresh in replay)")
     p.add_argument("--resume-from", type=str, default=None)
     args = p.parse_args()
 
@@ -184,6 +196,39 @@ def main() -> None:
         "git": os.popen("git rev-parse HEAD").read().strip(),
     })
 
+    teacher_bp = teacher_env_bp = None
+    if args.teacher_policy_dir:
+        tdir = Path(args.teacher_policy_dir).resolve()
+        teacher_bp = PolicyBlueprint(
+            cls=f"file:{tdir}/policy.py:ExportedTruncNormPolicy")
+        teacher_env_bp = make_teacher_env_bp(
+            max_steps=args.max_steps,
+            phy_steps_per_action=args.phy_steps)
+
+    def _inject_teacher(u: int) -> int:
+        """Collect teacher episodes on the dual env -> replay.
+
+        Teacher (a competent 96-dim policy) data covers regions our actor
+        never reaches (deep-tilt recoveries): the model then learns
+        transitions under a competent policy, and imagination can teach
+        recovery instead of only 'don't tilt'."""
+        tjobs = _build_jobs(teacher_env_bp, teacher_bp,
+                            args.seed + 777777 + u * 31,
+                            args.teacher_eps, rng, stochastic=True)
+        n_add = 0
+        for ep in rollouter.collect(tjobs):
+            for tr in extract_balance(ep, update=u,
+                                      obs_slice=SELF_OBS_DIM):
+                replay.add(tr)
+                n_add += 1
+        return n_add
+
+    if teacher_bp is not None:
+        n_t = _inject_teacher(start_u)
+        print(f"[teacher] injected {n_t} trajs "
+              f"({sum(t.T - 1 for t in replay.fit)} fit trans total)",
+              flush=True)
+
     best_survival = -1.0
     for u in range(start_u, args.max_updates):
         t0 = time.time()
@@ -194,6 +239,9 @@ def main() -> None:
         jobs = _build_jobs(env_bp, policy_bp, args.seed + u * 100003,
                            args.episodes_per_update, rng, stochastic=True)
         episodes = rollouter.collect(jobs)
+        if (teacher_bp is not None and args.teacher_every > 0
+                and u > start_u and u % args.teacher_every == 0):
+            rec["teacher_injected"] = _inject_teacher(u)
         n_fit = n_hold = 0
         for ep in episodes:
             for tr in extract_balance(ep, update=u):
