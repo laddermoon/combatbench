@@ -54,8 +54,8 @@ def eval_policy(policy_dir: str, clip_id: str,
                 video_path: str = None, json_path: str = None,
                 seed: int = 0, fall_mode: str = 'height',
                 drift_dxy=None, drift_dyaw_deg=None,
-                start_frame: int = None,
-                max_steps: int = None) -> dict:
+                start_frame: int = None, max_steps: int = None,
+                actuation_profile: str = 'simchar') -> dict:
     pol, pol_dir = _load_policy(policy_dir)
     standing = PolicyBlueprint.load(STANDING_YAML).build()
     ref = CoreRefView(clip_id)
@@ -63,7 +63,8 @@ def eval_policy(policy_dir: str, clip_id: str,
     ms = int(max_steps or ref.n_ctrl)
     kw = dict(clip_id=clip_id, rsi='first', max_steps=ms,
               fall_mode=fall_mode, drift_dxy=drift_dxy,
-              drift_dyaw_deg=drift_dyaw_deg)
+              drift_dyaw_deg=drift_dyaw_deg,
+              actuation_profile=actuation_profile)
     env_bp = ParameterizedEnvBlueprint.load(ENV_YAML).materialize(**kw)
     rt = env_bp.build()
 
@@ -145,12 +146,14 @@ def main():
     ap.add_argument('--drift-dxy', type=float, default=None)
     ap.add_argument('--drift-dyaw-deg', type=float, default=None)
     ap.add_argument('--max-steps', type=int, default=None)
+    ap.add_argument('--actuation-profile', default='simchar',
+                    help='执行器 profile（须与训练一致）')
     a = ap.parse_args()
     metrics = eval_policy(
         a.policy, a.clip, video_path=a.video, json_path=a.json,
         seed=a.seed, fall_mode=a.fall_mode, drift_dxy=a.drift_dxy,
         drift_dyaw_deg=a.drift_dyaw_deg, start_frame=a.start_frame,
-        max_steps=a.max_steps)
+        max_steps=a.max_steps, actuation_profile=a.actuation_profile)
     print(json.dumps(metrics, indent=1, ensure_ascii=False))
 
 

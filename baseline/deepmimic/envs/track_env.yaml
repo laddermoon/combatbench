@@ -46,6 +46,10 @@ parameters:
     default: 0.10
   w_root:
     default: 0.20
+  actuation_profile:
+    default: "simchar"
+    description: "执行器 profile：'simchar'=DeepMimic humanoid3d 对齐
+                  （gear/KP/KD + 目标范围扩展 beta=1）；'legacy'=原始"
 
 runtime:
   phy_steps_per_action: 25
@@ -63,6 +67,7 @@ simulator:
     initial_distance: ${initial_distance}
     initial_pose_a: "standing"
     initial_pose_b: "standing"
+    actuation_profile: ${actuation_profile}
 
 plugins:
   - cls: "baseline.deepmimic.plugins:DeepMimicGuardPlugin"

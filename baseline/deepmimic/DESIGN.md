@@ -195,7 +195,7 @@ reward_mean / kp_err_m / kp_err_rel_m / dxy / dyaw / q_rmse（mean+max）。
 | D8 | obs | 本体感知 + 标量 φ | 96 战斗 obs + 54 参考 ext（含 next-frame ref pose/vel） | **偏差（更简单）**：论文只给 φ；`ref_obs_mode=phase_only` 可退化到论文设定做消融 |
 | D9 | 场景 | 单角色空场 | robot_b standing@6m 场景机 | **偏差（已选）**：B 不参与评分；A 的 obs 含对手维（近常数，无害浪费） |
 | D10 | 控制率 | ~30-60Hz 控制 / ~1.2kHz 物理 | 20Hz 控制 / 500Hz 物理（CONTROLSPEC 契约） | **限制**：快速段带宽不足，M2 已知 foot jitter/mild tremor；不可改 |
-| D11 | PD | 位置 PD 目标 | 同 | 等价；均无目标速度前馈项 |
+| D11 | PD | 位置 PD 目标，humanoid3d 对齐的扭矩/KP/KD | 同——`actuation_profile='simchar'`（gear 按质量比 40.844/45 缩放、KP/KD 对齐 humanoid3d、beta=1 目标范围扩展 alpha∈[1.14,2.04]）；`'legacy'` 可选对照 | **对齐项**（比 legacy 更接近论文）；均无目标速度前馈项；alpha≠1 时 action 语义为扩展目标范围，RSI PD 对齐已按 scale/scale_eff 换算 |
 | D12 | RSI | 均匀采样 | 同 + rsi_bad_frames 排除 | **改进**：避免非物理速度 seed（差分放大的跳变帧 16-20 rad/s） |
 | D13 | 参考速度 | retarget 原生 | 20Hz 网格中心差分重导（v·dt=Δq 严格成立） | 偏差（自洽性更好，轻度低通） |
 | D14 | 策略类 | Gaussian 系 | TruncatedNormalPolicy（有界探索） | 偏差（蓝图可换 Gaussian 系 init_policy） |

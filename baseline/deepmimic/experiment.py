@@ -61,6 +61,9 @@ class DeepMimicTrack(CombatExperimentPPOBase):
     fall_height: float = 0.55
     drift_dxy: float | None = 0.8         # v6 一阶段；None=关闭
     drift_dyaw_deg: float | None = 75.0
+    # 'simchar'=DeepMimic humanoid3d 对齐执行器（论文对齐）；
+    # 'legacy'=原始固定 KP/KD
+    actuation_profile: str = "simchar"
 
     # --- Reward ---
     _channel_name = "r_track"
@@ -127,6 +130,7 @@ class DeepMimicTrack(CombatExperimentPPOBase):
             fall_mode=self.fall_mode, fall_height=self.fall_height,
             drift_dxy=self.drift_dxy, drift_dyaw_deg=self.drift_dyaw_deg,
             initial_distance=self.init_distance_min,
+            actuation_profile=self.actuation_profile,
         )
 
     def build_jobs(self, policy_bp, base_seed, n_episodes, *, update,
