@@ -82,6 +82,9 @@ def main() -> None:
     p.add_argument("--admit-intermediate", action="store_true")
     p.add_argument("--evict", choices=["phi", "random"], default="phi")
     p.add_argument("--cap", type=int, default=4096)
+    p.add_argument("--anchor-slots", type=int, default=32,
+                   help="reserved SubStartSet slots for the natural "
+                        "initial state (index 0)")
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--model-batches", type=int, default=40)
@@ -194,6 +197,9 @@ def main() -> None:
             raise RuntimeError("StartSet must be bootstrapped before loop")
         n_sub = min(args.subset, len(ss))
         idx = ss.sample(n_sub, rng)
+        n_anchor = min(args.anchor_slots, n_sub) if len(ss) else 0
+        if n_anchor:
+            idx[:n_anchor] = 0  # deployment anchor: natural init state
         seeds_cs = ss.states(idx)                       # (N,55)
 
         # ---- S2: branch rollout ---------------------------------------
