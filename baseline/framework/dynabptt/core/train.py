@@ -133,7 +133,9 @@ def main() -> None:
     ss = StartSetManager()
     replay: list[dict] = []       # branches as fit windows (len=nstep)
     hold: list[dict] = []         # small holdout for gate eval
+    critic_pool: list[dict] = []  # ALL branches incl. terminated + eval
     REPLAY_CAP = 4000
+    CRITIC_CAP = 6000
 
     start_u = 0
     if args.resume_from:
@@ -209,13 +211,20 @@ def main() -> None:
         n_admit = ss.admit_successors(succ_cs, succ_phi, succ_rep) \
             if succ_cs else 0
 
-        # replay/holdout split (branches are exactly nstep windows)
+        # replay/holdout split for WM windows (need full nstep length);
+        # critic pool keeps EVERYTHING — early-terminated branches carry
+        # the only true terminal zeros that ground the value function.
         for b in branches:
-            if len(b["act"]) < args.nstep:
-                continue  # terminated early — window too short
-            (hold if rng.random() < 0.05 else replay).append(b)
+            if len(b["act"]) >= args.nstep:
+                (hold if rng.random() < 0.05 else replay).append(b)
+            critic_pool.append(b)
         if len(replay) > REPLAY_CAP:
             del replay[:len(replay) - REPLAY_CAP]
+        if len(critic_pool) > CRITIC_CAP:
+            del critic_pool[:len(critic_pool) - CRITIC_CAP]
+        n_term = sum(1 for b in critic_pool
+                     if len(b["term"]) and b["term"][-1])
+        rec["pool_term_frac"] = n_term / max(len(critic_pool), 1)
 
         surv = float(np.mean([
             not b["term"][-1] if len(b["term"]) else True
@@ -294,12 +303,20 @@ def main() -> None:
         rec["gate_ok"] = bool(gate_ok)
 
         # ---- S5a: critic fit on REAL branches (GAE) --------------------
-        if len(replay) >= 64:
+        if len(critic_pool) >= 64:
             for _ in range(args.critic_batches):
-                bidx = rng.integers(0, len(replay), 64)
+                bidx = rng.integers(0, len(critic_pool), 64)
                 targets_all, reps_all, auxs_all = [], [], []
+                # oversample terminal branches: half the batch if possible
+                term_idx = [i for i in range(len(critic_pool))
+                            if len(critic_pool[i]["term"])
+                            and critic_pool[i]["term"][-1]]
+                n_tb = min(32, len(term_idx))
+                if n_tb:
+                    tb = rng.choice(term_idx, n_tb, replace=len(term_idx) < n_tb)
+                    bidx = np.concatenate([np.asarray(tb), bidx[:64 - n_tb]])
                 for i in bidx:
-                    b = replay[i]
+                    b = critic_pool[int(i)]
                     L = len(b["act"])
                     csb = torch.as_tensor(
                         b["cs"][:L + 1], dtype=torch.float32,
@@ -315,17 +332,24 @@ def main() -> None:
                         b["term"][:L].astype(np.float32),
                         device=device)
                     v = v_all[:L]
-                    v_last = torch.zeros((), device=device) \
-                        if bool(d[-1]) else v_all[L]
+                    terminal = bool(d[-1])
                     adv = torch.zeros((), device=device)
                     tgt = torch.zeros_like(v)
-                    nv = v_last
-                    for t in reversed(range(L)):
-                        nd = 1.0 - d[t]
-                        delta = r[t] + nd * args.gamma * nv - v[t]
-                        adv = delta + nd * args.gamma * args.lam * adv
-                        tgt[t] = adv + v[t]
-                        nv = v[t]
+                    if terminal:
+                        # pure Monte-Carlo return-to-go, no bootstrap:
+                        # fully grounded by the real terminal zero
+                        ret = torch.zeros((), device=device)
+                        for t in reversed(range(L)):
+                            ret = r[t] + args.gamma * ret * (1.0 - d[t])
+                            tgt[t] = ret
+                    else:
+                        nv = v_all[L]
+                        for t in reversed(range(L)):
+                            nd = 1.0 - d[t]
+                            delta = r[t] + nd * args.gamma * nv - v[t]
+                            adv = delta + nd * args.gamma * args.lam * adv
+                            tgt[t] = adv + v[t]
+                            nv = v[t]
                     targets_all.append(tgt)
                     reps_all.append(rr[:L])
                     auxs_all.append(aa[:L])
@@ -384,7 +408,7 @@ def main() -> None:
 
         # ---- eval: long branches every eval-every ----------------------
         if (u + 1) % args.eval_every == 0 and len(ss) > 0:
-            eidx = ss.sample(min(64, len(ss)), rng)
+            eidx = ss.sample(min(128, len(ss)), rng)
             ev = collector.collect(
                 actor_sd_numpy(actor), ss.states(eidx),
                 nstep=args.eval_nstep, sigma=0.0,
@@ -394,7 +418,16 @@ def main() -> None:
             rec["eval_full"] = float(np.mean([
                 not (b["term"][-1] if len(b["term"]) else False)
                 for b in ev]))
+            for b in ev:
+                critic_pool.append(b)
+            if len(critic_pool) > CRITIC_CAP:
+                del critic_pool[:len(critic_pool) - CRITIC_CAP]
 
+        with torch.no_grad():
+            cs_probe = torch.as_tensor(
+                seeds_cs[:256], dtype=torch.float32, device=device)
+            rp_, ax_ = gc.represent(cs_probe), gc.extract_aux(cs_probe)
+            rec["v_mean"] = float(vrep(rp_, ax_).mean())
         rec["t"] = time.time() - t0
         jlog(rec)
         print(f"[u{u:04d}] ss={len(ss)} surv8={rec['branch_surv8']:.2f} "
