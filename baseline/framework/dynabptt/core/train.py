@@ -83,6 +83,10 @@ def main() -> None:
     p.add_argument("--evict", choices=["phi", "random"], default="phi")
     p.add_argument("--cap", type=int, default=4096)
     p.add_argument("--obs-noise-scale", type=float, default=1.0)
+    p.add_argument("--model-hidden", type=int, default=1024)
+    p.add_argument("--fit-phi-weight", type=float, default=0.0,
+                   help="extra WM loss weight on degraded states: "
+                        "w = 1 + k*max(0, 0.95-phi_target)")
     p.add_argument("--anchor-slots", type=int, default=32,
                    help="reserved SubStartSet slots for the natural "
                         "initial state (index 0)")
@@ -120,8 +124,8 @@ def main() -> None:
     actor.log_std.requires_grad_(False)
     model = SelfWorldModel(
         state_dim=STATE_DIM, action_dim=ACTION_DIM, obs_dim=SELF_OBS_DIM,
-        hidden=(1024, 1024, 1024), dt=dt, substep_coeff=sub_coeff
-    ).to(device)
+        hidden=(args.model_hidden,) * 3, dt=dt,
+        substep_coeff=sub_coeff).to(device)
     vrep = RepCritic().to(device)
     opt_a = torch.optim.Adam(actor.parameters(), lr=args.actor_lr,
                              betas=(0.9, 0.95))
@@ -295,8 +299,25 @@ def main() -> None:
                 for m in range(fu):
                     aux, rep = model.next_state(rep, aux, acts[:, m])
                     h = model.heads(rep, aux)
-                    L_s = L_s + bryson_state_loss(
-                        model, rep, aux, rep_t[:, m], aux_t[:, m])
+                    if args.fit_phi_weight > 0:
+                        # per-sample weighted bryson loss: degraded target
+                        # states are scarce, weight them up
+                        pb = gc.loss_blocks(rep, aux)
+                        tb = gc.loss_blocks(rep_t[:, m], aux_t[:, m])
+                        num = den = 0.0
+                        for name, blk in pb.items():
+                            bw = model._loss_weights[name]
+                            se = ((blk - tb[name]) ** 2).mean(-1)
+                            num = num + bw * blk.shape[-1] * se
+                            den = den + blk.shape[-1]
+                        ls = num / den  # (B,)
+                        w = 1.0 + args.fit_phi_weight * (
+                            0.95 - analytic_phi(rep_t[:, m])).clamp(min=0)
+                        ls = (ls * w).mean()
+                    else:
+                        ls = bryson_state_loss(
+                            model, rep, aux, rep_t[:, m], aux_t[:, m])
+                    L_s = L_s + ls
                     L_obs = L_obs + F.mse_loss(
                         h["obs_norm"], model.norm_o(obs_t[:, m]))
                     L_phi = L_phi + F.mse_loss(
