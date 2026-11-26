@@ -57,6 +57,7 @@ def main() -> None:
             pl.set_episode_seed(seed)
         env.reset(seed=seed, base_seed=seed)
         o = np.asarray(env.get_observation()[0], dtype=np.float32)
+        o[52:54] = 0.0  # feet masked: policy input convention
         L = args.max_steps
         for t in range(args.max_steps):
             with torch.no_grad():
@@ -65,6 +66,7 @@ def main() -> None:
                                     device=dev))[0].cpu().numpy()
             env.step(np.clip(a, -1, 1).astype(np.float32), ZERO21)
             o = np.asarray(env.get_observation()[0], dtype=np.float32)
+            o[52:54] = 0.0
             if env.is_episode_over():
                 L = t + 1
                 break

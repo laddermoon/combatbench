@@ -67,15 +67,14 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
         unflatten_core_state)
 
     sd = payload["actor_sd"]
-    tasks = payload["tasks"]          # list of (seed_idx, cs(55,))
+    tasks = payload["tasks"]          # list of (seed_idx, cs(55,), sigma)
     nstep = int(payload["nstep"])
-    sigma = float(payload["sigma"])
     base_seed = int(payload["base_seed"])
     _build_policy(sd)
 
     rng = np.random.default_rng(base_seed)
     out: List[Dict[str, np.ndarray]] = []
-    for seed_idx, cs0 in tasks:
+    for seed_idx, cs0, sigma in tasks:
         bseed = int(rng.integers(2**31))
         for pl in _ENV.plugins:
             pl.set_episode_seed(bseed)
@@ -85,6 +84,7 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
         obs_seq, cs_seq, act_seq, det_seq, term_seq = [], [], [], [], []
         obs_now = _ENV.get_observation()
         o = np.asarray(obs_now[0], dtype=np.float32)
+        o[52:54] = 0.0  # feet_forces: policy never sees contact channels
         cs_seq.append(_flatten(_ENV.simulator.get_core_state(), AGENT))
         obs_seq.append(o.copy())
         terminated = False
@@ -97,6 +97,7 @@ def _run_branches(payload: Dict[str, Any]) -> List[Dict[str, np.ndarray]]:
             a = np.clip(a, -1.0, 1.0).astype(np.float32)  # match env clamp
             _ENV.step(a, ZERO21)
             o = np.asarray(_ENV.get_observation()[0], dtype=np.float32)
+            o[52:54] = 0.0  # feet_forces masked everywhere
             cs_seq.append(_flatten(_ENV.simulator.get_core_state(), AGENT))
             obs_seq.append(o.copy())
             act_seq.append(a.astype(np.float32))
@@ -128,17 +129,25 @@ class BranchCollector:
             initargs=(self._env_bp_dict,), maxtasksperchild=None)
 
     def collect(self, actor_sd_cpu: Dict[str, np.ndarray],
-                seed_cs: np.ndarray, nstep: int, sigma: float,
+                seed_cs: np.ndarray, nstep: int, sigma,
                 base_seed: int) -> List[Dict[str, np.ndarray]]:
-        """Roll branches for all seeds; returns concatenated results."""
+        """Roll branches for all seeds; returns concatenated results.
+
+        ``sigma`` may be a scalar (same noise for every seed) or a
+        per-seed array — the spec uses per-task sigma so deterministic
+        and noise-fill branches can mix in one call.
+        """
         n = len(seed_cs)
+        sig_arr = np.broadcast_to(
+            np.asarray(sigma, dtype=np.float32), (n,)) if np.isscalar(sigma)             else np.asarray(sigma, dtype=np.float32)
         chunks: List[List[Any]] = [[] for _ in range(self.num_workers)]
         for i in range(n):
-            chunks[i % self.num_workers].append((i, seed_cs[i]))
+            chunks[i % self.num_workers].append(
+                (i, seed_cs[i], float(sig_arr[i])))
         payloads = [{
             "actor_sd": actor_sd_cpu,
             "tasks": [t for t in c],
-            "nstep": nstep, "sigma": sigma,
+            "nstep": nstep,
             "base_seed": base_seed + j * 7919,
         } for j, c in enumerate(chunks) if c]
         results = self.pool.map(_run_branches, payloads)

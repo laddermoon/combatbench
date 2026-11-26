@@ -10,10 +10,20 @@
 - log_std 不使用、不训练、不进 BPTT 图
 - 外部噪声仅在 SubStartSet 补足阶段使用（见 4），稳态下策略完全确定性
 
-### 2. WM 网络定义
-- `SelfWorldModel`（GenCoord Δv + 解析积分，dt=0.02，substep_coeff=11/20）
-- hidden 1024³；职责只有**状态转移回归**：(rep, aux, a) → (rep', aux')
-- obs/aux 头仅用于在想象中渲染策略输入（obs 由 rep 组合 + feet 置零）
+### 2. WM 网络定义（已定的瘦身后版本）
+- **职责唯一：F(WMState, a) = Next WMState 的状态转移回归**
+- WMState = (aux 7, rep 52) —— EnvState cs(55) 的解析重参数化，
+  `represent/extract_aux` 双向无损转换，StartSet/replay 一律存 cs
+- 学习部分 = `dyn` MLP(73→1024³→27)：只预测加速度增量
+  (Δv_b, Δw_b, Δvj)；`apply_prediction` 半隐式解析积分（精确可微）
+- **所有学习头全部摘掉**：obs/phi/stage/done/auxr 头删除——
+  WM 里没有任何"学的而不是算的"通道
+- **三个映射全解析成立**：
+  EnvState→WMState = represent/extract_aux（精确）
+  WMState→Observation = compose_obs（57 维全解析，feet[52:54] 恒零）
+  WMState→Loss = analytic_phi(rep)（精确可微）
+- **feet 通道处处置零**：采集/想象/部署的策略输入 obs[52:54]=0，
+  策略从头到尾不存在这个输入通道（敏感度实测 ~0.03）
 
 **势函数 φ 与 WM 完全无关**：φ 是状态的解析函数
 （uprightness×z/standing_height），对 Env 产出的真实状态和 WM 产出
