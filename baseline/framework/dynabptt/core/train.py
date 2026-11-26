@@ -1,0 +1,426 @@
+"""DynaBPTT core orchestrator — Balance implementation.
+
+Implements the S0-S6 loop of DYNABPTT_FRAMEWORK.md:
+  S0 update StartSet (wavefront admission of first-step successors)
+  S1 sample SubStartSet (1024, phi^6-weighted + uniform floor)
+  S2 branch rollout in the real env (deterministic policy + sigma noise)
+  S3 fit the world model on replay windows + gate evaluation
+  S4 imagine H=NStep in the frozen model from the SAME SubStartSet
+  S5 loss = -J + real-branch critic fit
+  S6 BPTT policy update (gated)
+"""
+from __future__ import annotations
+
+import argparse
+import atexit
+import json
+import os
+import pickle
+import signal
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from baseline.framework.dynabptt.core.collect import BranchCollector
+from baseline.framework.dynabptt.core.startset import StartSetManager
+from baseline.framework.dynabptt.hybrid_ppo import gencoord as gc
+from baseline.framework.dynabptt.hybrid_ppo.model import (
+    RepCritic, SelfWorldModel, bryson_state_loss)
+from baseline.framework.dynabptt.smbptt.task import (
+    OBS_NOISE_HALF, STANDING_HEIGHT, analytic_phi, compose_obs,
+    make_balance_env_bp)
+from baseline.framework.dynabptt.hybrid_ppo.standup import (
+    ACTION_DIM, SELF_OBS_DIM, STATE_DIM)
+from baseline.framework.ppo.policies.truncated_normal_mlp import (
+    TruncatedNormalPolicy)
+
+RUNS_DIR = Path(__file__).resolve().parent / "runs"
+
+
+def phi_np(cs: np.ndarray) -> np.ndarray:
+    """phi from raw core state(s), numpy. cs (...,55) -> (...)"""
+    q = cs[..., 3:7]
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    # conj-rotate [0,0,-1] by q: gravity direction in body frame
+    ux, uy, uz = -x, -y, -z
+    vx, vy, vz = 0.0, 0.0, -1.0
+    # t = 2*cross(u,v)
+    tx = 2 * (uy * vz - uz * vy)
+    ty = 2 * (uz * vx - ux * vz)
+    tz = 2 * (ux * vy - uy * vx)
+    # v' = v + w*t + cross(u,t)
+    gx = vx + w * tx + (uy * tz - uz * ty)
+    gy = vy + w * ty + (uz * tx - ux * tz)
+    gz = vz + w * tz + (ux * ty - uy * tx)
+    upright = -gz
+    return upright * cs[..., 2] / STANDING_HEIGHT
+
+
+def actor_sd_numpy(actor) -> dict:
+    return {k: v.detach().cpu().numpy()
+            for k, v in actor.state_dict().items()}
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--run-name", required=True)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--phy-steps", type=int, default=10)
+    p.add_argument("--max-steps", type=int, default=1500)
+    p.add_argument("--subset", type=int, default=1024)
+    p.add_argument("--nstep", type=int, default=8)
+    p.add_argument("--workers", type=int, default=24)
+    p.add_argument("--sigma", type=float, default=0.15)
+    p.add_argument("--gamma", type=float, default=0.99)
+    p.add_argument("--lam", type=float, default=0.95)
+    p.add_argument("--model-batches", type=int, default=40)
+    p.add_argument("--model-batch", type=int, default=256)
+    p.add_argument("--imag-epochs", type=int, default=4)
+    p.add_argument("--critic-batches", type=int, default=4)
+    p.add_argument("--actor-lr", type=float, default=2e-4)
+    p.add_argument("--max-updates", type=int, default=100000)
+    p.add_argument("--time-budget-min", type=float, default=0.0)
+    p.add_argument("--device", default="cuda")
+    p.add_argument("--gate-phi-mae", type=float, default=0.08)
+    p.add_argument("--eval-every", type=int, default=10)
+    p.add_argument("--eval-nstep", type=int, default=100)
+    p.add_argument("--resume-from", type=str, default=None)
+    args = p.parse_args()
+
+    run_dir = RUNS_DIR / args.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    device = torch.device(args.device)
+    rng = np.random.default_rng(args.seed)
+    torch.manual_seed(args.seed)
+
+    env_bp = make_balance_env_bp(
+        max_steps=args.max_steps, phy_steps_per_action=args.phy_steps)
+    dt = args.phy_steps * 0.002
+    sub_coeff = (args.phy_steps + 1) / (2 * args.phy_steps)
+
+    actor = TruncatedNormalPolicy(
+        obs_dim=SELF_OBS_DIM, action_dim=ACTION_DIM,
+        hidden_dim=256, device=str(device))
+    # imagination uses the deterministic mean: freeze log_std out of BPTT
+    actor.log_std.requires_grad_(False)
+    model = SelfWorldModel(
+        state_dim=STATE_DIM, action_dim=ACTION_DIM, obs_dim=SELF_OBS_DIM,
+        hidden=(1024, 1024, 1024), dt=dt, substep_coeff=sub_coeff
+    ).to(device)
+    vrep = RepCritic().to(device)
+    opt_a = torch.optim.Adam(actor.parameters(), lr=args.actor_lr,
+                             betas=(0.9, 0.95))
+    opt_m = torch.optim.Adam(model.parameters(), lr=2e-4)
+    opt_v = torch.optim.Adam(vrep.parameters(), lr=2e-4)
+
+    noise_half = torch.as_tensor(
+        OBS_NOISE_HALF, dtype=torch.float32, device=device)
+
+    collector = BranchCollector(env_bp, num_workers=args.workers)
+    atexit.register(collector.close)
+    def _sigterm(*_):
+        raise SystemExit(143)
+    signal.signal(signal.SIGTERM, _sigterm)
+
+    # --- initial standup state: one in-process probe via the collector ---
+    # bootstrap: use a fresh env state captured by a zero-action rollout
+    ss = StartSetManager()
+    replay: list[dict] = []       # branches as fit windows (len=nstep)
+    hold: list[dict] = []         # small holdout for gate eval
+    REPLAY_CAP = 4000
+
+    start_u = 0
+    if args.resume_from:
+        ck = torch.load(args.resume_from, map_location=device,
+                        weights_only=False)
+        actor.load_state_dict(ck["actor"])
+        model.load_state_dict(ck["model"])
+        vrep.load_state_dict(ck["vrep"])
+        ss.load_state_dict(ck["startset"])
+        start_u = int(ck["update"]) + 1
+        rp = Path(str(args.resume_from).replace(".pt", ".replay.pkl"))
+        if rp.exists():
+            data = pickle.load(open(rp, "rb"))
+            replay, hold = data["replay"], data["hold"]
+
+    if len(ss) == 0:
+        # bootstrap StartSet with the natural standing initial state:
+        # reset a throwaway in-process env (NO injection) and read cs0.
+        boot_env = env_bp.build()
+        for pl in boot_env.plugins:
+            pl.set_episode_seed(args.seed)
+        boot_env.reset(seed=args.seed, base_seed=args.seed)
+        from baseline.framework.dynabptt.corestate import (
+            flatten_core_state)
+        cs0 = flatten_core_state(
+            boot_env.simulator.get_core_state(), "robot_a")
+        rep0 = gc.represent(torch.as_tensor(
+            cs0[None], dtype=torch.float32))[0].numpy()
+        ss.add_initial(cs0, float(phi_np(cs0)), rep0)
+        del boot_env
+        print(f"[init] StartSet bootstrapped phi={float(phi_np(cs0)):.3f}",
+              flush=True)
+
+    metrics_path = run_dir / "metrics.jsonl"
+    def jlog(rec: dict) -> None:
+        with open(metrics_path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+
+    jlog({"type": "header", "run": args.run_name, "seed": args.seed,
+          "nstep": args.nstep, "subset": args.subset,
+          "git": os.popen("git rev-parse HEAD").read().strip()})
+
+    v_max = 1.0 / (1.0 - args.gamma)  # r=phi in [0,1]
+    t_start = time.time()
+    for u in range(start_u, args.max_updates):
+        t0 = time.time()
+        rec = {"type": "update", "u": u}
+
+        # ---- S1: sample SubStartSet -----------------------------------
+        if len(ss) == 0:
+            raise RuntimeError("StartSet must be bootstrapped before loop")
+        n_sub = min(args.subset, len(ss))
+        idx = ss.sample(n_sub, rng)
+        seeds_cs = ss.states(idx)                       # (N,55)
+
+        # ---- S2: branch rollout ---------------------------------------
+        sd_np = actor_sd_numpy(actor)
+        branches = collector.collect(
+            sd_np, seeds_cs, nstep=args.nstep, sigma=args.sigma,
+            base_seed=args.seed + 1000 + u * 13)
+
+        # survivors produce first-step successors for the wavefront
+        succ_cs, succ_phi, succ_rep = [], [], []
+        for b in branches:
+            if len(b["cs"]) < 2 or b["term"][0]:
+                continue
+            cs1 = b["cs"][1]
+            succ_cs.append(cs1)
+            succ_phi.append(float(phi_np(cs1)))
+            rep1 = gc.represent(torch.as_tensor(
+                cs1[None], dtype=torch.float32))[0].numpy()
+            succ_rep.append(rep1)
+        n_admit = ss.admit_successors(succ_cs, succ_phi, succ_rep) \
+            if succ_cs else 0
+
+        # replay/holdout split (branches are exactly nstep windows)
+        for b in branches:
+            if len(b["act"]) < args.nstep:
+                continue  # terminated early — window too short
+            (hold if rng.random() < 0.05 else replay).append(b)
+        if len(replay) > REPLAY_CAP:
+            del replay[:len(replay) - REPLAY_CAP]
+
+        surv = float(np.mean([
+            not b["term"][-1] if len(b["term"]) else True
+            for b in branches])) if branches else 0.0
+        mean_len = float(np.mean([len(b["act"]) for b in branches]))
+        rec.update({
+            "n_sub": n_sub, "admit": n_admit, "ss_size": len(ss),
+            "branch_surv8": surv, "branch_len": mean_len,
+            **{f"ss_{k}": v for k, v in ss.stats().items()},
+        })
+
+        # ---- S3: WM fit -----------------------------------------------
+        wm_stats = {"loss": 0.0, "n": 0}
+        if len(replay) >= args.model_batch:
+            for _ in range(args.model_batches):
+                bidx = rng.integers(0, len(replay), args.model_batch)
+                cs0 = torch.as_tensor(np.stack(
+                    [replay[i]["cs"][0] for i in bidx]),
+                    dtype=torch.float32, device=device)
+                acts = torch.as_tensor(np.stack(
+                    [replay[i]["act"][:args.nstep] for i in bidx]),
+                    dtype=torch.float32, device=device)
+                cs_t = torch.as_tensor(np.stack(
+                    [replay[i]["cs"][1:args.nstep + 1] for i in bidx]),
+                    dtype=torch.float32, device=device)
+                obs_t = torch.as_tensor(np.stack(
+                    [replay[i]["obs"][1:args.nstep + 1] for i in bidx]),
+                    dtype=torch.float32, device=device)
+                rep_t = gc.represent(cs_t)
+                aux_t = gc.extract_aux(cs_t)
+                rep = gc.represent(cs0)
+                aux = gc.extract_aux(cs0)
+                L_s = L_obs = L_phi = 0.0
+                for m in range(args.nstep):
+                    aux, rep = model.next_state(rep, aux, acts[:, m])
+                    h = model.heads(rep, aux)
+                    L_s = L_s + bryson_state_loss(
+                        model, rep, aux, rep_t[:, m], aux_t[:, m])
+                    L_obs = L_obs + F.mse_loss(
+                        h["obs_norm"], model.norm_o(obs_t[:, m]))
+                    L_phi = L_phi + F.mse_loss(
+                        h["phi"], analytic_phi(rep).clamp(0.0, 1.0))
+                loss = (L_s + 1.0 * L_obs + 0.5 * L_phi) / args.nstep
+                opt_m.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+                opt_m.step()
+                wm_stats["loss"] += float(loss)
+                wm_stats["n"] += 1
+        rec["wm_loss"] = (wm_stats["loss"] / max(wm_stats["n"], 1))
+
+        # ---- S3b: gate — open-loop phi MAE on holdout ------------------
+        gate_ok = False
+        phi_mae = float("nan")
+        if len(hold) >= 8:
+            hn = min(64, len(hold))
+            hidx = rng.choice(len(hold), hn, replace=False)
+            cs0h = torch.as_tensor(np.stack(
+                [hold[i]["cs"][0] for i in hidx]),
+                dtype=torch.float32, device=device)
+            actsh = torch.as_tensor(np.stack(
+                [hold[i]["act"][:args.nstep] for i in hidx]),
+                dtype=torch.float32, device=device)
+            real_phi = np.stack([
+                phi_np(hold[i]["cs"][1:args.nstep + 1]) for i in hidx])
+            with torch.no_grad():
+                rep, aux = model.rep_aux_from_cs(cs0h)
+                preds = []
+                for m in range(args.nstep):
+                    aux, rep = model.next_state(rep, aux, actsh[:, m])
+                    preds.append(analytic_phi(rep).clamp(0.0, 1.0))
+                pred_phi = torch.stack(preds, 1).cpu().numpy()
+            phi_mae = float(np.abs(pred_phi - real_phi).mean())
+            gate_ok = phi_mae < args.gate_phi_mae
+        rec["gate_phi_mae"] = phi_mae
+        rec["gate_ok"] = bool(gate_ok)
+
+        # ---- S5a: critic fit on REAL branches (GAE) --------------------
+        if len(replay) >= 64:
+            for _ in range(args.critic_batches):
+                bidx = rng.integers(0, len(replay), 64)
+                targets_all, reps_all, auxs_all = [], [], []
+                for i in bidx:
+                    b = replay[i]
+                    L = len(b["act"])
+                    csb = torch.as_tensor(
+                        b["cs"][:L + 1], dtype=torch.float32,
+                        device=device)  # incl. successor state s_L
+                    rr = gc.represent(csb)
+                    aa = gc.extract_aux(csb)
+                    with torch.no_grad():
+                        v_all = vrep(rr, aa).clamp(max=v_max)
+                    r = torch.as_tensor(
+                        phi_np(b["cs"][1:L + 1]), dtype=torch.float32,
+                        device=device)
+                    d = torch.as_tensor(
+                        b["term"][:L].astype(np.float32),
+                        device=device)
+                    v = v_all[:L]
+                    v_last = torch.zeros((), device=device) \
+                        if bool(d[-1]) else v_all[L]
+                    adv = torch.zeros((), device=device)
+                    tgt = torch.zeros_like(v)
+                    nv = v_last
+                    for t in reversed(range(L)):
+                        nd = 1.0 - d[t]
+                        delta = r[t] + nd * args.gamma * nv - v[t]
+                        adv = delta + nd * args.gamma * args.lam * adv
+                        tgt[t] = adv + v[t]
+                        nv = v[t]
+                    targets_all.append(tgt)
+                    reps_all.append(rr[:L])
+                    auxs_all.append(aa[:L])
+                rb = torch.cat(reps_all)
+                ab = torch.cat(auxs_all)
+                tgt = torch.cat(targets_all).clamp(max=v_max)
+                vpred = vrep(rb, ab)
+                vloss = F.mse_loss(vpred, tgt)
+                opt_v.zero_grad(set_to_none=True)
+                vloss.backward()
+                opt_v.step()
+                rec["vloss"] = float(vloss)
+
+        # ---- S4+S6: imagine + BPTT (gated) -----------------------------
+        if gate_ok:
+            cs0i = torch.as_tensor(seeds_cs, dtype=torch.float32,
+                                   device=device)
+            o0i = torch.as_tensor(np.stack([
+                b["obs"][0] for b in branches]), dtype=torch.float32,
+                device=device)
+            for p in list(model.parameters()) + list(vrep.parameters()):
+                p.requires_grad_(False)
+            actor.train()
+            J_tot = 0.0
+            for epoch in range(args.imag_epochs):
+                rep, aux = model.rep_aux_from_cs(cs0i)
+                o = o0i
+                surv = torch.ones(len(cs0i), device=device)
+                J = 0.0
+                for t in range(args.nstep):
+                    a = actor.deterministic_action(o)
+                    aux, rep = model.next_state(rep, aux, a)
+                    hd = model.heads(rep, aux)
+                    phi = analytic_phi(rep).clamp(0.0, 1.0)
+                    d = torch.sigmoid((0.45 - phi) / 0.05)
+                    J = J + (args.gamma ** t) * surv * phi
+                    surv = surv * (1.0 - d)
+                    feet = torch.zeros(
+                        rep.shape[0], 2, device=device)
+                    o = compose_obs(rep, aux, feet)
+                    o = o + (torch.rand_like(o) * 2 - 1) * noise_half
+                with torch.no_grad():
+                    v_last = vrep(rep, aux).clamp(max=v_max)
+                J = J + (args.gamma ** args.nstep) * v_last * surv
+                loss = -J.mean()
+                opt_a.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_value_(actor.parameters(), 0.1)
+                gn = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
+                opt_a.step()
+                J_tot += float(J.mean())
+            for p in list(model.parameters()) + list(vrep.parameters()):
+                p.requires_grad_(True)
+            rec["J"] = J_tot / args.imag_epochs
+            rec["gnorm"] = float(gn)
+
+        # ---- eval: long branches every eval-every ----------------------
+        if (u + 1) % args.eval_every == 0 and len(ss) > 0:
+            eidx = ss.sample(min(64, len(ss)), rng)
+            ev = collector.collect(
+                actor_sd_numpy(actor), ss.states(eidx),
+                nstep=args.eval_nstep, sigma=0.0,
+                base_seed=args.seed + 555 + u)
+            rec["eval_surv"] = float(np.mean([
+                len(b["act"]) / args.eval_nstep for b in ev]))
+            rec["eval_full"] = float(np.mean([
+                not (b["term"][-1] if len(b["term"]) else False)
+                for b in ev]))
+
+        rec["t"] = time.time() - t0
+        jlog(rec)
+        print(f"[u{u:04d}] ss={len(ss)} surv8={rec['branch_surv8']:.2f} "
+              f"wm={rec.get('wm_loss', 0):.3f} "
+              f"gate={'OK' if gate_ok else 'X'}({phi_mae:.3f}) "
+              f"J={rec.get('J', float('nan')):.2f} "
+              f"t={rec['t']:.1f}s", flush=True)
+
+        if (u + 1) % 25 == 0:
+            torch.save({
+                "actor": actor.state_dict(), "model": model.state_dict(),
+                "vrep": vrep.state_dict(), "update": u,
+                "opt_a": opt_a.state_dict(), "opt_m": opt_m.state_dict(),
+                "opt_v": opt_v.state_dict(),
+                "startset": ss.state_dict(),
+            }, run_dir / f"ckpt_u{u:05d}.pt")
+            pickle.dump({"replay": replay[-500:], "hold": hold},
+                        open(run_dir / f"ckpt_u{u:05d}.replay.pkl", "wb"))
+
+        if args.time_budget_min > 0 and \
+                (time.time() - t_start) / 60 > args.time_budget_min:
+            print("[budget] time budget reached", flush=True)
+            break
+
+    collector.close()
+
+
+if __name__ == "__main__":
+    main()
