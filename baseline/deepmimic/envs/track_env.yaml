@@ -47,7 +47,7 @@ parameters:
   w_root:
     default: 0.20
   actuation_profile:
-    default: "simchar"
+    default: "legacy"
     description: "执行器 profile：'simchar'=DeepMimic humanoid3d 对齐
                   （gear/KP/KD + 目标范围扩展 beta=1）；'legacy'=原始"
 

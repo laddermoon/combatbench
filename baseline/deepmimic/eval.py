@@ -55,7 +55,7 @@ def eval_policy(policy_dir: str, clip_id: str,
                 seed: int = 0, fall_mode: str = 'height',
                 drift_dxy=None, drift_dyaw_deg=None,
                 start_frame: int = None, max_steps: int = None,
-                actuation_profile: str = 'simchar') -> dict:
+                actuation_profile: str = 'legacy') -> dict:
     pol, pol_dir = _load_policy(policy_dir)
     standing = PolicyBlueprint.load(STANDING_YAML).build()
     ref = CoreRefView(clip_id)
@@ -171,7 +171,7 @@ def main():
     ap.add_argument('--drift-dxy', type=float, default=None)
     ap.add_argument('--drift-dyaw-deg', type=float, default=None)
     ap.add_argument('--max-steps', type=int, default=None)
-    ap.add_argument('--actuation-profile', default='simchar',
+    ap.add_argument('--actuation-profile', default='legacy',
                     help='执行器 profile（须与训练一致）')
     a = ap.parse_args()
     metrics = eval_policy(

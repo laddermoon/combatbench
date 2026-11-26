@@ -63,7 +63,7 @@ class DeepMimicTrack(CombatExperimentPPOBase):
     drift_dyaw_deg: float | None = 75.0
     # 'simchar'=DeepMimic humanoid3d 对齐执行器（论文对齐）；
     # 'legacy'=原始固定 KP/KD
-    actuation_profile: str = "simchar"
+    actuation_profile: str = "legacy"
 
     # --- Reward ---
     _channel_name = "r_track"

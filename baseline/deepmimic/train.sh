@@ -18,12 +18,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # things/combatbenc
 CLIP="${1:?usage: train.sh <clip_id> [--smoke] [--fg] [extra args]}"
 shift
 
-FG=0; SMOKE=0; PROFILE="simchar"; EXTRA=()
+FG=0; SMOKE=0; PROFILE="legacy"; EXTRA=()
 for a in "$@"; do
   case "$a" in
     --fg)     FG=1 ;;
     --smoke)  SMOKE=1 ;;
-    --legacy) PROFILE="legacy" ;;
+    --simchar) PROFILE="simchar" ;;
     *)        EXTRA+=("$a") ;;
   esac
 done
@@ -39,7 +39,7 @@ PY
 )
 
 TS=$(date +%m%d_%H%M)
-TAG=$([[ "$PROFILE" == "legacy" ]] && echo "_legacy" || echo "")
+TAG=$([[ "$PROFILE" == "simchar" ]] && echo "_simchar" || echo "")
 RUN_NAME="dm_${CLIP}${TAG}_${TS}"
 
 ARGS=(--experiment deepmimic
