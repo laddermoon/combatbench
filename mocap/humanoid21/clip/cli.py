@@ -354,6 +354,29 @@ def _cmd_convert(args) -> int:
     return 0
 
 
+def _cmd_phc2core(args) -> int:
+    import pickle
+    from .convert import phc_to_coreclip
+    bundle = pickle.load(open(
+        f'/data1/dev/combatbench_mocap/phc/combatbench_{args.bundle}_v1.pkl',
+        'rb'))
+    outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for cid in sorted(bundle):
+        if args.only and args.only not in cid:
+            continue
+        cc = phc_to_coreclip(bundle[cid], clip_id=cid, bundle=args.bundle,
+                             with_ref_action=not args.no_ref_action)
+        out = outdir / f'{cid}.npz'
+        cc.save(out)
+        n += 1
+        iss = bundle[cid]['meta'].get('issues', [])
+        print(f'[OK] {cid}.npz T={cc.T} bad_frames={len(cc.meta["rsi_bad_frames"])}'
+              f' issues={iss}')
+    print(f'done: {n} clips -> {outdir}')
+    return 0
+
+
 def _cmd_info(args) -> int:
     clip = CoreClip.load(args.clip)
     print(f"{clip}")
@@ -499,6 +522,13 @@ def main(argv=None) -> int:
     p.add_argument("--end", type=int, default=None)
     p.add_argument("--no-ref-action", action="store_true")
     p.set_defaults(fn=_cmd_convert)
+
+    p = sub.add_parser("phc2core", help="PHC bundle pkl -> CoreClip npz dir")
+    p.add_argument("--bundle", default="core")
+    p.add_argument("--only", default=None, help="substring filter on clip_id")
+    p.add_argument("--outdir", default="/data1/dev/combatbench_mocap/core_clips")
+    p.add_argument("--no-ref-action", action="store_true")
+    p.set_defaults(fn=_cmd_phc2core)
 
     p = sub.add_parser("info", help="quick clip summary")
     p.add_argument("--clip", required=True)
