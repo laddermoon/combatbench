@@ -82,8 +82,8 @@ class StartSetManager:
         N = len(self.cs)
         if N == 0:
             raise RuntimeError("StartSet empty")
-        n = min(int(n), N)
-        n_u = min(N, int(round(n * (1.0 - self.weighted_frac))))
+        n = int(n)
+        n_u = int(round(n * (1.0 - self.weighted_frac)))
         n_w = n - n_u
         out = []
         if n_w > 0:

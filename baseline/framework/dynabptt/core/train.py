@@ -85,11 +85,14 @@ def _obs_windows(sel, device, k_max=8):
 
 
 def _fit_batch(model, opt_m, obs0, acts, obs_t):
+    # loss normalization: per-dim std floored at 10% of the median std —
+    # near-constant dims must not dominate the gradient
+    norm = model.o_std.clamp_min(0.1 * model.o_std.median())
     o = obs0
     L = 0.0
     for m in range(acts.shape[1]):
         o = model.next_obs(o, acts[:, m])
-        err = (o - obs_t[:, m]) / model.o_std
+        err = (o - obs_t[:, m]) / norm
         L = L + err.pow(2).mean()
     L = L / acts.shape[1]
     opt_m.zero_grad(set_to_none=True)
@@ -267,12 +270,6 @@ def main() -> None:
             model.fit_normalization(_pool_obs(
                 new_branches + hist_branches[:min(
                     len(hist_branches), 4 * len(new_branches))]))
-            # per-dim obs std for the criterion
-            dim_std = _pool_obs(
-                new_branches + hist_branches[:min(
-                    len(hist_branches), 4 * len(new_branches))]) \
-                .std(0).clamp_min(1e-6).to(device)
-
             order = rng.permutation(len(new_branches))
             for i in range(0, len(order), args.model_batch):
                 sel = [new_branches[j] for j in order[i:i + args.model_batch]]
@@ -303,7 +300,7 @@ def main() -> None:
             if obs0 is None:
                 break
             nrmse = onestep_nrmse(
-                model, obs0, acts[:, 0], obs_t[:, 0], dim_std)
+                model, obs0, acts[:, 0], obs_t[:, 0])
             fit_ok = nrmse < args.fit_threshold
             if n_batches >= args.fit_max_batches:
                 break

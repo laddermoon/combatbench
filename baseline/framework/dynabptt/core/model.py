@@ -68,14 +68,15 @@ def phi_from_obs(o: torch.Tensor) -> torch.Tensor:
 
 def onestep_nrmse(model: ObsWorldModel,
                   obs0: torch.Tensor, acts: torch.Tensor,
-                  obs_t: torch.Tensor,
-                  dim_std: torch.Tensor) -> float:
+                  obs_t: torch.Tensor) -> float:
     """Criterion: teacher-forced 1-step obs regression error.
 
-    mean over obs dims of rmse_d / std_d, std from the fit pool.
+    Global NRMSE = sqrt( mean(err^2) / mean(var_d) ) — the fraction of
+    the data's total per-dim variance left unexplained.  Robust to
+    near-constant dims (their error and variance both vanish).
     """
     with torch.no_grad():
         pred = model.next_obs(obs0, acts)
-        rmse = (pred - obs_t).pow(2).mean(0).sqrt()
-        nrmse = (rmse / dim_std.clamp_min(1e-6)).mean()
-    return float(nrmse)
+        mse = (pred - obs_t).pow(2).mean()
+        var = obs_t.var(0, unbiased=False).mean()
+        return float((mse / var.clamp_min(1e-12)).sqrt())
