@@ -168,6 +168,7 @@ amass smplx npz ──GMR retarget──> qpos ──export──> PHC clip_dict
 - 导出工具：`gmr/export_phc.py`（单条 GMR qpos → PHC clip_dict → bundle+manifest）；
   批量建库 `gmr/build_core.py`（本文 §4 的权威 clip 清单）；
   校验 `gmr/check_phc.py`；审片 `gmr/render_phc.py`
-- 库根沿用 `/data1/dev/combatbench_mocap/`，v2 产物在 `phc/` 子目录
+- 库根为 repo 内 `mocap/humanoid21/`（数据不进项目外路径、不进 git）：
+  PHC bundle 在 `phc/`（gitignored），sim 原生 CoreClip 在 `data/<bundle>/`
 - RSI 友好性：GMR burn-in 已消引导瞬态；仍有问题的片段在 meta 标注
 - 旧 `cmu_*` npz 库（v1 契约，wxyz/120Hz）只作回归参照，不进 v2 bundle
