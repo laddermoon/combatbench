@@ -35,7 +35,8 @@ class Humanoid21Simulator(BaseSimulator):
     INITIAL_POSES = Humanoid21Meta.INITIAL_POSES
     
     def __init__(self, initial_distance: float = 2.0, debug_torque: bool = False,
-                 initial_pose_a: str = 'standing', initial_pose_b: str = 'standing'):
+                 initial_pose_a: str = 'standing', initial_pose_b: str = 'standing',
+                 actuation_profile: str = 'legacy'):
         """
         初始化模拟器
 
@@ -44,11 +45,19 @@ class Humanoid21Simulator(BaseSimulator):
             debug_torque: 是否打印力矩调试信息
             initial_pose_a: 机器人A的初始姿态 ('standing', 'squat', 'stand_on_left_leg', 'prone', 'supine')
             initial_pose_b: 机器人B的初始姿态
+            actuation_profile: 执行器配置档案名 ('legacy'/'simchar', 见
+                Humanoid21Meta.ACTUATION_PROFILES 与 ACTUATION_DESIGN.md)。
+                'legacy' 与原始行为严格一致, 为默认值。
         """
         self.dt = self.DT
         self.initial_distance = initial_distance
         self.action_dim = self.ACTION_DIM
         self._debug_torque = debug_torque  # 是否打印力矩调试信息
+
+        # 解析执行器配置档案 (不依赖 model, 可提前)
+        self._actuation = Humanoid21Meta.resolve_actuation_profile(actuation_profile)
+        self._kp = self._actuation['kp']  # (21,) float32 有效 KP
+        self._kd = self._actuation['kd']  # (21,) float32 有效 KD
 
         # 验证初始姿态参数
         valid_poses = list(self.INITIAL_POSES.keys())
@@ -90,13 +99,22 @@ class Humanoid21Simulator(BaseSimulator):
         else:
             self._arena_radius = 3.44
 
+        # actuation gear 覆盖必须在 _build_pd_tables (读取 gear) 与
+        # alpha 计算 (依赖有效 gear) 之前完成
+        self._apply_actuation_gear_overrides()
         self._compute_normalization_params()
         self._build_pd_tables()
 
         # 初始化控制目标
+        # INITIAL_POSES 的 action 以机械限位归一化 (legacy 语义); 当 profile
+        # 带目标范围扩展 (alpha != 1) 时, 同一物理目标对应的 action 值需除以
+        # alpha 换算。beta=0 时 alpha 严格为 1.0, 换算为恒等操作。
+        # 注: reset() 会基于实际关节位置重新反算 action, 此处仅为 reset 前的初值。
         self._target_pos_norm = {
-            'robot_a': self.INITIAL_POSES[initial_pose_a]['action'].copy(),
-            'robot_b': self.INITIAL_POSES[initial_pose_b]['action'].copy()
+            'robot_a': (self.INITIAL_POSES[initial_pose_a]['action']
+                        / self._norm_params['robot_a']['alpha']).astype(np.float32),
+            'robot_b': (self.INITIAL_POSES[initial_pose_b]['action']
+                        / self._norm_params['robot_b']['alpha']).astype(np.float32)
         }
 
         # 调试用计数器
@@ -148,25 +166,63 @@ class Humanoid21Simulator(BaseSimulator):
         """获取 per-robot 结构化数据"""
         return self._robots[robot_id]
 
+    def _apply_actuation_gear_overrides(self):
+        """按 actuation profile 覆盖 model.actuator_gear (runtime override, 不改 XML)。
+
+        actuator 顺序与 CONTROLLED_JOINTS 一一对应 (见 build_runtime_tables),
+        因此逐关节数组可直接按 actuator_ids 索引写入。
+        """
+        gear_ovr = self._actuation['gear_override']  # (21,) NaN = 不覆盖
+        if np.all(np.isnan(gear_ovr)):
+            return
+        for robot_id in ['robot_a', 'robot_b']:
+            actuator_ids = self._robot(robot_id)['actuator_ids']
+            for j in range(self.ACTION_DIM):
+                if not np.isnan(gear_ovr[j]):
+                    self.model.actuator_gear[actuator_ids[j], 0] = float(gear_ovr[j])
+
     def _compute_normalization_params(self):
-        """计算归一化参数 (reference 和 scale)"""
+        """计算归一化参数 (reference / scale) 与 PD 目标范围扩展 (scale_eff)。
+
+        scale:     机械限位归一化尺度, 观测与 core state 归一化专用, 不随
+                   actuation profile 变化。
+        scale_eff: PD 目标位置尺度 = scale * alpha, 其中
+                   alpha = 1 + beta * gear / (KP * scale) 逐关节计算,
+                   beta=0 时 alpha 严格为 1.0, scale_eff 与 scale 逐位一致
+                   (legacy 行为)。仅用于 PD target 正算与 reset 反算。
+        """
         self._norm_params = {}
-        
+        beta = self._actuation['target_beta']
+
         for robot_id in ['robot_a', 'robot_b']:
             jnt_ranges = self._robot(robot_id)['jnt_ranges']  # (21, 2)
-            
+
             lower = jnt_ranges[:, 0]
             upper = jnt_ranges[:, 1]
-            
+
             # Reference = (Down + Up) / 2
             reference = (lower + upper) / 2.0
-            
+
             # Scale = (Up - Down) / 2
             scale = (upper - lower) / 2.0
-            
+
+            # alpha = 1 + beta * gear / (KP * scale), 逐关节 (float32 保持与
+            # scale 运算路径 dtype 一致; beta=0 时严格全 1.0)
+            actuator_ids = np.asarray(self._robot(robot_id)['actuator_ids'])
+            gear_eff = self.model.actuator_gear[actuator_ids, 0].astype(np.float32)
+            kp_eff = self._kp.astype(np.float32)
+            scale32 = scale.astype(np.float32)
+            if beta == 0.0:
+                alpha = np.ones(self.ACTION_DIM, dtype=np.float32)
+            else:
+                alpha = (1.0 + beta * gear_eff / (kp_eff * scale32)).astype(np.float32)
+            scale_eff = (scale32 * alpha).astype(np.float32)
+
             self._norm_params[robot_id] = {
                 'reference': reference.astype(np.float32),
-                'scale': scale.astype(np.float32),
+                'scale': scale32,
+                'scale_eff': scale_eff,
+                'alpha': alpha,
                 'lower': lower.astype(np.float32),
                 'upper': upper.astype(np.float32)
             }
@@ -193,7 +249,19 @@ class Humanoid21Simulator(BaseSimulator):
                 'ctrl_lo': ctrl_lo,
                 'ctrl_hi': ctrl_hi,
             }
-    
+
+    def _actuation_debug(self) -> Dict[str, Any]:
+        """返回 actuation profile 生效后的实际配置 (调试/验证用)。"""
+        np_ = self._norm_params['robot_a']
+        return {
+            'profile': self._actuation['name'],
+            'target_beta': self._actuation['target_beta'],
+            'gear': self._pd_tables['robot_a']['gear'].tolist(),
+            'kp': self._kp.tolist(),
+            'kd': self._kd.tolist(),
+            'alpha': np_['alpha'].tolist(),
+        }
+
     def get_static_data(self) -> Dict[str, Any]:
         """
         获取静态属性 (按 DATASPEC.md §2)
@@ -1014,8 +1082,8 @@ class Humanoid21Simulator(BaseSimulator):
             # 获取实际设置的关节位置
             actual_joint_pos = self.data.qpos[qpos_indices]
 
-            # 计算对应的 action 值
-            action = (actual_joint_pos - norm_params['reference']) / norm_params['scale']
+            # 计算对应的 action 值 (必须与 PD target 正算使用同一尺度 scale_eff)
+            action = (actual_joint_pos - norm_params['reference']) / norm_params['scale_eff']
             self._target_pos_norm[robot_id] = action.astype(np.float32)
 
         # 重置调试计数器
@@ -1056,8 +1124,9 @@ class Humanoid21Simulator(BaseSimulator):
             # 获取归一化目标位置
             target_pos_norm = self._target_pos_norm[robot_id]
 
-            # 反归一化: Target_rad = action * scale + reference
-            target_pos_rad = target_pos_norm * norm_params['scale'] + norm_params['reference']
+            # 反归一化: Target_rad = action * scale_eff + reference
+            # scale_eff = scale * alpha, alpha 由 actuation profile 决定 (legacy 严格为 1.0)
+            target_pos_rad = target_pos_norm * norm_params['scale_eff'] + norm_params['reference']
 
             # 获取当前关节状态
             qpos_indices = cache['qpos_indices']
@@ -1066,7 +1135,7 @@ class Humanoid21Simulator(BaseSimulator):
             current_vel = self.data.qvel[qvel_indices]
 
             # PD 控制: Torque = KP * (Target - Current) - KD * Vel
-            torque = self.KP * (target_pos_rad - current_pos) - self.KD * current_vel
+            torque = self._kp * (target_pos_rad - current_pos) - self._kd * current_vel
 
             # 向量化映射到执行器: Ctrl = clip(Torque / Gear, lo, hi)
             pd = self._pd_tables[robot_id]

@@ -27,6 +27,30 @@ Humanoid21 仿真环境元数据定义与管理
 from typing import Dict, List, Set, Tuple, Optional, Any
 
 import numpy as np
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class ActuationProfile:
+    """执行器配置档案: gear/KP/KD 覆盖 + PD 目标范围扩展系数。
+
+    设计依据与数据来源见 ACTUATION_DESIGN.md。
+
+    gear/kp/kd override 的 key 可以是 Humanoid21Meta.CONTROLLED_JOINT_GROUPS
+    中的关节组名 (如 'ankle_y'), 也可以是 CONTROLLED_JOINTS 中的具体关节名
+    (如 'ankle_y_right'); 空 dict 表示沿用 XML/静态默认值。
+
+    target_beta: PD 目标位置超出关节机械限位的扩展系数。
+      0.0 = 目标范围严格等于机械限位 (legacy 行为);
+      1.0 = 扩展到"关节到达限位时, 剩余 error 恰好仍能输出满力矩",
+            即逐关节 alpha = 1 + beta * gear / (KP * scale), 其中
+            scale 为机械半幅 (upper-lower)/2。
+    """
+    name: str
+    gear_overrides: Dict[str, float] = field(default_factory=dict)
+    kp_overrides: Dict[str, float] = field(default_factory=dict)
+    kd_overrides: Dict[str, float] = field(default_factory=dict)
+    target_beta: float = 0.0
 
 
 class Humanoid21Meta:
@@ -225,6 +249,110 @@ class Humanoid21Meta:
         # 左臂
         15.0, 15.0, 10.0,
     ], dtype=np.float32)
+
+    # ============================================================
+    # 执行器配置档案 (Actuation Profiles)
+    # 设计依据与外部数据来源见 ACTUATION_DESIGN.md
+    # ============================================================
+
+    # --- 受控关节分组 (actuation override 寻址用) ---
+    CONTROLLED_JOINT_GROUPS: Dict[str, List[str]] = {
+        'abdomen':  ['abdomen_z', 'abdomen_y', 'abdomen_x'],
+        'hip_x':    ['hip_x_right', 'hip_x_left'],
+        'hip_z':    ['hip_z_right', 'hip_z_left'],
+        'hip_y':    ['hip_y_right', 'hip_y_left'],
+        'knee':     ['knee_right', 'knee_left'],
+        'ankle_y':  ['ankle_y_right', 'ankle_y_left'],
+        'ankle_x':  ['ankle_x_right', 'ankle_x_left'],
+        'shoulder': ['shoulder1_right', 'shoulder2_right',
+                     'shoulder1_left', 'shoulder2_left'],
+        'elbow':    ['elbow_right', 'elbow_left'],
+    }
+
+    # --- 预定义 profiles ---
+    # legacy: 空覆盖 + beta=0, 与原始行为严格逐位一致 (默认)
+    # simchar: 与 DeepMimic/SimChar humanoid3d 全系统对齐
+    #   (扭矩 cap 按质量比 40.844/45 = 0.9076 缩放, KP/KD 同步对齐,
+    #    spherical 关节按"每 hinge 轴全额"映射, beta=1.0)
+    ACTUATION_PROFILES: Dict[str, ActuationProfile] = {
+        'legacy': ActuationProfile(name='legacy'),
+        'simchar': ActuationProfile(
+            name='simchar',
+            gear_overrides={
+                'abdomen': 182.0,
+                'hip_x': 182.0, 'hip_z': 182.0, 'hip_y': 182.0,
+                'knee': 136.0,
+                'ankle_y': 82.0, 'ankle_x': 82.0,
+                'shoulder': 91.0,
+                'elbow': 54.0,
+            },
+            kp_overrides={
+                'hip_x': 500.0, 'hip_z': 500.0, 'hip_y': 500.0,
+                'knee': 500.0,
+                'ankle_y': 400.0, 'ankle_x': 400.0,
+                'shoulder': 400.0,
+                'elbow': 300.0,
+            },
+            kd_overrides={
+                'hip_x': 50.0, 'hip_z': 50.0, 'hip_y': 50.0,
+                'knee': 50.0,
+                'ankle_y': 40.0, 'ankle_x': 40.0,
+                'shoulder': 40.0,
+                'elbow': 30.0,
+            },
+            target_beta=1.0,
+        ),
+    }
+
+    @classmethod
+    def _expand_actuation_overrides(cls, overrides: Dict[str, float]) -> np.ndarray:
+        """把组名/关节名 keyed 的覆盖表展开为 (21,) 数组, 未覆盖处为 NaN。"""
+        arr = np.full(cls.ACTION_DIM, np.nan, dtype=np.float32)
+        joint_index = {name: i for i, name in enumerate(cls.CONTROLLED_JOINTS)}
+        for key, val in overrides.items():
+            if key in cls.CONTROLLED_JOINT_GROUPS:
+                joints = cls.CONTROLLED_JOINT_GROUPS[key]
+            elif key in joint_index:
+                joints = [key]
+            else:
+                raise ValueError(
+                    f"Unknown actuation override key '{key}'. "
+                    f"Must be a group in CONTROLLED_JOINT_GROUPS or a joint in CONTROLLED_JOINTS."
+                )
+            for jname in joints:
+                arr[joint_index[jname]] = val
+        return arr
+
+    @classmethod
+    def resolve_actuation_profile(cls, name: str) -> Dict[str, Any]:
+        """解析 actuation profile 为 per-joint 数组 (按 CONTROLLED_JOINTS 顺序)。
+
+        返回:
+            name:           profile 名
+            target_beta:    目标范围扩展系数
+            gear_override:  (21,) float32, NaN = 不覆盖 (沿用 XML gear)
+            kp:             (21,) float32 有效 KP (覆盖 + 默认合并后)
+            kd:             (21,) float32 有效 KD
+        """
+        if name not in cls.ACTUATION_PROFILES:
+            raise ValueError(
+                f"Unknown actuation_profile '{name}'. "
+                f"Available: {sorted(cls.ACTUATION_PROFILES.keys())}"
+            )
+        profile = cls.ACTUATION_PROFILES[name]
+
+        kp_ovr = cls._expand_actuation_overrides(profile.kp_overrides)
+        kd_ovr = cls._expand_actuation_overrides(profile.kd_overrides)
+        kp = np.where(np.isnan(kp_ovr), cls.KP, kp_ovr).astype(np.float32)
+        kd = np.where(np.isnan(kd_ovr), cls.KD, kd_ovr).astype(np.float32)
+
+        return {
+            'name': profile.name,
+            'target_beta': float(profile.target_beta),
+            'gear_override': cls._expand_actuation_overrides(profile.gear_overrides),
+            'kp': kp,
+            'kd': kd,
+        }
 
     # --- 初始姿态配置 (来自 humanoid.xml 的 keyframes) ---
     INITIAL_POSES: Dict[str, Dict[str, np.ndarray]] = {
