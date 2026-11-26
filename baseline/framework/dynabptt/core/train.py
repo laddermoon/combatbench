@@ -415,7 +415,10 @@ def main() -> None:
                 surv = torch.ones(len(cs0i), device=device)
                 J = 0.0
                 for t in range(args.nstep):
-                    a = actor.deterministic_action(o)
+                    # clamp to the env's [-1,1] action range: the WM has
+                    # never seen out-of-range actions (env clips), feeding
+                    # them in imagination would be out-of-distribution
+                    a = actor.deterministic_action(o).clamp(-1.0, 1.0)
                     aux, rep = model.next_state(rep, aux, a)
                     hd = model.heads(rep, aux)
                     phi = analytic_phi(rep).clamp(0.0, 1.0)
