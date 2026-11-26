@@ -10,17 +10,22 @@
 - log_std 不使用、不训练、不进 BPTT 图
 - 外部噪声仅在 SubStartSet 补足阶段使用（见 4），稳态下策略完全确定性
 
-### 2. WM 网络定义（最简版，已拍板）
-- **WMState = Observation（57 维）本身**，模型就是
-  `F(obs, a) → next_obs` 的一个 MLP(57+21 → 1024³ → 57)
-- 参数化：残差式 `o' = o + dyn([norm(o), a])·o_std`
-- 三个映射全部平凡化：
-  EnvState→WMState = env observer（现成）
-  WMState→Observation = 恒等
-  WMState→Loss = φ(obs) 解析：obs[44]=g_b.z、obs[45]=z
-- 无任何学习头、无 rep/aux、无解析积分——最朴素的版本，
-  先验证"这样能不能训练出来"
-- feet 通道不特殊处理：obs 全 57 维一视同仁，由模型正常回归
+### 2. WM 网络定义（rep 路线，已拍板）
+- **WMState = (aux 7, rep 52, feet 2)**——rep/aux 由 cs 解析变换，
+  feet = obs[52:54] 作为**普通状态维**放进状态，由转移模型一并
+  回归（不是学习头；拟合不准就不准，可接受）
+- F = `dyn` MLP(54+21 → 1024³ → 29) 预测
+  [Δv_b, Δw_b, Δvj, Δfeet]；位姿/关节走解析积分，feet 直接加 delta
+- 三个映射：
+  EnvState→WMState = represent/extract_aux + obs[52:54] 切片
+  WMState→Observation = compose_obs(rep, aux, feet) 解析
+  WMState→Loss = analytic_phi(rep) 解析
+- 判据 = 全 WMState 向量的 1-step 全局 nRMSE < 0.01
+
+**已证伪的路线（留档）**：WMState=obs(57) 的 obs→obs 回归存在
+不可约误差地板——feet_forces 由不可见接触状态决定（rmse≈std，
+解释力≈0），jv/角速度维度的 sqrt 压缩在零附近放大误差。
+实测 nrmse 0.5+ 收敛不动，而 paired φ-MAE 仅 0.002。
 
 **势函数 φ 与 WM 完全无关**：φ 是状态的解析函数
 （uprightness×z/standing_height），对 Env 产出的真实状态和 WM 产出

@@ -6,13 +6,16 @@ Per update:
       |SS|>=2048 -> phi^6-weighted draw of 2048, all deterministic.
   S2  Rollout NStep=8 in the real env -> branches into replay.
       Strict s1 admission into StartSet (no dedup, no cap).
-  S3  Fit the WM (plain obs->obs regression) on
+  S3  Fit the WM (rep-space transition regression) on
       all-new windows + recency-weighted history until the 1-step
       normalized RMSE on THIS update's new windows < threshold.
       Not converged -> collect+fit only, no policy update.
   S4  Imagine H=8 deterministically through the WM from the same seeds.
-  S5  Loss = -J, J = sum_t phi(obs_t) (gamma=1, no critic, no shaping).
+  S5  Loss = -J, J = sum_t phi(rep_t) (gamma=1, no critic, no shaping).
   S6  4 BPTT gradient steps on the actor.
+
+WMState = (aux, rep, feet): rep/aux from cs analytically, feet from
+obs[52:54].  Obs for the policy = compose_obs(rep, aux, feet).
 """
 from __future__ import annotations
 
@@ -33,17 +36,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from baseline.framework.dynabptt.core.collect import BranchCollector
 from baseline.framework.dynabptt.core.model import (
-    ObsWorldModel, onestep_nrmse, phi_from_obs)
+    RepWorldModel, phi_of_rep, state_loss, wmstate_breakdown,
+    wmstate_nrmse)
 from baseline.framework.dynabptt.core.startset import StartSetManager
 from baseline.framework.dynabptt.hybrid_ppo import gencoord as gc
 from baseline.framework.dynabptt.smbptt.task import (
-    STANDING_HEIGHT, make_balance_env_bp)
+    STANDING_HEIGHT, analytic_phi, make_balance_env_bp)
 from baseline.framework.dynabptt.hybrid_ppo.standup import (
     ACTION_DIM, SELF_OBS_DIM)
 from baseline.framework.ppo.policies.truncated_normal_mlp import (
     TruncatedNormalPolicy)
 
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
+FEET = slice(52, 54)
 
 
 def phi_np(cs: np.ndarray) -> np.ndarray:
@@ -66,34 +71,40 @@ def actor_sd_numpy(actor) -> dict:
             for k, v in actor.state_dict().items()}
 
 
-def _obs_windows(sel, device, k_max=8):
-    """Stack branches into obs-unroll tensors.
+def _state_windows(sel, device, k_max=8):
+    """Stack branches into WMState-unroll tensors.
 
-    k = min(k_max, shortest branch len).  Returns
-    obs0 (B,57), acts (B,k,21), obs_t (B,k,57) — or Nones if all empty.
+    k = min(k_max, shortest branch len).  rep/aux come from cs,
+    feet from obs[52:54].  Returns None-tuple if all branches empty.
     """
     k = min([k_max] + [len(b["act"]) for b in sel])
     if k < 1:
-        return None, None, None
-    obs0 = torch.as_tensor(np.stack([b["obs"][0] for b in sel]),
-                           dtype=torch.float32, device=device)
+        return (None,) * 7
+    cs0 = torch.as_tensor(np.stack([b["cs"][0] for b in sel]),
+                          dtype=torch.float32, device=device)
     acts = torch.as_tensor(np.stack([b["act"][:k] for b in sel]),
                            dtype=torch.float32, device=device)
-    obs_t = torch.as_tensor(np.stack([b["obs"][1:k + 1] for b in sel]),
-                            dtype=torch.float32, device=device)
-    return obs0, acts, obs_t
+    cs_t = torch.as_tensor(np.stack([b["cs"][1:k + 1] for b in sel]),
+                           dtype=torch.float32, device=device)
+    feet0 = torch.as_tensor(np.stack(
+        [b["obs"][0][FEET] for b in sel]),
+        dtype=torch.float32, device=device)
+    feet_t = torch.as_tensor(np.stack(
+        [b["obs"][1:k + 1, FEET] for b in sel]),
+        dtype=torch.float32, device=device)
+    rep0, aux0 = gc.represent(cs0), gc.extract_aux(cs0)
+    rep_t, aux_t = gc.represent(cs_t), gc.extract_aux(cs_t)
+    return rep0, aux0, feet0, acts, rep_t, aux_t, feet_t
 
 
-def _fit_batch(model, opt_m, obs0, acts, obs_t):
-    # loss normalization: per-dim std floored at 10% of the median std —
-    # near-constant dims must not dominate the gradient
-    norm = model.o_std.clamp_min(0.1 * model.o_std.median())
-    o = obs0
+def _fit_batch(model, opt_m, win, feet_std):
+    rep0, aux0, feet0, acts, rep_t, aux_t, feet_t = win
+    rep, aux, feet = rep0, aux0, feet0
     L = 0.0
     for m in range(acts.shape[1]):
-        o = model.next_obs(o, acts[:, m])
-        err = (o - obs_t[:, m]) / norm
-        L = L + err.pow(2).mean()
+        aux, rep, feet = model.next_state(rep, aux, feet, acts[:, m])
+        L = L + state_loss(rep, aux, rep_t[:, m], aux_t[:, m],
+                           feet, feet_t[:, m], feet_std)
     L = L / acts.shape[1]
     opt_m.zero_grad(set_to_none=True)
     L.backward()
@@ -141,14 +152,16 @@ def main() -> None:
 
     env_bp = make_balance_env_bp(
         max_steps=args.max_steps, phy_steps_per_action=args.phy_steps)
+    dt = args.phy_steps * 0.002
+    sub_coeff = (args.phy_steps + 1) / (2 * args.phy_steps)
 
     actor = TruncatedNormalPolicy(
         obs_dim=SELF_OBS_DIM, action_dim=ACTION_DIM,
         hidden_dim=256, device=str(device))
     actor.log_std.requires_grad_(False)
-    model = ObsWorldModel(
-        obs_dim=SELF_OBS_DIM, action_dim=ACTION_DIM,
-        hidden=(args.model_hidden,) * 3).to(device)
+    model = RepWorldModel(
+        action_dim=ACTION_DIM, hidden=(args.model_hidden,) * 3,
+        dt=dt, substep_coeff=sub_coeff).to(device)
     opt_a = torch.optim.Adam(actor.parameters(), lr=args.actor_lr,
                              betas=(0.9, 0.95))
     opt_m = torch.optim.Adam(model.parameters(), lr=args.model_lr)
@@ -261,21 +274,32 @@ def main() -> None:
         n_batches = 0
         wm_loss = 0.0
 
-        def _pool_obs(pool):
-            return torch.as_tensor(np.concatenate(
-                [b["obs"] for b in pool]), dtype=torch.float32)
+        def _pool_states(pool):
+            cs = torch.as_tensor(np.concatenate(
+                [b["cs"] for b in pool]), dtype=torch.float32)
+            ob = torch.as_tensor(np.concatenate(
+                [b["obs"] for b in pool])[:, FEET],
+                dtype=torch.float32)
+            return torch.cat(
+                [gc.represent(cs), ob], dim=-1)   # (N, 54)
+
+        # feet std for the fit loss
+        win0 = _state_windows(
+            new_branches[:min(512, len(new_branches))], device)
+        feet_std = win0[6].std(0).clamp_min(1e-3) if win0[0] is not None \
+            else torch.ones(2, device=device)
 
         while not fit_ok:
-            # (re)fit normalization on the current pool
-            model.fit_normalization(_pool_obs(
+            model.fit_normalization(_pool_states(
                 new_branches + hist_branches[:min(
                     len(hist_branches), 4 * len(new_branches))]))
+
             order = rng.permutation(len(new_branches))
             for i in range(0, len(order), args.model_batch):
                 sel = [new_branches[j] for j in order[i:i + args.model_batch]]
-                obs0, acts, obs_t = _obs_windows(sel, device)
-                if obs0 is not None:
-                    wm_loss = _fit_batch(model, opt_m, obs0, acts, obs_t)
+                win = _state_windows(sel, device)
+                if win[0] is not None:
+                    wm_loss = _fit_batch(model, opt_m, win, feet_std)
                     n_batches += 1
             if hist_branches:
                 age = np.asarray([u - b["update"] for b in hist_branches],
@@ -290,19 +314,30 @@ def main() -> None:
                 horder = rng.permutation(len(hsel))
                 for i in range(0, len(horder), args.model_batch):
                     sel = [hsel[j] for j in horder[i:i + args.model_batch]]
-                    obs0, acts, obs_t = _obs_windows(sel, device)
-                    if obs0 is not None:
-                        wm_loss = _fit_batch(model, opt_m, obs0, acts, obs_t)
+                    win = _state_windows(sel, device)
+                    if win[0] is not None:
+                        wm_loss = _fit_batch(model, opt_m, win, feet_std)
                         n_batches += 1
 
-            # criterion: teacher-forced 1-step nRMSE on the new windows
-            obs0, acts, obs_t = _obs_windows(new_branches, device, k_max=1)
-            if obs0 is None:
+            # criterion: teacher-forced 1-step WMState nRMSE on NEW windows
+            win = _state_windows(new_branches, device, k_max=1)
+            if win[0] is None:
                 break
-            nrmse = onestep_nrmse(
-                model, obs0, acts[:, 0], obs_t[:, 0])
+            rep0, aux0, feet0, acts, rep_t, aux_t, feet_t = win
+            with torch.no_grad():
+                aux_p, rep_p, feet_p = model.next_state(
+                    rep0, aux0, feet0, acts[:, 0])
+            nrmse = wmstate_nrmse(
+                rep_p, aux_p, feet_p,
+                rep_t[:, 0], aux_t[:, 0], feet_t[:, 0])
             fit_ok = nrmse < args.fit_threshold
             if n_batches >= args.fit_max_batches:
+                rec["fit_top_dims"] = [
+                    {"dim": d, "share": round(s, 3),
+                     "rmse": round(r, 4), "std": round(sd, 4)}
+                    for d, s, r, sd in wmstate_breakdown(
+                        rep_p, aux_p, feet_p,
+                        rep_t[:, 0], aux_t[:, 0], feet_t[:, 0])[:5]]
                 break
 
         rec.update({"wm_loss": wm_loss, "fit_nrmse": nrmse,
@@ -315,37 +350,38 @@ def main() -> None:
             didx = rng.choice(len(new_branches),
                               min(64, len(new_branches)), replace=False)
             dbr = [new_branches[i] for i in didx]
-            obs0, acts, obs_t = _obs_windows(dbr, device, k_max=args.nstep)
-            if obs0 is not None:
-                real_phi = (
-                    -obs_t[..., 44] * obs_t[..., 45] / STANDING_HEIGHT)
+            win = _state_windows(dbr, device, k_max=args.nstep)
+            if win[0] is not None:
+                rep0, aux0, feet0, acts, rep_t, aux_t, feet_t = win
+                real_phi = analytic_phi(rep_t)
                 with torch.no_grad():
-                    o = obs0
+                    rep, aux, feet = rep0, aux0, feet0
                     preds = []
                     for m in range(acts.shape[1]):
-                        o = model.next_obs(o, acts[:, m])
-                        preds.append(phi_from_obs(o))
+                        aux, rep, feet = model.next_state(
+                            rep, aux, feet, acts[:, m])
+                        preds.append(phi_of_rep(rep))
                     pred_phi = torch.stack(preds, 1)
-                paired_mae = float(
-                    (pred_phi - real_phi).abs().mean())
+                paired_mae = float((pred_phi - real_phi).abs().mean())
         rec["paired_phi_mae"] = paired_mae
 
         # ---- S4-S6: imagine + BPTT (only when fit converged) -----------
         if fit_ok:
-            obs0i = torch.as_tensor(np.stack(
-                [b["obs"][0] for b in branches]), dtype=torch.float32,
-                device=device)
+            win = _state_windows(branches, device, k_max=1)
+            rep_i, aux_i, feet_i = win[0], win[1], win[2]
             for pp in model.parameters():
                 pp.requires_grad_(False)
             actor.train()
             J_tot = gn = 0.0
             for epoch in range(args.imag_epochs):
-                o = obs0i
+                rep, aux, feet = rep_i, aux_i, feet_i
+                o = model.obs_of(rep, aux, feet)
                 J = 0.0
                 for t in range(args.nstep):
                     a = actor.deterministic_action(o).clamp(-1.0, 1.0)
-                    o = model.next_obs(o, a)
-                    J = J + phi_from_obs(o)
+                    aux, rep, feet = model.next_state(rep, aux, feet, a)
+                    J = J + phi_of_rep(rep)
+                    o = model.obs_of(rep, aux, feet)
                 loss = -J.mean()
                 opt_a.zero_grad(set_to_none=True)
                 loss.backward()
