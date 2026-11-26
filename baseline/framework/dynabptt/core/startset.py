@@ -25,6 +25,7 @@ class StartSetManager:
         self.cs = []          # list of (D,) float32 arrays — core states
         self.phi = []         # parallel list of float
         self.reps = None      # cached (N, R) float32 reps for dedup/dist
+        self._pending_reps = []  # buffered until next _flush_reps()
         self.cap = int(cap)
         self.dedup_eps = float(dedup_eps)
         self.evict = str(evict)
@@ -40,26 +41,36 @@ class StartSetManager:
 
     def add_initial(self, cs: np.ndarray, phi: float, rep: np.ndarray):
         self._admit(cs, phi, rep, skip_dedup=True)
+        self._flush_reps()
 
     def _admit(self, cs, phi, rep, skip_dedup=False):
-        if not skip_dedup and self.reps is not None and len(self.reps):
+        if (not skip_dedup and self.dedup_eps > 0
+                and self.reps is not None and len(self.reps)):
             d = np.linalg.norm(self.reps - rep[None, :], axis=1).min()
             if d < self.dedup_eps:
                 self.n_dedup_skip += 1
                 return False
         self.cs.append(np.asarray(cs, dtype=np.float32).copy())
         self.phi.append(float(phi))
-        r = np.asarray(rep, dtype=np.float32).reshape(1, -1)
-        self.reps = r if self.reps is None else np.concatenate(
-            [self.reps, r], axis=0)
+        self._pending_reps.append(
+            np.asarray(rep, dtype=np.float32))
         self.n_admitted += 1
         return True
+
+    def _flush_reps(self):
+        if not self._pending_reps:
+            return
+        r = np.stack(self._pending_reps)
+        self.reps = r if self.reps is None else np.concatenate(
+            [self.reps, r], axis=0)
+        self._pending_reps = []
 
     def admit_successors(self, cs_list, phi_list, rep_list):
         """Admit first-step successors from this update's rollouts."""
         n = 0
         for cs, p, rp in zip(cs_list, phi_list, rep_list):
             n += int(self._admit(cs, p, rp))
+        self._flush_reps()
         if len(self.cs) > self.cap:
             n_kill = len(self.cs) - self.cap
             if self.evict == "random":
@@ -109,6 +120,7 @@ class StartSetManager:
         }
 
     def state_dict(self):
+        self._flush_reps()
         return {"cs": self.cs, "phi": self.phi, "reps": self.reps,
                 "n_admitted": self.n_admitted,
                 "n_dedup_skip": self.n_dedup_skip,
