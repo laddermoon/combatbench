@@ -95,6 +95,8 @@ def main() -> None:
     p.add_argument("--fit-unroll", type=int, default=16)
     p.add_argument("--workers", type=int, default=24)
     p.add_argument("--sigma", type=float, default=0.15)
+    p.add_argument("--sigma-imag", type=float, default=None,
+                   help="imagination action noise; default = sigma")
     p.add_argument("--no-critic", action="store_true")
     p.add_argument("--admit-intermediate", action="store_true")
     p.add_argument("--evict", choices=["phi", "random"], default="phi")
@@ -437,6 +439,7 @@ def main() -> None:
             for p in list(model.parameters()) + list(vrep.parameters()):
                 p.requires_grad_(False)
             actor.train()
+            sigma_imag = args.sigma if args.sigma_imag is None else args.sigma_imag
             J_tot = 0.0
             for epoch in range(args.imag_epochs):
                 rep, aux = model.rep_aux_from_cs(cs0i)
@@ -449,7 +452,7 @@ def main() -> None:
                     # (s,a) stays inside the noise-cloud coverage the WM
                     # was trained on, blocking coordinated-drift exploits
                     a = actor.deterministic_action(o)
-                    a = (a + torch.randn_like(a) * args.sigma) \
+                    a = (a + torch.randn_like(a) * sigma_imag) \
                         .clamp(-1.0, 1.0)
                     aux, rep = model.next_state(rep, aux, a)
                     hd = model.heads(rep, aux)
