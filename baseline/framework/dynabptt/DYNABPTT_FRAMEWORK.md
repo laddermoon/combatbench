@@ -156,3 +156,17 @@ phi≈1 简单态坍缩（实测 phi10 0.91→0.99），前沿不扩反缩。对
 （anchor-slots，默认 32/1024）给自然初始态；其分支中间帧经前沿准入
 把真实部署轨迹持续注入 StartSet。v8/v9 实测部署存活 84/93 步 vs
 strict 组停滞在 55-65（u200 仍无进展）。
+
+## Lesson: imagination must share collection's action semantics
+
+Framework spec: `a = det(obs) + N(0, sigma)` for BOTH collection and imagination.
+An implementation deviation made imagination purely deterministic — this let the
+policy coordinate sustained-drift action patterns outside the noise-cloud (s,a)
+coverage where the WM is untrained and systematically optimistic. Observed exploit:
+"controlled slow sink" — z 1.30->0.75 over ~60 steps, imagination predicted phi
+0.94 where reality gave 0.80. Restoring sigma noise in imagination (v14) made
+imaginary phi track real phi to within 0.02-0.09 over 60+ deploy steps, and
+finite-difference dphi/da in the sink corridor is correctly signed and usable
+(max 0.17 @ h24). Verdict: the oscillation plateau (~50-110 deploy steps across
+v4-v13) was dominated by imagination dishonesty, not by optimization failure.
+With honest imagination, J improvement should track deploy improvement.
