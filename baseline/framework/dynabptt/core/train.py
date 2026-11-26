@@ -77,6 +77,7 @@ def main() -> None:
     p.add_argument("--nstep", type=int, default=8)
     p.add_argument("--workers", type=int, default=24)
     p.add_argument("--sigma", type=float, default=0.15)
+    p.add_argument("--no-critic", action="store_true")
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--model-batches", type=int, default=40)
@@ -391,9 +392,10 @@ def main() -> None:
                         rep.shape[0], 2, device=device)
                     o = compose_obs(rep, aux, feet)
                     o = o + (torch.rand_like(o) * 2 - 1) * noise_half
-                with torch.no_grad():
-                    v_last = vrep(rep, aux).clamp(max=v_max)
-                J = J + (args.gamma ** args.nstep) * v_last * surv
+                if not args.no_critic:
+                    with torch.no_grad():
+                        v_last = vrep(rep, aux).clamp(max=v_max)
+                    J = J + (args.gamma ** args.nstep) * v_last * surv
                 loss = -J.mean()
                 opt_a.zero_grad(set_to_none=True)
                 loss.backward()
