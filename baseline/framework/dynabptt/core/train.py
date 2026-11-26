@@ -79,6 +79,9 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=24)
     p.add_argument("--sigma", type=float, default=0.15)
     p.add_argument("--no-critic", action="store_true")
+    p.add_argument("--admit-intermediate", action="store_true")
+    p.add_argument("--evict", choices=["phi", "random"], default="phi")
+    p.add_argument("--cap", type=int, default=4096)
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--lam", type=float, default=0.95)
     p.add_argument("--model-batches", type=int, default=40)
@@ -132,7 +135,7 @@ def main() -> None:
 
     # --- initial standup state: one in-process probe via the collector ---
     # bootstrap: use a fresh env state captured by a zero-action rollout
-    ss = StartSetManager()
+    ss = StartSetManager(cap=args.cap, evict=args.evict, rng=rng)
     replay: list[dict] = []       # branches as fit windows (len=nstep)
     hold: list[dict] = []         # small holdout for gate eval
     critic_pool: list[dict] = []  # ALL branches incl. terminated + eval
@@ -202,14 +205,31 @@ def main() -> None:
         # survivors produce first-step successors for the wavefront
         succ_cs, succ_phi, succ_rep = [], [], []
         for b in branches:
-            if len(b["cs"]) < 2 or b["term"][0]:
-                continue
-            cs1 = b["cs"][1]
-            succ_cs.append(cs1)
-            succ_phi.append(float(phi_np(cs1)))
-            rep1 = gc.represent(torch.as_tensor(
-                cs1[None], dtype=torch.float32))[0].numpy()
-            succ_rep.append(rep1)
+            if len(b["cs"]) >= 2 and not b["term"][0]:
+                cs1 = b["cs"][1]
+                succ_cs.append(cs1)
+                succ_phi.append(float(phi_np(cs1)))
+                rep1 = gc.represent(torch.as_tensor(
+                    cs1[None], dtype=torch.float32))[0].numpy()
+                succ_rep.append(rep1)
+            if args.admit_intermediate:
+                # sparse mid-branch frames: proven-viable hard states.
+                # a frame cs[k] qualifies when phi sits in the recoverable
+                # band AND the branch survives >=4 further steps — evidence
+                # it is not a dead zone under the current policy.
+                L = len(b["act"])
+                valid = []
+                for k in range(4, max(4, L - 4)):
+                    ph = float(phi_np(b["cs"][k]))
+                    if 0.45 <= ph <= 0.98 and not b["term"][k:k + 4].any():
+                        valid.append((k, ph))
+                if valid:
+                    k, ph = valid[int(rng.integers(0, len(valid)))]
+                    csk = b["cs"][k]
+                    succ_cs.append(csk)
+                    succ_phi.append(ph)
+                    succ_rep.append(gc.represent(torch.as_tensor(
+                        csk[None], dtype=torch.float32))[0].numpy())
         n_admit = ss.admit_successors(succ_cs, succ_phi, succ_rep) \
             if succ_cs else 0
 
@@ -428,6 +448,10 @@ def main() -> None:
                 for b in ev]))
             for b in ev:
                 critic_pool.append(b)
+                if len(b["act"]) >= args.fit_unroll:
+                    replay.append(b)
+            if len(replay) > REPLAY_CAP:
+                del replay[:len(replay) - REPLAY_CAP]
             if len(critic_pool) > CRITIC_CAP:
                 del critic_pool[:len(critic_pool) - CRITIC_CAP]
 

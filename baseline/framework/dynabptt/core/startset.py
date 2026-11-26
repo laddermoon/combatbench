@@ -19,12 +19,15 @@ CAP = 4096
 
 
 class StartSetManager:
-    def __init__(self, cap: int = CAP, dedup_eps: float = DEDUP_EPS):
+    def __init__(self, cap: int = CAP, dedup_eps: float = DEDUP_EPS,
+                 evict: str = "phi", rng: np.random.Generator = None):
         self.cs = []          # list of (D,) float32 arrays — core states
         self.phi = []         # parallel list of float
         self.reps = None      # cached (N, R) float32 reps for dedup/dist
         self.cap = int(cap)
         self.dedup_eps = float(dedup_eps)
+        self.evict = str(evict)
+        self._rng = rng if rng is not None else np.random.default_rng(0)
         self.n_admitted = 0
         self.n_dedup_skip = 0
         self.n_evicted = 0
@@ -55,8 +58,13 @@ class StartSetManager:
         for cs, p, rp in zip(cs_list, phi_list, rep_list):
             n += int(self._admit(cs, p, rp))
         if len(self.cs) > self.cap:
-            order = np.argsort(np.asarray(self.phi))  # lowest phi first
-            kill = order[:len(self.cs) - self.cap]
+            n_kill = len(self.cs) - self.cap
+            if self.evict == "random":
+                kill = self._rng.choice(
+                    len(self.cs), size=n_kill, replace=False)
+            else:
+                order = np.argsort(np.asarray(self.phi))
+                kill = order[:n_kill]
             keep = np.ones(len(self.cs), dtype=bool)
             keep[kill] = False
             idx = np.nonzero(keep)[0]
