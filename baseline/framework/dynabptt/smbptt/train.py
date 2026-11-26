@@ -135,6 +135,14 @@ def main() -> None:
                    help="1=fit rep-critic on REAL trajectories (GAE on "
                         "real rewards/dones) instead of imagined rollouts "
                         "— grounds the bootstrap against model error")
+    p.add_argument("--imag-rew-mode", choices=["combined", "fall_only",
+                                               "cross_centered"],
+                   default="combined",
+                   help="reward composition inside imagination: 'combined' "
+                        "scalarizes both channels (BROKEN — r_cross floor "
+                        "makes dying outscore surviving); 'cross_centered' "
+                        "subtracts EMA baseline so the penalty channel can "
+                        "only reward improvement, never punish existence")
     p.add_argument("--imag-obs-noise", type=float, default=0.0,
                    help="scale of per-dim uniform jitter on imagined actor "
                         "obs (official PROPRIO_NOISE_HALF_WIDTHS; 1.0 = "
@@ -319,7 +327,8 @@ def main() -> None:
                 phi_done=args.phi_done,
                 critic_trajs=(
                     critic_trajs if args.critic_real else None),
-                obs_noise=args.imag_obs_noise)
+                obs_noise=args.imag_obs_noise,
+                rew_mode=args.imag_rew_mode)
             rec.update({f"bptt_{k}": v for k, v in bstats.items()})
         rec["t_bptt"] = time.time() - t_p
 

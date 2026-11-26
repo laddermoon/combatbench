@@ -50,7 +50,8 @@ class ImaginedRollout:
     def __init__(self, model: SelfWorldModel, actor, vrep: RepCritic,
                  horizon: int = 16, gamma: float = 0.99, lam: float = 0.95,
                  stochastic: bool = True, done_mode: str = "learned",
-                 phi_done: float = 0.45, obs_noise: float = 0.0):
+                 phi_done: float = 0.45, obs_noise: float = 0.0,
+                 rew_mode: str = "combined"):
         self.model = model
         self.actor = actor
         self.vrep = vrep
@@ -68,6 +69,13 @@ class ImaginedRollout:
         # input is noised — critic/model see the clean rep.
         self.obs_noise = float(obs_noise)
         self._noise_half = None
+        # rew_mode: 'combined' (raw scalarization — INVERTED: r_cross floor
+        # -0.24/step makes dying outscore surviving), 'fall_only'
+        # (0.03*phi survival channel only), 'cross_centered' (r_fall +
+        # phi^2*(aux_rew - EMA baseline): the penalty channel can only
+        # reward better-than-average stepping, never punish existence).
+        self.rew_mode = rew_mode
+        self._aux_ema = -0.24  # measured mean on teacher data
 
     def _obs(self, rep: torch.Tensor, aux: torch.Tensor,
              heads: Optional[Dict[str, torch.Tensor]]) -> torch.Tensor:
@@ -120,8 +128,14 @@ class ImaginedRollout:
             # scalar-equivalent of the real two-channel objective:
             # r_fall*w_fall + r_cross*(w_cross*phi^2), phi clipped [0,1]
             phi = analytic_phi(rep).clamp(0.0, 1.0)
-            r = (STEP_PHI_COEF * W_FALL * phi
-                 + phi * phi * hd["aux_rew"].clamp(-1.0, 1.0))
+            r_fall = STEP_PHI_COEF * W_FALL * phi
+            if self.rew_mode == "fall_only":
+                r = r_fall
+            elif self.rew_mode == "cross_centered":
+                r = r_fall + phi * phi * (
+                    hd["aux_rew"].clamp(-1.0, 1.0) - self._aux_ema)
+            else:
+                r = r_fall + phi * phi * hd["aux_rew"].clamp(-1.0, 1.0)
             J = J + (self.gamma ** t) * survival * r
             survival = survival * (1.0 - p_term)
             o = self._obs(rep, aux, hd)
@@ -239,6 +253,7 @@ def bptt_update(model: SelfWorldModel, actor, vrep: RepCritic,
                 stochastic: bool = True, done_mode: str = "learned",
                 phi_done: float = 0.45,
                 critic_trajs=None, obs_noise: float = 0.0,
+                rew_mode: str = "combined",
                 ) -> Dict[str, float]:
     """One imagined rollout + one actor step + critic fit (one batch)."""
     # Freeze weights, keep the graph live for the actor gradient.
@@ -248,7 +263,8 @@ def bptt_update(model: SelfWorldModel, actor, vrep: RepCritic,
 
     env = ImaginedRollout(model, actor, vrep, horizon, gamma, lam,
                           stochastic=stochastic, done_mode=done_mode,
-                          phi_done=phi_done, obs_noise=obs_noise)
+                          phi_done=phi_done, obs_noise=obs_noise,
+                          rew_mode=rew_mode)
     loss, stats, crit = env.rollout(cs0, o0)
     opt_a.zero_grad(set_to_none=True)
     loss.backward()
