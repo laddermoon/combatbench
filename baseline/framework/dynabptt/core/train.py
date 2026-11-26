@@ -229,7 +229,7 @@ def main() -> None:
                 valid = []
                 for k in range(4, max(4, L - 4)):
                     ph = float(phi_np(b["cs"][k]))
-                    if 0.45 <= ph <= 0.98 and not b["term"][k:k + 4].any():
+                    if ph >= 0.7 and not b["term"][k:k + 4].any():
                         valid.append((k, ph))
                 if valid:
                     k, ph = valid[int(rng.integers(0, len(valid)))]
@@ -300,7 +300,7 @@ def main() -> None:
                     L_obs = L_obs + F.mse_loss(
                         h["obs_norm"], model.norm_o(obs_t[:, m]))
                     L_phi = L_phi + F.mse_loss(
-                        h["phi"], analytic_phi(rep).clamp(0.0, 1.0))
+                        h["phi"], analytic_phi(rep))
                 loss = (L_s + 1.0 * L_obs + 0.5 * L_phi) / fu
                 opt_m.zero_grad(set_to_none=True)
                 loss.backward()
@@ -330,7 +330,7 @@ def main() -> None:
                 preds = []
                 for m in range(gh):
                     aux, rep = model.next_state(rep, aux, actsh[:, m])
-                    preds.append(analytic_phi(rep).clamp(0.0, 1.0))
+                    preds.append(analytic_phi(rep))
                 pred_phi = torch.stack(preds, 1).cpu().numpy()
             phi_mae = float(np.abs(pred_phi - real_phi).mean())
             gate_ok = phi_mae < args.gate_phi_mae
@@ -421,7 +421,7 @@ def main() -> None:
                     a = actor.deterministic_action(o).clamp(-1.0, 1.0)
                     aux, rep = model.next_state(rep, aux, a)
                     hd = model.heads(rep, aux)
-                    phi = analytic_phi(rep).clamp(0.0, 1.0)
+                    phi = analytic_phi(rep)
                     d = torch.sigmoid((0.45 - phi) / 0.05)
                     J = J + (args.gamma ** t) * surv * phi
                     surv = surv * (1.0 - d)
