@@ -132,8 +132,14 @@ class ImaginedRollout:
             if self.rew_mode == "fall_only":
                 r = r_fall
             elif self.rew_mode == "cross_centered":
-                r = r_fall + phi * phi * (
-                    hd["aux_rew"].clamp(-1.0, 1.0) - self._aux_ema)
+                # aux head only trained on standing data — real range is
+                # [-0.26, 0]. Clamp to that so off-manifold extrapolation
+                # can't hand out fake positive bonuses to degenerate
+                # policies (measured: unclamped head let random score
+                # J=2.14 > teacher 0.83).
+                rc = hd["aux_rew"].clamp(-0.26, 0.0)
+                gate = torch.sigmoid((phi - 0.85) / 0.05)
+                r = r_fall + gate * phi * phi * (rc - self._aux_ema)
             else:
                 r = r_fall + phi * phi * hd["aux_rew"].clamp(-1.0, 1.0)
             J = J + (self.gamma ** t) * survival * r
