@@ -82,6 +82,7 @@ def main() -> None:
     p.add_argument("--admit-intermediate", action="store_true")
     p.add_argument("--evict", choices=["phi", "random"], default="phi")
     p.add_argument("--cap", type=int, default=4096)
+    p.add_argument("--obs-noise-scale", type=float, default=1.0)
     p.add_argument("--anchor-slots", type=int, default=32,
                    help="reserved SubStartSet slots for the natural "
                         "initial state (index 0)")
@@ -128,7 +129,8 @@ def main() -> None:
     opt_v = torch.optim.Adam(vrep.parameters(), lr=2e-4)
 
     noise_half = torch.as_tensor(
-        OBS_NOISE_HALF, dtype=torch.float32, device=device)
+        OBS_NOISE_HALF, dtype=torch.float32, device=device) \
+        * args.obs_noise_scale
 
     collector = BranchCollector(env_bp, num_workers=args.workers)
     atexit.register(collector.close)
