@@ -21,7 +21,7 @@ CoreClip 是**绑定 Humanoid21 仿真器**的动作记录格式：
 ## 2. 文件结构
 
 单个 `.npz` 文件 = 数组 + `meta_json`。默认库根
-`/data1/dev/combatbench_mocap/core_clips/`（大文件不入 git）。
+`mocap/humanoid21/data/<bundle>/`（如 `data/core/`；npz 已被 gitignore，不入版本库）。
 
 | 字段 | 形状 | 约定 |
 |---|---|---|

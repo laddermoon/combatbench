@@ -526,7 +526,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("phc2core", help="PHC bundle pkl -> CoreClip npz dir")
     p.add_argument("--bundle", default="core")
     p.add_argument("--only", default=None, help="substring filter on clip_id")
-    p.add_argument("--outdir", default="/data1/dev/combatbench_mocap/core_clips")
+    p.add_argument("--outdir",
+                   default=str(Path(__file__).resolve().parents[1]
+                               / 'data' / 'core'))
     p.add_argument("--no-ref-action", action="store_true")
     p.set_defaults(fn=_cmd_phc2core)
 
