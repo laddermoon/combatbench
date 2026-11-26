@@ -1,0 +1,85 @@
+# DeepMimic 单 clip 运动跟踪环境。
+# robot_a 由 DeepMimicTrackSimulator 做 RSI 初始化到 clip 合法相位，
+# 学习用归一化 PD 目标跟踪参考；robot_b 保持 standing（场景机）。
+# 终止：track_fall / track_drift / track_clip_end。
+
+parameters:
+  clip_id:
+    default: "cmu_13_17"
+    description: "参考片段 id（data/core/<id>.npz）或 npz 路径"
+  clips_dir:
+    default: "mocap/humanoid21/data/core"
+    description: "CoreClip 目录（clip_id 无 .npz 后缀时在此查找）"
+  rsi:
+    default: "random"
+    description: "'random'=rsi_frames 均匀采样；'first'=首个合法帧"
+  ref_obs:
+    default: "full"
+    description: "'full'=54d 参考扩展(obs 150)；'phase_only'=标量相
+                  位(obs 97，论文设定消融)"
+  initial_distance:
+    default: 6.0
+    description: "双机距离（B 仅作场景）"
+  max_steps:
+    default: 200
+    description: "最大控制步数（实验侧默认 = clip n_ctrl）"
+  fall_mode:
+    default: "height"
+    description: "'height'|'contact'|'none'（getup/lie/crawl 类用
+                  contact/none，见 clip_presets）"
+  fall_height:
+    default: 0.55
+    description: "height 模式：torso_z 低于此值判摔倒"
+  drift_dxy:
+    default: null
+    description: "根 xy 与参考偏差超此值判 track_drift（null=关闭）"
+  drift_dyaw_deg:
+    default: null
+    description: "根 yaw 与参考偏差超此度数判 track_drift（null=关闭）"
+  w_pose:
+    default: 0.35
+  w_vel:
+    default: 0.10
+  w_kp:
+    default: 0.25
+  w_height:
+    default: 0.10
+  w_root:
+    default: 0.20
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${max_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.deepmimic.sim:DeepMimicTrackSimulator"
+  config:
+    clip_id: ${clip_id}
+    clips_dir: ${clips_dir}
+    track_robot: "robot_a"
+    rsi: ${rsi}
+    ref_obs: ${ref_obs}
+    initial_distance: ${initial_distance}
+    initial_pose_a: "standing"
+    initial_pose_b: "standing"
+
+plugins:
+  - cls: "baseline.deepmimic.plugins:DeepMimicGuardPlugin"
+    config:
+      track_robot: "robot_a"
+      fall_mode: ${fall_mode}
+      fall_height: ${fall_height}
+      drift_dxy: ${drift_dxy}
+      drift_dyaw_deg: ${drift_dyaw_deg}
+
+observer_plugins:
+  track_a:
+    cls: "baseline.deepmimic.reward:DeepMimicRewarder"
+    config:
+      agent_id: "robot_a"
+      w_pose: ${w_pose}
+      w_vel: ${w_vel}
+      w_kp: ${w_kp}
+      w_height: ${w_height}
+      w_root: ${w_root}
