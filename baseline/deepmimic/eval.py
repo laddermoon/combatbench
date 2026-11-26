@@ -83,12 +83,17 @@ def eval_policy(policy_dir: str, clip_id: str,
             'root_dyaw_deg', 'q_rmse_deg', 'phase')
     rec = {k: [] for k in keys}
     acts = []
+    jvels = []
     obs_a, obs_b = rt.get_observation()
     while not rt.is_episode_over():
         aa, _ = pol.act(obs_a)
         ab, _ = standing.act(obs_b)
         rt.step(aa, ab)
         acts.append(np.asarray(aa, dtype=np.float64).copy())
+        cs = rt.simulator.get_core_state()
+        jv = cs.get('robot_a', cs).get('joint_vel_norm') if isinstance(cs, dict) else None
+        if jv is not None:
+            jvels.append(np.asarray(jv, dtype=np.float64).copy())
         out = rt.get_observer_output('track_a')
         for k in keys:
             rec[k].append(float(out[k]))
@@ -133,6 +138,14 @@ def eval_policy(policy_dir: str, clip_id: str,
         metrics['action_rate_mean'] = float(da.mean())
         metrics['action_rate_max'] = float(da.max())
         metrics['action_flip_rate'] = float(flips)
+    # 关节空间抖动：真实关节速度（归一化）的符号翻转率与速度量级。
+    # 动作空间 flip 相同的条件下，simchar alpha>1 会把同样的 action
+    # 抖动能放大成更大的关节目标抖动，此指标反映视觉真实抖动。
+    if len(jvels) > 2:
+        JV = np.asarray(jvels)
+        jflips = (np.diff(np.sign(JV), axis=0) != 0).mean()
+        metrics['jvel_abs_mean'] = float(np.abs(JV).mean())
+        metrics['jvel_flip_rate'] = float(jflips)
     rt.close()
 
     if json_path:
