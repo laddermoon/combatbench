@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import mujoco
+import os
 import numpy as np
 
 from envs.humanoid28.simulator import Humanoid28Simulator
@@ -348,7 +349,7 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         assert obs.shape[0] == OBS_DIM, obs.shape
         # MimicKit 观测归一化（上游 normalizer + clip±10 保真项）：
         # fixed stats 见 data/obs_norm.npz（生成脚本见 DESIGN.md §9）
-        if self._obs_norm_mean is not None:
+        if self._obs_norm_mean is not None and not os.environ.get('DM_RAW_OBS'):
             obs = (obs - self._obs_norm_mean) / self._obs_norm_std
             np.clip(obs, -10.0, 10.0, out=obs)
         return obs
