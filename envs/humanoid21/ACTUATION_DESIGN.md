@@ -1,3 +1,10 @@
+> **状态（2026-11-26 更新）：** 本文档描述的 SimChar 全系统对齐方案（gear/KP/KD 覆盖）
+> **已放弃并回滚**（实验证明动画级超人扭矩不利于从零探索的站立学习，且参数耦合
+> 复杂度远超预期）。但其中"目标范围扩展"（alpha / scale_eff 机制）已独立保留并
+> 重新落地为 `Humanoid21Simulator(target_beta=...)` 构造参数——不含任何关节
+> 参数修改。本文档 §3 的 alpha 推导仍然有效，其余与 profile/gear 相关的内容
+> 仅作历史参考。
+
 # Actuation Profile 设计说明：SimChar 对齐版执行器配置
 
 > 本文档记录 `actuation_profile` 机制的设计与 `simchar` profile 的全部决策依据。

@@ -35,7 +35,8 @@ class Humanoid21Simulator(BaseSimulator):
     INITIAL_POSES = Humanoid21Meta.INITIAL_POSES
     
     def __init__(self, initial_distance: float = 2.0, debug_torque: bool = False,
-                 initial_pose_a: str = 'standing', initial_pose_b: str = 'standing'):
+                 initial_pose_a: str = 'standing', initial_pose_b: str = 'standing',
+                 target_beta: float = 0.0):
         """
         初始化模拟器
 
@@ -44,6 +45,15 @@ class Humanoid21Simulator(BaseSimulator):
             debug_torque: 是否打印力矩调试信息
             initial_pose_a: 机器人A的初始姿态 ('standing', 'squat', 'stand_on_left_leg', 'prone', 'supine')
             initial_pose_b: 机器人B的初始姿态
+            target_beta: PD 目标范围扩展系数, 默认 0.0 为 legacy 行为
+                (action=±1 映射到机械限位)。beta=1.0 时 action=±1 映射到
+                机械限位之外恰好一个饱和角 e_sat = gear/KP 的位置, 使关节
+                到达限位时 PD 误差恰好等于 e_sat, ctrl 恰好满格 —— 即
+                "关节顶着限位仍能输出最大力矩"。动作输入输出接口始终是
+                [-1, 1], 仅内部 PD target 映射范围按
+                alpha = 1 + beta*gear/(KP*scale) 逐关节扩展; 观测归一化
+                始终使用机械限位 scale, 不受 beta 影响。关节扭矩上限/增益
+                等参数本身不受 beta 影响。
         """
         self.dt = self.DT
         self.initial_distance = initial_distance
@@ -90,13 +100,21 @@ class Humanoid21Simulator(BaseSimulator):
         else:
             self._arena_radius = 3.44
 
+        self._target_beta = float(target_beta)
         self._compute_normalization_params()
         self._build_pd_tables()
 
         # 初始化控制目标
+        # INITIAL_POSES 的 action 以机械限位归一化 (legacy 语义); 当 beta != 0
+        # 时 PD target 正算尺度变为 scale_eff = scale*alpha, 同一物理目标对应
+        # 的 action 值需除以 alpha 换算。beta=0 时 alpha 严格全 1.0, 换算为
+        # 逐位恒等操作。注: reset() 会基于实际关节位置重新反算 action,
+        # 此处仅为 reset 前的初值。
         self._target_pos_norm = {
-            'robot_a': self.INITIAL_POSES[initial_pose_a]['action'].copy(),
-            'robot_b': self.INITIAL_POSES[initial_pose_b]['action'].copy()
+            'robot_a': (self.INITIAL_POSES[initial_pose_a]['action']
+                        / self._norm_params['robot_a']['alpha']).astype(np.float32),
+            'robot_b': (self.INITIAL_POSES[initial_pose_b]['action']
+                        / self._norm_params['robot_b']['alpha']).astype(np.float32)
         }
 
         # 调试用计数器
@@ -149,24 +167,49 @@ class Humanoid21Simulator(BaseSimulator):
         return self._robots[robot_id]
 
     def _compute_normalization_params(self):
-        """计算归一化参数 (reference 和 scale)"""
+        """计算归一化参数 (reference / scale) 与 PD 目标范围扩展 (scale_eff)。
+
+        scale:     机械限位归一化尺度, 观测与 core state 归一化专用, 不随
+                   target_beta 变化。
+        scale_eff: PD 目标位置尺度 = scale * alpha, 其中
+                   alpha = 1 + beta * gear / (KP * scale) 逐关节计算,
+                   beta=0 时 alpha 严格全 1.0, scale_eff 与 scale 逐位一致
+                   (legacy 行为)。scale_eff 仅用于 PD target 正算与 reset
+                   反算两处, 观测归一化不使用。
+        """
         self._norm_params = {}
-        
+        beta = self._target_beta
+
         for robot_id in ['robot_a', 'robot_b']:
             jnt_ranges = self._robot(robot_id)['jnt_ranges']  # (21, 2)
-            
+
             lower = jnt_ranges[:, 0]
             upper = jnt_ranges[:, 1]
-            
+
             # Reference = (Down + Up) / 2
             reference = (lower + upper) / 2.0
-            
+
             # Scale = (Up - Down) / 2
             scale = (upper - lower) / 2.0
-            
+
+            # alpha = 1 + beta * gear / (KP * scale), 逐关节 (float32 保持与
+            # scale 运算路径 dtype 一致; beta=0 时严格全 1.0)
+            actuator_ids = np.asarray(self._robot(robot_id)['actuator_ids'])
+            gear = self.model.actuator_gear[actuator_ids, 0].astype(np.float32)
+            gear[gear == 0] = 1.0
+            kp = self.KP.astype(np.float32)
+            scale32 = scale.astype(np.float32)
+            if beta == 0.0:
+                alpha = np.ones(self.ACTION_DIM, dtype=np.float32)
+            else:
+                alpha = (1.0 + beta * gear / (kp * scale32)).astype(np.float32)
+            scale_eff = (scale32 * alpha).astype(np.float32)
+
             self._norm_params[robot_id] = {
                 'reference': reference.astype(np.float32),
-                'scale': scale.astype(np.float32),
+                'scale': scale32,
+                'scale_eff': scale_eff,
+                'alpha': alpha,
                 'lower': lower.astype(np.float32),
                 'upper': upper.astype(np.float32)
             }
@@ -1029,7 +1072,8 @@ class Humanoid21Simulator(BaseSimulator):
             actual_joint_pos = self.data.qpos[qpos_indices]
 
             # 计算对应的 action 值
-            action = (actual_joint_pos - norm_params['reference']) / norm_params['scale']
+            # 必须与 PD target 正算使用同一尺度 scale_eff (beta=0 时与 scale 逐位一致)
+            action = (actual_joint_pos - norm_params['reference']) / norm_params['scale_eff']
             self._target_pos_norm[robot_id] = action.astype(np.float32)
 
         # 重置调试计数器
@@ -1071,7 +1115,8 @@ class Humanoid21Simulator(BaseSimulator):
             target_pos_norm = self._target_pos_norm[robot_id]
 
             # 反归一化: Target_rad = action * scale + reference
-            target_pos_rad = target_pos_norm * norm_params['scale'] + norm_params['reference']
+            # scale_eff = scale * alpha (beta=0 时 alpha 严格全 1.0, 与 legacy 逐位一致)
+            target_pos_rad = target_pos_norm * norm_params['scale_eff'] + norm_params['reference']
 
             # 获取当前关节状态
             qpos_indices = cache['qpos_indices']
