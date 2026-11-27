@@ -49,6 +49,7 @@
 | D9 | 接触检测 | Isaac net contact force per body | MuJoCo 逐 contact 对力>0.1N，排除自碰撞 | 语义近似，灵敏度接近 |
 | D10 | 熵正则 | 无 | uncertainty floor 0.3 coef 0.01（框架 ExplorationSpec） | 轻微推大 std——std 已 FIXED 0.05，实际无效 |
 | D11 | ref 鬼影 | 可视化参考角色 | 无（纯跟踪，不渲染 ghost） | 仅可视化差异 |
+| D12 | 稳定机制 | SGD 小步 + action_bound_loss 使 Imp_Ratio~1.0005 | **target_kl=0.01**（框架原生 trust-region，epoch early-stop）+ minibatch 512 | 上游靠优化器天性稳定；我们用框架等效机制。无此项时 Adam 5epoch 内 ratio 爆炸至 1e7、mean_abs 饱和 4.48（u160 实测发散） |
 
 ## 4. 实验设计：单 critic vs 多 critic
 
