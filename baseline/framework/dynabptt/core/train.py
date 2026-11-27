@@ -38,6 +38,7 @@ from baseline.framework.dynabptt.core.collect import BranchCollector
 from baseline.framework.dynabptt.core.model import (
     RepWorldModel, bryson_error, phi_of_rep, state_loss,
     wmstate_breakdown, wmstate_nrmse)
+from baseline.framework.dynabptt.core.skeleton import balance_step
 from baseline.framework.dynabptt.core.startset import StartSetManager
 from baseline.framework.dynabptt.hybrid_ppo import gencoord as gc
 from baseline.framework.dynabptt.smbptt.task import (
@@ -137,6 +138,11 @@ def main() -> None:
     p.add_argument("--hist-tau", type=float, default=100.0,
                    help="recency decay (updates) for replay weighting")
     p.add_argument("--imag-epochs", type=int, default=4)
+    p.add_argument("--w-phi", type=float, default=0.3,
+                   help="weight of analytic phi in the imagined reward")
+    p.add_argument("--w-bal", type=float, default=1.0,
+                   help="weight of capture-point margin "
+                        "tanh(margin/0.05) in the imagined reward")
     p.add_argument("--actor-lr", type=float, default=1e-4)
     p.add_argument("--model-lr", type=float, default=2e-4)
     p.add_argument("--max-updates", type=int, default=100000)
@@ -380,14 +386,23 @@ def main() -> None:
                 pp.requires_grad_(False)
             actor.train()
             J_tot = gn = 0.0
+            dt_step = args.phy_steps * 0.002
+            marg_acc = 0.0
             for epoch in range(args.imag_epochs):
                 rep, aux, feet = rep_i, aux_i, feet_i
                 o = model.obs_of(rep, aux, feet)
+                prev_com = None
                 J = 0.0
                 for t in range(args.nstep):
                     a = actor.deterministic_action(o).clamp(-1.0, 1.0)
                     aux, rep, feet = model.next_state(rep, aux, feet, a)
-                    J = J + phi_of_rep(rep)
+                    margin, _cp, com, _ = balance_step(
+                        aux, rep, prev_com, dt_step)
+                    prev_com = com
+                    J = J + (args.w_phi * phi_of_rep(rep)
+                             + args.w_bal
+                             * torch.tanh(margin / 0.05))
+                    marg_acc += float(margin.mean())
                     o = model.obs_of(rep, aux, feet)
                 loss = -J.mean()
                 opt_a.zero_grad(set_to_none=True)
@@ -399,6 +414,7 @@ def main() -> None:
             for pp in model.parameters():
                 pp.requires_grad_(True)
             rec["J"] = J_tot / args.imag_epochs
+            rec["margin"] = marg_acc / (args.imag_epochs * args.nstep)
             rec["gnorm"] = float(gn)
 
         # ---- eval: deterministic long branches -------------------------

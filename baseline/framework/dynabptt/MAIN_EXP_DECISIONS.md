@@ -76,11 +76,18 @@ StartSet 中每个状态的 φ 权重、想象损失 J、诊断信号，用的�
 - 达标后每 update 继续拟合（本轮新数据必进），维持达标状态
 - 配对闭环 φ-MAE、覆盖率等降为**诊断信号**（记录、告警、不归入门控否决）
 
-### 7. S5 Loss(I)
-- **`J = Σ_{t=1..8} φ(ŝ_t)`**，纯势函数求和，越大越好
-- 无 critic、无 bootstrap、无 done 塑形权重、无 discount（γ=1）
+### 7. S5 Loss(I)（平衡裕度路线，已拍板）
+- **奖励 = `r_t = w_phi·φ_t + w_bal·tanh(margin_t/0.05)`**
+  （默认 w_phi=0.3, w_bal=1.0——margin 主导，φ 退为姿态先验）
+- 改动动机：φ=uprightness×z 的逐点最优是"挺胸踮脚站直"，恰是
+  稳定性边际为零的姿态——梯度把机器人引进必倒死区且无机制拉回
+- `margin` = Capture Point 到支撑域有符号距离：
+  cp = com_xy + v̇com_xy/ω，ω=√(g/com_z)；com 由 WMState 经
+  可微 FK（Skeleton 移植自 point5/mechanics.py）算出；
+  com 速度 = 想象轨迹内有限差分；支撑域 = 双踝心+脚板边距的
+  软矩形（贴地权重 sigmoid 软化，全链可微）
+- `J = Σ_t r_t`，γ=1，无 critic、无 bootstrap、无 done 塑形
 - 想象动作 = 确定性策略输出；想象内不加动作噪声、不加 obs 抖动
-- feet 通道想象时置零（WM 的 feet 头不参与想象）
 
 ### 8. S6 epoch 数
 - 4 个梯度步/update，同一批想象数据复用
