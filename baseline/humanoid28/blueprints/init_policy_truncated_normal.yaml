@@ -1,0 +1,10 @@
+# MimicKit 式无界对角高斯策略（弧度原生动作空间）。
+# 文件名保留 init_policy_truncated_normal.yaml 仅为与实验类默认配置兼容；
+# 实际策略类为 GaussianMLPPolicy（mean 线性无界 + 小初始化 0.01 + 可学习 σ）。
+version: 1
+cls: "baseline.framework.ppo.policies.gaussian_mlp:GaussianMLPPolicy"
+config:
+  obs_dim: 110
+  action_dim: 28
+  hidden_dim: 256
+  device: "cpu"

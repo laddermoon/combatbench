@@ -216,7 +216,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
 
     # --- Policy blueprint ---
     # Filename of the initial policy blueprint YAML under
-    # humanoid21/blueprints/.  Used by build_actor() to construct the
+    # ``baseline/<blueprint_subdir>/blueprints/``.  Used by build_actor() to construct the
     # actor.  Default is TruncatedNormalPolicy.
     actor_blueprint: str = "init_policy_truncated_normal.yaml"
 
@@ -359,8 +359,13 @@ class CombatExperimentPPOBase(ExperimentPPO):
     # Model construction
     # ------------------------------------------------------------------
 
+    # Subdirectory under ``baseline/`` holding this experiment family's
+    # blueprints.  humanoid21 default keeps all existing experiments unchanged;
+    # humanoid28 experiments override to "humanoid28".
+    blueprint_subdir: str = "humanoid21"
+
     def build_actor(self, device: torch.device) -> TrainablePolicy:
-        blueprint_dir = Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints"
+        blueprint_dir = Path(__file__).resolve().parent.parent / self.blueprint_subdir / "blueprints"
         bp = PolicyBlueprint.load(blueprint_dir / self.actor_blueprint)
         actor = bp.build().to(device)
         return actor
@@ -460,7 +465,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
                 "to a blueprint filename"
             )
         return ParameterizedEnvBlueprint.load(
-            Path(__file__).resolve().parent.parent / "humanoid21" / "blueprints" / self.env_blueprint
+            Path(__file__).resolve().parent.parent / self.blueprint_subdir / "blueprints" / self.env_blueprint
         )
 
     # ------------------------------------------------------------------
