@@ -180,7 +180,8 @@ def _margin(com, fl, fr, yaw, com_vel_xy, plant_tau: float = 0.02):
     wr = torch.sigmoid(-hr / plant_tau)
     wsum = wl + wr
     center = (wl.unsqueeze(-1) * fl[..., :2]
-              + wr.unsqueeze(-1) * fr[..., :2]) / wsum.clamp_min(1e-4)
+              + wr.unsqueeze(-1) * fr[..., :2]
+              ) / wsum.clamp_min(1e-4).unsqueeze(-1)
     span = (fl[..., :2] - fr[..., :2]).norm(dim=-1)
 
     cy, sy = torch.cos(yaw), torch.sin(yaw)
@@ -206,19 +207,16 @@ def torso_yaw(aux: torch.Tensor) -> torch.Tensor:
 
 
 def balance_step(aux: torch.Tensor, rep: torch.Tensor,
-                 prev_com: torch.Tensor | None, dt: float):
+                 prev_com=None, dt: float = 0.0):
     """One imagined step's balance quantities (single FK).
 
-    com_vel = finite difference through the trajectory
-    ((com_t - com_{t-1})/dt); at t=0 falls back to the world-frame
-    root linear velocity.  prev_com stays in the graph — the reward
-    legitimately depends on consecutive states.
+    com_vel proxy = world-frame root linear velocity (rep.v_b).
+    A finite-difference com velocity amplifies WM rep error into
+    phantom velocity (~cm per step / dt), so the root velocity —
+    a directly-predicted, smooth rep channel — is used instead.
     Returns (margin(B,), cp(B,2), com(B,3), diag)."""
     com, fl, fr = com_and_feet(aux, rep)
-    if prev_com is None:
-        vel_xy = root_linvel_world(aux, rep)[..., :2]
-    else:
-        vel_xy = (com[..., :2] - prev_com[..., :2]) / dt
+    vel_xy = root_linvel_world(aux, rep)[..., :2]
     margin, cp, diag = _margin(com, fl, fr, torso_yaw(aux), vel_xy)
     return margin, cp, com, diag
 

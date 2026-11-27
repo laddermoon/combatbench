@@ -386,19 +386,15 @@ def main() -> None:
                 pp.requires_grad_(False)
             actor.train()
             J_tot = gn = 0.0
-            dt_step = args.phy_steps * 0.002
             marg_acc = 0.0
             for epoch in range(args.imag_epochs):
                 rep, aux, feet = rep_i, aux_i, feet_i
                 o = model.obs_of(rep, aux, feet)
-                prev_com = None
                 J = 0.0
                 for t in range(args.nstep):
                     a = actor.deterministic_action(o).clamp(-1.0, 1.0)
                     aux, rep, feet = model.next_state(rep, aux, feet, a)
-                    margin, _cp, com, _ = balance_step(
-                        aux, rep, prev_com, dt_step)
-                    prev_com = com
+                    margin, _cp, _com, _ = balance_step(aux, rep)
                     J = J + (args.w_phi * phi_of_rep(rep)
                              + args.w_bal
                              * torch.tanh(margin / 0.05))
