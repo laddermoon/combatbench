@@ -7,6 +7,9 @@
 <mujoco model="Humanoid28_Battle_Arena">
   <compiler angle="radian" />
   <option timestep="0.002" impratio="10" />
+  <visual>
+    <global offwidth="1920" offheight="1080" />
+  </visual>
   <default>
     <motor ctrlrange="-1 1" ctrllimited="true" />
     <default class="body">

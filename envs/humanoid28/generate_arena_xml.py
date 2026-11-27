@@ -171,6 +171,9 @@ def build_xml(root_body: ET.Element) -> ET.Element:
     mujoco = ET.Element('mujoco', model='Humanoid28_Battle_Arena')
     ET.SubElement(mujoco, 'compiler', angle='radian')
     ET.SubElement(mujoco, 'option', timestep='0.002', impratio='10')
+    # 离屏 framebuffer 需显式放大，否则默认 640x480 无法渲染 1280x720 广播视角
+    visual = ET.SubElement(mujoco, 'visual')
+    ET.SubElement(visual, 'global', offwidth='1920', offheight='1080')
 
     # --- default：与上游 MimicKit XML 相同的结构，geom condim 改为 3 ---
     default = ET.SubElement(mujoco, 'default')
