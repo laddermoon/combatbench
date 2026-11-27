@@ -478,6 +478,8 @@ class Humanoid21Binding:
         - 线速度 qvel[0:3] 世界系 → R^T 转机体系；角速度 qvel[3:6] 本就在机体系；
         - relative_vel 为世界系速度差 (v_opp - v_self) 转到 ego 机体系，
           双方速度同源（各自 torso 的 cvel 线速度）；
+        - 对手关键点速度与 relative_vel 同一参照：世界系速度差
+          (v_keypoint - v_self_torso) 转到 ego 机体系；
         - 观测中关节速度做 sign*sqrt(|v|)/2，角速度做 sign*sqrt(|v/2|)，
           对手 head 关键点速度不变换，其余 4 个做 sign*sqrt(|v|)/2；
         - 字典字段保留原始物理值，sqrt 变换只作用于扁平 observation。
@@ -527,7 +529,7 @@ class Humanoid21Binding:
                 np.asarray(data.xpos[..., bid, :]) - self_pos).astype(np.float32)
             kp_vel_local[name] = np.einsum(
                 "...ij,...j->...i", R_self_inv,
-                np.asarray(data.cvel[..., bid, 3:6])).astype(np.float32)
+                np.asarray(data.cvel[..., bid, 3:6]) - self_vel_global).astype(np.float32)
 
         qpos_idx = cache["qpos_indices"]
         qvel_idx = cache["qvel_indices"]

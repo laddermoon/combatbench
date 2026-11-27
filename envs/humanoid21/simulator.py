@@ -566,8 +566,12 @@ class Humanoid21Simulator(BaseSimulator):
         arena_center_local = self_rot_inv.apply(-self_pos)
 
         # 模块四：对手观测 (39维)
+        # 自身 torso COM 线速度（世界系）—— 所有对手速度观测的公共参照：
+        # relative_vel 与关键点速度均为"对手速度 - 该参照"再转到 ego 机体系
+        self_vel_global = self.data.cvel[torso_id, 3:6]
+
         # 4.1 对手基础位姿 (9维)
-        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, torso_id, opp_torso_id)
+        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, self_vel_global, opp_torso_id)
 
         # 4.2 对手关键点位置 (15维)
         opponent_keypoint_pos = self._get_opponent_keypoints_pos(
@@ -576,7 +580,7 @@ class Humanoid21Simulator(BaseSimulator):
 
         # 4.3 对手关键点速度 (15维)
         opponent_keypoint_vel = self._get_opponent_keypoints_vel(
-            self_pos, self_rot_inv, opponent_id
+            self_pos, self_rot_inv, self_vel_global, opponent_id
         )
 
         # 计算模块一本体感知（需要从 get_core_state 获取）
@@ -704,7 +708,7 @@ class Humanoid21Simulator(BaseSimulator):
         self,
         self_pos: np.ndarray,
         self_rot_inv: R,
-        torso_id: int,
+        self_vel_global: np.ndarray,
         opp_torso_id: int
     ) -> Dict[str, np.ndarray]:
         """
@@ -716,16 +720,16 @@ class Humanoid21Simulator(BaseSimulator):
           自身角速度叉乘项）；采用简单的世界系速度差定义。
         - FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
 
-        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转 (self_rot.inv())。
+        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转 (self_rot.inv())；
+        ``self_vel_global`` 为自身 torso COM 线速度（世界系，cvel 来源）。
         """
         # 对手 Torso 的位置和姿态
         opp_pos = self.data.xpos[opp_torso_id]
         opp_quat = self.data.xquat[opp_torso_id]  # [w,x,y,z]
         opp_rot = R.from_quat([opp_quat[1], opp_quat[2], opp_quat[3], opp_quat[0]])
 
-        # 对手与自身速度 (全局坐标系) —— 同源：均为 torso 的 cvel 线速度
+        # 对手速度 (全局坐标系) —— 与自身参照同源：均为 torso 的 cvel 线速度
         opp_vel_global = self.data.cvel[opp_torso_id, 3:6]
-        self_vel_global = self.data.cvel[torso_id, 3:6]
 
         # 1. 相对位置 (3维) - 对手根关节 - 自身根关节
         relative_pos = opp_pos - self_pos
@@ -793,6 +797,7 @@ class Humanoid21Simulator(BaseSimulator):
         self,
         self_pos: np.ndarray,
         self_rot_inv: R,
+        self_vel_global: np.ndarray,
         opponent_id: str
     ) -> Dict[str, np.ndarray]:
         """
@@ -801,8 +806,12 @@ class Humanoid21Simulator(BaseSimulator):
         - 左右手中心点速度 (6维)
         - 左右脚中心点速度 (6维)
 
-        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转。5 个关键点速度堆叠成
-        (5,3) 后批量旋转，结果与逐点调用按位相同。
+        契约：与 relative_vel 同一参照 —— 世界系速度差 (v_keypoint - v_self_torso)
+        转到 ego 机体系。"拳相对我多快"才是格挡/闪避所需的量；若不减自身速度，
+        自己迎拳与静止时观测相同，语义错误。
+        ``self_rot_inv`` 为调用方预先计算好的自身逆旋转；``self_vel_global``
+        为自身 torso COM 线速度（世界系，cvel 来源）。5 个关键点速度堆叠成
+        (5,3) 后批量减参照再旋转，结果与逐点调用按位相同。
         """
         opp_cache = self._robot(opponent_id)
 
@@ -815,7 +824,7 @@ class Humanoid21Simulator(BaseSimulator):
         foot_right_vel = self.data.cvel[kp['foot_right'], 3:6]
         foot_left_vel = self.data.cvel[kp['foot_left'], 3:6]
 
-        # 转换到自身局部坐标系（批量）
+        # 世界系速度差 (v_keypoint - v_self_torso) 后转到自身局部坐标系（批量）
         vels = np.stack([
             head_vel,
             hand_right_vel,
@@ -823,7 +832,7 @@ class Humanoid21Simulator(BaseSimulator):
             foot_right_vel,
             foot_left_vel,
         ])
-        local = self_rot_inv.apply(vels)
+        local = self_rot_inv.apply(vels - self_vel_global)
 
         return {
             'head': local[0].astype(np.float32),  # 3维

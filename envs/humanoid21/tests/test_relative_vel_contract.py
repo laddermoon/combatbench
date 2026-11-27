@@ -106,8 +106,76 @@ def test_relative_vel_stationary_opponent():
     print("PASS: 静止对手 + 自身运动 -> relative_vel 非零且等于 -v_self (ego)")
 
 
+KP_NAMES = ['head', 'hand_right', 'hand_left', 'foot_right', 'foot_left']
+
+
+def test_keypoint_vel_exact_difference():
+    """关键点速度契约：精确等于 (v_kp - v_self_torso) 转到 ego 系。"""
+    sim = Humanoid21Simulator()
+    sim.reset(seed=42)
+    va, vb = np.array([1.0, 0.5, 0.0]), np.array([0.2, -0.3, 0.4])
+    _inject_root_linvel(sim, va, vb)
+
+    view_a, view_b = _views(sim)
+    for self_rid, opp_rid, view in (('robot_a', 'robot_b', view_a),
+                                    ('robot_b', 'robot_a', view_b)):
+        rot_inv = _ego_rot_inv(sim, self_rid)
+        self_vel = _cvel_lin(sim, self_rid)
+        kp_ids = sim._robot(opp_rid)['keypoint_body_ids']
+        for name in KP_NAMES:
+            kp_vel_world = sim.data.cvel[kp_ids[name], 3:6]
+            expected = rot_inv.apply(kp_vel_world - self_vel)
+            actual = view['opponent_keypoint_vel'][name]
+            assert np.allclose(actual, expected, atol=1e-5), \
+                f"{self_rid}/{name}: {actual} != {expected}"
+
+        # 扁平观测一致性：头部速度不变换，位于第 81:84 维
+        assert np.allclose(view['observation'][81:84],
+                           view['opponent_keypoint_vel']['head'], atol=1e-6), \
+            f"{self_rid}: flat obs[81:84] != keypoint_vel[head]"
+    print("PASS: 关键点速度精确公式 + 扁平观测一致性")
+
+
+def test_keypoint_vel_comoving_is_zero():
+    """同速运动时所有关键点速度必须为 0（纯平移下 v_kp == v_root）。"""
+    sim = Humanoid21Simulator()
+    sim.reset(seed=42)
+    v = np.array([0.8, 0.0, 0.0])
+    _inject_root_linvel(sim, v, v.copy())
+
+    view_a, view_b = _views(sim)
+    for rname, view in (('robot_a', view_a), ('robot_b', view_b)):
+        for name in KP_NAMES:
+            kv = view['opponent_keypoint_vel'][name]
+            assert np.allclose(kv, 0.0, atol=1e-5), \
+                f"{rname}/{name}: 同速运动关键点速度应为 0, 实际 {kv}"
+    print("PASS: 同速运动关键点速度 == 0")
+
+
+def test_keypoint_vel_stationary_opponent():
+    """对手静止、自身运动：所有关键点速度 == ego 系下 -v_self（纯平移）。"""
+    sim = Humanoid21Simulator()
+    sim.reset(seed=42)
+    va = np.array([0.0, 0.6, 0.0])
+    _inject_root_linvel(sim, va, np.zeros(3))
+
+    view_a, _ = _views(sim)
+    rot_inv = _ego_rot_inv(sim, 'robot_a')
+    expected = rot_inv.apply(-_cvel_lin(sim, 'robot_a'))
+    for name in KP_NAMES:
+        actual = view_a['opponent_keypoint_vel'][name]
+        assert np.allclose(actual, expected, atol=1e-5), \
+            f"{name}: {actual} != {expected}"
+        assert np.linalg.norm(actual) > 0.3, \
+            f"{name}: 自身运动时对静止对手的关键点速度必须非零"
+    print("PASS: 静止对手 + 自身运动 -> 关键点速度非零且等于 -v_self (ego)")
+
+
 if __name__ == '__main__':
     test_relative_vel_exact_difference()
     test_relative_vel_comoving_is_zero()
     test_relative_vel_stationary_opponent()
+    test_keypoint_vel_exact_difference()
+    test_keypoint_vel_comoving_is_zero()
+    test_keypoint_vel_stationary_opponent()
     print("\n全部契约测试通过")
