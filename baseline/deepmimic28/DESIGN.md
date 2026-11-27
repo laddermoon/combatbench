@@ -51,6 +51,9 @@
 | D11 | ref 鬼影 | 可视化参考角色 | 无（纯跟踪，不渲染 ghost） | 仅可视化差异 |
 | D12 | 稳定机制 | SGD 小步 + action_bound_loss 使 Imp_Ratio~1.0005 | **actor lr 1e-5**（10×降速模拟上游小步 regime；critic 保持 1e-4）+ minibatch 512，无 KL stop | 实测：Adam lr1e-4 单步 mean 位移 0.004 在 σ=0.05 下 ratio 爆炸至 1e6（分布敏感性固有）；lr1e-5 后 epochs 跑满、ep_len 60u 内 7.7→10.2 缓慢爬升 |
 
+| D13 | RSI 时间采样 | 连续均匀 | 60fps 帧网格量化 | 帧对齐后全部 ref 查询精确落帧可预计算（吞吐 2.7×）；上游原版 DeepMimic 本就离散帧采样 |
+| D14 | 激活函数 | ReLU（checkpoint 实证） | Tanh（框架 GaussianMLPPolicy 硬编码） | 网络动力学特性差异 |
+
 ## 4. 实验设计：单 critic vs 多 critic
 
 同一奖励的两种结构化方式（框架 multi-critic 能力验证）：

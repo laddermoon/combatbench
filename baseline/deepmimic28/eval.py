@@ -17,11 +17,19 @@ from envs.framework.common_plugins import VideoRecorderPlugin
 _PKG = Path(__file__).resolve().parent
 
 
-def _load_policy(p: str):
-    pd = Path(p)
-    if (pd / 'MANIFEST.json').exists():
-        return PolicyBlueprint.load(pd / 'MANIFEST.json').build()
-    return PolicyBlueprint.load(pd).build()
+def _load_policy(policy_arg: str):
+    p = Path(policy_arg).resolve()
+    if (p / 'policy').is_dir():              # run 目录 → best-of-run
+        p = p / 'policy'
+    import json as _json
+    manifest = _json.loads((p / 'MANIFEST.json').read_text())
+    cls = manifest.get('exported_class', 'ExportedGaussianMLPPolicy')
+    bp = PolicyBlueprint.from_dict({
+        'version': 1,
+        'cls': f'file:{p}/policy.py:{cls}',
+        'config': {},
+    })
+    return bp.build()
 
 
 def main():

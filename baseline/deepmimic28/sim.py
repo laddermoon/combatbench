@@ -90,6 +90,13 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         self._a_center = 0.5 * (self._action_high + self._action_low)
         self._a_half = 0.5 * (self._action_high - self._action_low)
 
+        # 帧对齐加速：fps=60 时 1 控制步 = 3 帧，RSI 帧对齐后全部查询精确落帧
+        self._fps = self.ref.fps
+        self._frames_per_step = CONTROL_DT * self._fps  # 60fps→3.0
+        self._frame_aligned = abs(self._frames_per_step - round(self._frames_per_step)) < 1e-9
+        self._fk_frames: Optional[list] = None   # 全帧 FK 状态缓存（lazy）
+        self._t0_frame = 0
+
         # 相位状态
         self._motion_time0 = 0.0   # RSI 采样的起始动作时间
         self._step_count = 0
@@ -108,10 +115,30 @@ class DeepMimic28Simulator(Humanoid28Simulator):
     # ---------------------------------------------------------
     # 参考数据（带 FK key positions）
     # ---------------------------------------------------------
+    def _build_fk_frames(self) -> None:
+        """一次性预计算全部帧的 FK 增强状态（key/body 世界位置）。"""
+        self._fk_frames = []
+        for f in range(self.ref.n_frames):
+            self._fk_frames.append(self.ref_state(f / self._fps))
+        # WRAP：时间取模后到帧 n-1 等于帧 0 的位姿但属合法查询，保留原样即可
+
+    def _frame_of_step(self, step_idx: int) -> int:
+        f = self._t0_frame + int(round(self._frames_per_step)) * step_idx
+        if self.ref.loop_mode == 1:
+            f = f % (self.ref.n_frames - 1)
+        else:
+            f = min(f, self.ref.n_frames - 1)
+        return f
+
     def ref_state_at_step(self, step_idx: int) -> Dict[str, np.ndarray]:
         """按控制步索引取参考状态（memoized——reward 与 tar_obs 在同一时刻复用）。"""
         if step_idx not in self._ref_cache:
-            self._ref_cache[step_idx] = self.ref_state(self.motion_time_at_step(step_idx))
+            if self._frame_aligned:
+                if self._fk_frames is None:
+                    self._build_fk_frames()
+                self._ref_cache[step_idx] = self._fk_frames[self._frame_of_step(step_idx)]
+            else:
+                self._ref_cache[step_idx] = self.ref_state(self.motion_time_at_step(step_idx))
         return self._ref_cache[step_idx]
 
     def motion_time_at_step(self, step_idx: int) -> float:
@@ -197,11 +224,20 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         options = options or {}
 
         if self.rand_reset:
-            t0 = float(self._rng.uniform(0.0, self.ref.duration))
+            if self._frame_aligned:
+                # 帧量化 RSI（D13）：起始帧均匀采样 → 后续所有查询精确落帧，
+                # ref 查询变纯查表。上游为连续时间采样——方法影响可忽略。
+                nf = self.ref.n_frames - 1 if self.ref.loop_mode == 1 else self.ref.n_frames
+                self._t0_frame = int(self._rng.integers(0, nf))
+                t0 = self._t0_frame / self._fps
+            else:
+                t0 = float(self._rng.uniform(0.0, self.ref.duration))
         else:
+            self._t0_frame = 0
             t0 = 0.0
         if 'start_time' in options:
             t0 = float(options['start_time'])
+            self._t0_frame = int(round(t0 * self._fps))
         self._motion_time0 = t0
         self._step_count = 0
         self._ref_cache = {}
