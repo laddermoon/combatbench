@@ -94,6 +94,7 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         self._motion_time0 = 0.0   # RSI 采样的起始动作时间
         self._step_count = 0
         self._rng = np.random.default_rng()
+        self._ref_cache: Dict[int, Dict[str, np.ndarray]] = {}  # 控制步索引 → ref_state
 
     # ---------------------------------------------------------
     # 相位
@@ -107,6 +108,18 @@ class DeepMimic28Simulator(Humanoid28Simulator):
     # ---------------------------------------------------------
     # 参考数据（带 FK key positions）
     # ---------------------------------------------------------
+    def ref_state_at_step(self, step_idx: int) -> Dict[str, np.ndarray]:
+        """按控制步索引取参考状态（memoized——reward 与 tar_obs 在同一时刻复用）。"""
+        if step_idx not in self._ref_cache:
+            self._ref_cache[step_idx] = self.ref_state(self.motion_time_at_step(step_idx))
+        return self._ref_cache[step_idx]
+
+    def motion_time_at_step(self, step_idx: int) -> float:
+        t = self._motion_time0 + step_idx * CONTROL_DT
+        if self.ref.loop_mode == 1:
+            t = t % self.ref.duration
+        return min(t, self.ref.duration)
+
     def ref_state(self, t: float) -> Dict[str, np.ndarray]:
         st = self.ref.state_at(t)
         # FK：把 hinge_pos+root 落入 scratch，读 key body 世界位置
@@ -191,6 +204,7 @@ class DeepMimic28Simulator(Humanoid28Simulator):
             t0 = float(options['start_time'])
         self._motion_time0 = t0
         self._step_count = 0
+        self._ref_cache = {}
 
         # RSI：参考状态落入 robot_a
         st = self.ref_state(t0)
@@ -269,7 +283,7 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         # ---- tar_obs 3×108 ----
         tar_all = []
         for k in TAR_OBS_STEPS:
-            ref = self.ref_state(self.motion_time(k))
+            ref = self.ref_state_at_step(self._step_count + k)
             # root_pos 偏移（相对角色 root；z 为参考绝对高度）
             rp = ref['root_pos'] - ch['root_pos']
             rp[2] = ref['root_pos'][2]
@@ -298,7 +312,7 @@ class DeepMimic28Simulator(Humanoid28Simulator):
     def track_data(self) -> Dict[str, Any]:
         """插件用：当前帧角色状态 + 当前时间参考状态。"""
         ch = self._char()
-        ref = self.ref_state(self.motion_time(0))
+        ref = self.ref_state_at_step(self._step_count)
         return {'char': ch, 'ref': ref,
                 'time': self._motion_time0 + self._step_count * CONTROL_DT,
                 'step': self._step_count}
