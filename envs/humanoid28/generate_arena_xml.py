@@ -163,7 +163,7 @@ def build_wall(index: int) -> ET.Element:
     g.set('friction', ARENA['wall_friction'])
     g.set('solref', ARENA['env_solref'])
     g.set('solimp', ARENA['env_solimp'])
-    g.set('material', f'mat_wall_{index % 6}')
+    g.set('material', f'mat_wall_{(2 - index) % 6}')  # circular_v2 的降序循环：6 张纹理是连续广告幅的分片，顺序错乱会拼成乱码
     return g
 
 
