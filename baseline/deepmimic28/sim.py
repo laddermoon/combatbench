@@ -304,7 +304,23 @@ class DeepMimic28Simulator(Humanoid28Simulator):
     def _key_rel(key_pos: np.ndarray, root_pos: np.ndarray) -> np.ndarray:
         return key_pos - root_pos[None, :]
 
+    def _ensure_obs_norm(self):
+        """惰性加载 obs 归一化统计（MimicKit normalizer 保真项）。"""
+        if getattr(self, '_obs_norm_loaded', False):
+            return
+        self._obs_norm_loaded = True
+        import os
+        npz = os.path.join(os.path.dirname(__file__), 'data', 'obs_norm.npz')
+        if os.path.exists(npz):
+            d = np.load(npz)
+            self._obs_norm_mean = d['mean'].astype(np.float32)
+            self._obs_norm_std = d['std'].astype(np.float32)
+        else:
+            self._obs_norm_mean = None
+            self._obs_norm_std = None
+
     def compute_obs_a(self) -> np.ndarray:
+        self._ensure_obs_norm()
         ch = self._char()
         # ---- char_obs (140) ----
         root_h = ch['root_pos'][2:3]                                    # 1
@@ -330,6 +346,11 @@ class DeepMimic28Simulator(Humanoid28Simulator):
         tar_obs = np.concatenate(tar_all)                               # 324
         obs = np.concatenate([char_obs, tar_obs]).astype(np.float32)
         assert obs.shape[0] == OBS_DIM, obs.shape
+        # MimicKit 观测归一化（上游 normalizer + clip±10 保真项）：
+        # fixed stats 见 data/obs_norm.npz（生成脚本见 DESIGN.md §9）
+        if self._obs_norm_mean is not None:
+            obs = (obs - self._obs_norm_mean) / self._obs_norm_std
+            np.clip(obs, -10.0, 10.0, out=obs)
         return obs
 
     def get_observation(self) -> Dict[str, Any]:

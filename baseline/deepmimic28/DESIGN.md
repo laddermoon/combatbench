@@ -120,3 +120,14 @@ Adam 丢弃梯度幅度信息——每步恒定 lr 的噪声游走，而 PPO 裁
 
 修复后冒烟：ratio_mean 1.0136（上游 Imp_Ratio~1.0005 同量级）、KL~0.06、mean_abs 稳定 0.04。
 原"框架不支持就不加"决策被实证推翻：这两项是方法的承重墙，不是装饰。
+
+## 9. 观测归一化补漏（2026-01-28，第三个被实证推翻的"可省"项）
+
+上游 config `normalizer_samples` + checkpoint 含 obs_mean/obs_std——running 归一化 + clip±10
+本就是方法的一部分。实测我方原始 obs 幅度最大 17.3（速度维），2.4% 超 |5|，tanh 饱和 +
+特征尺度混乱导致学习近乎冻结（80min/28M 样本 eval survive 全程平直 0.03-0.04）。
+
+实现：fixed stats（data/obs_norm.npz，随机小动作用力 rollout + RSI 落位混合分布 1200 样本，
+std 地板 0.05）在 sim.compute_obs_a 出口归一化 + clip±10。用 fixed 而非 running 的偏差已记录，
+但尺度矫正捕获 ~90% 收益。**注意**：obs 语义布局若变，必须重新生成 obs_norm.npz。
+ReLU vs Tanh（上游用 ReLU）差异仍保留为 D14——归一化后输入集中在 ±2，饱和问题次要。
