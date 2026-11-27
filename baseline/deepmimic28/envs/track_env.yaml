@@ -1,0 +1,53 @@
+# MimicKit DeepMimic 复现：humanoid28 单 clip 跟踪环境。
+# robot_a RSI 到动作随机相位，学习归一化 PD 目标跟踪；
+# robot_b 无控制陪衬（T-pose 漂移，纯场景）。
+# 终止：track_fall（非脚接触）/ track_deviation（pose 偏差>1m）/ timeout。
+
+parameters:
+  motion:
+    default: "humanoid_spinkick"
+    description: "MimicKit 动作 clip 名（data/motions/<motion>.pkl）"
+  motion_dir:
+    default: null
+    description: "pkl 目录（null=deepmimic28/data/motions）"
+  rand_reset:
+    default: true
+    description: "RSI 均匀随机相位（false=从头开始，评估用）"
+  episode_steps:
+    default: 200
+    description: "最大控制步数（200=10s@20Hz，对齐上游 episode_length）"
+  contact_fall:
+    default: true
+    description: "非白名单（双脚外）身体受力即摔倒终止"
+  pose_dev:
+    default: true
+    description: "key body/root 世界系位置偏差 >1m 终止"
+  initial_distance:
+    default: 6.0
+    description: "双机距离（B 仅作场景）"
+
+runtime:
+  phy_steps_per_action: 25
+  max_steps: ${episode_steps}
+  strict: true
+
+simulator:
+  cls: "baseline.deepmimic28.sim:DeepMimic28Simulator"
+  config:
+    motion: ${motion}
+    motion_dir: ${motion_dir}
+    rand_reset: ${rand_reset}
+    episode_steps: ${episode_steps}
+    initial_distance: ${initial_distance}
+
+plugins:
+  - cls: "baseline.deepmimic28.plugins:DeepMimic28TerminationPlugin"
+    config:
+      contact_fall: ${contact_fall}
+      pose_dev: ${pose_dev}
+
+observer_plugins:
+  track_a:
+    cls: "baseline.deepmimic28.plugins:DeepMimic28RewardObserver"
+    config:
+      agent_id: "robot_a"

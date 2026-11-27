@@ -1,0 +1,2 @@
+cls: "baseline.deepmimic28.zero_policy:ZeroPolicy"
+config: {}
