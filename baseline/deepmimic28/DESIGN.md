@@ -106,3 +106,17 @@ baseline/deepmimic28/
 
 **监控基线**：dm28sk_single_1128_0230 / dm28sk_multi_1128_0230
 （--no-confidence 必需：critic 初期 EV 为负会零化 advantage；MimicKit 本无此机制）
+
+## 8. Adam→SGD 保真修复（2026-01-28 凌晨，决定性）
+
+**死亡螺旋确诊链**：固定 σ=0.05 下 log-ratio 对均值微位移极度敏感（1/σ²=400 放大）。
+Adam 丢弃梯度幅度信息——每步恒定 lr 的噪声游走，而 PPO 裁剪使 ratio 偏离后有效梯度缩小
+（天然刹车），SGD 保留这一自限性而 Adam 破坏它。实测：Adam 下第一个梯度步后 KL 即爆至
+2.5 亿，mean_abs 0.04→1.82 饱和（动作出界被环境裁剪，策略失去自由度）。
+
+**修复**（框架扩展，默认不影响其他实验）：
+1. `actor_optimizer/critic_optimizer` 可选 'sgd'——上游双方都是纯 SGD lr 1e-4（无 momentum）
+2. `action_bound_weight=10.0`（上游精确形式：Σmin(m+1,0)²+Σmax(m-1,0)²，防均值出界）
+
+修复后冒烟：ratio_mean 1.0136（上游 Imp_Ratio~1.0005 同量级）、KL~0.06、mean_abs 稳定 0.04。
+原"框架不支持就不加"决策被实证推翻：这两项是方法的承重墙，不是装饰。

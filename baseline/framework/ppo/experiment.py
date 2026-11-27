@@ -244,6 +244,7 @@ class ActorEval:
     log_prob: torch.Tensor
     uncertainty: torch.Tensor
     stats: Optional[Dict[str, float]] = None
+    mean: Optional[torch.Tensor] = None
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +373,11 @@ class CommonParams:
     # UDS inference server with GPU-batched forwards.  Fixed for the whole
     # run — the ParallelRollouter is built once before the loop.
     rollout_inference: str = "cpu"
+    # 优化器类型：'adam'（框架默认）或 'sgd'（MimicKit 保真——固定小 std
+    # 高斯策略 regime 下 Adam 丢弃梯度幅度导致 ratio 失稳，上游纯 SGD
+    # lr=1e-4 是稳定关键；仅取 'adam'/'sgd'，其余值回退 adam）
+    actor_optimizer: str = 'adam'
+    critic_optimizer: str = 'adam'
 
 
 @dataclass(frozen=True)
@@ -432,6 +438,10 @@ class PPOParams:
     # coefficient |adv| so a single outlier trajectory cannot dominate
     # the update direction.  0.0 disables.
     adv_winsorize_sigma: float = 0.0
+    # MimicKit action_bound_weight：归一化空间内对 |mean|>1 部分的
+    # 平方惩罚权重（0=关闭）。无界高斯均值策略在固定小 std 下必须
+    # 有此正则，否则均值漂移出界后策略失去动作自由度（死亡螺旋）。
+    action_bound_weight: float = 0.0
 
     # Dual-Clip floor (Ye et al. 2020): for adv<0 the standard
     # min(surr1,surr2) selects the unclipped branch once ratio > 1+eps,

@@ -263,6 +263,8 @@ class CombatExperimentPPOBase(ExperimentPPO):
         return CommonParams(
             name=self.name,
             learning_rate=self.learning_rate,
+            actor_optimizer=getattr(self, 'actor_optimizer', 'adam'),
+            critic_optimizer=getattr(self, 'critic_optimizer', 'adam'),
             critic_learning_rate=self.critic_learning_rate,
             grad_clip_norm=self.grad_clip_norm,
             episodes_per_update=self.episodes_per_update,
@@ -283,6 +285,7 @@ class CombatExperimentPPOBase(ExperimentPPO):
             minibatch_size=self.minibatch_size,
             early_stop_kl_window=self.early_stop_kl_window,
             adv_norm=self.adv_norm,
+            action_bound_weight=getattr(self, "action_bound_weight", 0.0),
             grad_sig_cos_bins=self.grad_sig_cos_bins,
             grad_sig_norm_bins=self.grad_sig_norm_bins,
             grad_sig_norm_lo=self.grad_sig_norm_lo,

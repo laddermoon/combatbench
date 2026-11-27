@@ -675,9 +675,14 @@ def train_ppo(
         for ch in channels
     }
 
-    actor_optimizer = torch.optim.Adam(actor.parameters(), lr=cp.learning_rate)
+    def _make_opt(params, lr, opt_type):
+        if opt_type == 'sgd':
+            return torch.optim.SGD(params, lr=lr)
+        return torch.optim.Adam(params, lr=lr)
+
+    actor_optimizer = _make_opt(actor.parameters(), cp.learning_rate, cp.actor_optimizer)
     critic_optimizers = {
-        ch.name: torch.optim.Adam(critics[ch.name].parameters(), lr=cp.critic_learning_rate)
+        ch.name: _make_opt(critics[ch.name].parameters(), cp.critic_learning_rate, cp.critic_optimizer)
         for ch in channels
     }
 

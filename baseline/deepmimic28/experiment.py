@@ -62,12 +62,15 @@ class DeepMimic28Track(CombatExperimentPPOBase):
     init_distance: float = 6.0
 
     # --- PPO（MimicKit 对齐）---
-    learning_rate: float = 1e-4       # Adam（框架硬编码；他是 SGD——差异记录）
+    learning_rate: float = 1e-4       # = 他的 SGD lr（actor_optimizer='sgd' 保真对齐）
     critic_learning_rate: float = 1e-4
     target_kl: float = 0.0            # 他无 KL early-stop
     update_epochs: int = 5            # actor_epochs=5（框架无分离，critic 同步 5）
     minibatch_size: int = 4096
     adv_winsorize_sigma: float = 4.0  # = 他的 norm_adv_clip
+    action_bound_weight: float = 10.0  # = 他的 action_bound_weight（承重正则，防均值出界死亡螺旋）
+    actor_optimizer: str = 'sgd'        # = 他的 actor_optimizer: SGD lr 1e-4（纯 SGD 无 momentum）
+    critic_optimizer: str = 'sgd'       # = 他的 critic_optimizer: SGD lr 1e-4
 
     episodes_per_update: int = 256
     max_updates: int = 2000

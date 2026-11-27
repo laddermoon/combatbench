@@ -1581,6 +1581,14 @@ def ppo_update(
             # overwhelming the policy gradient in cold-start phases.
             loss = policy_loss
             floor_loss = torch.tensor(0.0, device=policy_loss.device)
+            # MimicKit action_bound 正则（pp.action_bound_weight>0 时）：
+            # 惩罚归一化空间中超出 [-1,1] 的分布均值，形式与上游一致：
+            #   mean_batch( sum_dims(min(m+1,0)^2) + sum_dims(max(m-1,0)^2) )
+            if pp.action_bound_weight > 0.0 and actor_eval.mean is not None:
+                _m = actor_eval.mean
+                _vio = (torch.clamp_max(_m + 1.0, 0.0) ** 2).sum(dim=-1) \
+                    + (torch.clamp_min(_m - 1.0, 0.0) ** 2).sum(dim=-1)
+                loss = loss + pp.action_bound_weight * _vio.mean()
             if uncertainty_coef > 0.0 and uncertainty_floor > 0.0:
                 fw_mb = floor_weight_t[idx]  # (B,) per-frame floor weight
                 gap = torch.relu(

@@ -173,7 +173,7 @@ class GaussianMLPPolicy(nn.Module, TrainablePolicy, Policy):
                     "std_max": float(policy_sigma.max().item()),
                     "mean_abs": float(mean.abs().mean().item()),
                 }
-        return ActorEval(log_prob=log_prob, uncertainty=uncertainty, stats=stats)
+        return ActorEval(log_prob=log_prob, uncertainty=uncertainty, stats=stats, mean=mean)
 
     # ---------------- Policy contract ----------------
     def act(self, observation: Any, *, want_extra: bool = False):
