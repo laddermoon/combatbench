@@ -16,7 +16,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 HERE = pathlib.Path(__file__).resolve().parent
-PHC_DIR = HERE.parents[1] / 'phc'            # mocap/humanoid21/phc (gitignored)
+PHC_DIR = HERE.parents[0] / 'phc'            # mocap/humanoid21/phc (gitignored)
 MANIFEST = PHC_DIR / 'manifest.json'
 MOCAP_XML = HERE / 'humanoid21_mocap.xml'
 
