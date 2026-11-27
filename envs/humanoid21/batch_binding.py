@@ -476,8 +476,8 @@ class Humanoid21Binding:
 
         与 CPU 相同的语义要点：
         - 线速度 qvel[0:3] 世界系 → R^T 转机体系；角速度 qvel[3:6] 本就在机体系；
-        - relative_vel 用的是**对手** torso 的 cvel 线速度（字段名带 relative
-          但 CPU 语义如此，不为"修正命名"改公式）；
+        - relative_vel 为世界系速度差 (v_opp - v_self) 转到 ego 机体系，
+          双方速度同源（各自 torso 的 cvel 线速度）；
         - 观测中关节速度做 sign*sqrt(|v|)/2，角速度做 sign*sqrt(|v/2|)，
           对手 head 关键点速度不变换，其余 4 个做 sign*sqrt(|v|)/2；
         - 字典字段保留原始物理值，sqrt 变换只作用于扁平 observation。
@@ -509,10 +509,11 @@ class Humanoid21Binding:
         feet_forces = self.feet_forces_batch(data, robot_id)
         arena_center_local = np.einsum("...ij,...j->...i", R_self_inv, -self_pos)
 
-        # 对手基础位姿：relative_vel 取对手 torso 线速度转到自机体系（CPU 语义）。
+        # 对手基础位姿：relative_vel 为世界系速度差 (v_opp - v_self) 转到自机体系（CPU 语义）。
         relative_pos_local = np.einsum("...ij,...j->...i", R_self_inv, opp_pos - self_pos)
         opp_vel_global = np.asarray(data.cvel[..., opp_torso_id, 3:6])
-        relative_vel_local = np.einsum("...ij,...j->...i", R_self_inv, opp_vel_global)
+        self_vel_global = np.asarray(data.cvel[..., torso_id, 3:6])
+        relative_vel_local = np.einsum("...ij,...j->...i", R_self_inv, opp_vel_global - self_vel_global)
         opp_forward = quat_to_rot_np(opp_quat)[..., :, 0]       # 对手局部 x 轴（世界系）
         face_vector = np.einsum("...ij,...j->...i", R_self_inv, opp_forward)
 

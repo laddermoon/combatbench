@@ -567,7 +567,7 @@ class Humanoid21Simulator(BaseSimulator):
 
         # 模块四：对手观测 (39维)
         # 4.1 对手基础位姿 (9维)
-        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, opp_torso_id)
+        opponent_basic = self._get_opponent_basic_pose(self_pos, self_rot_inv, torso_id, opp_torso_id)
 
         # 4.2 对手关键点位置 (15维)
         opponent_keypoint_pos = self._get_opponent_keypoints_pos(
@@ -704,12 +704,16 @@ class Humanoid21Simulator(BaseSimulator):
         self,
         self_pos: np.ndarray,
         self_rot_inv: R,
+        torso_id: int,
         opp_torso_id: int
     ) -> Dict[str, np.ndarray]:
         """
         获取对手基础位姿 (9维)
         - 相对位置 (3维)
-        - 相对速度 (3维)
+        - 相对速度 (3维) - 世界系速度差 (v_opp - v_self) 转到 ego 机体系。
+          双方速度同源（各自 torso 的 cvel 线速度，COM 线速度）。
+          注意这不是旋转 ego 系中 relative_pos 的时间导数（那还多一项
+          自身角速度叉乘项）；采用简单的世界系速度差定义。
         - FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
 
         ``self_rot_inv`` 为调用方预先计算好的自身逆旋转 (self_rot.inv())。
@@ -719,15 +723,16 @@ class Humanoid21Simulator(BaseSimulator):
         opp_quat = self.data.xquat[opp_torso_id]  # [w,x,y,z]
         opp_rot = R.from_quat([opp_quat[1], opp_quat[2], opp_quat[3], opp_quat[0]])
 
-        # 对手速度 (全局坐标系)
-        opp_vel_global = self.data.cvel[opp_torso_id, 3:6]  # 线速度
+        # 对手与自身速度 (全局坐标系) —— 同源：均为 torso 的 cvel 线速度
+        opp_vel_global = self.data.cvel[opp_torso_id, 3:6]
+        self_vel_global = self.data.cvel[torso_id, 3:6]
 
         # 1. 相对位置 (3维) - 对手根关节 - 自身根关节
         relative_pos = opp_pos - self_pos
         relative_pos_local = self_rot_inv.apply(relative_pos)
 
-        # 2. 相对速度 (3维)
-        relative_vel_local = self_rot_inv.apply(opp_vel_global)
+        # 2. 相对速度 (3维) —— 世界系速度差 (v_opp - v_self) 转到 ego 机体系
+        relative_vel_local = self_rot_inv.apply(opp_vel_global - self_vel_global)
 
         # 3. FaceVector (3维) - 对手朝向的单位向量在Ego坐标系中的值
         # 对手的"前方"在自身坐标系中表示
