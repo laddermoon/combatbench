@@ -86,3 +86,23 @@ baseline/deepmimic28/
   或降 lr（记为正式偏差）
 - 20Hz 控制率 + MimicKit 高增益 PD——抖动风险（humanoid21 实测教训），
   但他的 std 极小 + 绝对位置目标语义，预期好于归一化 delta 方案
+
+## 7. 训练配方实战记录（2026-01-28 凌晨）
+
+**D15: batch 规模是样本效率的决定因素**。初始 256 eps/update（~2.5k 样本）配 minibatch 512，
+每个梯度步仅 ~100 样本——上游 MimicKit 是 131k/80步 ≈ 1640 样本/步。小批量噪声导致策略空转
+（single-critic 回报先升后降）。修正为 **episodes_per_update=2048 + minibatch 4096（实验默认）**，
+每步 ~819 样本。代价：update 频率降低，但 samples/sec 吞吐不变。
+
+**吞吐优化链**（全部已验证）：
+1. RSI 起始帧量化到 60fps 网格 + 控制步恰为 3 帧 → 全部参考查询精确落帧 →
+   FK/tar_obs 全量预计算，ref_state 变纯查表：9.05→3.37ms/控制步（2.7×）
+2. rollout_workers 96 + 2048 eps/update 的摊薄效应：实测 ~8k 控制步/秒/run（双跑并行）
+3. 对比上游：iter400（突破点）= 52M 样本 ≈ 我们 1 小时 wallclock
+
+**Adam 固定小 std 的固有敏感 regime**（D12 补充）：σ=0.05 下 ratio 对微位移极端敏感
+（单步 Adam mean_shift 0.004 已足以大幅推动 ratio）。上游靠 SGD+action_bound 正则稳定，
+我们靠 lr=1e-5 + 大 batch。activate ReLU vs 框架 Tanh 差异保留（D14）。
+
+**监控基线**：dm28sk_single_1128_0230 / dm28sk_multi_1128_0230
+（--no-confidence 必需：critic 初期 EV 为负会零化 advantage；MimicKit 本无此机制）
