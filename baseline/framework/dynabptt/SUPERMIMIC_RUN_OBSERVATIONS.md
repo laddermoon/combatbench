@@ -49,9 +49,60 @@ Run: `/tmp/supermimic_mjlab/outputs/run512_15k`
 - eval 协议：确定性策略、无噪声、从 clip 首帧全段播、height/tilt 失败即终止——
   比我们 eval 严格得多（我们 StartSet 种子 eval 本就是优势区间）
 
-## 待观察的转折点
+## 全程结果（15000 轮跑完，~2h）
 
-- [ ] real_reward_per_step 何时脱离 0.03 平台开始爬（策略真正起形的信号）
-- [ ] 第一个 eval success clip 出现的迭代（官方 4096 envs 下预期远早于 15000）
-- [ ] imag_r 与 real_r 是否出现分叉（model exploitation 的早期信号）
-- [ ] 缩小配置（512 envs）能否收敛到有意义的成功率——README 明说未验证
+**1/8 规模（512 envs）达到 30/40 success、86.9% completion、norm_return 0.498。**
+官方 4096 envs 报 40/40——缩小配置有效，README 的"未验证"已验证通过。
+
+### 曲线三段结构（这是最重要的体感）
+
+```
+iter 0-1500 (10%):   死亡平台期 —— eval 0/40，real_r 平在 0.03，
+                     pos_err 反而涨到 2.0m（策略还在乱挥），
+                     所有"下游"指标零信号。此时唯一能看的是 wm_loss 在降。
+iter 1300-2000:      相变期 —— wm_term 0.21→0.03 雪崩，
+                     surv_H 0.4→0.985，fail% 51→3，tilt_err 砍半，
+                     eval 一次评估间从 0/40 跳到 15/40。
+iter 2000-15000:     精修期 —— 缓慢研磨到 30/40，
+                     4000 轮后 completion 就 ~80%+，之后全是长尾。
+```
+
+**核心判读：termination head 的学习是"离散的锁"**——它一旦学会（wm_term 从 0.2 跌到
+0.03 发生在 ~500 轮内），软存活权重 `alive` 才有意义，想象的奖励分配瞬间变得可用，
+策略立刻起飞。在此之前整条链都在"无 survival 信号"状态空转。
+
+### imag↔real 全程贴合——最硬的一条体感
+
+imagined_reward 与 real_reward_per_step **全程几乎重合**（终点 0.069 vs 0.0665，gap~2%），
+从未分叉。这证实之前的推断：mocap 锚定的 tracking reward 天然抗 model exploitation；
+我们 dynabptt 的 imag-real gap 病态是**内在奖励语义**的问题，不是 WM 训练的问题。
+
+### 剩余 10 条失败 clip 的画像
+
+- 5/8 个 fallAndGetUp 全挂（5%-93% completion 不等）——倒地-爬起是接触最复杂的相
+- jumps、快节奏 dance——空中相 + 冲击接触
+- 失败原因全是 height/tilt_failure——模型和策略都倒在了高动态相
+- 合理推测：这些 clip 要么需要更多 envs/batch（探索覆盖），要么需要 wm-only 预训练期
+
+### 数值健康基线（"正常应该长这样"）
+
+| 指标 | 健康轨迹 |
+|---|---|
+| wm_loss | 5.6 → 0.015，单调降，相变后趋稳 |
+| wm_term | 平台 0.2 很久 → 相变时雪崩到 ~0.001 |
+| surv_H | 死亡期 0.2-0.5 振荡 → 相变跳到 0.98+ |
+| real_r vs imag_r | 全程贴合，gap<10% 即健康 |
+| physical_failures | 94% → ~1%，相变期降幅最陡 |
+| actor/wm grad norm | 2-6 起步，收敛期降到 0.3-1.7，无尖峰 |
+| critic_loss | 早期巨峰（想象目标漂移）后稳在 ~1 |
+| pos_err（采集口径） | 含失败 rollout 漂移，收敛后仍有 ~0.7m——会被失败样本拉偏，别当 tracking 精度读 |
+
+### 对我们实现的反哺清单
+
+1. **死亡平台 10% 是正常的**——我们之前看到 eval 不动就改方向可能过早；
+   正确的等待判据是"底层指标（WM loss）是否还在动"
+2. **termination/存活信号是离散的锁**——我们的实验里没有等价的"alive"结构，
+   值得考虑给想象链加权存活软终止
+3. **imag↔real gap 是唯一需要盯的剥削信号**，且只在内在奖励下才危险
+4. **长尾是结构性的**——最难 clip（高动态/倒地爬起）天然需要更多覆盖，
+   30/40→40/40 靠的是规模不是等更久
