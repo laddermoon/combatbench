@@ -8,3 +8,4 @@ config:
   action_dim: 28
   hidden_dim: 256
   device: "cpu"
+  init_log_std: -0.693   # log(0.5)：初始探索 σ=0.5 rad——0.1 对 ±1.5~3 rad 关节范围太小，探索不足（对照 humanoid21 truncnorm 有效 σ≈0.5-1.1 rad）
